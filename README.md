@@ -118,13 +118,15 @@ Credentials live separately in `/etc/beosound5c/secrets.env` (created by the ins
 | `beo-router` | [`services/router.py`](services/router.py) | Event router: dispatches remote events to HA or the active source, controls volume |
 | `beo-player-sonos` | [`services/players/sonos.py`](services/players/sonos.py) | Sonos player: artwork, metadata, playback commands, volume reporting |
 | `beo-player-bluesound` | [`services/players/bluesound.py`](services/players/bluesound.py) | BluOS player: long-poll monitoring, HTTP/XML transport controls |
-| `beo-player-local` | [`services/players/local.py`](services/players/local.py) | Local player: URL stream playback for S/PDIF, HDMI, and other outputs |
+| `beo-player-local` | [`services/players/local.py`](services/players/local.py) | Local player: Spotify via go-librespot, URL streams via mpv |
 | `beo-source-spotify` | [`services/sources/spotify/service.py`](services/sources/spotify/service.py) | Spotify: PKCE OAuth, playlist browsing, playback via player or Web API |
 | `beo-source-apple-music` | [`services/sources/apple_music/service.py`](services/sources/apple_music/service.py) | Apple Music: MusicKit API browsing and playback |
 | `beo-source-tidal` | [`services/sources/tidal/service.py`](services/sources/tidal/service.py) | TIDAL: tidalapi OAuth, playlist browsing and playback |
 | `beo-source-plex` | [`services/sources/plex/service.py`](services/sources/plex/service.py) | Plex: PIN-based OAuth, playlist/album browsing, source-managed playback |
 | `beo-source-cd` | [`services/sources/cd.py`](services/sources/cd.py) | CD player: disc detection, MusicBrainz metadata, mpv playback |
 | `beo-source-usb` | [`services/sources/usb/service.py`](services/sources/usb/service.py) | USB file playback from mounted drives |
+| `beo-source-news` | [`services/sources/news.py`](services/sources/news.py) | News: The Guardian API, article browsing and reading |
+| `beo-source-radio` | [`services/sources/radio/service.py`](services/sources/radio/service.py) | Internet radio: Radio Browser API, browsing and playback |
 | `beo-masterlink` | [`services/masterlink.py`](services/masterlink.py) | USB sniffer for B&O IR and MasterLink bus commands |
 | `beo-bluetooth` | [`services/bluetooth.py`](services/bluetooth.py) | HID service for BeoRemote One wireless control |
 | `beo-http` | — | Simple HTTP server for static files |
@@ -184,7 +186,9 @@ Each BS5c is configured with one **player** (Sonos, BlueSound, or Local) and one
 |---|---|---|
 | Sonos | `spotify`, `url_stream` | Any Sonos speaker (S1 or S2, any generation) |
 | BlueSound | `url_stream` | Any BluOS player (e.g. Node, PowerNode, Vault) |
-| Local | `url_stream` | S/PDIF HAT, HDMI, or other audio output |
+| Local | `spotify`¹, `url_stream` | S/PDIF HAT, HDMI, or other audio output |
+
+¹ Requires go-librespot (installed automatically by the installer).
 
 ### Source Compatibility
 
@@ -192,14 +196,34 @@ Sources check the player's capabilities at startup to determine how to play cont
 
 | Source | Sonos | BlueSound | Local (mpv) |
 |---|---|---|---|
-| Spotify | **Working** | No | No (under development) |
+| Spotify | **Working** | No | **Working** |
 | Apple Music | **Working** | No | No (DRM restrictions) |
 | TIDAL | **Working** | Untested (Stream URL) | Untested (Stream URL) |
 | Plex | **Working** (Stream URL) | Untested (Stream URL) | **Working** (Stream URL) |
+| Radio | **Working** (Stream URL) | **Working** (Stream URL) | **Working** (Stream URL) |
 | CD | **Working** (AirPlay) | **Working** (AirPlay) | **Working** |
 | USB | **Working** (Stream URL) | Untested (Stream URL) | **Working** (Stream URL) |
 
-Spotify and Apple Music send share links via `uri=` which only Sonos handles natively. TIDAL and Plex send direct Stream URLs via `url=` which all players support. On Sonos, TIDAL uses ShareLink for native queue management; on BlueSound, TIDAL resolves Stream URLs and manages the queue itself (like Plex). CD plays locally via mpv and streams to Sonos/BlueSound over AirPlay (RAOP). The local player uses mpv to play URL streams through PipeWire/PulseAudio — sources manage their own track lists and advance tracks by issuing new play commands.
+### Spotify Setup
+
+1. **Create a Spotify Developer App** (free) at [developer.spotify.com/dashboard](https://developer.spotify.com/dashboard):
+   - Click "Create App" — name it anything (e.g. "BeoSound 5c")
+   - Redirect URI: `https://<device-ip>:8772/callback` (the setup page will show the exact URI)
+   - Select "Web API"
+   - Copy the Client ID
+
+2. **Configure**: Add the client ID to your device `config.json`:
+   ```json
+   { "spotify": { "client_id": "your-client-id-here" } }
+   ```
+
+3. **Connect**: Navigate to SPOTIFY on the BS5 display, follow the on-screen setup, and scan the QR code with your phone.
+
+**Notes:**
+- Spotify apps in "Development" mode allow up to 25 test users. You must add your Spotify account email under **User Management** in the developer dashboard.
+- A self-signed SSL certificate is generated during install (required for Spotify OAuth on non-localhost). Your phone must accept the certificate warning when scanning the QR code.
+
+Spotify sends share links via `uri=` which Sonos handles natively via ShareLink; the local player handles them via go-librespot. Apple Music uses MusicKit URLs which only Sonos supports. TIDAL and Plex send direct Stream URLs via `url=` which all players support. On Sonos, TIDAL uses ShareLink for native queue management; on BlueSound, TIDAL resolves Stream URLs and manages the queue itself (like Plex). Radio streams URLs directly, working across all player types. CD plays locally via mpv and streams to Sonos/BlueSound over AirPlay (RAOP). The local player uses mpv to play URL streams through PipeWire/PulseAudio — sources manage their own track lists and advance tracks by issuing new play commands.
 
 ### Volume Adapters
 
@@ -208,12 +232,13 @@ Spotify and Apple Music send share links via `uri=` which only Sonos handles nat
 | Sonos | Sonos speaker volume | Sonos device (all supported) |
 | BlueSound | BluOS player volume | BlueSound device (all supported) |
 | BeoLab 5 | BeoLab 5 volume and power | BeoLab 5 Controller |
-| PowerLink | B&O PowerLink speakers | S/PDIF HAT with COAX output, or any Sonos device¹ |
+| PowerLink | B&O PowerLink speakers | S/PDIF HAT with COAX output, or any Sonos device² |
 | HDMI | ALSA software volume on HDMI1 | Amplifier with HDMI audio input |
 | S/PDIF | ALSA software volume | S/PDIF HAT (e.g. HiFiBerry Digi) |
 | RCA | ALSA software volume | DAC HAT with RCA out |
+| C4 Amp | Control4 amplifier zone volume | Control4 amplifier (UDP) |
 
-¹ You can use a standalone Sonos player and still output audio through PowerLink by connecting the Sonos digital out via an adapter to the PCB51 S/PDIF in. This means your player is Sonos instead of Local, which unlocks additional source support (see Source Compatibility table).
+² You can use a standalone Sonos player and still output audio through PowerLink by connecting the Sonos digital out via an adapter to the PCB51 S/PDIF in. This means your player is Sonos instead of Local, which unlocks additional source support (see Source Compatibility table).
 
 Sources register with the router and appear in the menu. The remote's media keys are forwarded to whichever source is currently active. When no source is active, transport keys (play/pause/next/prev) are forwarded directly to the player.
 
@@ -233,7 +258,9 @@ services/                   # Backend services
 │   ├── tidal/              #   TIDAL (tidalapi OAuth)
 │   ├── plex/               #   Plex (PIN-based OAuth, direct stream URLs)
 │   ├── cd.py               #   CD player (disc detect, MusicBrainz, mpv)
-│   └── usb/                #   USB file playback (BM5 library, file browser)
+│   ├── usb/                #   USB file playback (BM5 library, file browser)
+│   ├── news.py             #   News (The Guardian API, article browsing)
+│   └── radio/              #   Internet radio (Radio Browser API)
 ├── players/                # External playback backends
 │   ├── sonos.py            #   Sonos (SoCo, ShareLink, artwork)
 │   ├── bluesound.py        #   BluOS (HTTP/XML, long-poll)
@@ -247,7 +274,10 @@ services/                   # Backend services
 │   │   ├── hdmi.py         #   HDMI (ALSA software volume)
 │   │   ├── spdif.py        #   S/PDIF / Optical (ALSA software volume)
 │   │   ├── rca.py          #   RCA DAC (ALSA software volume)
-│   │   └── powerlink.py    #   B&O PowerLink via masterlink.py
+│   │   ├── powerlink.py    #   B&O PowerLink via masterlink.py
+│   │   ├── bluesound.py    #   BluOS player volume
+│   │   └── c4amp.py        #   Control4 amplifier (UDP)
+│   ├── librespot.py        # go-librespot client for Spotify playback
 │   ├── transport.py        # HA communication (webhook/MQTT)
 │   ├── config.py           # Shared JSON config loader
 │   └── audio_outputs.py    # PipeWire sink discovery
