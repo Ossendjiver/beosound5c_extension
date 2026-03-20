@@ -24,10 +24,11 @@ SERVICE_DIR="/etc/systemd/system"
 # Determine the install user (from env, SUDO_USER, or logname)
 INSTALL_USER="${INSTALL_USER:-${SUDO_USER:-$(logname 2>/dev/null || whoami)}}"
 INSTALL_HOME=$(eval echo "~$INSTALL_USER")
+INSTALL_UID=$(id -u "$INSTALL_USER")
 
 echo "📁 Script directory: $SCRIPT_DIR"
 echo "📁 Target directory: $SERVICE_DIR"
-echo "👤 Install user: $INSTALL_USER ($INSTALL_HOME)"
+echo "👤 Install user: $INSTALL_USER (uid=$INSTALL_UID, home=$INSTALL_HOME)"
 echo ""
 
 # Ensure the install user has the required groups:
@@ -60,6 +61,8 @@ if [ ! -d "$CONFIG_DIR" ]; then
     echo "  ✅ Creating $CONFIG_DIR"
     mkdir -p "$CONFIG_DIR"
 fi
+# Ensure the install user owns the config dir (services write tokens here)
+chown "$INSTALL_USER:$INSTALL_USER" "$CONFIG_DIR"
 
 if [ ! -f "$SECRETS_FILE" ]; then
     if [ -f "$SECRETS_EXAMPLE" ]; then
@@ -136,7 +139,7 @@ echo "📋 Copying service files..."
 for service in "${SERVICES[@]}"; do
     if [ -f "$SCRIPT_DIR/$service" ]; then
         echo "  ✅ Copying $service"
-        sed -e "s|__USER__|$INSTALL_USER|g" -e "s|__HOME__|$INSTALL_HOME|g" \
+        sed -e "s|__USER__|$INSTALL_USER|g" -e "s|__HOME__|$INSTALL_HOME|g" -e "s|__UID__|$INSTALL_UID|g" \
             "$SCRIPT_DIR/$service" > "$SERVICE_DIR/$service"
         chmod 644 "$SERVICE_DIR/$service"
     else

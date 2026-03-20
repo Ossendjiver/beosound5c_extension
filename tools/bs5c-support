@@ -1,0 +1,155 @@
+#!/bin/bash
+# =============================================================================
+# bs5c-support — Enable remote support access via Tailscale
+# =============================================================================
+# Run this when you need remote assistance with your BeoSound 5c.
+# It creates a secure Tailscale tunnel so the developer can SSH in.
+#
+# Usage:
+#   bs5c-support              Start remote support session
+#   bs5c-support stop         Disconnect remote support
+#   bs5c-support status       Show connection status
+#
+# The device will be accessible via Tailscale SSH — no port forwarding needed.
+# When you're done, run 'bs5c-support stop' to disconnect.
+# =============================================================================
+
+set -e
+
+CONFIG_DIR="/etc/beosound5c"
+CONFIG_FILE="$CONFIG_DIR/config.json"
+SECRETS_FILE="$CONFIG_DIR/secrets.env"
+
+# Colors
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+RED='\033[0;31m'
+NC='\033[0m'
+
+# Read device name from config
+device_name() {
+    if [ -f "$CONFIG_FILE" ]; then
+        jq -r '.device // "beosound5c"' "$CONFIG_FILE" 2>/dev/null
+    else
+        echo "beosound5c"
+    fi
+}
+
+# Read auth key from secrets
+auth_key() {
+    if [ -f "$SECRETS_FILE" ]; then
+        grep "^TAILSCALE_AUTH_KEY=" "$SECRETS_FILE" 2>/dev/null | head -1 | sed 's/^[^=]*="//; s/"$//'
+    fi
+}
+
+cmd_start() {
+    if ! command -v tailscale &>/dev/null; then
+        echo -e "${RED}Tailscale is not installed.${NC}"
+        echo "Run: curl -fsSL https://tailscale.com/install.sh | sudo sh"
+        exit 1
+    fi
+
+    # Check if already connected
+    if tailscale status &>/dev/null 2>&1; then
+        local current_ip
+        current_ip=$(tailscale ip -4 2>/dev/null || true)
+        if [ -n "$current_ip" ]; then
+            echo -e "${GREEN}Remote support is already active.${NC}"
+            echo ""
+            echo -e "  Tailscale IP:  ${CYAN}${current_ip}${NC}"
+            echo -e "  SSH command:   ${CYAN}ssh $(whoami)@${current_ip}${NC}"
+            echo ""
+            echo -e "Run ${YELLOW}bs5c-support stop${NC} to disconnect."
+            return 0
+        fi
+    fi
+
+    local hostname
+    hostname=$(device_name)
+
+    local key
+    key=$(auth_key)
+
+    # Ensure tailscaled is running (it's disabled by default)
+    if ! systemctl is-active --quiet tailscaled 2>/dev/null; then
+        sudo systemctl start tailscaled
+        sleep 1
+    fi
+
+    echo -e "${CYAN}Starting remote support session...${NC}"
+    echo ""
+
+    if [ -z "$key" ]; then
+        # No saved key — ask the user to paste one from the developer
+        echo -e "  To enable remote support, you need an access key."
+        echo -e "  Ask the BeoSound 5c developer for one, then paste it here."
+        echo ""
+        read -p "  Access key: " key
+        echo ""
+        if [ -z "$key" ]; then
+            echo -e "${RED}No key provided. Aborting.${NC}"
+            sudo systemctl stop tailscaled
+            exit 1
+        fi
+    fi
+
+    sudo tailscale up --ssh --hostname="$hostname" --auth-key="$key"
+
+    # Wait briefly for IP assignment
+    sleep 2
+
+    local ip
+    ip=$(tailscale ip -4 2>/dev/null || true)
+
+    echo ""
+    echo -e "${GREEN}Remote support is active!${NC}"
+    echo ""
+    if [ -n "$ip" ]; then
+        echo -e "  Tailscale IP:  ${CYAN}${ip}${NC}"
+        echo -e "  Hostname:      ${CYAN}${hostname}${NC}"
+    fi
+    echo ""
+    echo -e "  Share this info with the developer so they can connect."
+    echo -e "  Run ${YELLOW}bs5c-support stop${NC} when the session is done."
+    echo ""
+}
+
+cmd_stop() {
+    echo -e "${CYAN}Disconnecting remote support...${NC}"
+    sudo tailscale down
+    sudo systemctl stop tailscaled
+    echo -e "${GREEN}Remote support disconnected.${NC}"
+}
+
+cmd_status() {
+    if ! command -v tailscale &>/dev/null; then
+        echo -e "${RED}Tailscale is not installed.${NC}"
+        exit 1
+    fi
+
+    local ip
+    ip=$(tailscale ip -4 2>/dev/null || true)
+
+    if [ -n "$ip" ]; then
+        echo -e "${GREEN}Remote support is active.${NC}"
+        echo ""
+        echo -e "  Tailscale IP:  ${CYAN}${ip}${NC}"
+        echo -e "  Hostname:      ${CYAN}$(device_name)${NC}"
+        echo ""
+        tailscale status
+    else
+        echo -e "${YELLOW}Remote support is not active.${NC}"
+        echo -e "Run ${CYAN}bs5c-support${NC} to start a session."
+    fi
+}
+
+case "${1:-start}" in
+    start)   cmd_start ;;
+    stop)    cmd_stop ;;
+    status)  cmd_status ;;
+    *)
+        echo "Usage: bs5c-support [start|stop|status]"
+        exit 1
+        ;;
+esac

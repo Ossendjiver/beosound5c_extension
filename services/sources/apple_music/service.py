@@ -108,7 +108,7 @@ class AppleMusicService(DigitPlaylistMixin, SourceBase):
 
         if has_creds:
             self._load_playlists()
-            self.player = "remote"
+            self._detect_player()
 
             caps = await self.player_capabilities()
             if caps:
@@ -706,7 +706,7 @@ authBtn.addEventListener('click', async () => {{
 
             # Set auth state
             self.auth.set_credentials(user_token, storefront)
-            self.player = "remote"
+            self._detect_player()
 
             await self.register("available")
 

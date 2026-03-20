@@ -29,6 +29,8 @@ log = logging.getLogger('beo-radio')
 
 FAVOURITES_PATH_PROD = "/etc/beosound5c/radio_favourites.json"
 FAVOURITES_PATH_DEV = os.path.join(os.path.dirname(os.path.abspath(__file__)), "radio_favourites.json")
+LAST_STATION_PATH_PROD = "/etc/beosound5c/radio_last_station.json"
+LAST_STATION_PATH_DEV = os.path.join(os.path.dirname(os.path.abspath(__file__)), "radio_last_station.json")
 
 # Cache TTLs in seconds
 CACHE_TTL_CATEGORIES = 3600  # 1 hour for country/genre/language lists
@@ -136,19 +138,13 @@ class RadioService(SourceBase):
             headers={"User-Agent": "BeoSound5c/1.0"}
         )
         self._load_favourites()
-
-        # Detect remote player from config (not runtime probe — avoids
-        # startup race where the player service isn't ready yet)
-        player_type = cfg("player", "type", default="local")
-        if player_type != "local":
-            self.player = "remote"
-            log.info("Playback mode: remote (player.type=%s)", player_type)
-        else:
-            log.info("Playback mode: local (mpv)")
+        self._load_last_station()
 
         await self.register("available")
         self._sr_poll_task = asyncio.create_task(self._sr_poll_loop())
-        log.info("Radio source ready (%d favourites)", len(self._favourites))
+        log.info("Radio source ready (%d favourites, last=%s)",
+                 len(self._favourites),
+                 self._current_station.get("name") if self._current_station else "none")
 
     async def on_stop(self):
         if self._sr_poll_task:
@@ -480,7 +476,7 @@ class RadioService(SourceBase):
         elif cmd == "stop":
             await self.player_stop()
             self._playing_state = "stopped"
-            self._current_station = None
+            # Keep _current_station so source button can resume it
             await self.register("available")
 
         elif cmd == "digit":
@@ -565,6 +561,7 @@ class RadioService(SourceBase):
             return
 
         self._current_station = station
+        self._save_last_station()
         # Snapshot browse list for next/prev cycling (only when playing from browse)
         uuid = station.get("stationuuid", "")
         found_in_browse = any(s.get("stationuuid") == uuid for s in self._browse_stations)
@@ -791,6 +788,36 @@ class RadioService(SourceBase):
             log.info("Saved %d favourites to %s", len(self._favourites), path)
         except Exception as e:
             log.warning("Failed to save favourites: %s", e)
+
+    # ── Last station persistence ──
+
+    def _last_station_path(self) -> str:
+        if os.path.exists(os.path.dirname(LAST_STATION_PATH_PROD)):
+            return LAST_STATION_PATH_PROD
+        return LAST_STATION_PATH_DEV
+
+    def _load_last_station(self):
+        path = self._last_station_path()
+        try:
+            with open(path) as f:
+                self._current_station = json.load(f)
+            log.info("Loaded last station: %s", self._current_station.get("name"))
+        except FileNotFoundError:
+            pass
+        except Exception as e:
+            log.warning("Failed to load last station: %s", e)
+
+    def _save_last_station(self):
+        if not self._current_station:
+            return
+        path = self._last_station_path()
+        try:
+            tmp = path + ".tmp"
+            with open(tmp, "w") as f:
+                json.dump(self._current_station, f, indent=2)
+            os.replace(tmp, path)
+        except Exception as e:
+            log.warning("Failed to save last station: %s", e)
 
     def _toggle_favourite(self, station: dict) -> dict:
         uuid = station.get("stationuuid", "")

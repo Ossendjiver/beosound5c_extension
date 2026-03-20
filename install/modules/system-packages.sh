@@ -58,6 +58,18 @@ install_system_packages() {
     apt-get install -y \
         espeak-ng
 
+    log_info "Installing Tailscale (remote support)..."
+    if ! command -v tailscale &>/dev/null; then
+        curl -fsSL https://tailscale.com/install.sh | sh
+        # Installed but not started — user runs 'bs5c-support' when needed
+        systemctl disable --now tailscaled 2>/dev/null || true
+    else
+        log_info "Tailscale already installed"
+    fi
+    # Install bs5c-support command
+    cp "$INSTALL_DIR/tools/bs5c-support" /usr/local/bin/bs5c-support
+    chmod +x /usr/local/bin/bs5c-support
+
     log_info "Installing utilities..."
     apt-get install -y \
         avahi-utils \
@@ -107,6 +119,12 @@ context.modules = [
 ]
 RAOP_EOF
         chmod 644 "$RAOP_CONF"
+    fi
+
+    # Enable NTP time synchronization
+    if command -v timedatectl &>/dev/null; then
+        timedatectl set-ntp true 2>/dev/null || true
+        log_info "NTP time synchronization enabled"
     fi
 
     log_success "System packages installed"

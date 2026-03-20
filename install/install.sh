@@ -96,6 +96,7 @@ source "$SCRIPT_ROOT/install/modules/x11.sh"
 source "$SCRIPT_ROOT/install/modules/audio-hat.sh"
 source "$SCRIPT_ROOT/install/modules/plymouth.sh"
 source "$SCRIPT_ROOT/install/modules/librespot.sh"
+source "$SCRIPT_ROOT/install/modules/piper.sh"
 source "$SCRIPT_ROOT/install/modules/verify.sh"
 
 source "$SCRIPT_ROOT/install/configure/device.sh"
@@ -272,6 +273,7 @@ run_system_setup() {
     configure_x11
     install_plymouth_theme
     install_librespot
+    install_piper
     install_usb_music_support
 }
 
@@ -382,6 +384,10 @@ case "$SUBCOMMAND" in
         echo -e "${CYAN}║${NC}     ${GREEN}sudo ./install.sh configure ha${NC}       (HA)              ${CYAN}║${NC}"
         echo -e "${CYAN}║${NC}     ${GREEN}sudo ./install.sh configure audio${NC}    (volume)          ${CYAN}║${NC}"
         echo -e "${CYAN}║${NC}     ${GREEN}sudo ./install.sh status${NC}             (overview)        ${CYAN}║${NC}"
+        echo -e "${CYAN}║${NC}                                                          ${CYAN}║${NC}"
+        echo -e "${CYAN}║${NC}  ${YELLOW}Remote support:${NC}                                           ${CYAN}║${NC}"
+        echo -e "${CYAN}║${NC}     ${GREEN}bs5c-support${NC}                          (enable)          ${CYAN}║${NC}"
+        echo -e "${CYAN}║${NC}     ${GREEN}bs5c-support stop${NC}                     (disable)         ${CYAN}║${NC}"
         echo -e "${CYAN}║${NC}                                                          ${CYAN}║${NC}"
         echo -e "${CYAN}╚══════════════════════════════════════════════════════════╝${NC}"
         echo ""

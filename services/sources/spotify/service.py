@@ -53,6 +53,7 @@ FETCH_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'fetch.p
 
 # OAuth setup
 SPOTIFY_SCOPES = ('playlist-read-private playlist-read-collaborative '
+                  'user-library-read '
                   'user-read-playback-state user-modify-playback-state '
                   'user-read-currently-playing streaming')
 SSL_PORT = 8772
@@ -112,6 +113,7 @@ class SpotifyService(DigitPlaylistMixin, SourceBase):
         self._fetching_playlists = False  # True while initial fetch is running
         self._last_playlist_id = None  # last playlist we queued on the player
         self._last_track_uri = None   # last Spotify track URI seen on player
+        self._last_play_time = 0      # monotonic time of last play command (debounce)
         self._last_refresh = 0  # monotonic timestamp of last completed refresh
         self._last_refresh_wall = None  # wall-clock datetime of last completed refresh
         self._last_refresh_duration = None  # seconds the last refresh took
@@ -119,11 +121,11 @@ class SpotifyService(DigitPlaylistMixin, SourceBase):
 
     async def on_start(self):
         # Load credentials (may fail — setup flow will handle it)
-        has_creds = self.auth.load()
+        has_creds = self.auth.load(config_client_id=cfg("spotify", "client_id", default=""))
 
         if has_creds:
             self._load_playlists()
-            self.player = "remote"
+            self._detect_player()
 
             # Fetch display name from Spotify profile
             asyncio.create_task(self._fetch_display_name())
@@ -163,8 +165,10 @@ class SpotifyService(DigitPlaylistMixin, SourceBase):
                 self._delayed_refresh(delay=10))
             self._nightly_task = asyncio.create_task(
                 self._nightly_refresh_loop())
+            await self.auth.start_keepalive()
 
     async def on_stop(self):
+        self.auth.stop_keepalive()
         for task in (self._poll_task, self._refresh_task, self._nightly_task):
             if task:
                 task.cancel()
@@ -300,6 +304,16 @@ class SpotifyService(DigitPlaylistMixin, SourceBase):
             uri = data.get('uri', '')
             await self._play_track(uri)
 
+        elif cmd == 'play_index':
+            index = data.get('index', 0)
+            if self._last_playlist_id:
+                log.info("play_index %d in playlist %s", index, self._last_playlist_id)
+                # Reset debounce so play_index always works
+                self._last_play_time = 0
+                await self._play_playlist(self._last_playlist_id, track_index=index)
+            else:
+                log.warning("play_index but no active playlist")
+
         elif cmd == 'toggle':
             await self._toggle()
 
@@ -341,21 +355,43 @@ class SpotifyService(DigitPlaylistMixin, SourceBase):
 
     async def _play_playlist(self, playlist_id, track_index=None):
         """Start playing a playlist, optionally at a specific track."""
-        url = f"https://open.spotify.com/playlist/{playlist_id}"
+        now = time.monotonic()
+        if now - self._last_play_time < 2 and self._last_playlist_id == playlist_id:
+            log.debug("Debounced duplicate play for %s", playlist_id)
+            return
+        self._last_play_time = now
+        # Default to first track when none specified (GO on playlist)
+        if track_index is None:
+            track_index = 0
         # Look up the track's Spotify URI so the player can find it in the queue
         track_uri = None
         track_meta = None
-        if track_index is not None:
-            for pl in self.playlists:
-                if pl.get('id') == playlist_id:
-                    tracks = pl.get('tracks', [])
-                    if 0 <= track_index < len(tracks):
-                        track_meta = tracks[track_index]
-                        track_uri = track_meta.get('uri', '')
-                    break
-        log.info("Play playlist %s (track_index=%s, track_uri=%s)",
-                 playlist_id, track_index, track_uri)
-        # Pre-broadcast metadata BEFORE player call for instant PLAYING view
+        all_track_uris = None
+        for pl in self.playlists:
+            if pl.get('id') == playlist_id:
+                tracks = pl.get('tracks', [])
+                if 0 <= track_index < len(tracks):
+                    track_meta = tracks[track_index]
+                    track_uri = track_meta.get('uri', '')
+                # Liked Songs: collect track URIs for individual queueing
+                # (Sonos ShareLink can't handle spotify:collection:tracks)
+                if playlist_id == "liked-songs":
+                    all_track_uris = [t['uri'] for t in tracks if t.get('uri')]
+                break
+        if playlist_id == "liked-songs":
+            # Local player: play single track URI (librespot handles it)
+            # Sonos: pass track_uris for individual queueing via ShareLink
+            url = self._spotify_uri_to_url(track_uri) if track_uri else None
+        else:
+            url = f"https://open.spotify.com/playlist/{playlist_id}"
+        log.info("Play playlist %s (track_index=%s, track_uri=%s, track_uris=%s)",
+                 playlist_id, track_index, track_uri,
+                 f"{len(all_track_uris)} tracks" if all_track_uris else "none")
+        # Register as playing FIRST so router accepts the media update
+        self.state = "playing"
+        self._last_playlist_id = playlist_id
+        await self.register("playing", auto_power=True)
+        # Pre-broadcast metadata for instant PLAYING view (source is now active)
         if track_meta:
             await self.post_media_update(
                 title=track_meta.get("name", ""),
@@ -364,24 +400,57 @@ class SpotifyService(DigitPlaylistMixin, SourceBase):
                 state="playing",
                 reason="track_change",
             )
-        ok = await self.player_play(uri=url, track_uri=track_uri)
-        if ok:
-            self.state = "playing"
-            self._last_playlist_id = playlist_id
-            await self.register("playing", auto_power=True)
-            self._start_polling()
-        else:
+        self._start_polling()
+        ok = await self.player_play(
+            uri=url, track_uri=track_uri, track_uris=all_track_uris)
+        if not ok:
             log.error("Player service failed to start playlist")
 
     async def _play_track(self, uri):
         """Play a specific track."""
         url = self._spotify_uri_to_url(uri)
         log.info("Play track %s", url)
+        # Register as playing BEFORE player call so UI transitions immediately
+        self.state = "playing"
+        await self.register("playing", auto_power=True)
+        self._start_polling()
         ok = await self.player_play(uri=url)
-        if ok:
-            self.state = "playing"
-            await self.register("playing", auto_power=True)
-            self._start_polling()
+        if not ok:
+            log.error("Player service failed to start track")
+
+    async def get_queue(self, start=0, max_items=50) -> dict:
+        """Return tracks from the last played Spotify playlist.
+        Used when Spotify+local (source is queue authority for local player)."""
+        if not self._last_playlist_id:
+            return {"tracks": [], "current_index": -1, "total": 0}
+        playlist = None
+        for pl in self.playlists:
+            if pl.get('id') == self._last_playlist_id:
+                playlist = pl
+                break
+        if not playlist:
+            return {"tracks": [], "current_index": -1, "total": 0}
+        all_tracks = playlist.get('tracks', [])
+        current_index = self._find_track_index(
+            self._last_playlist_id, self._last_track_uri)
+        end = min(start + max_items, len(all_tracks))
+        tracks = []
+        for i in range(start, end):
+            t = all_tracks[i]
+            tracks.append({
+                "id": f"q:{i}",
+                "title": t.get("name", ""),
+                "artist": t.get("artist", ""),
+                "album": "",
+                "artwork": t.get("image", ""),
+                "index": i,
+                "current": i == current_index,
+            })
+        return {
+            "tracks": tracks,
+            "current_index": current_index,
+            "total": len(all_tracks),
+        }
 
     async def _toggle(self):
         if self.state == "playing":
@@ -446,6 +515,11 @@ class SpotifyService(DigitPlaylistMixin, SourceBase):
                 stderr=asyncio.subprocess.PIPE)
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
             if proc.returncode == 0:
+                # Log fetch.py output for diagnostics
+                fetch_out = stdout.decode().strip()
+                if fetch_out:
+                    for line in fetch_out.splitlines()[-20:]:
+                        log.info("fetch: %s", line.strip())
                 old_playlists = self.playlists
                 self._load_playlists()
                 # Don't clobber a working cache with empty results (API/token error)
@@ -503,6 +577,7 @@ class SpotifyService(DigitPlaylistMixin, SourceBase):
         log.info("Logging out of Spotify")
 
         # Stop background tasks
+        self.auth.stop_keepalive()
         if self._refresh_task:
             self._refresh_task.cancel()
             self._refresh_task = None
@@ -805,7 +880,7 @@ label{{display:block;margin-top:12px;color:#666;font-size:13px;text-transform:up
                 client_id, rt,
                 access_token=token_data.get('access_token'),
                 expires_in=token_data.get('expires_in', 3600))
-            self.player = "remote"
+            self._detect_player()
 
             # Register as available now that we have credentials
             await self.register("available")
@@ -824,6 +899,9 @@ label{{display:block;margin-top:12px;color:#666;font-size:13px;text-transform:up
             if not self._nightly_task or self._nightly_task.done():
                 self._nightly_task = asyncio.create_task(
                     self._nightly_refresh_loop())
+
+            # Start keepalive to prevent PKCE refresh token expiry
+            await self.auth.start_keepalive()
 
             html = '''<!DOCTYPE html><html><head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">

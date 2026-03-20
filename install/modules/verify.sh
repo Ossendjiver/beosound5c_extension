@@ -73,8 +73,8 @@ run_verification() {
     fi
 
     # Check service files have no unresolved placeholders
-    if grep -rl '__USER__\|__HOME__' /etc/systemd/system/beo-*.service &>/dev/null; then
-        log_error "Service files contain unresolved placeholders (__USER__/__HOME__)"
+    if grep -rl '__USER__\|__HOME__\|__UID__' /etc/systemd/system/beo-*.service &>/dev/null; then
+        log_error "Service files contain unresolved placeholders (__USER__/__HOME__/__UID__)"
         log_error "Re-run: sudo ./install.sh services"
         ((++FAILED_CHECKS))
     else

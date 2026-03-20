@@ -247,6 +247,7 @@ class MediaServer(PlayerBase):
         self._suppress_until_track = None   # Spotify track ID to wait for
         self._suppress_set_time = 0.0       # monotonic time when suppression was set
         self._last_play_was_radio = False    # only suppress monitor for radio plays
+        self._queue_backfill_task: asyncio.Task | None = None
         # JOIN feature: one-time discovery map + default-player monitor
         self._sonos_devices: dict[str, str] = {}   # player_name → ip
         self._default_player_playing: bool = False
@@ -285,7 +286,7 @@ class MediaServer(PlayerBase):
             return ''
 
     async def play(self, uri=None, url=None, track_uri=None, meta=None,
-                   radio=False) -> bool:
+                   radio=False, track_uris=None) -> bool:
         """Play content on the Sonos speaker.
 
         uri: Spotify share link (https://open.spotify.com/...) or spotify: URI
@@ -296,6 +297,8 @@ class MediaServer(PlayerBase):
         meta: optional dict with display metadata (title, artist, album,
               artwork_url, track_number) — rendered in Sonos controller UI.
         radio: if True, use x-rincon-mp3radio:// scheme for Sonos streaming.
+        track_uris: list of spotify:track:xxx URIs to queue individually
+                    (used for Liked Songs and other non-playlist collections).
         """
         self._last_play_was_radio = radio
         try:
@@ -309,6 +312,37 @@ class MediaServer(PlayerBase):
                 self._suppress_set_time = time.monotonic()
                 logger.info("Suppressing broadcasts until track %s appears", suppress_id[:12])
 
+            # Queue individual tracks (for Liked Songs and other non-playlist collections)
+            # Check before uri path so Sonos queues all tracks, not just the first one
+            if track_uris:
+                if self._queue_backfill_task and not self._queue_backfill_task.done():
+                    self._queue_backfill_task.cancel()
+                share_link = ShareLinkPlugin(coordinator)
+                # Fast-start: play first track immediately
+                start_idx = 0
+                if track_uri:
+                    for i, tu in enumerate(track_uris):
+                        if tu == track_uri:
+                            start_idx = i
+                            break
+                first_url = track_uris[start_idx].replace("spotify:", "https://open.spotify.com/").replace(":", "/")
+                try:
+                    await loop.run_in_executor(None, coordinator.pause)
+                except Exception:
+                    pass
+                await loop.run_in_executor(None, coordinator.clear_queue)
+                await loop.run_in_executor(
+                    None, share_link.add_share_link_to_queue, first_url)
+                await loop.run_in_executor(
+                    None, coordinator.play_from_queue, 0)
+                logger.info("Track-queue: playing %s, backfilling %d tracks",
+                            track_uris[start_idx][:40], len(track_uris) - 1)
+                remaining = track_uris[start_idx + 1:] + track_uris[:start_idx]
+                if remaining:
+                    self._queue_backfill_task = asyncio.create_task(
+                        self._backfill_track_uris(coordinator, remaining))
+                return True
+
             if uri:
                 # Convert spotify: URIs to share links
                 if uri.startswith("spotify:"):
@@ -319,6 +353,33 @@ class MediaServer(PlayerBase):
                 # Use ShareLink for Spotify / Apple Music / TIDAL URLs
                 if "open.spotify.com" in uri or "music.apple.com" in uri or "tidal.com" in uri:
                     share_link = ShareLinkPlugin(coordinator)
+
+                    # Fast-start: queue single track, play immediately,
+                    # backfill full playlist in background
+                    if track_uri and "/playlist/" in uri:
+                        # Cancel any in-flight backfill
+                        if self._queue_backfill_task and not self._queue_backfill_task.done():
+                            self._queue_backfill_task.cancel()
+                        # Build a single-track share link
+                        track_url = track_uri.replace("spotify:", "https://open.spotify.com/")
+                        track_url = track_url.replace(":", "/")
+                        try:
+                            await loop.run_in_executor(None, coordinator.pause)
+                        except Exception:
+                            pass
+                        await loop.run_in_executor(None, coordinator.clear_queue)
+                        await loop.run_in_executor(
+                            None, share_link.add_share_link_to_queue, track_url)
+                        await loop.run_in_executor(
+                            None, coordinator.play_from_queue, 0)
+                        logger.info("Fast-start: playing %s, backfilling %s",
+                                    track_uri[:30], uri)
+                        # Background backfill the full playlist
+                        self._queue_backfill_task = asyncio.create_task(
+                            self._backfill_queue(coordinator, uri, track_uri))
+                        return True
+
+                    # Standard path: queue full playlist, find track, play
                     # Pause first to prevent auto-play when adding to empty queue
                     if track_uri:
                         try:
@@ -465,6 +526,51 @@ class MediaServer(PlayerBase):
         })
         return base
 
+    async def _backfill_queue(self, coordinator, playlist_uri, track_uri):
+        """Background task: replace single-track queue with full playlist."""
+        try:
+            loop = asyncio.get_running_loop()
+            share_link = ShareLinkPlugin(coordinator)
+            # Add full playlist (appends after the single track already playing)
+            await loop.run_in_executor(
+                None, share_link.add_share_link_to_queue, playlist_uri)
+            # Remove the duplicate first track (position 0, which is the
+            # single-track we fast-started with — now duplicated in the
+            # full playlist that was appended)
+            await loop.run_in_executor(
+                None, coordinator.remove_from_queue, 0)
+            # Find and jump to the correct position in the full queue
+            idx = await self._find_track_in_queue(coordinator, track_uri, loop)
+            if idx > 0:
+                await loop.run_in_executor(
+                    None, coordinator.play_from_queue, idx)
+            logger.info("Backfill complete: full playlist queued, playing at %d", idx)
+        except asyncio.CancelledError:
+            logger.debug("Backfill cancelled")
+        except Exception as e:
+            logger.warning("Backfill failed: %s", e)
+
+    async def _backfill_track_uris(self, coordinator, track_uris):
+        """Background task: queue individual track URIs after fast-start."""
+        try:
+            loop = asyncio.get_running_loop()
+            share_link = ShareLinkPlugin(coordinator)
+            queued = 0
+            for tu in track_uris:
+                track_url = tu.replace("spotify:", "https://open.spotify.com/").replace(":", "/")
+                try:
+                    await loop.run_in_executor(
+                        None, share_link.add_share_link_to_queue, track_url)
+                    queued += 1
+                except Exception as e:
+                    logger.debug("Skipping track %s: %s", tu[:30], e)
+            logger.info("Track-queue backfill complete: %d/%d tracks queued",
+                        queued, len(track_uris))
+        except asyncio.CancelledError:
+            logger.debug("Track-queue backfill cancelled")
+        except Exception as e:
+            logger.warning("Track-queue backfill failed: %s", e)
+
     async def _find_track_in_queue(self, coordinator, track_uri, loop) -> int:
         """Find a Spotify track in the Sonos queue by URI. Returns 0-based index."""
         # Extract Spotify track ID from URI (spotify:track:XXXXX)
@@ -487,6 +593,55 @@ class MediaServer(PlayerBase):
         idx = await loop.run_in_executor(None, _search)
         logger.info("Found track %s at queue position %d", track_id[:12], idx)
         return idx
+
+    # ── Queue support ──
+
+    async def get_queue(self, start=0, max_items=50) -> dict:
+        """Return the Sonos playback queue."""
+        loop = asyncio.get_running_loop()
+        try:
+            def _fetch():
+                coordinator = self.sonos_viewer.get_coordinator()
+                track_info = coordinator.get_current_track_info()
+                current_pos = 0
+                if track_info:
+                    try:
+                        current_pos = int(track_info.get('playlist_position', '0')) - 1
+                    except (ValueError, TypeError):
+                        pass
+                queue_items = coordinator.get_queue(start=start, max_items=max_items)
+                tracks = []
+                for i, item in enumerate(queue_items):
+                    idx = start + i
+                    art = getattr(item, 'album_art_uri', '') or ''
+                    if art.startswith('/'):
+                        art = f"http://{coordinator.ip_address}:1400{art}"
+                    tracks.append({
+                        "id": f"q:{idx}",
+                        "title": getattr(item, 'title', '') or '',
+                        "artist": getattr(item, 'creator', '') or '',
+                        "album": getattr(item, 'album', '') or '',
+                        "artwork": art,
+                        "index": idx,
+                        "current": idx == current_pos,
+                    })
+                total = max(start + len(tracks), current_pos + 1)
+                return {"tracks": tracks, "current_index": current_pos, "total": total}
+            return await loop.run_in_executor(None, _fetch)
+        except Exception as e:
+            logger.warning("get_queue failed: %s", e)
+            return {"tracks": [], "current_index": -1, "total": 0}
+
+    async def play_from_queue(self, position: int) -> bool:
+        """Play a specific position in the Sonos queue."""
+        loop = asyncio.get_running_loop()
+        try:
+            coordinator = self.sonos_viewer.get_coordinator()
+            await loop.run_in_executor(None, coordinator.play_from_queue, position)
+            return True
+        except Exception as e:
+            logger.warning("play_from_queue(%d) failed: %s", position, e)
+            return False
 
     # ── PlayerBase hooks ──
 

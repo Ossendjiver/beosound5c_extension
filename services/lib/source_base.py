@@ -56,8 +56,14 @@ class SourceBase:
     id: str = ""
     name: str = ""
     port: int = 0
-    player: str = "local"    # "local" or "remote" — who renders the audio
+    player: str = "local"    # "local" or "remote" — set via _detect_player()
     action_map: dict = {}
+    manages_queue: bool = False  # True if source manages its own playlist/queue
+
+    def _detect_player(self):
+        """Set self.player based on configured player type."""
+        player_type = cfg("player", "type", default="local")
+        self.player = "local" if player_type == "local" else "remote"
 
     def __init__(self):
         self._http_session: ClientSession | None = None
@@ -80,6 +86,7 @@ class SourceBase:
                 "menu_preset": self.id,
                 "handles": list(self.action_map.keys()),
                 "player": self.player,
+                "manages_queue": self.manages_queue,
             })
         if navigate:
             payload["navigate"] = True
@@ -124,7 +131,7 @@ class SourceBase:
     async def post_media_update(self, title="", artist="", album="",
                                 artwork="", state="playing",
                                 duration=0, position=0, reason="track_change",
-                                back_artwork=""):
+                                back_artwork="", track_number=0):
         """Push a media update to the router for unified PLAYING view rendering.
         All sources should use this instead of source-specific _update broadcasts
         for metadata that appears on the PLAYING view.
@@ -142,6 +149,8 @@ class SourceBase:
         }
         if back_artwork:
             payload["back_artwork"] = back_artwork
+        if track_number:
+            payload["track_number"] = track_number
         if self._action_ts:
             payload["_action_ts"] = self._action_ts
         # Cache for instant replay on source button activate
@@ -158,9 +167,23 @@ class SourceBase:
             log.warning("Failed to post media update: %s", e)
 
     async def _resync_media(self):
-        """Re-post cached metadata to the router if source is playing/paused.
-        Call this from handle_resync() after register() to restore PLAYING view."""
-        if self._last_media and self._registered_state in ("playing", "paused"):
+        """Re-post current metadata to the router if source is playing/paused.
+        Fetches fresh media from the player service to avoid replaying stale
+        cached data (e.g. after auto-advance to next track)."""
+        if self._registered_state not in ("playing", "paused"):
+            return
+        # Prefer live player media over cached _last_media
+        fresh = await self._player_get("media")
+        if fresh and fresh.get("title"):
+            media = {
+                "title": fresh.get("title", ""),
+                "artist": fresh.get("artist", ""),
+                "album": fresh.get("album", ""),
+                "artwork": fresh.get("artwork", ""),
+            }
+            await self.post_media_update(
+                **media, state=self._registered_state, reason="resync")
+        elif self._last_media:
             await self.post_media_update(
                 **self._last_media, state=self._registered_state, reason="resync")
 
@@ -199,13 +222,15 @@ class SourceBase:
             return None
 
     async def player_play(self, uri=None, url=None, track_uri=None, meta=None,
-                          radio=False) -> bool:
+                          radio=False, track_uris=None) -> bool:
         """Ask the player service to play a URI or URL.
         track_uri: Spotify track URI to start at within a playlist/album.
         meta: optional dict with display metadata (title, artist, album,
               artwork_url, track_number) — shown on Sonos/BlueSound controllers.
         radio: if True, treat URL as a continuous radio stream (Sonos uses
-               x-rincon-mp3radio:// scheme instead of plain HTTP)."""
+               x-rincon-mp3radio:// scheme instead of plain HTTP).
+        track_uris: list of spotify:track:xxx URIs to queue individually
+                    (used for Liked Songs and other non-playlist collections)."""
         body = {}
         if uri:
             body["uri"] = uri
@@ -217,21 +242,25 @@ class SourceBase:
             body["meta"] = meta
         if radio:
             body["radio"] = True
-        if self._action_ts:
-            body["action_ts"] = self._action_ts
+        if track_uris:
+            body["track_uris"] = track_uris
+        # Always stamp fresh monotonic — _action_ts can be stale relative
+        # to the player's latest_action_ts (e.g. after direct arc commands
+        # bumped the player's ts higher than the router's).
+        body["action_ts"] = time.monotonic()
         return await self._player_post("play", body)
 
     async def player_pause(self) -> bool:
         return await self._player_post("pause")
 
     async def player_resume(self) -> bool:
-        return await self._player_post("resume")
+        return await self._player_post("resume", {"action_ts": time.monotonic()})
 
     async def player_next(self) -> bool:
-        return await self._player_post("next")
+        return await self._player_post("next", {"action_ts": time.monotonic()})
 
     async def player_prev(self) -> bool:
-        return await self._player_post("prev")
+        return await self._player_post("prev", {"action_ts": time.monotonic()})
 
     async def player_stop(self) -> bool:
         return await self._player_post("stop")
@@ -291,6 +320,7 @@ class SourceBase:
         app.router.add_post("/command", self._handle_command_route)
         app.router.add_options("/command", self._handle_cors)
         app.router.add_get("/resync", self._handle_resync_route)
+        app.router.add_get("/queue", self._handle_queue_route)
 
         # Let subclass add extra routes
         self.add_routes(app)
@@ -312,6 +342,11 @@ class SourceBase:
     async def stop(self):
         """Shutdown hook — override on_stop() for cleanup."""
         await self.on_stop()
+        # Deregister from router so menu doesn't show a dead source
+        try:
+            await self.register('gone')
+        except Exception:
+            pass  # router may already be down
         if self._http_session:
             await self._http_session.close()
             self._http_session = None
@@ -353,9 +388,12 @@ class SourceBase:
             # Raw action from router (forwarded event)
             action = data.get("action")
             if action:
-                # Pick up fresh action_ts from router-forwarded events
+                # Pick up action_ts from router-forwarded events;
+                # if missing/zero, stamp fresh (same as direct commands)
                 if data.get("action_ts"):
                     self._action_ts = data["action_ts"]
+                else:
+                    self._action_ts = time.monotonic()
                 # Source button activation — resume or start playback
                 if action == "activate":
                     result = await self.handle_activate(data)
@@ -394,6 +432,18 @@ class SourceBase:
                 headers=self._cors_headers(),
             )
 
+    # ── Queue support ──
+
+    async def get_queue(self, start=0, max_items=50) -> dict:
+        """Return the source's playback queue. Override in subclass."""
+        return {"tracks": [], "current_index": -1, "total": 0}
+
+    async def _handle_queue_route(self, request):
+        start = int(request.query.get("start", "0"))
+        max_items = int(request.query.get("max_items", "50"))
+        result = await self.get_queue(start, max_items)
+        return web.json_response(result, headers=self._cors_headers())
+
     # ── Subclass hooks (override as needed) ──
 
     async def on_start(self):
@@ -420,14 +470,14 @@ class SourceBase:
         IMPORTANT: Must never pause — the shared player may be playing
         another source's content.
 
-        Default: pre-broadcasts cached metadata (instant PLAYING view update),
-        registers as playing, then calls activate_playback() for source-specific
+        Default: registers as playing (stops old source), pre-broadcasts
+        cached metadata, then calls activate_playback() for source-specific
         resume/start logic.  Override activate_playback() instead of this."""
         self._action_ts = data.get("action_ts", 0) or 0
+        await self.register("playing", auto_power=True)
         if self._last_media:
             await self.post_media_update(
                 **self._last_media, state="playing", reason="activate")
-        await self.register("playing", auto_power=True)
         await self.activate_playback()
 
     async def activate_playback(self):

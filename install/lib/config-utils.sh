@@ -83,6 +83,10 @@ HA_TOKEN=""
 # MQTT credentials (only needed if transport.mode includes "mqtt")
 MQTT_USER=""
 MQTT_PASSWORD=""
+
+# Tailscale auth key for remote support (optional)
+# Generate at: https://login.tailscale.com/admin/settings/keys
+TAILSCALE_AUTH_KEY=""
 SKEL
         chmod 600 "$SECRETS_FILE"
     fi

@@ -60,7 +60,7 @@ class LocalPlayer(PlayerBase):
     # ── PlayerBase abstract methods ──
 
     async def play(self, uri=None, url=None, track_uri=None, meta=None,
-                   radio=False) -> bool:
+                   radio=False, track_uris=None) -> bool:
         if uri:
             # Spotify share URL or native URI → go-librespot
             spotify_uri = share_url_to_uri(uri)

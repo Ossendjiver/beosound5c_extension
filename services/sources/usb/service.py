@@ -130,6 +130,7 @@ class USBService(SourceBase):
         self.transcode_cache.init()
 
         # Detect playback mode
+        self._detect_player()
         caps = await self.player_capabilities()
         if "url_stream" in caps:
             self._playback_mode = "remote"

@@ -100,37 +100,6 @@ html, body {
   color: rgba(102,153,255,1);
 }
 
-.arc-content-flow {
-  position: relative;
-  width: 100%;
-  height: 100%;
-  overflow: auto;
-  scroll-behavior: smooth;
-}
-
-.flow-items {
-  position: relative;
-  width: 100%;
-  height: 100%;
-}
-
-.flow-item {
-  position: absolute;
-  color: rgb(255, 255, 255);
-  font-size: 14px;
-  width: 200px;
-  height: 50px;
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  transition: all 0.2s ease-out;
-  cursor: pointer;
-}
-
-.flow-item:hover {
-  color: rgba(102,153,255,1);
-}
-
 /* ── Shared media view (PLAYING + CD) ── */
 .media-view {
   position: absolute;
@@ -309,19 +278,16 @@ html, body {
 }
 
 /* Optional scrollbar styling for modern browsers */
-.scrollable-content::-webkit-scrollbar,
-.arc-content-flow::-webkit-scrollbar {
+.scrollable-content::-webkit-scrollbar {
   width: 6px;
 }
 
-.scrollable-content::-webkit-scrollbar-track,
-.arc-content-flow::-webkit-scrollbar-track {
+.scrollable-content::-webkit-scrollbar-track {
   background: rgba(0, 0, 0, 0.2);
   border-radius: 3px;
 }
 
-.scrollable-content::-webkit-scrollbar-thumb,
-.arc-content-flow::-webkit-scrollbar-thumb {
+.scrollable-content::-webkit-scrollbar-thumb {
   background: rgba(102, 153, 255, 0.6);
   border-radius: 3px;
 }

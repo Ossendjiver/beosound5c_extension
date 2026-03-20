@@ -8,6 +8,7 @@ Token source: auth.get_access_token() (PKCE token store or env vars).
 Can also receive --access-token from the beo-source-spotify service.
 """
 
+import hashlib
 import json
 import os
 import sys
@@ -47,9 +48,65 @@ def fetch_playlist_tracks(token, playlist_id):
             with urllib.request.urlopen(req, timeout=10) as resp:
                 data = json.loads(resp.read().decode())
 
+            raw_items = data.get('items', [])
+            skipped_local = 0
+            skipped_no_url = 0
+            for item in raw_items:
+                track = item.get('track')
+                if not track:
+                    continue
+                if track.get('is_local'):
+                    skipped_local += 1
+                    continue
+                ext_url = track.get('external_urls', {}).get('spotify')
+                if not ext_url:
+                    skipped_no_url += 1
+                    continue
+                tracks.append({
+                    'name': track['name'],
+                    'artist': ', '.join([a['name'] for a in track.get('artists', []) if a.get('name')]),
+                    'id': track['id'],
+                    'uri': track.get('uri', ''),
+                    'url': ext_url,
+                    'image': track['album']['images'][0]['url'] if track.get('album', {}).get('images') else None
+                })
+
+            if skipped_local or skipped_no_url:
+                log(f"  Skipped {skipped_local} local files, {skipped_no_url} without URL "
+                    f"(page had {len(raw_items)} items, kept {len(tracks)} tracks)")
+
+            url = data.get('next')
+        except urllib.error.HTTPError as e:
+            if e.code == 429:
+                retry_after = int(e.headers.get('Retry-After', 2))
+                time.sleep(retry_after)
+                continue  # retry same URL
+            log(f"  Error fetching tracks: {e}")
+            break
+        except Exception as e:
+            log(f"  Error fetching tracks: {e}")
+            break
+
+    return tracks
+
+
+def fetch_liked_songs(token):
+    """Fetch all liked (saved) tracks and return a synthetic playlist dict."""
+    headers = {'Authorization': f'Bearer {token}'}
+    tracks = []
+    url = 'https://api.spotify.com/v1/me/tracks?limit=50'
+
+    while url:
+        try:
+            req = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data = json.loads(resp.read().decode())
+
             for item in data.get('items', []):
                 track = item.get('track')
                 if not track:
+                    continue
+                if track.get('is_local'):
                     continue
                 ext_url = track.get('external_urls', {}).get('spotify')
                 if not ext_url:
@@ -68,14 +125,37 @@ def fetch_playlist_tracks(token, playlist_id):
             if e.code == 429:
                 retry_after = int(e.headers.get('Retry-After', 2))
                 time.sleep(retry_after)
-                continue  # retry same URL
-            log(f"  Error fetching tracks: {e}")
+                continue
+            log(f"  Error fetching liked songs: {e}")
             break
         except Exception as e:
-            log(f"  Error fetching tracks: {e}")
+            log(f"  Error fetching liked songs: {e}")
             break
 
-    return tracks
+    if not tracks:
+        return None
+
+    # Build a change-detection key from track count + first/last track IDs
+    first_id = tracks[0]['id'] if tracks else ''
+    last_id = tracks[-1]['id'] if tracks else ''
+    hash_input = f"{len(tracks)}:{first_id}:{last_id}"
+    snapshot_id = hashlib.sha256(hash_input.encode()).hexdigest()[:16]
+
+    # Use first track's album image as playlist image
+    image = tracks[0].get('image') if tracks else None
+
+    log(f"  Liked Songs: {len(tracks)} tracks")
+    return {
+        'id': 'liked-songs',
+        'name': 'Liked Songs',
+        'uri': 'spotify:collection:tracks',
+        'url': 'https://open.spotify.com/collection/tracks',
+        'image': image,
+        'owner': '',
+        'public': False,
+        'snapshot_id': snapshot_id,
+        'tracks': tracks
+    }
 
 
 def fetch_user_playlists(token):
@@ -93,6 +173,9 @@ def fetch_user_playlists(token):
             for pl in data.get('items', []):
                 if not pl:
                     continue
+                api_track_count = pl.get('tracks', {}).get('total', '?')
+                log(f"  {pl['name']} (owner: {pl.get('owner', {}).get('id', '?')}, "
+                    f"tracks: {api_track_count})")
                 playlists.append({
                     'id': pl['id'],
                     'name': pl['name'],
@@ -169,6 +252,17 @@ def main():
         except Exception as e:
             log(f"Could not load cache: {e}")
 
+    # Fetch liked songs
+    log("Fetching liked songs")
+    liked_cached = cache.get('liked-songs')
+    liked_playlist = fetch_liked_songs(token)
+    liked_changed = True
+    if liked_playlist and liked_cached:
+        if liked_cached.get('snapshot_id') == liked_playlist.get('snapshot_id'):
+            liked_playlist['tracks'] = liked_cached['tracks']
+            liked_changed = False
+            log("  Liked Songs (unchanged)")
+
     # Fetch all user's playlists
     log("Fetching playlists for authenticated user")
     all_playlists = fetch_user_playlists(token)
@@ -222,6 +316,12 @@ def main():
 
     # Sort by name
     playlists_with_tracks.sort(key=lambda p: p['name'].lower())
+
+    # Insert Liked Songs as the first playlist
+    if liked_playlist and liked_playlist.get('tracks'):
+        playlists_with_tracks.insert(0, liked_playlist)
+        if liked_changed:
+            fetched += 1
 
     # Skip write if nothing changed (no tracks fetched, same playlist count)
     if fetched == 0 and len(playlists_with_tracks) == len(cache):

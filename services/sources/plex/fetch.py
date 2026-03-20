@@ -158,8 +158,14 @@ def main():
 
     # Connect to Plex server
     try:
+        import requests as req_lib
+        import urllib3
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
         from plexapi.server import PlexServer
-        server = PlexServer(tokens['server_url'], tokens['auth_token'], timeout=30)
+        sess = req_lib.Session()
+        sess.verify = False
+        server = PlexServer(tokens['server_url'], tokens['auth_token'],
+                            timeout=30, session=sess)
         log(f"Connected to Plex server: {server.friendlyName}")
     except Exception as e:
         log(f"ERROR: Could not connect to Plex server: {e}")

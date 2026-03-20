@@ -54,6 +54,18 @@ sudo ./install/install.sh
 
 The installer handles everything: packages, USB permissions, display config, service installation, configuration prompts, and optional BeoRemote One pairing. It will ask if you want to reboot when complete.
 
+## Remote Support
+
+If you need help troubleshooting, you can open a temporary remote support session. The installer pre-installs [Tailscale](https://tailscale.com/) (disabled by default — no background services run until you start a session).
+
+```bash
+bs5c-support          # Start session — prompts for an access key
+bs5c-support stop     # End session and disconnect
+bs5c-support status   # Check if a session is active
+```
+
+Ask the developer for an access key, paste it when prompted, and share the displayed Tailscale IP. The developer can then SSH in to diagnose the issue. When you're done, `bs5c-support stop` disconnects and stops the Tailscale daemon.
+
 ## Configuration
 
 Configuration lives in two files on the device:
@@ -186,9 +198,7 @@ Each BS5c is configured with one **player** (Sonos, BlueSound, or Local) and one
 |---|---|---|
 | Sonos | `spotify`, `url_stream` | Any Sonos speaker (S1 or S2, any generation) |
 | BlueSound | `url_stream` | Any BluOS player (e.g. Node, PowerNode, Vault) |
-| Local | `spotify`¹, `url_stream` | S/PDIF HAT, HDMI, or other audio output |
-
-¹ Requires go-librespot (installed automatically by the installer).
+| Local | `spotify`, `url_stream` | S/PDIF HAT, HDMI, or other audio output |
 
 ### Source Compatibility
 
@@ -232,13 +242,13 @@ Spotify sends share links via `uri=` which Sonos handles natively via ShareLink;
 | Sonos | Sonos speaker volume | Sonos device (all supported) |
 | BlueSound | BluOS player volume | BlueSound device (all supported) |
 | BeoLab 5 | BeoLab 5 volume and power | BeoLab 5 Controller |
-| PowerLink | B&O PowerLink speakers | S/PDIF HAT with COAX output, or any Sonos device² |
+| PowerLink | B&O PowerLink speakers | S/PDIF HAT with COAX output, or any Sonos device¹ |
 | HDMI | ALSA software volume on HDMI1 | Amplifier with HDMI audio input |
 | S/PDIF | ALSA software volume | S/PDIF HAT (e.g. HiFiBerry Digi) |
 | RCA | ALSA software volume | DAC HAT with RCA out |
 | C4 Amp | Control4 amplifier zone volume | Control4 amplifier (UDP) |
 
-² You can use a standalone Sonos player and still output audio through PowerLink by connecting the Sonos digital out via an adapter to the PCB51 S/PDIF in. This means your player is Sonos instead of Local, which unlocks additional source support (see Source Compatibility table).
+¹ You can use a standalone Sonos player and still output audio through PowerLink by connecting the Sonos digital out via an adapter to the PCB51 S/PDIF in. This means your player is Sonos instead of Local, which unlocks additional source support (see Source Compatibility table).
 
 Sources register with the router and appear in the menu. The remote's media keys are forwarded to whichever source is currently active. When no source is active, transport keys (play/pause/next/prev) are forwarded directly to the player.
 

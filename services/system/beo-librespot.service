@@ -12,7 +12,7 @@ Type=simple
 User=__USER__
 Group=__USER__
 WorkingDirectory=/etc/beosound5c
-Environment=XDG_RUNTIME_DIR=/run/user/%U
+Environment=XDG_RUNTIME_DIR=/run/user/__UID__
 ExecStart=/usr/local/bin/go-librespot --config_dir /etc/beosound5c/librespot
 Restart=on-failure
 RestartSec=5

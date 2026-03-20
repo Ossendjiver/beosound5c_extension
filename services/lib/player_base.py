@@ -160,10 +160,11 @@ class PlayerBase:
     # ── Abstract methods (subclass must implement) ──
 
     async def play(self, uri=None, url=None, track_uri=None, meta=None,
-                   radio=False) -> bool:
+                   radio=False, track_uris=None) -> bool:
         """Start playback. uri = Spotify/share link, url = generic stream.
         track_uri = Spotify track URI to start at within a playlist/album.
-        radio = treat URL as continuous radio stream (affects Sonos URI scheme)."""
+        radio = treat URL as continuous radio stream (affects Sonos URI scheme).
+        track_uris = list of individual track URIs to queue (for non-playlist collections)."""
         raise NotImplementedError
 
     async def pause(self) -> bool:
@@ -311,6 +312,8 @@ class PlayerBase:
         app.router.add_get("/player/spotify-status", self._handle_spotify_status)
         app.router.add_post("/player/announce", self._handle_announce)
         app.router.add_get("/player/media", self._handle_media)
+        app.router.add_get("/player/queue", self._handle_queue)
+        app.router.add_post("/player/play_from_queue", self._handle_play_from_queue)
 
         # Let subclass add extra routes
         self.add_routes(app)
@@ -398,6 +401,12 @@ class PlayerBase:
         """Record that a command was received from a BS5c source/router."""
         self._last_internal_command = time.monotonic()
 
+    def _update_action_ts(self, request_data: dict):
+        """Update action timestamp if provided (prevents stale media rejections)."""
+        action_ts = request_data.get("action_ts", 0)
+        if action_ts and action_ts >= self._latest_action_ts:
+            self._latest_action_ts = action_ts
+
     def seconds_since_command(self) -> float:
         """Seconds since the last internal command (play/next/prev/etc.)."""
         if self._last_internal_command == 0.0:
@@ -423,7 +432,8 @@ class PlayerBase:
         ok = await self.play(
             uri=data.get("uri"), url=data.get("url"),
             track_uri=data.get("track_uri"), meta=data.get("meta"),
-            radio=data.get("radio", False))
+            radio=data.get("radio", False),
+            track_uris=data.get("track_uris"))
         # Re-stamp after play completes — SoCo calls can take 5+ seconds,
         # and the monitor suppression window starts from the last stamp.
         self._stamp_command()
@@ -440,6 +450,11 @@ class PlayerBase:
 
     async def _handle_resume(self, request: web.Request) -> web.Response:
         self._stamp_command()
+        try:
+            data = await request.json()
+        except Exception:
+            data = {}
+        self._update_action_ts(data)
         ok = await self.resume()
         return web.json_response(
             {"status": "ok" if ok else "error"},
@@ -447,6 +462,11 @@ class PlayerBase:
 
     async def _handle_next(self, request: web.Request) -> web.Response:
         self._stamp_command()
+        try:
+            data = await request.json()
+        except Exception:
+            data = {}
+        self._update_action_ts(data)
         ok = await self.next_track()
         return web.json_response(
             {"status": "ok" if ok else "error"},
@@ -454,6 +474,11 @@ class PlayerBase:
 
     async def _handle_prev(self, request: web.Request) -> web.Response:
         self._stamp_command()
+        try:
+            data = await request.json()
+        except Exception:
+            data = {}
+        self._update_action_ts(data)
         ok = await self.prev_track()
         return web.json_response(
             {"status": "ok" if ok else "error"},
@@ -546,6 +571,34 @@ class PlayerBase:
             "name": self.name,
             "ws_clients": len(self._ws_clients),
         }
+
+    # ── Queue support ──
+
+    async def get_queue(self, start=0, max_items=50) -> dict:
+        """Return the playback queue. Override in subclass for real queue data."""
+        return {"tracks": [], "current_index": -1, "total": 0}
+
+    async def play_from_queue(self, position: int) -> bool:
+        """Play a specific position in the queue. Override in subclass."""
+        return False
+
+    async def _handle_queue(self, request: web.Request) -> web.Response:
+        start = int(request.query.get("start", "0"))
+        max_items = int(request.query.get("max_items", "50"))
+        result = await self.get_queue(start, max_items)
+        return web.json_response(result, headers=self._cors_headers())
+
+    async def _handle_play_from_queue(self, request: web.Request) -> web.Response:
+        try:
+            data = await request.json()
+        except Exception:
+            data = {}
+        position = data.get("position", 0)
+        self._stamp_command()
+        ok = await self.play_from_queue(position)
+        return web.json_response(
+            {"status": "ok" if ok else "error"},
+            headers=self._cors_headers())
 
     # ── Subclass hooks ──
 

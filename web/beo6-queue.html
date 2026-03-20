@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Beo6 Queue</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #111; color: #eee; max-width: 480px; margin: 0 auto; padding: 16px; }
+  h1 { font-size: 16px; font-weight: 400; color: #888; margin-bottom: 12px; letter-spacing: 1px; text-transform: uppercase; }
+
+  /* Now playing */
+  #now-playing { text-align: center; margin-bottom: 24px; padding-bottom: 20px; border-bottom: 1px solid #333; }
+  #now-playing img { width: 240px; height: 240px; object-fit: cover; border-radius: 8px; background: #222; }
+  #now-playing .title { font-size: 18px; font-weight: 600; margin-top: 12px; }
+  #now-playing .artist { font-size: 14px; color: #999; margin-top: 4px; }
+  #now-playing .album { font-size: 12px; color: #666; margin-top: 2px; }
+
+  /* Queue list */
+  #queue { list-style: none; }
+  #queue li { display: flex; align-items: center; padding: 10px 12px; border-radius: 8px; cursor: pointer; gap: 12px; transition: background 0.15s; }
+  #queue li:hover { background: #1a1a1a; }
+  #queue li.current { background: #1a2a1a; }
+  #queue li img { width: 44px; height: 44px; object-fit: cover; border-radius: 4px; background: #222; flex-shrink: 0; }
+  #queue li .info { flex: 1; min-width: 0; }
+  #queue li .info .name { font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #queue li .info .artist { font-size: 12px; color: #888; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #queue li .qid { font-size: 11px; color: #555; font-family: monospace; flex-shrink: 0; }
+  #queue li.current .qid { color: #6a6; }
+
+  #status { font-size: 11px; color: #555; text-align: center; margin-top: 16px; }
+  .empty { text-align: center; color: #555; padding: 40px 0; }
+</style>
+</head>
+<body>
+
+<h1>Beo6 Queue</h1>
+
+<div id="now-playing">
+  <img id="np-art" src="" alt="">
+  <div class="title" id="np-title">—</div>
+  <div class="artist" id="np-artist"></div>
+  <div class="album" id="np-album"></div>
+</div>
+
+<ul id="queue"></ul>
+
+<div id="status"></div>
+
+<script>
+const ROUTER = `${window.location.protocol}//${window.location.hostname}:8770`;
+
+let refreshTimer;
+
+async function fetchQueue() {
+  try {
+    // First get current_index, then fetch from there
+    const peek = await fetch(`${ROUTER}/router/queue?start=0&max_items=1`);
+    if (!peek.ok) throw new Error(`HTTP ${peek.status}`);
+    const peekData = await peek.json();
+    const ci = peekData.current_index || 0;
+    const total = peekData.total || 0;
+
+    // Fetch from current_index onward (what Beo6 shows)
+    const count = Math.min(total - ci, 100);
+    const res = await fetch(`${ROUTER}/router/queue?start=${ci}&max_items=${count}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    render(data);
+    document.getElementById('status').textContent =
+      `${data.total} tracks · position ${ci}/${total} · updated ${new Date().toLocaleTimeString()}`;
+  } catch (e) {
+    document.getElementById('status').textContent = `Error: ${e.message}`;
+  }
+}
+
+function render(data) {
+  const { tracks, current_index, total } = data;
+  const current = tracks.find(t => t.current) || tracks[0];
+
+  // Now playing
+  const art = document.getElementById('np-art');
+  const title = document.getElementById('np-title');
+  const artist = document.getElementById('np-artist');
+  const album = document.getElementById('np-album');
+
+  if (current) {
+    art.src = current.artwork || '';
+    art.style.display = current.artwork ? '' : 'none';
+    title.textContent = current.title || '—';
+    artist.textContent = current.artist || '';
+    album.textContent = current.album || '';
+  } else {
+    art.style.display = 'none';
+    title.textContent = 'Nothing playing';
+    artist.textContent = '';
+    album.textContent = '';
+  }
+
+  // Queue list
+  const ul = document.getElementById('queue');
+  if (!tracks.length) {
+    ul.innerHTML = '<li class="empty">Queue is empty</li>';
+    return;
+  }
+
+  ul.innerHTML = tracks.map(t => `
+    <li class="${t.current ? 'current' : ''}" data-pos="${t.index}" onclick="playPosition(${t.index})">
+      <img src="${t.artwork || ''}" alt="" onerror="this.style.display='none'">
+      <div class="info">
+        <div class="name">${esc(t.title || '—')}</div>
+        <div class="artist">${esc(t.artist || '')}</div>
+      </div>
+      <span class="qid">${esc(t.id)}</span>
+    </li>
+  `).join('');
+}
+
+async function playPosition(position) {
+  try {
+    const res = await fetch(`${ROUTER}/router/queue/play`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ position })
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    // Refresh after a short delay to let playback start
+    setTimeout(fetchQueue, 500);
+  } catch (e) {
+    alert(`Play failed: ${e.message}`);
+  }
+}
+
+function esc(s) {
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+// Poll every 2 seconds
+fetchQueue();
+refreshTimer = setInterval(fetchQueue, 2000);
+</script>
+</body>
+</html>

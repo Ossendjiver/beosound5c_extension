@@ -656,6 +656,7 @@ class CDService(SourceBase):
     name = "CD"
     port = 8769
     player = "local"
+    manages_queue = True
     action_map = {
         "play": "toggle",
         "pause": "toggle",
@@ -767,6 +768,32 @@ class CDService(SourceBase):
             return ('_cd_button', data)
         return None
 
+    async def get_queue(self, start=0, max_items=50) -> dict:
+        """Return CD tracklist as a queue for Beo6."""
+        if not self.metadata:
+            return {"tracks": [], "current_index": -1, "total": 0}
+        all_tracks = self.metadata.get('tracks', [])
+        artwork = self.metadata.get('artwork', '')
+        current = self.cdplayer.current_track  # 1-based
+        end = min(start + max_items, len(all_tracks))
+        tracks = []
+        for i in range(start, end):
+            t = all_tracks[i]
+            tracks.append({
+                "id": f"q:{i}",
+                "title": t.get('title', f'Track {t.get("num", i + 1)}'),
+                "artist": self.metadata.get('artist', ''),
+                "album": self.metadata.get('title', ''),
+                "artwork": artwork or '',
+                "index": i,
+                "current": (i == current - 1),
+            })
+        return {
+            "tracks": tracks,
+            "current_index": current - 1,
+            "total": len(all_tracks),
+        }
+
     async def handle_command(self, cmd, data) -> dict:
         if cmd == '_cd_button':
             return await self._handle_cd_button_action()
@@ -793,11 +820,16 @@ class CDService(SourceBase):
             await self._broadcast_cd_update()
         elif cmd == 'stop':
             await self.cdplayer.stop()
-            await self.register('available')
+            await self.register('paused')
             await self._broadcast_cd_update()
         elif cmd == 'play_track':
             # Track number from action ("5") or explicit track field
             track = data.get('track') or int(data.get('action', 1))
+            await self.cdplayer.play_track(track)
+            await self.register('playing', auto_power=True)
+            await self._broadcast_cd_update()
+        elif cmd == 'play_index':
+            track = data.get('index', 0) + 1  # 0-based index → 1-based track
             await self.cdplayer.play_track(track)
             await self.register('playing', auto_power=True)
             await self._broadcast_cd_update()
@@ -967,6 +999,7 @@ class CDService(SourceBase):
                 artwork=cd_data.get('artwork', ''),
                 back_artwork=cd_data.get('back_artwork', ''),
                 state=cd_data['state'],
+                track_number=cd_data['current_track'],
             )
             # Pre-cache TTS for instant announce on button press
             tts_text = f"{track_title}, by {cd_data['artist']}" if cd_data['artist'] else track_title

@@ -11,13 +11,16 @@ Port: 8778
 """
 
 import asyncio
+import base64
 import json
 import logging
 import os
+import ssl
 import sys
 import time
 from datetime import datetime, timedelta
 
+import aiohttp
 from aiohttp import web
 
 # Sibling imports (this directory)
@@ -71,6 +74,7 @@ class PlexService(DigitPlaylistMixin, SourceBase):
     id = "plex"
     name = "PLEX"
     port = 8778
+    manages_queue = True
     action_map = {
         "play": "toggle",
         "pause": "toggle",
@@ -101,17 +105,20 @@ class PlexService(DigitPlaylistMixin, SourceBase):
         self._last_refresh = 0
         self._last_refresh_wall = None
         self._last_refresh_duration = None
-        self._pending_login = None  # (pinlogin,) during OAuth
+        self._pending_login = None  # (pinlogin, oauth_url, created_time) during OAuth
+        self._login_lock = asyncio.Lock()
         # Source-managed track advancement
         self._current_playlist = None  # full playlist dict with tracks
         self._current_index = 0
+        self._last_play_time = 0
+        self._last_play_id = None
 
     async def on_start(self):
         has_creds = self.auth.load()
 
         if has_creds:
             self._load_playlists()
-            self.player = "remote"
+            self._detect_player()
 
             caps = await self.player_capabilities()
             if caps:
@@ -234,6 +241,14 @@ class PlexService(DigitPlaylistMixin, SourceBase):
         elif cmd == 'prev':
             await self._prev()
 
+        elif cmd == 'play_index':
+            index = data.get('index', 0)
+            if self._current_playlist:
+                tracks = self._current_playlist.get('tracks', [])
+                if 0 <= index < len(tracks):
+                    self._current_index = index
+                    await self._play_current_track()
+
         elif cmd == 'stop':
             await self._stop()
 
@@ -252,6 +267,12 @@ class PlexService(DigitPlaylistMixin, SourceBase):
 
     async def _play_playlist(self, playlist_id, track_index=None):
         """Start playing a playlist. Stores playlist for source-managed advancement."""
+        now = time.monotonic()
+        if now - self._last_play_time < 2 and self._last_play_id == playlist_id:
+            log.debug("Debounced duplicate play for %s", playlist_id)
+            return
+        self._last_play_time = now
+        self._last_play_id = playlist_id
         playlist = None
         for pl in self.playlists:
             if pl.get('id') == playlist_id:
@@ -299,11 +320,15 @@ class PlexService(DigitPlaylistMixin, SourceBase):
                 await self._play_current_track()
             return
 
+        # Fetch artwork and embed as base64 (Plex servers may use self-signed
+        # HTTPS certs that the browser would reject for direct image loads)
+        artwork = await self._fetch_artwork_base64(track.get("image", ""))
+
         # Pre-broadcast metadata for instant PLAYING view update
         await self.post_media_update(
             title=track.get("name", ""),
             artist=track.get("artist", ""),
-            artwork=track.get("image", ""),
+            artwork=artwork,
             state="playing",
             reason="track_change",
         )
@@ -326,6 +351,32 @@ class PlexService(DigitPlaylistMixin, SourceBase):
         else:
             log.error("Player service failed to start track")
 
+    async def _fetch_artwork_base64(self, url):
+        """Fetch artwork URL and return as base64 data URI.
+
+        Uses an SSL context that accepts self-signed certs (common on
+        local Plex servers with 'Secure connections: Required').
+        Returns the original URL as fallback if fetch fails.
+        """
+        if not url or url.startswith("data:"):
+            return url
+        try:
+            ssl_ctx = ssl.create_default_context()
+            ssl_ctx.check_hostname = False
+            ssl_ctx.verify_mode = ssl.CERT_NONE
+            conn = aiohttp.TCPConnector(ssl=ssl_ctx)
+            async with aiohttp.ClientSession(connector=conn) as sess:
+                async with sess.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                    resp.raise_for_status()
+                    data = await resp.read()
+                    if data:
+                        ct = resp.content_type or "image/jpeg"
+                        b64 = base64.b64encode(data).decode("utf-8")
+                        return f"data:{ct};base64,{b64}"
+        except Exception as e:
+            log.warning("Artwork fetch failed (%s): %s", url[:80], e)
+        return url
+
     async def _play_track_url(self, url):
         """Play a specific track by its stream URL (standalone, no playlist context)."""
         log.info("Play track URL %s", url)
@@ -336,6 +387,30 @@ class PlexService(DigitPlaylistMixin, SourceBase):
             self._current_index = 0
             await self.register("playing", auto_power=True)
             self._start_polling()
+
+    async def get_queue(self, start=0, max_items=50) -> dict:
+        """Return the current Plex playlist as a queue."""
+        if not self._current_playlist:
+            return {"tracks": [], "current_index": -1, "total": 0}
+        all_tracks = self._current_playlist.get('tracks', [])
+        end = min(start + max_items, len(all_tracks))
+        tracks = []
+        for i in range(start, end):
+            t = all_tracks[i]
+            tracks.append({
+                "id": f"q:{i}",
+                "title": t.get("name", ""),
+                "artist": t.get("artist", ""),
+                "album": "",
+                "artwork": t.get("image", ""),
+                "index": i,
+                "current": i == self._current_index,
+            })
+        return {
+            "tracks": tracks,
+            "current_index": self._current_index,
+            "total": len(all_tracks),
+        }
 
     async def _toggle(self):
         if self.state == "playing":
@@ -655,6 +730,14 @@ startBtn.addEventListener('click', async () => {
                 } else if (result.status === 'error') {
                     clearInterval(pollInterval);
                     statusEl.textContent = result.error || 'Login failed.';
+                    statusEl.style.color = '#E5A00D';
+                    statusEl.style.fontSize = '16px';
+                    statusEl.style.lineHeight = '1.6';
+                    startBtn.disabled = false;
+                    loginUrlEl.style.display = 'none';
+                } else if (result.status === 'no_pending') {
+                    clearInterval(pollInterval);
+                    statusEl.textContent = 'Session lost (service restarted). Please click Start again.';
                     startBtn.disabled = false;
                     loginUrlEl.style.display = 'none';
                 }
@@ -670,29 +753,40 @@ startBtn.addEventListener('click', async () => {
         return web.Response(text=html, content_type='text/html')
 
     async def _handle_start_login(self, request):
-        """Start the Plex PIN-based OAuth flow."""
-        if self._pending_login:
+        """Start the Plex PIN-based OAuth flow.
+        Uses a lock + debounce to prevent iframe double-load from creating
+        multiple PINs (which causes Plex to rate-limit/invalidate them).
+        """
+        async with self._login_lock:
+            if self._pending_login:
+                pinlogin, oauth_url, created_time = self._pending_login
+                if time.monotonic() - created_time < 10:
+                    log.info("Reusing existing Plex OAuth PIN (%.1fs old)",
+                             time.monotonic() - created_time)
+                    return web.json_response({
+                        'url': oauth_url,
+                    }, headers=self._cors_headers())
+                try:
+                    pinlogin.stop()
+                except Exception:
+                    pass
+                self._pending_login = None
+
             try:
-                self._pending_login.stop()
-            except Exception:
-                pass
-            self._pending_login = None
+                loop = asyncio.get_running_loop()
+                pinlogin, oauth_url = await loop.run_in_executor(
+                    None, self.auth.start_oauth)
+                self._pending_login = (pinlogin, oauth_url, time.monotonic())
 
-        try:
-            loop = asyncio.get_running_loop()
-            pinlogin, oauth_url = await loop.run_in_executor(
-                None, self.auth.start_oauth)
-            self._pending_login = pinlogin
-
-            log.info("Plex OAuth started - URL: %s", oauth_url)
-            return web.json_response({
-                'url': oauth_url,
-            }, headers=self._cors_headers())
-        except Exception as e:
-            log.error("Failed to start Plex login: %s", e)
-            return web.json_response(
-                {'error': str(e)},
-                status=500, headers=self._cors_headers())
+                log.info("Plex OAuth started - URL: %s", oauth_url)
+                return web.json_response({
+                    'url': oauth_url,
+                }, headers=self._cors_headers())
+            except Exception as e:
+                log.error("Failed to start Plex login: %s", e)
+                return web.json_response(
+                    {'error': str(e)},
+                    status=500, headers=self._cors_headers())
 
     async def _handle_check_login(self, request):
         """Check if the Plex OAuth login has completed."""
@@ -701,7 +795,7 @@ startBtn.addEventListener('click', async () => {
                 {'status': 'no_pending'},
                 headers=self._cors_headers())
 
-        pinlogin = self._pending_login
+        pinlogin, _, _ = self._pending_login
 
         try:
             loop = asyncio.get_running_loop()
@@ -728,7 +822,7 @@ startBtn.addEventListener('click', async () => {
 
         if success:
             self._pending_login = None
-            self.player = "remote"
+            self._detect_player()
             await self.register("available")
 
             # Kick off playlist refresh

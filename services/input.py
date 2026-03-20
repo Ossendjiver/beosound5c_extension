@@ -1120,6 +1120,8 @@ def scan_loop(loop):
         # --- Read loop (runs while device is connected) ---
         last_laser = None
         first = True
+        last_probe_time = time.monotonic()
+        HID_PROBE_INTERVAL = 60  # seconds between liveness probes
         try:
             while True:
                 rpt = dev.read(64, timeout_ms=50)
@@ -1146,6 +1148,13 @@ def scan_loop(loop):
                             loop
                         )
                         last_laser, first = laser_pos, False
+
+                # Periodic liveness probe: re-send current state to device.
+                # A stale handle will throw here, triggering reconnect.
+                now = time.monotonic()
+                if now - last_probe_time > HID_PROBE_INTERVAL:
+                    dev.write(bytes([state_byte1, 0x00]))
+                    last_probe_time = now
 
                 time.sleep(0.001)
         except Exception as e:

@@ -10,9 +10,12 @@ Storage locations (first writable wins):
 """
 
 import json
+import logging
 import os
 import tempfile
 from datetime import datetime, timezone
+
+log = logging.getLogger('spotify-tokens')
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -68,19 +71,21 @@ def save_tokens(client_id, refresh_token):
             with os.fdopen(fd, "w") as f:
                 f.write(content)
             os.replace(tmp, path)
+            log.info("Tokens saved to %s", path)
             return path
         except Exception:
             try:
                 os.unlink(tmp)
             except OSError:
                 pass
-    except OSError:
-        pass  # Can't create temp file in dir — fall through to direct write
+    except OSError as e:
+        log.warning("Cannot write to %s (%s) — trying direct write", d, e)
 
     # Direct write — file itself is writable even if directory isn't
     with open(path, "w") as f:
         f.write(content)
 
+    log.info("Tokens saved to %s (direct write)", path)
     return path
 
 

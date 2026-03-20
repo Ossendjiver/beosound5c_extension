@@ -1,0 +1,26 @@
+[Unit]
+Description=BeoSound5c Beo6 Remote (XMPP BeoNet emulation for Beo6 control)
+After=network-online.target beo-router.service
+Wants=network-online.target
+OnFailure=beo-notify-failure@%n.service
+StartLimitIntervalSec=300
+StartLimitBurst=3
+
+[Service]
+Type=simple
+User=__USER__
+Group=__USER__
+WorkingDirectory=__HOME__/beosound5c/services
+EnvironmentFile=-/etc/beosound5c/secrets.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 __HOME__/beosound5c/services/beo6/service.py
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+# XMPP on port 5222 requires CAP_NET_BIND_SERVICE for non-root
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+
+[Install]
+WantedBy=multi-user.target

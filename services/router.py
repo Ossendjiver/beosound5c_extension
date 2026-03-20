@@ -54,7 +54,7 @@ STATIC_VIEWS = {"showing", "system", "scenes", "playing"}
 _DIGITS = {"0", "1", "2", "3", "4", "5", "6", "7", "8", "9"}
 DEFAULT_SOURCE_HANDLES = {
     "cd": {"play", "pause", "next", "prev", "stop", "go", "left", "right",
-           "up", "down", "info", "track", "menu"} | _DIGITS,
+           "up", "down", "info", "track"} | _DIGITS,
     "spotify": {"play", "pause", "next", "prev", "stop", "go", "left", "right",
                 "up", "down"} | _DIGITS,
     "usb": {"play", "pause", "next", "prev", "stop", "go", "left", "right",
@@ -96,6 +96,7 @@ class Source:
         self.state = "gone"            # gone | available | playing | paused
         self.from_config = False       # True if pre-created from config.json
         self.visible = "auto"          # "auto" | "always" | "never"
+        self.manages_queue = False     # True if source manages its own playlist
 
     def to_menu_item(self) -> dict:
         return {
@@ -185,6 +186,8 @@ class SourceRegistry:
             source.menu_preset = fields["menu_preset"]
         if "player" in fields:
             source.player = fields["player"]
+        if "manages_queue" in fields:
+            source.manages_queue = fields["manages_queue"]
         # handles from config take precedence; only use registration handles for unknown sources
         if "handles" in fields and not source.handles:
             source.handles = set(fields["handles"])
@@ -231,19 +234,14 @@ class SourceRegistry:
                         # Accept state update but don't change active source
                         return {"actions": actions, "old_state": old_state, "new_state": state}
 
-                # Cross-player switch: when old and new sources use different
-                # player types, stop both the player service AND the old source.
-                # Same-player sources don't need this — player_play() replaces
-                # whatever was playing and the old source detects via polling.
+                # Stop the old source so it can clean up (e.g. CD's mpv,
+                # radio's player stream).  Each source's stop handler is
+                # responsible for stopping its own playback.
                 old_source = self._sources.get(self._active_id) if self._active_id else None
-                if old_source and old_source.player != source.player:
-                    logger.info("Player type change (%s→%s) — stopping old playback",
-                                old_source.player, source.player)
-                    asyncio.ensure_future(router._player_stop())
-                    # Also tell the old source to stop (e.g. CD's own mpv)
-                    if old_source.command_url:
-                        asyncio.ensure_future(
-                            router._forward_to_source(old_source, {"action": "stop"}))
+                if old_source and old_source.command_url:
+                    logger.info("Stopping old source: %s", old_source.id)
+                    asyncio.ensure_future(
+                        router._forward_to_source(old_source, {"action": "stop"}))
                 self._active_id = id
                 self._persist_active()
                 await router._broadcast("source_change", {
@@ -397,6 +395,13 @@ class EventRouter:
                 entry_id = value.get("id", title.lower().replace(" ", "_"))
                 entry_cfg = value
             items.append({"id": entry_id, "title": title, "config": entry_cfg})
+
+        # Auto-inject JOIN for Sonos players (player service controls visibility via available/gone)
+        player_type = str(cfg("player", "type", default="")).lower()
+        if player_type == "sonos" and not any(i["id"] == "join" for i in items):
+            join_entry = {"id": "join", "title": "JOIN", "config": {}}
+            playing_idx = next((i for i, e in enumerate(items) if e["id"] == "playing"), -1)
+            items.insert(playing_idx + 1, join_entry)
 
         # Pre-create sources from menu entries (non-static-view, non-webpage items)
         for item in items:
@@ -688,17 +693,19 @@ class EventRouter:
         is_local = (device_type == "Audio" and self._handle_audio) or \
                    (device_type == "Video" and self._handle_video)
         if is_local and active and active.state in ("playing", "paused") and action in active.handles:
-            # Stamp action timestamp — user interaction should carry a fresh ts
-            # so downstream player_play/register calls aren't rejected as stale
-            action_ts = time.monotonic()
-            self._latest_action_ts = action_ts
+            # Forward to active source but do NOT bump _latest_action_ts —
+            # this is intra-source interaction (next/prev/scroll), not a source
+            # switch. Bumping here makes the player's media updates look stale
+            # because player_next/prev don't carry action_ts, so the player
+            # keeps broadcasting with the ts from the original play command.
+            action_ts = self._latest_action_ts or 0
             logger.info("-> %s: %s (active source)", active.id, action)
             await self._forward_to_source(active, {**payload, "action_ts": action_ts})
             return
 
         # 1a. Announce — TTS via player when source doesn't handle info/track/menu
         if is_local and action in ("menu", "info", "track") and self._media_state:
-            if self._media_state.get("state") == "playing":
+            if self._media_state.get("state") in ("playing", "paused"):
                 asyncio.ensure_future(self._player_announce())
                 return
 
@@ -718,8 +725,14 @@ class EventRouter:
         if is_local and not active and self._default_source_id:
             default = self.registry.get(self._default_source_id)
             if default and default.state != "gone" and default.command_url and action in default.handles:
+                # Stamp fresh action_ts — this is a user-initiated action
+                # (digit, next, etc.) that should carry a valid timestamp so
+                # the source can register and the player won't reject it.
+                action_ts = time.monotonic()
+                self._latest_action_ts = action_ts
                 logger.info("-> %s: %s (default source)", default.id, action)
-                await self._forward_to_source(default, payload)
+                await self._forward_to_source(
+                    default, {**payload, "action_ts": action_ts})
                 return
 
         # 1c. No active source, transport action → forward to player directly
@@ -1011,13 +1024,21 @@ class EventRouter:
         reason = payload.pop("_reason", "update")
         source_id = payload.pop("_source_id", None)
         action_ts = payload.pop("_action_ts", 0)
-        if action_ts and action_ts < self._latest_action_ts:
-            logger.warning("Dropped stale media update (ts=%.3f < latest=%.3f)",
-                           action_ts, self._latest_action_ts)
-            return web.json_response({"status": "ok", "dropped": True})
-        if source_id and source_id != self.registry._active_id:
+        is_active_source = source_id and source_id == self.registry._active_id
+        # Reject media from inactive sources
+        if source_id and not is_active_source:
             logger.warning("Dropped media update from inactive source %s "
                            "(active: %s)", source_id, self.registry._active_id)
+            return web.json_response({"status": "ok", "dropped": True})
+        # Reject stale timestamps — but only from sources (source_id set).
+        # Player-originated media (source_id=None) is trusted: the player has
+        # its own stale protection and always reflects current playback state.
+        # Active source media is also exempt — it may carry an old action_ts
+        # from its original activation while a newer source button bumped
+        # the global ts.
+        if source_id and action_ts and action_ts < self._latest_action_ts and not is_active_source:
+            logger.warning("Dropped stale media update (ts=%.3f < latest=%.3f)",
+                           action_ts, self._latest_action_ts)
             return web.json_response({"status": "ok", "dropped": True})
         self._media_state = payload
         # Pre-cache TTS for instant announce on button press
@@ -1068,7 +1089,7 @@ async def handle_source(request: web.Request) -> web.Response:
 
     # Extract optional fields
     fields = {}
-    for key in ("name", "command_url", "menu_preset", "handles", "navigate", "player", "auto_power", "action_ts"):
+    for key in ("name", "command_url", "menu_preset", "handles", "navigate", "player", "auto_power", "action_ts", "manages_queue"):
         if key in data:
             fields[key] = data[key]
 
@@ -1170,6 +1191,11 @@ async def handle_playback_override(request: web.Request) -> web.Response:
         router_instance._latest_action_ts = action_ts
     active = router_instance.registry.active_source
     if active and force:
+        if active.manages_queue:
+            # Source owns its own playback (e.g. CD) — player state is irrelevant
+            return web.json_response({
+                "status": "ok", "cleared": False,
+                "reason": f"{active.id} manages own playback"})
         logger.info("Playback override: clearing active source %s", active.id)
         await router_instance.registry.clear_active_source(router_instance)
         return web.json_response({"status": "ok", "cleared": True})
@@ -1222,6 +1248,123 @@ async def handle_status(request: web.Request) -> web.Response:
     return web.json_response(result)
 
 
+async def handle_queue(request: web.Request) -> web.Response:
+    """GET /router/queue — aggregated queue from player or source.
+
+    Queue authority matrix (source × player):
+
+                    Sonos/Bluesound    Local (mpv/librespot)
+    Spotify         Player             Source
+    Plex            Player             Source
+    CD              Source              Source
+    USB             Source              Source
+    News            —                   Source
+    Radio           —                   None (stream)
+    External        None                —
+
+    Logic: manages_queue=True → source first
+           manages_queue=False + local player → source first
+           manages_queue=False + remote player → player first
+    """
+    start = int(request.query.get("start", "0"))
+    max_items = int(request.query.get("max_items", "50"))
+
+    source = router_instance.registry.active_source
+    source_url = None
+    player_url = f"http://localhost:8766/player/queue?start={start}&max_items={max_items}"
+
+    if source and source.command_url:
+        # Derive source queue URL from command_url (replace /command with /queue)
+        base = source.command_url.rsplit("/command", 1)[0]
+        source_url = f"{base}/queue?start={start}&max_items={max_items}"
+
+    # Determine primary/secondary based on authority
+    if source and (source.manages_queue or source.player == "local"):
+        primary, secondary = source_url, player_url
+    else:
+        primary, secondary = player_url, source_url
+
+    async def _fetch_queue(url):
+        if not url:
+            return None
+        try:
+            async with router_instance._session.get(
+                url, timeout=aiohttp.ClientTimeout(total=5)
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    if data.get("tracks"):
+                        return data
+        except Exception as e:
+            logger.debug("Queue fetch from %s failed: %s", url, e)
+        return None
+
+    result = await _fetch_queue(primary)
+    if not result:
+        result = await _fetch_queue(secondary)
+    if not result:
+        # Fall back to wrapping current media state as single track
+        if router_instance._media_state:
+            m = router_instance._media_state
+            result = {
+                "tracks": [{
+                    "id": "q:0",
+                    "title": m.get("title", ""),
+                    "artist": m.get("artist", ""),
+                    "album": m.get("album", ""),
+                    "artwork": m.get("artwork", ""),
+                    "index": 0,
+                    "current": True,
+                }],
+                "current_index": 0,
+                "total": 1,
+            }
+        else:
+            result = {"tracks": [], "current_index": -1, "total": 0}
+
+    return web.json_response(result)
+
+
+async def handle_queue_play(request: web.Request) -> web.Response:
+    """POST /router/queue/play — play a specific queue position."""
+    try:
+        data = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid json"}, status=400)
+
+    position = data.get("position", 0)
+    source = router_instance.registry.active_source
+
+    # Determine authority (same logic as handle_queue)
+    if source and (source.manages_queue or source.player == "local"):
+        # Source-managed: send play_index command
+        if source.command_url:
+            try:
+                async with router_instance._session.post(
+                    source.command_url,
+                    json={"command": "play_index", "index": position},
+                    timeout=aiohttp.ClientTimeout(total=10),
+                ) as resp:
+                    if resp.status == 200:
+                        return web.json_response({"status": "ok"})
+            except Exception as e:
+                logger.warning("Source play_index failed: %s", e)
+        return web.json_response({"status": "error"}, status=500)
+    else:
+        # Player-managed: use play_from_queue
+        try:
+            async with router_instance._session.post(
+                "http://localhost:8766/player/play_from_queue",
+                json={"position": position},
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as resp:
+                result = await resp.json()
+                return web.json_response(result)
+        except Exception as e:
+            logger.warning("Player play_from_queue failed: %s", e)
+            return web.json_response({"status": "error"}, status=500)
+
+
 # ---------------------------------------------------------------------------
 # App lifecycle
 # ---------------------------------------------------------------------------
@@ -1261,6 +1404,8 @@ def create_app() -> web.Application:
     app.router.add_get("/router/status", handle_status)
     app.router.add_get("/router/ws", router_instance._handle_media_ws)
     app.router.add_post("/router/media", router_instance._handle_media_post)
+    app.router.add_get("/router/queue", handle_queue)
+    app.router.add_post("/router/queue/play", handle_queue_play)
     app.on_startup.append(on_startup)
     app.on_cleanup.append(on_cleanup)
     return app

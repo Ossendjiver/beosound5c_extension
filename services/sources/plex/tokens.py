@@ -11,9 +11,12 @@ Storage locations (first writable wins):
 """
 
 import json
+import logging
 import os
 import tempfile
 from datetime import datetime, timezone
+
+log = logging.getLogger('plex-tokens')
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -58,20 +61,28 @@ def save_tokens(auth_token, server_url, server_name, user_name):
 
     d = os.path.dirname(path)
     os.makedirs(d, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=d, suffix=".tmp")
     try:
-        with os.fdopen(fd, "w") as f:
+        fd, tmp = tempfile.mkstemp(dir=d, suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w") as f:
+                json.dump(data, f, indent=2)
+                f.write("\n")
+            os.replace(tmp, path)
+            log.info("Tokens saved to %s", path)
+            return path
+        except Exception:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+    except OSError as e:
+        log.warning("Cannot write to %s (%s) — trying direct write", d, e)
+        with open(path, "w") as f:
             json.dump(data, f, indent=2)
             f.write("\n")
-        os.replace(tmp, path)
-    except Exception:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
-
-    return path
+        log.info("Tokens saved to %s (direct write)", path)
+        return path
 
 
 def delete_tokens():

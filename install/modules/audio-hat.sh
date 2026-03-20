@@ -135,6 +135,17 @@ setup_audio_hat() {
     cp "$INSTALL_DIR/install/configs/51-beosound5c-volume.conf" /etc/wireplumber/wireplumber.conf.d/
     log_info "WirePlumber default volume set to 100%"
 
+    # Enable user lingering so PipeWire survives SSH session logout.
+    # Without this, systemd kills all user services (PipeWire, WirePlumber)
+    # when the last login session ends, breaking audio for go-librespot.
+    local install_user="${INSTALL_USER:-${SUDO_USER:-$(logname 2>/dev/null || whoami)}}"
+    if ! loginctl show-user "$install_user" -p Linger 2>/dev/null | grep -q "yes"; then
+        loginctl enable-linger "$install_user"
+        log_success "Enabled user linger for $install_user (PipeWire persists after logout)"
+    else
+        log_info "User linger already enabled for $install_user"
+    fi
+
     # Try to detect the HAT
     if detect_audio_hat; then
         log_success "Detected audio HAT: $DETECTED_HAT"

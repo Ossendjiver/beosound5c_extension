@@ -16,7 +16,6 @@
     let idleTimer = null;
     let isTracking = false;     // true while laser is actively driving progress
     let lastOverlayText = { title: '', artist: '', album: '' };
-    let overlayTextSynced = false; // whether text has been synced for current immersive session
     let transitionCleanup = null;  // setTimeout ID for post-transition cleanup
 
     function isFullyImmersive() { return progress >= 1; }
@@ -66,7 +65,6 @@
             if (artwork) artwork.style.transform = '';
             if (info) { info.style.opacity = ''; info.style.pointerEvents = ''; }
             if (overlay) overlay.style.opacity = '0';
-            overlayTextSynced = false;
             return;
         }
 
@@ -86,9 +84,8 @@
         }
 
         // Sync overlay text just before it becomes visible
-        if (p > 0.4 && !overlayTextSynced) {
+        if (p > 0.4) {
             syncOverlayText(false);
-            overlayTextSynced = true;
         }
 
         // Overlay fades in during the second half of progress
@@ -100,26 +97,16 @@
 
     // ── Smooth text update with per-field fade ──
 
-    function getMediaText() {
-        // Read from DOM first (reflects source-specific formatting, e.g. CD track titles),
-        // fall back to uiStore.mediaInfo (always populated by Sonos/generic path)
-        const titleEl = document.getElementById('media-title');
-        const artistEl = document.getElementById('media-artist');
-        const albumEl = document.getElementById('media-album');
-        const mi = window.uiStore?.mediaInfo;
-
-        return {
-            title: (titleEl?.textContent && titleEl.textContent !== '\u2014') ? titleEl.textContent : (mi?.title || ''),
-            artist: (artistEl?.textContent && artistEl.textContent !== '\u2014') ? artistEl.textContent : (mi?.artist || ''),
-            album: (albumEl?.textContent && albumEl.textContent !== '\u2014') ? albumEl.textContent : (mi?.album || '')
-        };
-    }
-
     function syncOverlayText(animate) {
         const overlay = ensureOverlay();
         if (!overlay) return;
 
-        const newText = getMediaText();
+        const mi = window.uiStore?.mediaInfo;
+        const newText = {
+            title: mi?.title || '',
+            artist: mi?.artist || '',
+            album: mi?.album || ''
+        };
 
         const fields = [
             { key: 'title', el: overlay.querySelector('.immersive-info-title') },
@@ -222,7 +209,6 @@
         if (!container) return;
 
         syncOverlayText(false);
-        overlayTextSynced = true;
         enableIdleTransitions();
 
         // Force reflow so the transition actually animates from current state
@@ -283,49 +269,43 @@
         idleTimer = null;
     }
 
-    // ── Init: wrap UIStore methods ──
+    // ── Init: listen for UIStore events ──
 
     function init() {
         const uiStore = window.uiStore;
         if (!uiStore) { setTimeout(init, 200); return; }
 
-        // 1. Wrap setMenuVisible: exit immersive when menu reappears
-        const origSetMenuVisible = uiStore.setMenuVisible.bind(uiStore);
-        uiStore.setMenuVisible = function(visible) {
-            if (visible && isPartiallyImmersive() && !isTracking) {
+        // 1. Menu visibility: exit immersive when menu reappears
+        document.addEventListener('bs5c:menu-visibility', (e) => {
+            if (e.detail.visible && isPartiallyImmersive() && !isTracking) {
                 animatedExit();
             }
-            origSetMenuVisible(visible);
-        };
+        });
 
-        // 2. Wrap handleWheelChange: laser tracking + idle timer reset
-        const origHandleWheelChange = uiStore.handleWheelChange.bind(uiStore);
-        uiStore.handleWheelChange = function() {
-            origHandleWheelChange();
+        // 2. Wheel change: laser tracking + idle timer reset
+        document.addEventListener('bs5c:wheel-change', () => {
             updateFromLaser();
             if (!isTracking) resetIdleTimer();
-        };
+        });
 
-        // 3. Wrap navigateToView: cleanup on view change
-        const origNavigate = uiStore.navigateToView.bind(uiStore);
-        uiStore.navigateToView = function(path) {
-            const wasPlaying = uiStore.currentRoute === 'menu/playing';
+        // 3. View change: cleanup on navigation
+        document.addEventListener('bs5c:view-change', (e) => {
+            const { from, to } = e.detail;
+            const wasPlaying = from === 'menu/playing';
             const wasImmersive = isPartiallyImmersive();
-            origNavigate(path);
-            if (wasPlaying && path !== 'menu/playing') {
+
+            if (wasPlaying && to !== 'menu/playing') {
                 clearIdleTimer();
                 instantExit();
             }
-            if (path === 'menu/playing') {
+            if (to === 'menu/playing') {
                 // DOM was rebuilt by updateView() — overlay is gone, text cache is stale
                 lastOverlayText = { title: '', artist: '', album: '' };
-                overlayTextSynced = false;
                 if (wasImmersive && wasPlaying) {
                     // Re-apply immersive state after DOM rebuild (e.g. spurious wake)
                     setTimeout(() => {
                         ensureOverlay();
                         syncOverlayText(false);
-                        overlayTextSynced = true;
                         applyProgress(progress);
                     }, 100);
                 } else if (!wasPlaying && isPlaying()) {
@@ -340,23 +320,12 @@
                     setTimeout(() => ensureOverlay(), 100);
                 }
             }
-        };
+        });
 
-        // 4. Wrap handleMediaUpdate: sync overlay text on track change
-        //    crossfadeText swaps DOM text after 200ms, so wait for that
-        const origHandleMediaUpdate = uiStore.handleMediaUpdate.bind(uiStore);
-        uiStore.handleMediaUpdate = function(data, reason) {
-            origHandleMediaUpdate(data, reason);
-            setTimeout(() => syncOverlayText(true), 250);
-        };
-
-        // 5. Wrap updatePlaying: sync overlay text on source-routed updates
-        //    crossfadeText swaps DOM text after 200ms, so wait for that
-        const origUpdatePlaying = uiStore.updatePlaying.bind(uiStore);
-        uiStore.updatePlaying = function(data) {
-            origUpdatePlaying(data);
-            setTimeout(() => syncOverlayText(true), 250);
-        };
+        // 4. Media text updated: sync overlay text on track change
+        document.addEventListener('bs5c:media-text-updated', () => {
+            syncOverlayText(true);
+        });
 
         // Initial setup
         if (uiStore.currentRoute === 'menu/playing') {
@@ -364,7 +333,7 @@
             ensureOverlay();
         }
 
-        console.log('[IMMERSIVE] Module initialized (v5.1)');
+        console.log('[IMMERSIVE] Module initialized (v6.0)');
     }
 
     // Expose for debugging / manual toggle

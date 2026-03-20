@@ -10,25 +10,11 @@ function crossfadeText(el, newText) {
     el._crossfadeTimer = setTimeout(() => {
         el.textContent = newText;
         el.style.removeProperty('opacity');
+        document.dispatchEvent(new CustomEvent('bs5c:media-text-updated'));
     }, 200);
 }
 window.crossfadeText = crossfadeText;
 
-// Default PLAYING view slot content (used when no source overrides)
-const DEFAULT_ARTWORK_SLOT = `
-    <div class="playing-flipper">
-        <div class="playing-face playing-front">
-            <img class="playing-artwork" src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7" alt="Album Art">
-        </div>
-        <div class="playing-face playing-back" style="display:none">
-            <img class="playing-artwork-back" src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7" alt="">
-        </div>
-    </div>`;
-const DEFAULT_INFO_SLOT = `
-    <div id="media-title" class="media-view-title">—</div>
-    <div id="media-artist" class="media-view-artist">—</div>
-    <div id="media-album" class="media-view-album">—</div>
-`;
 const DEFAULT_PLAYING_PRESET = {
     // All sources push metadata via the unified router media path.
     // media_update events reach this preset via handleMediaUpdate() → updateNowPlayingView().
@@ -218,14 +204,6 @@ class UIStore {
         this._fetchMenu();
     }
     
-    // Image preloading delegated to ArtworkManager
-    preloadAndCacheImage(url) {
-        if (window.ArtworkManager) {
-            return window.ArtworkManager.preloadImage(url);
-        }
-        return Promise.resolve(null);
-    }
-    
     // REMOVED: requestMediaUpdate - now using push-based updates from media server
     // Media server automatically pushes updates when:
     // 1. Client connects
@@ -260,27 +238,9 @@ class UIStore {
     
     // Update the now playing view with current media info
     updateNowPlayingView() {
-        // Delegate to active playing preset if available
-        if (this.activePlayingPreset?.onUpdate) {
-            const container = document.getElementById('now-playing');
-            if (container) {
-                this.activePlayingPreset.onUpdate(container, this.mediaInfo);
-                return;
-            }
-        }
-
-        // Fallback: direct DOM update (artwork must not depend on text elements)
-        const artworkEl = document.querySelector('#now-playing .playing-artwork');
-        const titleEl = document.getElementById('media-title');
-        const artistEl = document.getElementById('media-artist');
-        const albumEl = document.getElementById('media-album');
-
-        if (titleEl) titleEl.textContent = this.mediaInfo.title;
-        if (artistEl) artistEl.textContent = this.mediaInfo.artist;
-        if (albumEl) albumEl.textContent = this.mediaInfo.album;
-
-        if (artworkEl && window.ArtworkManager) {
-            window.ArtworkManager.displayArtwork(artworkEl, this.mediaInfo.artwork, 'noArtwork');
+        const container = document.getElementById('now-playing');
+        if (container && this.activePlayingPreset?.onUpdate) {
+            this.activePlayingPreset.onUpdate(container, this.mediaInfo);
         }
     }
 
@@ -470,59 +430,18 @@ class UIStore {
     setActivePlayingPreset(sourceId) {
         const preset = sourceId && window.SourcePresets?.[sourceId]?.playing;
         const newPreset = preset || DEFAULT_PLAYING_PRESET;
-
-        // Skip rebuild if preset hasn't changed (avoids artwork flash on track changes)
         if (newPreset === this.activePlayingPreset) return;
 
         const container = document.getElementById('now-playing');
         if (!container) {
-            // PLAYING view not currently rendered — just store the preset for later
             this.activePlayingPreset = newPreset;
             return;
         }
 
-        const artworkSlot = container.querySelector('.playing-artwork-slot');
-        const infoSlot = container.querySelector('.playing-info-slot');
-
-        // Cleanup old preset and default flipper handler
-        DEFAULT_PLAYING_PRESET.onRemove(container);
-        if (this.activePlayingPreset?.onRemove) {
-            this.activePlayingPreset.onRemove(container);
-        }
-
-        // Activate new preset
+        if (this.activePlayingPreset?.onRemove) this.activePlayingPreset.onRemove(container);
         this.activePlayingPreset = newPreset;
-
-        // Override slots (or restore defaults)
-        if (artworkSlot) {
-            artworkSlot.innerHTML = this.activePlayingPreset.artworkSlot || DEFAULT_ARTWORK_SLOT;
-        }
-        if (infoSlot) {
-            infoSlot.innerHTML = this.activePlayingPreset.infoSlot || DEFAULT_INFO_SLOT;
-        }
-
-        // Default artwork slot includes a flipper — set up click-to-flip
-        if (!this.activePlayingPreset.artworkSlot) {
-            DEFAULT_PLAYING_PRESET.onMount(container);
-        }
-
-        if (this.activePlayingPreset.onMount) {
-            this.activePlayingPreset.onMount(container);
-        }
-
-        // Re-populate after DOM rebuild so artwork/text isn't blank
-        if (this.currentRoute === 'menu/playing') {
-            this.updateNowPlayingView();
-        }
-    }
-
-    /**
-     * Push data to the active PLAYING preset.
-     */
-    updatePlaying(data) {
-        const container = document.getElementById('now-playing');
-        if (!container || !this.activePlayingPreset?.onUpdate) return;
-        this.activePlayingPreset.onUpdate(container, data);
+        if (this.activePlayingPreset.onMount) this.activePlayingPreset.onMount(container);
+        if (this.currentRoute === 'menu/playing') this.updateNowPlayingView();
     }
 
     // Update the SHOWING view (called when navigating to view)
@@ -932,15 +851,17 @@ class UIStore {
 
         this.updatePointer();
         this.topWheelPosition = 0;
+
+        document.dispatchEvent(new CustomEvent('bs5c:wheel-change'));
     }
-    
 
     // Simplified menu visibility control
     setMenuVisible(visible) {
         if (this.menuVisible === visible) return; // No change needed
-        
+
         this.menuVisible = visible;
-        
+        document.dispatchEvent(new CustomEvent('bs5c:menu-visibility', { detail: { visible } }));
+
         // Get menu elements
         const menuElements = this.getMenuElements();
         if (menuElements.length === 0) {
@@ -1008,8 +929,12 @@ class UIStore {
             this.navigationTimeout = null;
         }
 
+        const from = this.currentRoute;
+
         // Update route immediately to prevent repeated navigation triggers
         this.currentRoute = path;
+
+        document.dispatchEvent(new CustomEvent('bs5c:view-change', { detail: { from, to: path } }));
 
         // Gate iframe click messages during navigation (prevents spurious clicks
         // from softarc checkForSelectionClick when preloaded iframes are attached)
@@ -1133,8 +1058,6 @@ class UIStore {
             this.updateShowingView();
         }
 
-        this.setupContentScroll();
-
         // Fire onMount for dynamic menu presets (e.g. CD loading sequence)
         if (window.SourcePresets) {
             for (const preset of Object.values(window.SourcePresets)) {
@@ -1155,68 +1078,6 @@ class UIStore {
                 contentArea.style.opacity = 1;
             }, 50);
         }
-    }
-
-    setupContentScroll() {
-        const flowContainer = document.querySelector('.arc-content-flow');
-        if (!flowContainer) return;
-
-        let scrollPosition = 0;
-        const angleStep = 10;
-        const radius = 300;
-
-        // Add visual indicator for scrolling
-        const scrollIndicator = document.createElement('div');
-        scrollIndicator.className = 'scroll-indicator';
-        scrollIndicator.innerHTML = '<span>Scroll with wheel</span>';
-        scrollIndicator.style.cssText = 'position: absolute; bottom: 15px; right: 15px; background: rgba(0,0,0,0.5); color: white; padding: 5px 10px; border-radius: 4px; font-size: 12px; opacity: 0.7; pointer-events: none; transition: opacity 0.3s ease;';
-        flowContainer.appendChild(scrollIndicator);
-        
-        // Fade out the indicator after a few seconds
-        setTimeout(() => {
-            scrollIndicator.style.opacity = '0';
-        }, 3000);
-
-        const updateFlowItems = () => {
-            const items = document.querySelectorAll('.flow-item');
-            items.forEach((item, index) => {
-                const itemAngle = 180 + (index * angleStep) - scrollPosition;
-                const position = arcs.getArcPoint(radius, 20, itemAngle);
-                
-                Object.assign(item.style, {
-                    position: 'absolute',
-                    left: `${position.x - 200}px`,
-                    top: `${position.y - 25}px`,
-                    opacity: Math.abs(itemAngle - 180) < 20 ? 1 : 0.5,
-                    transform: `scale(${Math.abs(itemAngle - 180) < 20 ? 1 : 0.9})`,
-                    fontWeight: Math.abs(itemAngle - 180) < 2 ? 'bold' : 'normal'
-                });
-            });
-        };
-
-        // Handle wheel events for content scrolling
-        flowContainer.addEventListener('wheel', (event) => {
-            // Show scroll indicator briefly when user uses mouse wheel
-            scrollIndicator.style.opacity = '0.7';
-            setTimeout(() => {
-                scrollIndicator.style.opacity = '0';
-            }, 1500);
-            
-            event.preventDefault();
-            const totalItems = document.querySelectorAll('.flow-item').length;
-            const maxScroll = (totalItems - 1) * angleStep;
-            
-            if (event.deltaY > 0 && scrollPosition < maxScroll) {
-                scrollPosition += angleStep;
-            } else if (event.deltaY < 0 && scrollPosition > 0) {
-                scrollPosition -= angleStep;
-            }
-            
-            updateFlowItems();
-        });
-
-        // Initial position
-        updateFlowItems();
     }
 
     // Set the current laser position
