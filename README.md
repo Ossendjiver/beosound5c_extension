@@ -139,6 +139,7 @@ Credentials live separately in `/etc/beosound5c/secrets.env` (created by the ins
 | `beo-source-usb` | [`services/sources/usb/service.py`](services/sources/usb/service.py) | USB file playback from mounted drives |
 | `beo-source-news` | [`services/sources/news.py`](services/sources/news.py) | News: The Guardian API, article browsing and reading |
 | `beo-source-radio` | [`services/sources/radio/service.py`](services/sources/radio/service.py) | Internet radio: Radio Browser API, browsing and playback |
+| `beo-beo6` | [`services/beo6/service.py`](services/beo6/service.py) | XMPP BeoNet emulator for Beo6 remote control |
 | `beo-masterlink` | [`services/masterlink.py`](services/masterlink.py) | USB sniffer for B&O IR and MasterLink bus commands |
 | `beo-bluetooth` | [`services/bluetooth.py`](services/bluetooth.py) | HID service for BeoRemote One wireless control |
 | `beo-http` | — | Simple HTTP server for static files |
@@ -188,6 +189,19 @@ Volume/off on audio buttons controls BS5c. TV/DVD commands go to HA for the vide
 ```
 Volume/off works for all source buttons regardless of type.
 
+## Beo6 Remote Control
+
+The BS5c can be controlled by a [Beo6](https://support.bang-olufsen.com/hc/en-us/articles/360041401952-Beo6) remote. Basic control (volume, source selection, etc.) works out of the box. For two-way artwork display and playlist browsing on the Beo6 screen, the `beo-beo6` service emulates a BeoMaster 5's XMPP-based BeoNet interface.
+
+### Setup
+
+1. **Add `"beo6": {}` to your device's config.json** and deploy. This enables the `beo-beo6` service.
+2. **Configure a BeoSound 5 in the Beo6 Configuration Tool** — add a BeoSound 5 device and sync the configuration to your Beo6.
+3. **Enable wireless on the Beo6** — hold the power button and press the middle GO button to enter settings. Turn on wireless networking.
+4. **Set the BS5c IP address** — in the Beo6 network settings, configure the IP address of your BeoSound 5c.
+
+The Beo6 connects to the BS5c over XMPP (port 5222). Cover art is served via HTTP on port 8080.
+
 ## Audio
 
 Each BS5c is configured with one **player** (Sonos, BlueSound, or Local) and one **volume adapter** (which controls the physical volume). The installer asks you to choose during setup.
@@ -226,12 +240,32 @@ Sources check the player's capabilities at startup to determine how to play cont
    ```json
    { "spotify": { "client_id": "your-client-id-here" } }
    ```
+   Then restart the service: `sudo systemctl restart beo-source-spotify`
 
 3. **Connect**: Navigate to SPOTIFY on the BS5 display, follow the on-screen setup, and scan the QR code with your phone.
 
 **Notes:**
 - Spotify apps in "Development" mode allow up to 25 test users. You must add your Spotify account email under **User Management** in the developer dashboard.
 - A self-signed SSL certificate is generated during install (required for Spotify OAuth on non-localhost). Your phone must accept the certificate warning when scanning the QR code.
+
+#### Spotify Canvas (Optional)
+
+Canvas shows looping video backgrounds behind tracks in immersive mode — the same videos you see in the Spotify mobile app. Not all tracks have a Canvas; those that don't stay on the standard artwork view.
+
+To enable Canvas, add your `sp_dc` cookie to `secrets.env`:
+
+1. Log into [open.spotify.com](https://open.spotify.com) in a browser
+2. Open DevTools (F12) → **Application** → **Cookies** → `open.spotify.com`
+3. Copy the value of `sp_dc`
+4. On the device: add `SPOTIFY_SP_DC="<your-cookie>"` to `/etc/beosound5c/secrets.env`
+5. Restart: `sudo systemctl restart beo-source-spotify`
+
+The cookie is valid for ~1 year. When immersive mode is active and a Canvas video is available, the UI auto-cycles between artwork and video views.
+
+You can test a track's Canvas availability with the CLI tool:
+```bash
+SP_DC="..." python3 tools/spotify-canvas.py https://open.spotify.com/track/7eGuPhpdS8sBjPJNuAShUX
+```
 
 Spotify sends share links via `uri=` which Sonos handles natively via ShareLink; the local player handles them via go-librespot. Apple Music uses MusicKit URLs which only Sonos supports. TIDAL and Plex send direct Stream URLs via `url=` which all players support. On Sonos, TIDAL uses ShareLink for native queue management; on BlueSound, TIDAL resolves Stream URLs and manages the queue itself (like Plex). Radio streams URLs directly, working across all player types. CD plays locally via mpv and streams to Sonos/BlueSound over AirPlay (RAOP). The local player uses mpv to play URL streams through PipeWire/PulseAudio — sources manage their own track lists and advance tracks by issuing new play commands.
 
@@ -262,6 +296,7 @@ config/                     # Per-device configuration
 ├── secrets.env.example     #   Credentials template
 └── <device>.json           #   One per device (deployed to /etc/beosound5c/)
 services/                   # Backend services
+├── beo6/                   # Beo6 remote control (XMPP BeoNet emulation)
 ├── sources/                # Music sources (register with router)
 │   ├── spotify/            #   Spotify (PKCE OAuth, Web API)
 │   ├── apple_music/        #   Apple Music (MusicKit API)

@@ -66,8 +66,20 @@ def player_play(action_ts=None, url=None):
     return post(f"{PLAYER}/player/play", data)
 
 
+def player_stop(action_ts=None):
+    """Send stop command directly to the player, optionally with action_ts."""
+    data = {}
+    if action_ts is not None:
+        data["action_ts"] = action_ts
+    return post(f"{PLAYER}/player/stop", data)
+
+
 def player_state():
     return get(f"{PLAYER}/player/state")
+
+
+def player_status():
+    return get(f"{PLAYER}/player/status")
 
 
 def router_media(source_id, title="Test", action_ts=None):

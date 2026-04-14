@@ -14,7 +14,7 @@
 #   - No Sonos or specific player config required
 # ─────────────────────────────────────────────────────────────────────
 
-HOST="${HOST:-beosound5c-office.kirstenhome}"
+HOST="${HOST:-beosound5c.local}"
 ROUTER="http://localhost:8770"
 PASS=0
 FAIL=0

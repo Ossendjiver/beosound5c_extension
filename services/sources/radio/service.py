@@ -96,6 +96,7 @@ class RadioService(SourceBase):
     name = "Radio"
     port = 8779
     player = "local"
+    manages_queue = True
     action_map = {
         "play": "toggle",
         "pause": "toggle",
@@ -141,6 +142,8 @@ class RadioService(SourceBase):
         self._load_last_station()
 
         await self.register("available")
+        # Pre-warm curated station caches so play_by_name is instant
+        self._spawn(self._prewarm_curated(), name="prewarm_curated")
         self._sr_poll_task = asyncio.create_task(self._sr_poll_loop())
         log.info("Radio source ready (%d favourites, last=%s)",
                  len(self._favourites),
@@ -372,6 +375,15 @@ class RadioService(SourceBase):
             log.warning("API %s failed: %s", endpoint, e)
             return cached[1] if cached else []
 
+    async def _prewarm_curated(self):
+        """Pre-fetch curated station lists so play_by_name is instant."""
+        try:
+            await self._fetch_curated("Sweden", CURATED_SVERIGE)
+            await self._fetch_curated("Denmark", CURATED_DANMARK)
+            log.info("Curated station caches warmed")
+        except Exception as e:
+            log.debug("Curated prewarm failed (will fetch on demand): %s", e)
+
     async def _fetch_curated(self, country: str, uuids: list[str]) -> list:
         """Fetch curated stations by country, filtered and ordered by UUID list."""
         cache_key = f"_curated_{country}"
@@ -464,14 +476,22 @@ class RadioService(SourceBase):
                 await self._play_station(self._current_station)
 
         elif cmd == "next":
-            if self._stations and self._current_station:
-                self._current_index = (self._current_index + 1) % len(self._stations)
-                await self._play_station(self._stations[self._current_index])
+            if self._favourites:
+                idx = self._find_in_favourites()
+                if idx is not None:
+                    idx = (idx + 1) % len(self._favourites)
+                else:
+                    idx = 0
+                await self._play_station(self._favourites[idx])
 
         elif cmd == "prev":
-            if self._stations and self._current_station:
-                self._current_index = (self._current_index - 1) % len(self._stations)
-                await self._play_station(self._stations[self._current_index])
+            if self._favourites:
+                idx = self._find_in_favourites()
+                if idx is not None:
+                    idx = (idx - 1) % len(self._favourites)
+                else:
+                    idx = len(self._favourites) - 1
+                await self._play_station(self._favourites[idx])
 
         elif cmd == "stop":
             await self.player_stop()
@@ -488,6 +508,28 @@ class RadioService(SourceBase):
                 await self._play_station(self._favourites[idx])
             else:
                 log.info("No favourite at digit %d (have %d)", digit, len(self._favourites))
+
+        elif cmd == "play_index":
+            idx = data.get("index", 0)
+            if 0 <= idx < len(self._favourites):
+                self._stations = list(self._favourites)
+                self._current_index = idx
+                await self._play_station(self._favourites[idx])
+            else:
+                log.info("No favourite at index %d (have %d)", idx, len(self._favourites))
+
+        elif cmd == "play_by_name":
+            name = data.get("name", "")
+            if name:
+                station = await self._find_station_by_name(name)
+                if station:
+                    self._stations = [station]
+                    self._current_index = 0
+                    await self._play_station(station)
+                else:
+                    return {"status": "error", "message": f"Station not found: {name}"}
+            else:
+                return {"status": "error", "message": "Missing 'name'"}
 
         elif cmd == "toggle_favourite":
             uuid = data.get("stationuuid", "")
@@ -534,6 +576,33 @@ class RadioService(SourceBase):
             self._current_index = 0
             await self._play_station(self._favourites[0])
 
+    async def get_queue(self, start=0, max_items=50) -> dict:
+        """Return favourites as a queue so Beo6 can browse/select stations."""
+        if not self._favourites:
+            return {"tracks": [], "current_index": -1, "total": 0}
+        current_uuid = self._current_station.get("stationuuid") if self._current_station else None
+        current_index = -1
+        end = min(start + max_items, len(self._favourites))
+        tracks = []
+        for i in range(start, end):
+            s = self._favourites[i]
+            if s.get("stationuuid") == current_uuid:
+                current_index = i
+            tracks.append({
+                "id": f"q:{i}",
+                "title": s.get("name", "Unknown"),
+                "artist": "",
+                "album": "Radio",
+                "artwork": s.get("favicon", ""),
+                "index": i,
+                "current": s.get("stationuuid") == current_uuid,
+            })
+        return {
+            "tracks": tracks,
+            "current_index": current_index,
+            "total": len(self._favourites),
+        }
+
     async def handle_status(self) -> dict:
         return {
             "source": self.id,
@@ -541,6 +610,16 @@ class RadioService(SourceBase):
             "station": self._current_station.get("name") if self._current_station else None,
             "favourites": len(self._favourites),
         }
+
+    def _find_in_favourites(self) -> int | None:
+        """Return index of _current_station in _favourites, or None."""
+        if not self._current_station:
+            return None
+        uuid = self._current_station.get("stationuuid", "")
+        for i, s in enumerate(self._favourites):
+            if s.get("stationuuid") == uuid:
+                return i
+        return None
 
     def _find_station(self, uuid: str) -> dict | None:
         for s in self._browse_stations:
@@ -554,11 +633,60 @@ class RadioService(SourceBase):
                 return s
         return None
 
-    async def _play_station(self, station: dict):
+    async def _find_station_by_name(self, name: str) -> dict | None:
+        """Find a station by name — checks local caches first, then Radio Browser API.
+
+        Matches case-insensitively. Prefers exact match, then substring match.
+        Checks favourites → curated → browse cache → API search."""
+        name_lower = name.lower()
+
+        # Check all local sources first
+        for pool in (self._favourites, self._browse_stations, self._stations):
+            # Exact match
+            for s in pool:
+                if s.get("name", "").lower() == name_lower:
+                    return s
+            # Substring match (e.g. "SR P1" matches "Sveriges Radio P1")
+            for s in pool:
+                if name_lower in s.get("name", "").lower():
+                    return s
+
+        # Fetch curated Swedish stations (likely candidates for SR P1, P3, etc.)
+        try:
+            curated = await self._fetch_curated("Sweden", CURATED_SVERIGE)
+            for s in curated:
+                if name_lower in s.get("name", "").lower():
+                    return s
+        except Exception:
+            pass
+
+        # Fall back to API search
+        try:
+            results = await self._api_get(
+                f"/json/stations/byname/{urllib.parse.quote(name)}?limit=5&hidebroken=true",
+                ttl=CACHE_TTL_STATIONS,
+            )
+            if results:
+                # Prefer exact match
+                for s in results:
+                    if s.get("name", "").lower() == name_lower:
+                        return s
+                return results[0]  # best match from API
+        except Exception as e:
+            log.warning("Radio API search failed for '%s': %s", name, e)
+
+        return None
+
+    async def _play_station(self, station: dict, action_ts=None):
         url = station.get("url_resolved", station.get("url", ""))
         if not url:
             log.warning("No URL for station %s", station.get("name"))
             return
+
+        # Snapshot action_ts before yielding calls (register, post_media_update)
+        # can allow concurrent handlers to overwrite self._action_ts.
+        if not action_ts:
+            action_ts = self._action_ts
 
         self._current_station = station
         self._save_last_station()
@@ -588,6 +716,7 @@ class RadioService(SourceBase):
                 "artwork_url": station.get("favicon", ""),
             },
             radio=True,
+            action_ts=action_ts,
         )
         self._playing_state = "playing"
 

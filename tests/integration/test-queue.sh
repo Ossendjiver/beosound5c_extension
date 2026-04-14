@@ -7,10 +7,10 @@
 #
 # Usage:
 #   ./tests/integration/test-queue.sh
-#   HOST=beosound5c-office.kirstenhome ./tests/integration/test-queue.sh
+#   HOST=beosound5c.local ./tests/integration/test-queue.sh
 # ─────────────────────────────────────────────────────────────────
 
-HOST="${HOST:-beosound5c-office.kirstenhome}"
+HOST="${HOST:-beosound5c.local}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 

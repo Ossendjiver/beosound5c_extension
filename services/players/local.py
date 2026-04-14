@@ -52,10 +52,13 @@ class LocalPlayer(PlayerBase):
         self._watcher_task: asyncio.Task | None = None
         # go-librespot backend
         self._librespot = LibrespotClient(on_event=self._on_librespot_event)
-        self._librespot_available = False
         # Which backend is currently active: "mpv", "librespot", or None
         self._active_backend: str | None = None
         self._stop_time: float = 0  # monotonic time of last explicit stop
+
+    @property
+    def _librespot_available(self) -> bool:
+        return self._librespot.connected
 
     # ── PlayerBase abstract methods ──
 
@@ -73,7 +76,6 @@ class LocalPlayer(PlayerBase):
                 if ok:
                     self._active_backend = 'librespot'
                     self._current_playback_state = 'playing'
-                    await self.trigger_output_on()
                     logger.info("Playing via go-librespot: %s", spotify_uri)
                     return True
                 else:
@@ -102,7 +104,6 @@ class LocalPlayer(PlayerBase):
                 self._active_backend = 'mpv'
                 self._current_playback_state = 'playing'
                 self._watcher_task = asyncio.create_task(self._watch_process())
-                await self.trigger_output_on()
                 logger.info("Playing URL via mpv: %s", url)
                 return True
             except Exception as e:
@@ -207,14 +208,11 @@ class LocalPlayer(PlayerBase):
         except Exception:
             pass
 
-        # Check if go-librespot is available (retry — it may still be starting)
-        self._librespot_available = await self._librespot.wait_for_ready(timeout=15)
-        if self._librespot_available:
-            await self._librespot.start()
-            logger.info("Local player ready (mpv + go-librespot backends)")
-        else:
-            logger.info("Local player ready (mpv backend only — "
-                        "go-librespot not available)")
+        # Start librespot client — systemd ExecStartPost guarantees
+        # go-librespot is listening before this service starts.
+        # The event stream handles runtime reconnection if it restarts.
+        await self._librespot.start()
+        logger.info("Local player ready (mpv + go-librespot backends)")
 
     async def on_stop(self):
         await self._kill_mpv()

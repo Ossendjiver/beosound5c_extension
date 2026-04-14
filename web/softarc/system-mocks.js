@@ -32,8 +32,8 @@
     };
 
     const player = {
-        player: 'sonos', name: 'Sonos', speaker_name: 'Church Living',
-        speaker_ip: '192.168.0.190', state: 'playing', volume: 35,
+        player: 'sonos', name: 'Sonos', speaker_name: 'Living Room',
+        speaker_ip: '192.168.1.100', state: 'playing', volume: 35,
         ws_clients: 1, artwork_cache_size: 42, is_grouped: false,
         current_track: { title: 'Gymnopédie No. 1', artist: 'Erik Satie', album: 'Gymnopédies' },
     };
@@ -45,12 +45,12 @@
     ];
 
     const btRemotes = [
-        { mac: '48:D0:CF:BD:34:BA', name: 'BEORC', connected: true, rssi: -52, battery: 85 },
-        { mac: '48:D0:CF:BD:CE:35', name: 'BEORC', connected: false, rssi: null, battery: 60 },
+        { mac: 'AA:BB:CC:DD:EE:01', name: 'BEORC', connected: true, rssi: -52, battery: 85 },
+        { mac: 'AA:BB:CC:DD:EE:02', name: 'BEORC', connected: false, rssi: null, battery: 60 },
     ];
 
     const spotify = {
-        display_name: 'Markus Kirsten', has_credentials: true, needs_reauth: false,
+        display_name: 'Demo User', has_credentials: true, needs_reauth: false,
         state: 'playing', playlist_count: 24, fetching: false,
         last_refresh: new Date().toISOString(), last_refresh_duration: 4.2,
         digit_playlists: {
@@ -61,7 +61,7 @@
     };
 
     const tidal = {
-        user_name: 'Markus Kirsten', has_credentials: true, needs_reauth: false,
+        user_name: 'Demo User', has_credentials: true, needs_reauth: false,
         state: 'stopped', playlist_count: 18, fetching: false,
         last_refresh: new Date().toISOString(), last_refresh_duration: 3.8,
         digit_playlists: {

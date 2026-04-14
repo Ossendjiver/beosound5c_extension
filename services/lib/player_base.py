@@ -52,7 +52,16 @@ from io import BytesIO
 import aiohttp
 from aiohttp import web
 
+from .background_tasks import BackgroundTaskSet
 from .config import cfg
+from .endpoints import (
+    INPUT_WEBHOOK,
+    ROUTER_MEDIA,
+    ROUTER_OUTPUT_ON,
+    ROUTER_PLAYBACK_OVERRIDE,
+    ROUTER_VOLUME_REPORT,
+)
+from .loop_monitor import LoopMonitor
 from .http_utils import CORS_HEADERS
 from .watchdog import watchdog_loop
 
@@ -71,12 +80,13 @@ ARTWORK_CACHE_SIZE = 100       # number of artworks to cache
 # Shared thread pool for CPU-bound image processing
 _artwork_executor = ThreadPoolExecutor(max_workers=2)
 
-# Common service URLs
-INPUT_WAKE_URL = "http://localhost:8767/webhook"
-ROUTER_MEDIA_URL = "http://localhost:8770/router/media"
-ROUTER_VOLUME_REPORT_URL = "http://localhost:8770/router/volume/report"
-ROUTER_PLAYBACK_OVERRIDE_URL = "http://localhost:8770/router/playback_override"
-ROUTER_OUTPUT_ON_URL = "http://localhost:8770/router/output/on"
+# Common service URLs — back-compat aliases; new code should use
+# services.lib.endpoints directly.
+INPUT_WAKE_URL = INPUT_WEBHOOK
+ROUTER_MEDIA_URL = ROUTER_MEDIA
+ROUTER_VOLUME_REPORT_URL = ROUTER_VOLUME_REPORT
+ROUTER_PLAYBACK_OVERRIDE_URL = ROUTER_PLAYBACK_OVERRIDE
+ROUTER_OUTPUT_ON_URL = ROUTER_OUTPUT_ON
 
 
 class ArtworkCache:
@@ -95,10 +105,12 @@ class ArtworkCache:
     def put(self, url: str, data: dict):
         if url in self._cache:
             self._cache.move_to_end(url)
-        else:
-            if len(self._cache) >= self.max_size:
-                self._cache.popitem(last=False)
-            self._cache[url] = data
+        elif len(self._cache) >= self.max_size:
+            self._cache.popitem(last=False)
+        # Always assign — a duplicate put must overwrite, not silently
+        # discard the new value.  (Spotify CDN URLs occasionally rotate
+        # bytes behind the same URL.)
+        self._cache[url] = data
 
     def __contains__(self, url: str):
         return url in self._cache
@@ -156,6 +168,13 @@ class PlayerBase:
         self._last_reported_volume: int | None = None
         self._last_internal_command: float = 0.0  # monotonic timestamp
         self._latest_action_ts: float = 0.0  # action timestamp for race prevention
+        self._background_tasks = BackgroundTaskSet(log, label=f"{self.id or 'player'}")
+
+    # ── Background task tracking ──
+
+    def _spawn(self, coro, *, name: str | None = None) -> asyncio.Task:
+        """Launch a fire-and-forget task with automatic lifecycle tracking."""
+        return self._background_tasks.spawn(coro, name=name)
 
     # ── Abstract methods (subclass must implement) ──
 
@@ -246,11 +265,24 @@ class PlayerBase:
     async def broadcast_media_update(self, media_data: dict, reason: str = "update"):
         """POST a media update to the router, which pushes to UI clients."""
         self._cached_media_data = media_data
+        if not self._session_ready():
+            log.debug("Skipping media broadcast — session not available (shutdown?)")
+            return
         try:
             payload = dict(media_data)
             payload["_reason"] = reason
             if self._latest_action_ts:
                 payload["_action_ts"] = self._latest_action_ts
+            # Include the current track URI so the router's canvas
+            # injection doesn't race back to /player/track_uri — that
+            # callback can observe stale state while this POST is still
+            # in flight (see sonos.py monitor loop).
+            try:
+                track_uri = await self.get_track_uri()
+                if track_uri:
+                    payload["_track_uri"] = track_uri
+            except Exception as e:
+                log.debug("get_track_uri failed during broadcast: %s", e)
             async with self._http_session.post(
                 ROUTER_MEDIA_URL, json=payload,
                 timeout=aiohttp.ClientTimeout(total=5),
@@ -280,6 +312,9 @@ class PlayerBase:
 
         self.running = True
         self._http_session = aiohttp.ClientSession()
+        # Event-loop lag detector: warns when a sync call blocks the
+        # loop for more than the default threshold.
+        self._loop_monitor = LoopMonitor().start()
 
         @web.middleware
         async def cors_middleware(request, handler):
@@ -318,7 +353,7 @@ class PlayerBase:
         # Let subclass add extra routes
         self.add_routes(app)
 
-        self._runner = web.AppRunner(app)
+        self._runner = web.AppRunner(app, access_log=None)
         await self._runner.setup()
         site = web.TCPSite(self._runner, "0.0.0.0", self.port)
         await site.start()
@@ -356,6 +391,13 @@ class PlayerBase:
                 pass
             self._monitor_task = None
 
+        # Cancel any tracked background tasks spawned by subclasses via _spawn()
+        await self._background_tasks.cancel_all()
+
+        if getattr(self, "_loop_monitor", None) is not None:
+            await self._loop_monitor.stop()
+            self._loop_monitor = None
+
         # Close HTTP session
         if self._http_session:
             await self._http_session.close()
@@ -363,7 +405,10 @@ class PlayerBase:
 
         # Close all WebSocket connections
         for ws in list(self._ws_clients):
-            await ws.close()
+            try:
+                await ws.close()
+            except Exception as e:
+                log.debug("Error closing WS during shutdown: %s", e)
         self._ws_clients.clear()
         if self._runner:
             await self._runner.cleanup()
@@ -486,6 +531,19 @@ class PlayerBase:
 
     async def _handle_stop(self, request: web.Request) -> web.Response:
         self._stamp_command()
+        try:
+            data = await request.json()
+        except Exception:
+            data = {}
+        # Reject stale stop — prevents a deactivated source from killing
+        # playback that a newer source already started.
+        action_ts = data.get("action_ts", 0)
+        if action_ts and action_ts < self._latest_action_ts:
+            log.warning("Dropped stale stop (ts=%.3f < latest=%.3f)",
+                        action_ts, self._latest_action_ts)
+            return web.json_response(
+                {"status": "dropped", "reason": "stale"},
+                headers=self._cors_headers())
         ok = await self.stop()
         return web.json_response(
             {"status": "ok" if ok else "error"},
@@ -493,18 +551,30 @@ class PlayerBase:
 
     async def _handle_announce(self, request: web.Request) -> web.Response:
         """TTS announce current track title + artist, with volume ducking."""
-        if not self._cached_media_data or self._current_playback_state != "playing":
+        # Prefer media state from request body (router sends its authoritative
+        # _media_state), fall back to player's own cache.
+        try:
+            body = await request.json()
+        except Exception:
+            body = None
+        media = body if body and body.get("title") else self._cached_media_data
+        # When the body carries an explicit state (router's authoritative
+        # view), trust it — CD plays via mpv directly, so local player's
+        # own _current_playback_state stays "stopped" even while CD is
+        # playing.
+        state = (media.get("state") if media else None) or self._current_playback_state
+        if not media or state != "playing":
             return web.json_response(
                 {"status": "skipped", "reason": "not playing"},
                 headers=self._cors_headers())
-        title = self._cached_media_data.get("title", "")
-        artist = self._cached_media_data.get("artist", "")
+        title = media.get("title", "")
+        artist = media.get("artist", "")
         if not title:
             return web.json_response(
                 {"status": "skipped", "reason": "no title"},
                 headers=self._cors_headers())
         text = f"{title}, by {artist}" if artist else title
-        asyncio.ensure_future(self._announce_with_duck(text))
+        self._spawn(self._announce_with_duck(text), name="announce_with_duck")
         return web.json_response({"status": "ok"}, headers=self._cors_headers())
 
     async def _announce_with_duck(self, text: str):
@@ -570,6 +640,7 @@ class PlayerBase:
             "player": self.id,
             "name": self.name,
             "ws_clients": len(self._ws_clients),
+            "latest_action_ts": self._latest_action_ts,
         }
 
     # ── Queue support ──
@@ -619,8 +690,14 @@ class PlayerBase:
 
     # ── Common helpers (used by subclass monitoring loops) ──
 
+    def _session_ready(self) -> bool:
+        """True if the HTTP session is usable (not None and not closed)."""
+        return self._http_session is not None and not self._http_session.closed
+
     async def trigger_wake(self):
         """Trigger screen wake via input service webhook."""
+        if not self._session_ready():
+            return
         try:
             async with self._http_session.post(
                 INPUT_WAKE_URL,
@@ -636,6 +713,8 @@ class PlayerBase:
 
     async def trigger_output_on(self):
         """Power on the audio output (speakers) via the router."""
+        if not self._session_ready():
+            return
         try:
             async with self._http_session.post(
                 ROUTER_OUTPUT_ON_URL,
@@ -656,6 +735,8 @@ class PlayerBase:
         if volume == self._last_reported_volume:
             return
         self._last_reported_volume = volume
+        if not self._session_ready():
+            return
         try:
             async with self._http_session.post(
                 ROUTER_VOLUME_REPORT_URL,
@@ -669,14 +750,24 @@ class PlayerBase:
         except Exception as e:
             log.debug("Could not report volume to router: %s", e)
 
-    async def notify_router_playback_override(self, force: bool = False):
-        """Notify the router that media changed externally on the player."""
+    async def notify_router_playback_override(self, force: bool = False,
+                                                push_idle: bool = True):
+        """Notify the router that media changed externally on the player.
+
+        ``push_idle=False`` suppresses the router's idle media broadcast
+        when the caller is about to push real media right after (used by
+        the external-start eager broadcast path — see
+        ``SonosPlayer._on_playback_started``).
+        """
         action_ts = time.monotonic()
         self._latest_action_ts = action_ts
+        if not self._session_ready():
+            return
         try:
             async with self._http_session.post(
                 ROUTER_PLAYBACK_OVERRIDE_URL,
-                json={"force": force, "action_ts": action_ts},
+                json={"force": force, "action_ts": action_ts,
+                      "push_idle": push_idle},
                 timeout=aiohttp.ClientTimeout(total=2),
             ) as resp:
                 if resp.status == 200:

@@ -60,27 +60,27 @@ class TranscodeCache:
             cached.touch()
             return str(cached)
 
+        # Check under lock whether someone else is already transcoding this file
+        pending_event = None
         async with self._lock:
-            # Check if another request is already transcoding this file
             if file_path in self._active_transcodes:
-                event = self._active_transcodes[file_path]
-                # Release lock while waiting for transcode to finish
-                self._lock.release()
-                try:
-                    await event.wait()
-                finally:
-                    await self._lock.acquire()
+                pending_event = self._active_transcodes[file_path]
+            else:
+                # Re-check cache after acquiring lock
                 if cached.is_file():
+                    cached.touch()
                     return str(cached)
-                return None
+                # Claim the transcode slot
+                pending_event = None
+                event = asyncio.Event()
+                self._active_transcodes[file_path] = event
 
-            # Re-check cache after acquiring lock
+        # If another task is transcoding, wait for it (outside the lock)
+        if pending_event is not None:
+            await pending_event.wait()
             if cached.is_file():
-                cached.touch()
                 return str(cached)
-
-            event = asyncio.Event()
-            self._active_transcodes[file_path] = event
+            return None
 
         # Transcode outside lock
         try:

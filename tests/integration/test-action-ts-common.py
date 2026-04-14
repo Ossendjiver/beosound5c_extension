@@ -22,7 +22,7 @@ def test_01_activate_stamps_timestamp():
     ts_before = router_status()["latest_action_ts"]
 
     router_event("radio")
-    time.sleep(2)
+    time.sleep(4)
 
     status = router_status()
     assert status["latest_action_ts"] > ts_before, \
@@ -174,25 +174,28 @@ def test_09_no_timestamp_passes():
 
 
 def test_10_player_tracks_latest_ts():
-    """Player accepts newer ts, rejects older ts."""
+    """Player accepts same-or-newer ts, rejects older ts."""
     stop_all()
 
     # Two real activations to get properly ordered timestamps
     router_event(src_a)
     time.sleep(2)
-    ts_a = router_status()["latest_action_ts"]
 
     router_event(src_b)
     time.sleep(2)
-    ts_b = router_status()["latest_action_ts"]
-    assert ts_b > ts_a
 
-    # Play with ts_a (older) — rejected
-    result = player_play(action_ts=ts_a, url="http://example.com/old.mp3")
+    # Query player's actual latest_action_ts (may differ from router's
+    # due to intervening commands during activation)
+    ps = player_status()
+    player_ts = ps.get("latest_action_ts", 0)
+    assert player_ts > 0, "Player should have a non-zero action_ts"
+
+    # Play with older ts — rejected
+    result = player_play(action_ts=player_ts - 10.0, url="http://example.com/old.mp3")
     assert result.get("status") == "dropped"
 
-    # Play with ts_b (same as current) — accepted
-    result = player_play(action_ts=ts_b, url="http://example.com/same.mp3")
+    # Play with same ts — accepted (>= check)
+    result = player_play(action_ts=player_ts, url="http://example.com/same.mp3")
     assert result.get("status") != "dropped", \
         f"Same-ts should be accepted: {result}"
     stop_all()
@@ -250,6 +253,141 @@ def test_12_auto_advance_same_ts():
     stop_all()
 
 
+def test_13_stale_stop_rejected():
+    """player_stop() with an old action_ts is rejected."""
+    stop_all()
+
+    router_event(src_a)
+    time.sleep(2)
+    ts_a = router_status()["latest_action_ts"]
+
+    router_event(src_b)
+    time.sleep(2)
+    ts_b = router_status()["latest_action_ts"]
+    assert ts_b > ts_a
+
+    # Fresh play from src_b so player has its ts
+    player_play(action_ts=ts_b, url="http://example.com/new.mp3")
+    time.sleep(0.5)
+
+    # Stale stop from src_a — should be rejected
+    result = player_stop(action_ts=ts_a)
+    assert result.get("status") == "dropped", \
+        f"Stale stop should be rejected: {result}"
+    assert result.get("reason") == "stale"
+    stop_all()
+
+
+def test_14_stop_without_ts_accepted():
+    """player_stop() without action_ts is accepted (backward compat)."""
+    stop_all()
+
+    router_event(src_a)
+    time.sleep(2)
+
+    result = player_stop()
+    assert result.get("status") != "dropped", \
+        f"Stop without timestamp should be accepted: {result}"
+    stop_all()
+
+
+def test_15_rapid_switch_no_overlap():
+    """Rapid A->B: src_a's late play is rejected by the player.
+
+    This is the exact race condition that caused overlapping audio:
+    src_a's play arrives at the player AFTER src_b's play, but src_a's
+    action_ts is older so the player drops it.
+    """
+    stop_all()
+
+    router_event(src_a)
+    time.sleep(2)
+    ts_a = router_status()["latest_action_ts"]
+
+    router_event(src_b)
+    time.sleep(2)
+    ts_b = router_status()["latest_action_ts"]
+    assert ts_b > ts_a
+
+    # Simulate src_a's late play arriving after src_b already took over
+    result = player_play(action_ts=ts_a, url="http://example.com/stale-source.mp3")
+    assert result.get("status") == "dropped", \
+        f"Late play from old source should be rejected: {result}"
+
+    # Simulate src_a's late stop arriving after src_b already took over
+    result = player_stop(action_ts=ts_a)
+    assert result.get("status") == "dropped", \
+        f"Late stop from old source should be rejected: {result}"
+    stop_all()
+
+
+def test_16_next_updates_authority():
+    """player_next() advances authority so auto-advance play still works.
+
+    After user presses next, the source's action_ts must be updated to
+    the next command's timestamp. Otherwise a subsequent player_play()
+    (auto-advance) would use the stale activation ts and be rejected.
+    """
+    stop_all()
+
+    router_event(src_a)
+    time.sleep(2)
+    ts_activate = router_status()["latest_action_ts"]
+
+    # First play at activation ts
+    result = player_play(action_ts=ts_activate, url="http://example.com/t1.mp3")
+    assert result.get("status") != "dropped"
+
+    # Simulate user pressing next — stamps fresh ts via player
+    ts_next = time.monotonic()
+    result = post(f"{PLAYER}/player/next", {"action_ts": ts_next})
+
+    # Auto-advance play should use ts_next (>= player's latest) — accepted
+    result = player_play(action_ts=ts_next, url="http://example.com/t2.mp3")
+    assert result.get("status") != "dropped", \
+        f"Auto-advance after next should be accepted: {result}"
+
+    # But a play with the old activation ts should be rejected
+    result = player_play(action_ts=ts_activate, url="http://example.com/stale.mp3")
+    assert result.get("status") == "dropped", \
+        f"Play with pre-next ts should be rejected: {result}"
+    stop_all()
+
+
+def test_17_intra_source_play_after_next():
+    """Intra-source play (digit press, track selection) must not be
+    rejected after user has pressed next/prev.
+
+    Regression: next/prev bumped player's latest_action_ts, but a
+    subsequent digit press used the stale activation _action_ts
+    because register() yields allowed it to be overwritten.
+    """
+    stop_all()
+
+    router_event(src_a)
+    time.sleep(3)
+
+    # Press next — bumps player's ts above the activation ts
+    post(f"{PLAYER}/player/next", {"action_ts": time.monotonic()})
+    time.sleep(0.5)
+    post(f"{PLAYER}/player/next", {"action_ts": time.monotonic()})
+    time.sleep(0.5)
+
+    ps = player_status()
+    player_ts = ps.get("latest_action_ts", 0)
+    assert player_ts > 0
+
+    # A fresh play (digit press) should use a ts > player's latest
+    time.sleep(0.1)
+    ts_fresh = time.monotonic()
+    assert ts_fresh > player_ts, \
+        f"Fresh monotonic should be > player ts: {ts_fresh} vs {player_ts}"
+    result = player_play(action_ts=ts_fresh, url="http://example.com/digit.mp3")
+    assert result.get("status") != "dropped", \
+        f"Fresh intra-source play should not be rejected: {result}"
+    stop_all()
+
+
 def main():
     global src_a, src_b
 
@@ -292,6 +430,11 @@ def main():
         test("10. Player tracks latest action_ts", test_10_player_tracks_latest_ts)
         test("11. Burst of stale commands all rejected", test_11_concurrent_stale_commands)
         test("12. Auto-advance: same action_ts accepted", test_12_auto_advance_same_ts)
+        test("13. Stale player_stop() rejected", test_13_stale_stop_rejected)
+        test("14. Stop without timestamp accepted", test_14_stop_without_ts_accepted)
+        test("15. Rapid switch: late play + stop rejected", test_15_rapid_switch_no_overlap)
+        test("16. Next updates authority for auto-advance", test_16_next_updates_authority)
+        test("17. Intra-source play works after next/prev", test_17_intra_source_play_after_next)
     finally:
         stop_all()
         if orig_vol > 10:

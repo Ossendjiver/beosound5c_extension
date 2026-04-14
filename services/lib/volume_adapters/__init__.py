@@ -45,8 +45,28 @@ __all__ = [
     "RcaVolume",
     "SonosVolume",
     "SpdifVolume",
+    "infer_volume_type",
     "create_volume_adapter",
 ]
+
+
+def infer_volume_type() -> str:
+    """Infer the volume adapter type from config.json.
+
+    Returns the explicit ``volume.type`` if set, otherwise derives it from
+    ``player.type``: sonos/bluesound map to themselves, local/powerlink map
+    to "powerlink", everything else defaults to "beolab5".
+    """
+    vol_type = cfg("volume", "type")
+    if vol_type is None:
+        player_type = str(cfg("player", "type", default="")).lower()
+        if player_type in ("sonos", "bluesound"):
+            vol_type = player_type
+        elif player_type in ("local", "powerlink"):
+            vol_type = "powerlink"
+        else:
+            vol_type = "beolab5"
+    return str(vol_type).lower()
 
 
 def create_volume_adapter(session: aiohttp.ClientSession) -> VolumeAdapter:
@@ -63,17 +83,7 @@ def create_volume_adapter(session: aiohttp.ClientSession) -> VolumeAdapter:
       input       – C4 amp source input for power_on (c4amp only, default "01")
       mixer_port  – masterlink.py mixer HTTP port (default 8768, powerlink only)
     """
-    vol_type = cfg("volume", "type")
-    if vol_type is None:
-        # Default to matching the player type for sonos/bluesound
-        player_type = str(cfg("player", "type", default="")).lower()
-        if player_type in ("sonos", "bluesound"):
-            vol_type = player_type
-        elif player_type in ("local", "powerlink"):
-            vol_type = "powerlink"
-        else:
-            vol_type = "beolab5"
-    vol_type = str(vol_type).lower()
+    vol_type = infer_volume_type()
     # Default host: use player IP for sonos/bluesound, otherwise beolab5 controller
     vol_host_default = "beolab5-controller.local"
     if vol_type in ("sonos", "bluesound") and not cfg("volume", "host"):

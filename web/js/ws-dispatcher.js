@@ -25,6 +25,73 @@ let hwReconnectTimer = null;
 let mediaReconnectTimer = null;
 const HW_RECONNECT_INTERVAL = 3000;
 
+// ── Resource health monitoring ──
+// Logs Chromium resource stats every 10 minutes to help diagnose
+// ERR_INSUFFICIENT_RESOURCES crashes on long-running kiosk sessions.
+let _hwReconnectCount = 0;
+let _mediaReconnectCount = 0;
+const HEALTH_LOG_INTERVAL = 10 * 60 * 1000; // 10 minutes
+
+// Rolling fetch-error counter: timestamps of recent failures; anything older
+// than FETCH_ERROR_WINDOW_MS is dropped on read. This prevents a transient
+// network blip from producing noisy HEALTH log lines forever.
+const FETCH_ERROR_WINDOW_MS = 10 * 60 * 1000; // 10 minutes
+let _fetchErrorTimes = [];
+let _lastFetchError = '';
+
+function _recentFetchErrorCount() {
+    const cutoff = Date.now() - FETCH_ERROR_WINDOW_MS;
+    _fetchErrorTimes = _fetchErrorTimes.filter(t => t >= cutoff);
+    return _fetchErrorTimes.length;
+}
+
+function _logResourceHealth() {
+    const perf = performance.getEntriesByType('resource');
+    const iframes = document.querySelectorAll('iframe');
+    let iframeLoadFails = 0;
+    iframes.forEach(f => {
+        try { if (!f.contentDocument?.readyState || f.contentDocument.readyState !== 'complete') iframeLoadFails++; }
+        catch(e) { /* cross-origin */ }
+    });
+    const mem = performance.memory ? {
+        usedMB: Math.round(performance.memory.usedJSHeapSize / 1048576),
+        totalMB: Math.round(performance.memory.totalJSHeapSize / 1048576),
+        limitMB: Math.round(performance.memory.jsHeapSizeLimit / 1048576)
+    } : null;
+    const uptimeMin = Math.round((Date.now() - performance.timeOrigin) / 60000);
+
+    const recentErrs = _recentFetchErrorCount();
+    console.log(`[HEALTH] uptime=${uptimeMin}min resources=${perf.length} ` +
+        `iframes=${iframes.length}(${iframeLoadFails} incomplete) ` +
+        `ws_media=${window.mediaWebSocket?.readyState ?? 'none'} ` +
+        `reconnects=[hw:${_hwReconnectCount} media:${_mediaReconnectCount}] ` +
+        `fetchErrors_10min=${recentErrs}` +
+        (recentErrs && _lastFetchError ? ` lastErr="${_lastFetchError}"` : '') +
+        (mem ? ` heap=${mem.usedMB}/${mem.totalMB}MB(limit ${mem.limitMB})` : ''));
+
+    // Clear performance buffer periodically to prevent unbounded growth
+    if (perf.length > 500) {
+        performance.clearResourceTimings();
+        console.log('[HEALTH] Cleared performance resource buffer');
+    }
+}
+
+// Intercept fetch errors globally to count network failures
+const _origFetch = window.fetch;
+window.fetch = function() {
+    const args = arguments;
+    return _origFetch.apply(this, args).catch(function(err) {
+        _fetchErrorTimes.push(Date.now());
+        _lastFetchError = (args[0]?.url || args[0] || '').toString().replace(/^https?:\/\/[^/]+/, '') + ': ' + err.message;
+        throw err;
+    });
+};
+
+setTimeout(() => {
+    _logResourceHealth();
+    setInterval(_logResourceHealth, HEALTH_LOG_INTERVAL);
+}, 30000); // first check 30s after load
+
 // Cache last source update data per source for replay on view mount
 const _lastSourceUpdate = {};
 
@@ -56,7 +123,7 @@ function processWebSocketEvent(message) {
 
         case 'media_update':
             if (uiStore.handleMediaUpdate) {
-                uiStore.handleMediaUpdate(data.data, data.reason);
+                uiStore.handleMediaUpdate(data, message.reason);
             }
             break;
 
@@ -98,6 +165,9 @@ function processWebSocketEvent(message) {
 function handleExternalNavigation(uiStore, data) {
     const page = data.page;
     console.log(`[NAVIGATE] External navigation to: ${page}`);
+
+    // External navigations often come from wake-from-standby — ensure media WS is alive
+    ensureMediaWsConnected();
 
     if (window.uiStore && window.uiStore.logWebsocketMessage) {
         window.uiStore.logWebsocketMessage(`External navigation to: ${page}`);
@@ -212,9 +282,25 @@ function handleSourceChange(uiStore, data) {
     const player = data.player || null;   // "local" | "remote" | null
     console.log(`[SOURCE] Active source changed: ${sourceId || 'none'} (${sourceName || 'HA fallback'}, player=${player || 'none'})`);
 
+    const prevSource = uiStore.activeSource;
     uiStore.activeSource = sourceId;
     uiStore.activeSourcePlayer = player;
     uiStore.setActivePlayingPreset(sourceId);
+
+    // Remote-triggered source start: arm immersive mode so the
+    // subsequent navigate to menu/playing drops straight into the
+    // immersive view instead of flashing the menu for a beat. Only
+    // when we transition from no-source (or a different source) to a
+    // real source — clearing or re-registering the same source
+    // shouldn't force-enter immersive.
+    if (sourceId && sourceId !== prevSource && window.ImmersiveMode?.armEagerEntry) {
+        window.ImmersiveMode.armEagerEntry();
+    }
+
+    // Clear canvas when switching away from Spotify
+    if (sourceId !== 'spotify') {
+        uiStore.mediaInfo.canvas_url = '';
+    }
 
     // Clean up CD track list back face when switching away from CD
     if (sourceId !== 'cd') {
@@ -259,6 +345,7 @@ function connectHardwareWebSocket() {
         ws.onopen = () => {
             clearTimeout(connectionTimeout);
             wasConnected = true;
+            window.hardwareWebSocket = ws;
             console.log('[WS] Real hardware connected - switching from emulation mode');
 
             if (window.dummyHardwareManager) {
@@ -269,7 +356,11 @@ function connectHardwareWebSocket() {
         ws.onmessage = (event) => {
             try {
                 const msg = JSON.parse(event.data);
-                processWebSocketEvent(msg);
+                // Hardware WS: only process raw hardware events
+                const t = msg.type;
+                if (t === 'laser' || t === 'nav' || t === 'volume' || t === 'button') {
+                    processWebSocketEvent(msg);
+                }
             } catch (error) {
                 console.error('[WS] Error parsing message:', error);
             }
@@ -277,6 +368,7 @@ function connectHardwareWebSocket() {
 
         ws.onclose = () => {
             clearTimeout(connectionTimeout);
+            window.hardwareWebSocket = null;
 
             if (wasConnected) {
                 console.log('[WS] Hardware disconnected - will reconnect');
@@ -287,10 +379,12 @@ function connectHardwareWebSocket() {
                 window.dummyHardwareManager.start();
             }
 
+            _hwReconnectCount++;
             hwReconnectTimer = setTimeout(connectHardwareWebSocket, HW_RECONNECT_INTERVAL);
         };
 
     } catch (error) {
+        _hwReconnectCount++;
         hwReconnectTimer = setTimeout(connectHardwareWebSocket, HW_RECONNECT_INTERVAL);
     }
 }
@@ -338,6 +432,17 @@ function initWebSocket() {
     initMediaWebSocket();
 }
 
+// Ensure media WS is connected — reconnect only if dead
+function ensureMediaWsConnected() {
+    const ws = window.mediaWebSocket;
+    if (!ws || ws.readyState === WebSocket.CLOSED || ws.readyState === WebSocket.CLOSING) {
+        console.log('[MEDIA] WS not connected, reconnecting');
+        initMediaWebSocket();
+    }
+    // If OPEN or CONNECTING, leave it alone — closing a healthy connection
+    // creates a gap during which events are lost.
+}
+
 // Media WebSocket connection (router /router/ws)
 function initMediaWebSocket() {
     if (mediaReconnectTimer) {
@@ -379,20 +484,21 @@ function initMediaWebSocket() {
             if (wasConnected) {
                 console.log('[MEDIA] Router media WS disconnected - will reconnect');
             }
+            _mediaReconnectCount++;
             mediaReconnectTimer = setTimeout(initMediaWebSocket, HW_RECONNECT_INTERVAL);
         };
 
         mediaWs.onmessage = (event) => {
             try {
-                const data = JSON.parse(event.data);
-                if (data.type === 'media_update' && window.uiStore && window.uiStore.handleMediaUpdate) {
-                    window.uiStore.handleMediaUpdate(data.data, data.reason);
-                }
+                const msg = JSON.parse(event.data);
+                // Router WS: handles all state events (media, source, navigate, menu, etc.)
+                processWebSocketEvent(msg);
             } catch (error) {
-                console.error('[MEDIA-WS] Error processing message:', error);
+                console.error('[ROUTER-WS] Error processing message:', error);
             }
         };
     } catch (error) {
+        _mediaReconnectCount++;
         mediaReconnectTimer = setTimeout(initMediaWebSocket, HW_RECONNECT_INTERVAL);
     }
 }

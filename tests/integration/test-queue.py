@@ -7,7 +7,7 @@ Runs ON the BS5c device (local player config).
 
 Usage (via wrapper):
   ./tests/integration/test-queue.sh
-  HOST=beosound5c-office.kirstenhome ./tests/integration/test-queue.sh
+  HOST=beosound5c.local ./tests/integration/test-queue.sh
 
 Or directly on device:
   python3 test-queue.py

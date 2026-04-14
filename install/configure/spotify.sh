@@ -59,4 +59,25 @@ configure_spotify() {
         log_info "Skipping Spotify integration"
         log_info "You can set it up later at http://<device-ip>:8771/setup"
     fi
+
+    # Spotify Canvas (optional looping video backgrounds)
+    echo ""
+    log_section "Spotify Canvas Videos (Optional)"
+    echo ""
+    echo "Canvas shows looping video backgrounds behind tracks in immersive mode."
+    echo "This requires a browser cookie from your Spotify account."
+    echo ""
+    echo "To get it:"
+    echo "  1. Log into open.spotify.com in a browser"
+    echo "  2. Open DevTools (F12) → Application → Cookies → open.spotify.com"
+    echo "  3. Copy the value of 'sp_dc'"
+    echo ""
+    read -p "Paste your sp_dc cookie (or Enter to skip): " SP_DC_VALUE
+
+    if [ -n "$SP_DC_VALUE" ]; then
+        secret_set "SPOTIFY_SP_DC" "$SP_DC_VALUE"
+        log_success "Spotify Canvas cookie saved"
+    else
+        log_info "Skipping Spotify Canvas — can be added later to secrets.env"
+    fi
 }

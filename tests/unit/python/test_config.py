@@ -3,6 +3,8 @@
 import json
 import logging
 
+import pytest
+
 from lib.config import cfg, load_config, reload_config
 
 
@@ -15,8 +17,8 @@ class TestCfgGetter:
         assert cfg("device") == "Church"
 
     def test_two_key_nested(self, write_config):
-        write_config({"player": {"type": "sonos", "ip": "192.168.0.190"}})
-        assert cfg("player", "ip") == "192.168.0.190"
+        write_config({"player": {"type": "sonos", "ip": "192.168.1.100"}})
+        assert cfg("player", "ip") == "192.168.1.100"
 
     def test_default_when_key_missing(self, write_config):
         write_config({"device": "Church"})
@@ -83,11 +85,36 @@ class TestLoadBehavior:
         assert result == "Good"
         assert any("Invalid JSON" in r.message for r in caplog.records)
 
-    def test_empty_config_when_no_files(self, tmp_path, monkeypatch):
+    def test_raises_when_no_files_found(self, tmp_path, monkeypatch):
+        """Previous behaviour silently fell back to ``{}`` — that masked
+        real install / deploy problems.  Fail loud instead."""
         import lib.config as config_mod
+        from lib.config import ConfigError
         monkeypatch.setattr(config_mod, "_SEARCH_PATHS", [str(tmp_path / "nope.json")])
+        with pytest.raises(ConfigError, match="No config.json found"):
+            load_config()
 
-        assert load_config() == {}
+    def test_raises_when_only_file_is_invalid_json(self, tmp_path, monkeypatch):
+        import lib.config as config_mod
+        from lib.config import ConfigError
+        bad = tmp_path / "bad.json"
+        bad.write_text("{invalid json")
+        monkeypatch.setattr(config_mod, "_SEARCH_PATHS", [str(bad)])
+        with pytest.raises(ConfigError, match="invalid JSON"):
+            load_config()
+
+    def test_raises_on_duplicate_source_button(self, write_config):
+        """A single IR button mapped to two sources silently corrupts
+        routing ("last one wins").  It should fail loud at startup."""
+        from lib.config import ConfigError
+        write_config({
+            "device": "Church",
+            "menu": {"1": "spotify", "2": "radio"},
+            "spotify": {"source": "radio"},
+            "radio": {"source": "radio"},
+        })
+        with pytest.raises(ConfigError, match="source button 'radio'"):
+            load_config()
 
     def test_caches_after_first_load(self, write_config, config_file):
         write_config({"device": "First"})

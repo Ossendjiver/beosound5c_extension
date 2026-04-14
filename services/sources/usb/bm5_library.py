@@ -19,9 +19,9 @@ class BM5Library:
     Artist, Album, Genre, and Folders.
     """
 
-    def __init__(self, mount_path, name="BM5"):
+    def __init__(self, mount_path):
         self.mount = Path(mount_path)
-        self.name = name
+        self.name = Path(mount_path).name
         # Partition root contains BM-Share/ and Cache/ at top level
         self.music_root = self.mount / "BM-Share" / "Music"
         self.db_path = self.mount / "Cache" / "Data" / "nmusic.db"
@@ -42,7 +42,8 @@ class BM5Library:
         t0 = time.monotonic()
 
         # Copy entire DB into RAM so queries never touch the spinning disk
-        file_conn = sqlite3.connect(f"file:{self.db_path}?mode=ro", uri=True)
+        # immutable=1: skip locking, required for FUSE/NTFS filesystems
+        file_conn = sqlite3.connect(f"file:{self.db_path}?mode=ro&immutable=1", uri=True)
         mem_conn = sqlite3.connect(":memory:")
         file_conn.backup(mem_conn)
         file_conn.close()

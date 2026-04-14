@@ -1,0 +1,36 @@
+# Python test dependencies.
+#
+# The unit tests import the real source and player service modules,
+# which in turn import their runtime deps at module load time. So the
+# test venv needs ~the same packages as a live install, minus the
+# ones that only exist on real hardware:
+#   - pyusb   (needs libusb + an attached HID device)
+#   - pyudev  (Linux-only, handled as OPTIONAL_MODULES in test_cross_source_import)
+#
+# If you add a new runtime dep to install/requirements.txt and the
+# tests start failing with ModuleNotFoundError, mirror it here too.
+pytest>=8.0
+pytest-asyncio>=1.0
+
+# HTTP / websocket stack
+aiohttp>=3.9
+requests>=2.31.0
+websockets>=12.0
+websocket-client>=1.6.0
+
+# Transport
+aiomqtt>=2.0.0
+
+# Source clients imported at module-load time
+soco>=0.30.0
+plexapi>=4.15.0
+tidalapi>=0.8.0
+edge-tts>=6.1.0
+
+# Spotify Canvas: canvas_pb2 is a protobuf-generated module that
+# imports from google.protobuf — without this package every canvas
+# test fails at collection with "No module named 'google'"
+protobuf>=6.0
+
+# Artwork handling
+pillow>=10.0.0

@@ -69,7 +69,7 @@ class USBService(SourceBase):
         self._current_track_meta = {}  # Rich metadata for current track
         self._device_ip = None
         self.audio = AudioOutputs()
-        self._mounts_config = []  # saved for hot-plug rescan
+        self._paths = []  # saved for hot-plug rescan
         self._hotplug_task = None
         self._rescan_task = None
 
@@ -79,7 +79,7 @@ class USBService(SourceBase):
         return self.remote_player if self._playback_mode == "remote" else self.file_player
 
     async def on_start(self):
-        # Parse mount config
+        # Parse paths from config
         menu = cfg("menu") or {}
         usb_cfg = None
         for v in menu.values():
@@ -87,38 +87,17 @@ class USBService(SourceBase):
                 usb_cfg = v
                 break
 
-        mounts_config = []
-        if usb_cfg:
-            if "mounts" in usb_cfg:
-                mounts_config = usb_cfg["mounts"]
-            elif "paths" in usb_cfg:
-                # Backward compat: old "paths" format
-                for p in usb_cfg["paths"]:
-                    mounts_config.append({"name": Path(p).name, "path": p})
-
-        if not mounts_config:
-            # Fallback to env var
-            paths_str = os.getenv('USB_MUSIC_PATHS', '')
-            if paths_str:
-                for p in paths_str.split(','):
-                    p = p.strip()
-                    if p:
-                        mounts_config.append({"name": Path(p).name, "path": p})
-
-        # Auto-detect BM5 HDD if no mounts configured
-        if not mounts_config:
-            mounts_config.append({"name": "BeoMaster 5", "type": "bm5"})
-
-        self._mounts_config = mounts_config
-        self.mount_manager = MountManager(mounts_config)
+        paths = usb_cfg.get("paths", []) if usb_cfg else []
+        self._paths = paths
+        self.mount_manager = MountManager(paths)
         await self.mount_manager.init()
 
-        # Retry mount detection — USB drives may not be ready at early boot
-        if not self.mount_manager.available and mounts_config:
+        # Retry — drives may not be ready at early boot
+        if not self.mount_manager.available:
             for attempt in range(3):
                 await asyncio.sleep(5)
                 log.info("Retrying mount detection (attempt %d/3)...", attempt + 1)
-                self.mount_manager = MountManager(mounts_config)
+                self.mount_manager = MountManager(paths)
                 await self.mount_manager.init()
                 if self.mount_manager.available:
                     break
@@ -161,7 +140,7 @@ class USBService(SourceBase):
         self._hotplug_task = asyncio.create_task(self._watch_hotplug())
 
         if self._playback_mode == "local":
-            asyncio.create_task(self._set_default_airplay())
+            self._spawn(self._set_default_airplay(), name="set_default_airplay")
 
     async def on_stop(self):
         if self._hotplug_task:
@@ -200,7 +179,7 @@ class USBService(SourceBase):
             return
         for _ in range(15):
             await asyncio.sleep(2)
-            sink = self.audio.find_sink(ip=sonos_ip)
+            sink = await self.audio.find_sink(ip=sonos_ip)
             if sink:
                 await self.audio.set_output(sink['name'])
                 log.info("Default AirPlay -> %s", sink['label'])
@@ -242,7 +221,7 @@ class USBService(SourceBase):
                 if isinstance(browser, BM5Library):
                     browser.close()
 
-        self.mount_manager = MountManager(self._mounts_config)
+        self.mount_manager = MountManager(self._paths)
         await self.mount_manager.init()
         is_available = self.mount_manager.available
 

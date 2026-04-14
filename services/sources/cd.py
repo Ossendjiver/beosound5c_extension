@@ -7,6 +7,7 @@ manages playback via mpv, and discovers AirPlay speakers.
 """
 
 import asyncio
+import fcntl
 import json
 import os
 import subprocess
@@ -35,6 +36,8 @@ try:
 except ImportError:
     HAS_ZEROCONF = False
 
+import pyudev
+
 # Shared library
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from lib.audio_outputs import AudioOutputs
@@ -51,63 +54,91 @@ log = logging.getLogger('beo-cd')
 CDROM_DEVICE = cfg("cd", "device", default="/dev/sr0")
 BS5C_BASE_PATH = os.getenv('BS5C_BASE_PATH', os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 CD_CACHE_DIR = os.path.join(BS5C_BASE_PATH, 'web/assets/cd-cache')
-POLL_INTERVAL = 2  # seconds
+# Linux CDROM ioctl constants (from <linux/cdrom.h>)
+CDROM_DRIVE_STATUS = 0x5326
+CDS_DISC_OK = 4
 
 
 class CDDrive:
-    """Monitors CD/DVD drive presence and disc insertion/ejection."""
+    """Monitors CD/DVD drive presence and disc insertion/ejection via udev events."""
 
     def __init__(self, device_path=CDROM_DEVICE):
         self.device_path = device_path
         self.drive_connected = False
         self.disc_inserted = False
-        self._poll_task = None
+        self._monitor_task = None
+        self._udev_observer = None
 
     async def start_polling(self, on_drive_change, on_disc_change):
         self._on_drive_change = on_drive_change
         self._on_disc_change = on_disc_change
-        self._poll_task = asyncio.create_task(self._poll_loop())
+        self._monitor_task = asyncio.create_task(self._udev_monitor())
 
     async def stop(self):
-        if self._poll_task:
-            self._poll_task.cancel()
+        if self._monitor_task:
+            self._monitor_task.cancel()
             try:
-                await self._poll_task
+                await self._monitor_task
             except asyncio.CancelledError:
                 pass
 
-    async def _poll_loop(self):
-        while True:
+    def _check_disc_ioctl(self):
+        """Check disc presence via ioctl — no physical read, no clicking."""
+        try:
+            fd = os.open(self.device_path, os.O_RDONLY | os.O_NONBLOCK)
             try:
-                drive_present = Path(self.device_path).exists()
-                disc_present = False
+                status = fcntl.ioctl(fd, CDROM_DRIVE_STATUS, 0)
+                return status == CDS_DISC_OK
+            finally:
+                os.close(fd)
+        except (OSError, IOError):
+            return False
 
-                if drive_present and HAS_DISCID:
-                    # Audio CDs can't be probed with dd — use discid TOC read
-                    try:
-                        await asyncio.get_running_loop().run_in_executor(
-                            None, lambda: discid.read(self.device_path)
-                        )
-                        disc_present = True
-                    except Exception:
-                        disc_present = False
+    async def _update_state(self):
+        """Check drive/disc state and fire callbacks on changes."""
+        drive_present = Path(self.device_path).exists()
+        disc_present = drive_present and await asyncio.get_running_loop().run_in_executor(
+            None, self._check_disc_ioctl)
 
-                # Drive state change
-                if drive_present != self.drive_connected:
-                    self.drive_connected = drive_present
-                    log.info(f"Drive {'connected' if drive_present else 'disconnected'}")
-                    await self._on_drive_change(drive_present)
+        if drive_present != self.drive_connected:
+            self.drive_connected = drive_present
+            log.info(f"Drive {'connected' if drive_present else 'disconnected'}")
+            await self._on_drive_change(drive_present)
 
-                # Disc state change
-                if disc_present != self.disc_inserted:
-                    self.disc_inserted = disc_present
-                    log.info(f"Disc {'inserted' if disc_present else 'ejected'}")
-                    await self._on_disc_change(disc_present)
+        if disc_present != self.disc_inserted:
+            self.disc_inserted = disc_present
+            log.info(f"Disc {'inserted' if disc_present else 'ejected'}")
+            await self._on_disc_change(disc_present)
 
-            except Exception as e:
-                log.error(f"Poll error: {e}")
+    async def _udev_monitor(self):
+        """Watch for udev events on the CD device — event-driven, no polling."""
+        loop = asyncio.get_running_loop()
+        context = pyudev.Context()
+        monitor = pyudev.Monitor.from_netlink(context)
+        monitor.filter_by(subsystem='block', device_type='disk')
 
-            await asyncio.sleep(POLL_INTERVAL)
+        # Check initial state
+        await self._update_state()
+
+        # Use a threading event pipe to bridge udev callbacks to asyncio
+        event = asyncio.Event()
+
+        def _on_udev_event(action, device):
+            if device.device_node == self.device_path or action in ('add', 'remove'):
+                loop.call_soon_threadsafe(event.set)
+
+        self._udev_observer = pyudev.MonitorObserver(monitor, _on_udev_event)
+        self._udev_observer.start()
+        log.info(f"Monitoring {self.device_path} via udev events")
+
+        try:
+            while True:
+                await event.wait()
+                event.clear()
+                await asyncio.sleep(0.5)  # debounce — udev fires multiple events per disc change
+                await self._update_state()
+        finally:
+            self._udev_observer.stop()
 
     async def eject(self):
         """Eject the disc."""
@@ -136,9 +167,11 @@ class CDMetadata:
             return None
 
         try:
-            disc = await asyncio.get_running_loop().run_in_executor(
-                None, lambda: discid.read(self.device_path)
-            )
+            disc = await asyncio.wait_for(
+                asyncio.get_running_loop().run_in_executor(
+                    None, lambda: discid.read(self.device_path)),
+                timeout=15)
+
             self.last_disc = disc
             disc_id = disc.id
             log.info(f"Disc ID: {disc_id}, tracks: {len(disc.tracks)}")
@@ -708,7 +741,7 @@ class CDService(SourceBase):
         # After grace period, treat any disc detection as a real insertion
         asyncio.get_running_loop().call_later(6, self._clear_first_detection)
 
-        asyncio.create_task(self._set_default_airplay())
+        self._spawn(self._set_default_airplay(), name="set_default_airplay")
 
     def _clear_first_detection(self):
         if self._is_first_detection:
@@ -729,7 +762,7 @@ class CDService(SourceBase):
             'disc_inserted': self.drive.disc_inserted,
             'metadata': self.metadata,
             'playback': self.cdplayer.get_status(),
-            'audio_outputs': self.audio.get_outputs(),
+            'audio_outputs': await self.audio.get_outputs(),
             'current_sink': self.audio.current_sink,
             'has_external_drive': self._detect_external_drive(),
             'ripping': self._rip_process is not None and self._rip_process.poll() is None,
@@ -867,7 +900,7 @@ class CDService(SourceBase):
         # Wait for PipeWire to discover AirPlay sinks
         for _ in range(15):
             await asyncio.sleep(2)
-            sink = self.audio.find_sink(ip=sonos_ip)
+            sink = await self.audio.find_sink(ip=sonos_ip)
             if sink:
                 await self.audio.set_output(sink['name'])
                 log.info(f"Default AirPlay -> {sink['label']}")
@@ -1003,7 +1036,7 @@ class CDService(SourceBase):
             )
             # Pre-cache TTS for instant announce on button press
             tts_text = f"{track_title}, by {cd_data['artist']}" if cd_data['artist'] else track_title
-            asyncio.ensure_future(tts_precache(tts_text))
+            self._spawn(tts_precache(tts_text), name="tts_precache")
 
     async def _announce_track(self, volume=100, text=None):
         """Speak text over the CD audio via TTS overlay.
@@ -1168,7 +1201,7 @@ class CDService(SourceBase):
 
     async def _handle_speakers(self, request):
         return web.json_response(
-            self.audio.get_outputs(),
+            await self.audio.get_outputs(),
             headers=self._cors_headers())
 
 

@@ -7,7 +7,7 @@ Usage:
     python3 tests/integration/test-radio.py
 
     # Against a deployed device:
-    python3 tests/integration/test-radio.py http://beosound5c-office.kirstenhome:8779
+    python3 tests/integration/test-radio.py http://beosound5c.local:8779
 """
 
 import json

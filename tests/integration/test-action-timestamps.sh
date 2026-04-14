@@ -10,7 +10,7 @@
 #   HOST=beosound5c-kitchen.local ./tests/integration/test-action-timestamps.sh sonos
 # ─────────────────────────────────────────────────────────────────
 
-HOST="${HOST:-beosound5c-office.kirstenhome}"
+HOST="${HOST:-beosound5c.local}"
 SUITE="${1:-all}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 

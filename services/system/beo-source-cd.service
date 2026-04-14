@@ -17,6 +17,7 @@ ExecStart=/usr/bin/python3 __HOME__/beosound5c/services/sources/cd.py
 Restart=on-failure
 RestartSec=5
 WatchdogSec=60
+TimeoutStopSec=10
 StandardOutput=journal
 StandardError=journal
 

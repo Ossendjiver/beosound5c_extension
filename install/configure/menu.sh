@@ -14,11 +14,12 @@ configure_menu() {
     echo ""
 
     # Optional items the user can toggle (order matches default.json)
-    local -a ITEMS=("CD" "USB" "SPOTIFY" "NEWS" "SCENES" "SHOWING")
+    local -a ITEMS=("CD" "USB" "SPOTIFY" "RADIO" "NEWS" "SCENES" "SHOWING")
     local -a DESCS=(
         "CD player (requires USB CD drive)"
         "USB music files (auto-mounted USB drives)"
         "Spotify playlists and playback"
+        "Internet radio (Radio Browser)"
         "News articles from The Guardian"
         "Home Assistant scene control"
         "Apple TV — show what's currently playing"
@@ -79,6 +80,9 @@ configure_menu() {
                     ;;
                 SPOTIFY)
                     jq_expr="$jq_expr | .menu.SPOTIFY = \"spotify\""
+                    ;;
+                RADIO)
+                    jq_expr="$jq_expr | .menu.RADIO = \"radio\""
                     ;;
                 NEWS)
                     jq_expr="$jq_expr | .menu.NEWS = \"news\""

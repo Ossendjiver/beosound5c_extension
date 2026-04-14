@@ -14,6 +14,7 @@ Group=__USER__
 WorkingDirectory=/etc/beosound5c
 Environment=XDG_RUNTIME_DIR=/run/user/__UID__
 ExecStart=/usr/local/bin/go-librespot --config_dir /etc/beosound5c/librespot
+ExecStartPost=/bin/sh -c 'until curl -sf http://localhost:3678/status >/dev/null 2>&1; do sleep 0.2; done'
 Restart=on-failure
 RestartSec=5
 StandardOutput=journal

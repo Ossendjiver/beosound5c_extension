@@ -64,8 +64,8 @@ def _list_real_dir(dir_path, rel_path, parent, name=None):
 class FileBrowser:
     """Stateless directory listing for a single root path."""
 
-    def __init__(self, root_path, name="USB"):
-        self.name = name
+    def __init__(self, root_path):
+        self.name = Path(root_path).name if root_path else "USB"
         self.root = Path(root_path).resolve() if root_path else None
         if self.root and self.root.is_dir():
             log.info("FileBrowser root: %s", self.root)
@@ -75,7 +75,13 @@ class FileBrowser:
 
     @property
     def available(self):
-        return self.root is not None and self.root.is_dir()
+        if self.root is None or not self.root.is_dir():
+            return False
+        # An empty directory (e.g. unmounted mount point) is not available
+        try:
+            return any(self.root.iterdir())
+        except OSError:
+            return False
 
     def browse(self, path=""):
         if not self.available:

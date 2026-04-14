@@ -6,8 +6,10 @@
  */
 
 const ArtworkManager = {
-    // In-memory cache for loaded images
+    // In-memory cache for loaded images (bounded LRU)
     cache: {},
+    _cacheOrder: [],   // URLs in insertion order (oldest first)
+    _maxCacheSize: 50, // keep at most 50 images in memory
 
     /**
      * Preload and cache an image
@@ -25,7 +27,7 @@ const ArtworkManager = {
 
             const img = new window.Image();
             img.onload = () => {
-                this.cache[url] = img;
+                this._addToCache(url, img);
                 resolve(img);
             };
             img.onerror = () => {
@@ -33,6 +35,20 @@ const ArtworkManager = {
             };
             img.src = url;
         });
+    },
+
+    _addToCache(url, img) {
+        if (this.cache[url]) {
+            // Move to end (most recently used)
+            this._cacheOrder = this._cacheOrder.filter(u => u !== url);
+        }
+        this.cache[url] = img;
+        this._cacheOrder.push(url);
+        // Evict oldest entries beyond the limit
+        while (this._cacheOrder.length > this._maxCacheSize) {
+            const evicted = this._cacheOrder.shift();
+            delete this.cache[evicted];
+        }
     },
 
     /**
@@ -49,11 +65,14 @@ const ArtworkManager = {
         const fadeInDelay = window.Constants?.timeouts?.artworkFadeIn || 100;
         const fadeInComplete = window.Constants?.timeouts?.artworkFadeInComplete || 20;
 
-        // Hardcoded fallback placeholders in case Constants isn't loaded
+        // Hardcoded fallback placeholders in case Constants isn't loaded.
+        // Must stay in sync with web/js/constants.js `placeholders`.
+        const SILENT = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 200 200'><rect width='200' height='200' fill='%231a1a1a'/><circle cx='100' cy='100' r='62' stroke='%23333' stroke-width='1.5' fill='none'/><circle cx='100' cy='100' r='24' stroke='%23333' stroke-width='1' fill='none'/><circle cx='100' cy='100' r='4' fill='%23333'/></svg>";
         const defaultPlaceholders = {
-            noArtwork: "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='200'%3E%3Crect width='200' height='200' fill='%23333'/%3E%3Ctext x='100' y='100' font-family='Arial' font-size='14' fill='%23999' text-anchor='middle' dominant-baseline='middle'%3ENo Artwork%3C/text%3E%3C/svg%3E",
-            artworkUnavailable: "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='200'%3E%3Crect width='200' height='200' fill='%23333'/%3E%3Ctext x='100' y='100' font-family='Arial' font-size='14' fill='%23999' text-anchor='middle' dominant-baseline='middle'%3EArtwork Unavailable%3C/text%3E%3C/svg%3E",
-            showing: "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='200'%3E%3Crect width='200' height='200' fill='%23222'/%3E%3Ctext x='100' y='100' font-family='Arial' font-size='16' fill='%23666' text-anchor='middle' dominant-baseline='middle'%3ESHOWING%3C/text%3E%3C/svg%3E"
+            blank: "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7",
+            noArtwork: SILENT,
+            artworkUnavailable: SILENT,
+            showing: SILENT
         };
         const placeholders = window.Constants?.placeholders || defaultPlaceholders;
 
@@ -115,6 +134,7 @@ const ArtworkManager = {
      */
     clearCache() {
         this.cache = {};
+        this._cacheOrder = [];
     },
 
     /**

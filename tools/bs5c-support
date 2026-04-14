@@ -14,8 +14,6 @@
 # When you're done, run 'bs5c-support stop' to disconnect.
 # =============================================================================
 
-set -e
-
 CONFIG_DIR="/etc/beosound5c"
 CONFIG_FILE="$CONFIG_DIR/config.json"
 SECRETS_FILE="$CONFIG_DIR/secrets.env"
@@ -29,8 +27,8 @@ NC='\033[0m'
 
 # Read device name from config
 device_name() {
-    if [ -f "$CONFIG_FILE" ]; then
-        jq -r '.device // "beosound5c"' "$CONFIG_FILE" 2>/dev/null
+    if [ -f "$CONFIG_FILE" ] && command -v jq &>/dev/null; then
+        jq -r '.device // "beosound5c"' "$CONFIG_FILE" 2>/dev/null || echo "beosound5c"
     else
         echo "beosound5c"
     fi
@@ -71,11 +69,9 @@ cmd_start() {
     local key
     key=$(auth_key)
 
-    # Ensure tailscaled is running (it's disabled by default)
-    if ! systemctl is-active --quiet tailscaled 2>/dev/null; then
-        sudo systemctl start tailscaled
-        sleep 1
-    fi
+    # Enable tailscaled so it survives reboots
+    sudo systemctl enable --now tailscaled 2>/dev/null
+    sleep 1
 
     echo -e "${CYAN}Starting remote support session...${NC}"
     echo ""
@@ -94,7 +90,25 @@ cmd_start() {
         fi
     fi
 
-    sudo tailscale up --ssh --hostname="$hostname" --auth-key="$key"
+    if ! sudo tailscale up --ssh --hostname="$hostname" --auth-key="$key" 2>&1; then
+        echo ""
+        echo -e "${RED}Failed to connect. The access key may have expired.${NC}"
+        echo -e "Ask the developer for a new key, or paste one manually:"
+        echo ""
+        read -p "  Access key: " key
+        echo ""
+        if [ -z "$key" ]; then
+            echo -e "${RED}No key provided. Aborting.${NC}"
+            sudo systemctl stop tailscaled
+            exit 1
+        fi
+        if ! sudo tailscale up --ssh --hostname="$hostname" --auth-key="$key" 2>&1; then
+            echo ""
+            echo -e "${RED}Still failed to connect. Contact the developer for help.${NC}"
+            sudo systemctl stop tailscaled
+            exit 1
+        fi
+    fi
 
     # Wait briefly for IP assignment
     sleep 2
@@ -118,7 +132,7 @@ cmd_start() {
 cmd_stop() {
     echo -e "${CYAN}Disconnecting remote support...${NC}"
     sudo tailscale down
-    sudo systemctl stop tailscaled
+    sudo systemctl disable --now tailscaled
     echo -e "${GREEN}Remote support disconnected.${NC}"
 }
 

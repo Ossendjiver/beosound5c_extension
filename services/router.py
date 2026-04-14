@@ -17,7 +17,6 @@ Port: 8770
 """
 
 import asyncio
-import json
 import logging
 import os
 import signal
@@ -30,317 +29,44 @@ from aiohttp import web
 # Ensure services/ is on the path for sibling imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from lib.config import cfg
+from lib.correlation import (
+    install_logging, correlation_middleware as cid_middleware,
+    correlation_headers, set_id, new_id,
+)
+from lib.background_tasks import BackgroundTaskSet
+from lib.endpoints import (
+    INPUT_WEBHOOK,
+    PLAYER_ANNOUNCE,
+    PLAYER_JOIN,
+    PLAYER_MEDIA,
+    PLAYER_PLAY_FROM_QUEUE,
+    PLAYER_STATE,
+    PLAYER_STOP,
+    PLAYER_TRACK_URI,
+    player_url,
+    spotify_canvas_url,
+)
+from lib.loop_monitor import LoopMonitor
+from lib.lydbro import LydbroHandler
+from lib.media_state import MediaState
+from lib.spotify_canvas import extract_spotify_track_id
+from lib.source_registry import (
+    Source, SourceRegistry, DEFAULT_SOURCE_HANDLES, DEFAULT_SOURCE_PORTS,
+)
 from lib.transport import Transport
-from lib.volume_adapters import create_volume_adapter
+from lib.volume_adapters import create_volume_adapter, infer_volume_type
 from lib.watchdog import watchdog_loop
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="[%(asctime)s] %(levelname)s %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-)
-logger = logging.getLogger("beo-router")
+logger = install_logging("beo-router")
 
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
 ROUTER_PORT = 8770
-INPUT_WEBHOOK_URL = "http://localhost:8767/webhook"
+INPUT_WEBHOOK_URL = INPUT_WEBHOOK
 
 # Static menu IDs — these are built-in views (not dynamic sources)
 STATIC_VIEWS = {"showing", "system", "scenes", "playing"}
-
-# Source handles defaults (used when a source registers without specifying handles)
-_DIGITS = {"0", "1", "2", "3", "4", "5", "6", "7", "8", "9"}
-DEFAULT_SOURCE_HANDLES = {
-    "cd": {"play", "pause", "next", "prev", "stop", "go", "left", "right",
-           "up", "down", "info", "track"} | _DIGITS,
-    "spotify": {"play", "pause", "next", "prev", "stop", "go", "left", "right",
-                "up", "down"} | _DIGITS,
-    "usb": {"play", "pause", "next", "prev", "stop", "go", "left", "right",
-            "up", "down"},
-    "demo": {"play", "pause", "next", "prev", "stop", "go"},
-    "news": {"go", "left", "right", "up", "down"},
-    "radio": {"play", "pause", "next", "prev", "stop", "go", "left", "right",
-              "up", "down", "red", "blue"} | _DIGITS,
-}
-
-# Known source ports — used on startup to probe running sources for re-registration
-DEFAULT_SOURCE_PORTS = {
-    "cd": 8769,
-    "spotify": 8771,
-    "usb": 8773,
-    "apple_music": 8774,
-    "demo": 8775,
-    "news": 8776,
-    "tidal": 8777,
-    "plex": 8778,
-    "radio": 8779,
-    "join": 8766,  # beo-player-sonos
-}
-
-
-# ---------------------------------------------------------------------------
-# Source model & registry
-# ---------------------------------------------------------------------------
-class Source:
-    """A registered source that can receive routed events."""
-
-    def __init__(self, id: str, handles: set):
-        self.id = id
-        self.name = id.upper()        # display name, overridden on register
-        self.command_url = ""          # HTTP endpoint for forwarding events
-        self.handles = handles         # set of action names this source handles
-        self.menu_preset = id          # SourcePresets key in the UI
-        self.player = "local"          # "local" or "remote" — who renders audio
-        self.state = "gone"            # gone | available | playing | paused
-        self.from_config = False       # True if pre-created from config.json
-        self.visible = "auto"          # "auto" | "always" | "never"
-        self.manages_queue = False     # True if source manages its own playlist
-
-    def to_menu_item(self) -> dict:
-        return {
-            "id": self.id,
-            "title": self.name,
-            "preset": self.menu_preset,
-            "dynamic": True,
-        }
-
-
-STATE_FILE = "/tmp/beo-router-state.json"
-
-
-class SourceRegistry:
-    """Manages dynamic sources and their lifecycle."""
-
-    def __init__(self):
-        self._sources: dict[str, Source] = {}
-        self._active_id: str | None = None
-        self._persisted_active_id: str | None = self._load_persisted_active()
-        self._resync_in_progress: bool = False  # suppress active stealing during resyncs
-
-    @staticmethod
-    def _load_persisted_active() -> str | None:
-        """Load the previously-active source ID from disk (survives router restart)."""
-        try:
-            with open(STATE_FILE) as f:
-                data = json.load(f)
-                active = data.get("active_source_id")
-                if active:
-                    logger.info("Loaded persisted active source: %s", active)
-                return active
-        except (FileNotFoundError, json.JSONDecodeError, OSError):
-            return None
-
-    def _persist_active(self):
-        """Save the active source ID to disk."""
-        try:
-            with open(STATE_FILE, "w") as f:
-                json.dump({"active_source_id": self._active_id}, f)
-        except OSError as e:
-            logger.warning("Failed to persist active source: %s", e)
-
-    def consume_persisted_active(self) -> str | None:
-        """Return and clear the persisted active source ID (used once at startup)."""
-        val = self._persisted_active_id
-        self._persisted_active_id = None
-        return val
-
-    @property
-    def active_source(self) -> Source | None:
-        if self._active_id:
-            return self._sources.get(self._active_id)
-        return None
-
-    @property
-    def active_id(self) -> str | None:
-        return self._active_id
-
-    def get(self, id: str) -> Source | None:
-        return self._sources.get(id)
-
-    def create_from_config(self, id: str, handles: set) -> Source:
-        """Pre-create a Source from config (not yet registered/available)."""
-        source = Source(id, handles)
-        self._sources[id] = source
-        return source
-
-    async def update(self, id: str, state: str, router: "EventRouter", **fields) -> dict:
-        """Handle a source state transition. Returns broadcast actions taken."""
-        source = self._sources.get(id)
-        was_new = source is None or source.state == "gone"
-        was_active = self._active_id == id
-
-        # Create source if unknown (not in config)
-        if source is None:
-            handles = set(fields.get("handles", []))
-            source = Source(id, handles)
-            self._sources[id] = source
-
-        # Update fields from registration payload
-        if "name" in fields:
-            source.name = fields["name"]
-        if "command_url" in fields:
-            source.command_url = fields["command_url"]
-        if "menu_preset" in fields:
-            source.menu_preset = fields["menu_preset"]
-        if "player" in fields:
-            source.player = fields["player"]
-        if "manages_queue" in fields:
-            source.manages_queue = fields["manages_queue"]
-        # handles from config take precedence; only use registration handles for unknown sources
-        if "handles" in fields and not source.handles:
-            source.handles = set(fields["handles"])
-
-        old_state = source.state
-        source.state = state
-        actions = []
-
-        if state == "available" and was_new:
-            if source.visible == "never":
-                pass  # Never shown in menu
-            elif source.visible == "always":
-                pass  # Already in menu from boot
-            else:
-                # auto: add to menu dynamically
-                broadcast_data = {"action": "add", "preset": source.menu_preset}
-                config_title = router._get_config_title(id)
-                if config_title:
-                    broadcast_data["title"] = config_title
-                after_id = router._get_after(id)
-                if after_id:
-                    broadcast_data["after"] = f"menu/{after_id}"
-                await router._broadcast("menu_item", broadcast_data)
-                actions.append("add_menu_item")
-            logger.info("Source registered: %s (handles: %s)", id, source.handles)
-
-        elif state == "playing":
-            # Activate this source
-            if self._active_id != id:
-                # Reject stale register from a superseded source activation
-                action_ts = fields.get("action_ts", 0)
-                if action_ts and action_ts < router._latest_action_ts:
-                    logger.info("Rejected stale register from %s (ts=%.3f < latest=%.3f)",
-                                id, action_ts, router._latest_action_ts)
-                    return {"actions": actions, "old_state": old_state, "new_state": state}
-
-                # During a resync, sources re-register their remembered state.
-                # Don't let them steal active from the actually-playing source.
-                if self._resync_in_progress and self._active_id:
-                    current = self._sources.get(self._active_id)
-                    if current and current.state in ("playing", "paused"):
-                        logger.info("Resync: %s wants active but %s is %s — skipping",
-                                    id, self._active_id, current.state)
-                        # Accept state update but don't change active source
-                        return {"actions": actions, "old_state": old_state, "new_state": state}
-
-                # Stop the old source so it can clean up (e.g. CD's mpv,
-                # radio's player stream).  Each source's stop handler is
-                # responsible for stopping its own playback.
-                old_source = self._sources.get(self._active_id) if self._active_id else None
-                if old_source and old_source.command_url:
-                    logger.info("Stopping old source: %s", old_source.id)
-                    asyncio.ensure_future(
-                        router._forward_to_source(old_source, {"action": "stop"}))
-                self._active_id = id
-                self._persist_active()
-                await router._broadcast("source_change", {
-                    "active_source": id, "source_name": source.name,
-                    "player": source.player,
-                })
-                actions.append("source_change")
-                logger.info("Source activated: %s (player=%s)", id, source.player)
-
-            # Auto-power output + wake screen — only when source explicitly
-            # requests it (user-initiated playback, not external detection)
-            if fields.get("auto_power"):
-                if router._volume and not await router._volume.is_on():
-                    await router._volume.power_on()
-                await router._wake_screen()
-
-        elif state == "paused":
-            # Still active, user can resume — but don't steal active from
-            # another source that's already playing (e.g., we were paused
-            # during a source switch and are just re-registering)
-            if self._active_id != id:
-                current = self._sources.get(self._active_id) if self._active_id else None
-                if not current or current.state not in ("playing", "paused"):
-                    self._active_id = id
-                    self._persist_active()
-                    await router._broadcast("source_change", {
-                        "active_source": id, "source_name": source.name,
-                        "player": source.player,
-                    })
-                    actions.append("source_change")
-
-        elif state == "available" and was_active:
-            # Deactivate — return to HA fallback
-            self._active_id = None
-            self._persist_active()
-            await router._broadcast("source_change", {
-                "active_source": None, "player": None,
-            })
-            actions.append("source_change_clear")
-            logger.info("Source deactivated: %s", id)
-
-        elif state == "gone":
-            if was_active:
-                self._active_id = None
-                self._persist_active()
-                await router._broadcast("source_change", {
-                    "active_source": None, "player": None,
-                })
-                actions.append("source_change_clear")
-            if source.visible == "never":
-                pass  # Never shown in menu
-            elif source.visible == "always":
-                pass  # Stays in menu
-            else:
-                # auto: remove from menu
-                await router._broadcast("menu_item", {
-                    "action": "remove", "preset": source.menu_preset
-                })
-                actions.append("remove_menu_item")
-            source.state = "gone"
-            logger.info("Source unregistered: %s", id)
-
-        # Optional: navigate UI to the source's view
-        if fields.get("navigate") and state in ("playing", "available"):
-            # Playing → show PLAYING screen; available → show source browse page
-            page = "menu/playing" if state == "playing" else f"menu/{id}"
-            await router._broadcast("navigate", {"page": page})
-            actions.append(f"navigate:{page}")
-
-        return {"actions": actions, "old_state": old_state, "new_state": state}
-
-    def handles_action(self, action: str) -> bool:
-        """Check if the active source handles this action."""
-        source = self.active_source
-        if not source:
-            return False
-        if action in source.handles:
-            return True
-        # "digits" handle matches any digit action
-        if "digits" in source.handles:
-            return False  # digits are checked separately via payload
-        return False
-
-    async def clear_active_source(self, router: "EventRouter"):
-        """Clear the active source (e.g. when external playback overrides it)."""
-        if self._active_id is None:
-            return False
-        old_id = self._active_id
-        self._active_id = None
-        self._persist_active()
-        await router._broadcast("source_change", {
-            "active_source": None, "player": None,
-        })
-        logger.info("Active source cleared (was: %s)", old_id)
-        return True
-
-    def all_available(self) -> list[Source]:
-        """Return all sources that are not gone."""
-        return [s for s in self._sources.values() if s.state != "gone"]
 
 
 # ---------------------------------------------------------------------------
@@ -350,37 +76,42 @@ class EventRouter:
     def __init__(self):
         self.transport = Transport()
         self.registry = SourceRegistry()
-        self.active_view = None       # UI view reported by frontend
-        self.volume = 0               # current volume 0-100
-        self.balance = 0              # current balance -20..+20
+        self.media = MediaState()
+        self._lydbro = LydbroHandler(self)
+        self.active_view = None
+        self.volume = 0
+        self.balance = 0
         self.output_device = cfg("volume", "output_name", default="BeoLab 5")
         self._volume_step = int(cfg("volume", "step", default=3))
         self._balance_step = 1
         self._session: aiohttp.ClientSession | None = None
-        self._volume = None           # VolumeAdapter instance
-        self._accept_player_volume = False  # set in start() based on adapter/player match
-        self._menu_order: list[dict] = []  # parsed menu from config
-        self._local_button_views: set[str] = {"menu/system"}  # views that suppress HA button forwarding
+        self._volume = None
+        self._accept_player_volume = False
+        self._menu_order: list[dict] = []
+        self._local_button_views: set[str] = {"menu/system"}
         self._default_source_id: str | None = cfg("remote", "default_source", default=None)
-        self._source_buttons: dict[str, str] = {}  # IR source name → source id
-        self._handle_audio: bool = True   # handle Audio-tagged commands locally
-        self._handle_video: bool = False  # handle Video-tagged commands locally
-        self._media_state: dict | None = None  # cached media data from player
-        self._media_ws_clients: set[web.WebSocketResponse] = set()  # UI media WS clients
-        self._last_activity: float = time.monotonic()  # auto-standby idle tracker
-        self._auto_off_task: asyncio.Task | None = None
-        self._latest_action_ts: float = 0.0  # monotonic timestamp of last source activation
+        self._source_buttons: dict[str, str] = {}
+        self._handle_audio: bool = True
+        self._handle_video: bool = False
+        self._last_activity: float = time.monotonic()
+        self._standby_dispatched: bool = False
+        self._background_tasks = BackgroundTaskSet(logger, label="router")
+        self._latest_action_ts: float = 0.0
+        self._canvas_generation: int = 0
+        self._player_type: str = ""
+        self._last_local_volume_set: float = 0.0
+
+    # ── Background task tracking ──
+
+    def _spawn(self, coro, *, name: str | None = None) -> asyncio.Task:
+        """Launch a background coroutine with automatic lifecycle tracking."""
+        return self._background_tasks.spawn(coro, name=name)
+
+    # ── Menu parsing ──
 
     def _parse_menu(self):
-        """Parse the menu section from config.json into an ordered list.
-
-        Menu is defined top-to-bottom as visible on screen.  Each entry is
-        either a static view or a source.  String values = component with
-        default config; object values = component + config.
-        """
         menu_cfg = cfg("menu")
         if not menu_cfg:
-            # Fallback menu
             menu_cfg = {
                 "PLAYING": "playing", "SPOTIFY": "spotify", "SCENES": "scenes",
                 "SYSTEM": "system", "SHOWING": "showing",
@@ -396,25 +127,21 @@ class EventRouter:
                 entry_cfg = value
             items.append({"id": entry_id, "title": title, "config": entry_cfg})
 
-        # Auto-inject JOIN for Sonos players (player service controls visibility via available/gone)
         player_type = str(cfg("player", "type", default="")).lower()
         if player_type == "sonos" and not any(i["id"] == "join" for i in items):
             join_entry = {"id": "join", "title": "JOIN", "config": {}}
             playing_idx = next((i for i, e in enumerate(items) if e["id"] == "playing"), -1)
             items.insert(playing_idx + 1, join_entry)
 
-        # Pre-create sources from menu entries (non-static-view, non-webpage items)
         for item in items:
             if "url" in item["config"]:
-                pass  # Webpage item — buttons fall through to HA (gate/lock etc.)
+                pass
             elif item["id"] not in STATIC_VIEWS:
                 handles = DEFAULT_SOURCE_HANDLES.get(item["id"], set())
                 source = self.registry.create_from_config(item["id"], handles)
                 source.from_config = True
                 source.visible = item["config"].get("visible", "auto")
 
-        # Build IR source button map from per-source config sections
-        # e.g. "spotify": { "source": "radio" } → pressing RADIO activates spotify
         for item in items:
             sid = item["id"]
             if sid in STATIC_VIEWS:
@@ -426,20 +153,14 @@ class EventRouter:
                                    source, self._source_buttons[source], sid, sid)
                 self._source_buttons[source] = sid
 
-        # Auto-detect which device types to handle locally based on button types
         _AUDIO_BUTTONS = {"radio", "amem", "cd", "n.radio", "n.music", "spotify"}
         _VIDEO_BUTTONS = {"tv", "v.aux", "a.aux", "vmem", "dvd", "dtv", "pc",
                           "youtube", "doorcam", "photo", "usb2"}
         mapped = set(self._source_buttons.keys())
         if cfg("remote", "handle_all", default=False):
-            # Explicit override — handle all device types locally (e.g.
-            # Kitchen: no video master, BeoRemote defaults to Video mode)
             self._handle_audio = True
             self._handle_video = True
         elif mapped:
-            # Auto-detect from mapped source button types:
-            # audio button mapped → BS5c is audio master
-            # video button mapped → BS5c is video master
             self._handle_audio = bool(mapped & _AUDIO_BUTTONS)
             self._handle_video = bool(mapped & _VIDEO_BUTTONS)
         logger.info("Device type handling: audio=%s, video=%s (sources: %s)",
@@ -448,37 +169,28 @@ class EventRouter:
 
         self._menu_order = items
 
+    # ── Lifecycle ──
+
     async def start(self):
-        await self.transport.start()
         self._session = aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(total=2.0),
         )
-        # Parse menu from config and pre-create sources
+        self._lydbro.setup()
+        await self.transport.start()
         self._parse_menu()
 
-        # Create volume adapter from config
         self._volume = create_volume_adapter(self._session)
-        # Fetch current volume from output device
-        initial_vol = await self._volume.get_volume()
-        if initial_vol is not None:
-            self.volume = initial_vol
+        default_vol = int(cfg("volume", "default", default=30))
+        # Adapter returns the hardware value (0..max_volume). Convert to
+        # 0–100 UI scale for self.volume.
+        initial_vol_hw = await self._volume.get_volume()
+        if initial_vol_hw is not None and initial_vol_hw > 0:
+            self.volume = self._hw_to_ui(initial_vol_hw)
         else:
-            logger.warning("Could not read initial volume — defaulting to 0")
-            self.volume = 0
+            logger.info("Volume read as %s — using default %d", initial_vol_hw, default_vol)
+            self.volume = default_vol
 
-        # Determine whether to accept volume reports from the player service.
-        # Only accept when the player IS the volume adapter (e.g. sonos+sonos).
-        adapter_type = cfg("volume", "type")
-        if adapter_type is None:
-            # Mirror the inference logic from create_volume_adapter
-            player_type = str(cfg("player", "type", default="")).lower()
-            if player_type in ("sonos", "bluesound"):
-                adapter_type = player_type
-            elif player_type in ("local", "powerlink"):
-                adapter_type = "powerlink"
-            else:
-                adapter_type = "beolab5"
-        adapter_type = str(adapter_type).lower()
+        adapter_type = infer_volume_type()
         player_type = str(cfg("player", "type", default="")).lower()
         self._player_type = player_type
         self._accept_player_volume = (adapter_type == player_type)
@@ -491,68 +203,82 @@ class EventRouter:
         logger.info("Router started (transport: %s, output: %s, volume: %.0f%%)",
                      self.transport.mode, self.output_device, self.volume)
 
-        # Probe running sources so they re-register after a router restart,
-        # then recover media state from the player
-        asyncio.ensure_future(self._startup_recovery())
+        self._spawn(self._startup_recovery(), name="startup_recovery")
+        self._spawn(self._auto_standby_loop(), name="auto_standby")
 
-        # Auto-standby after inactivity
-        self._auto_off_task = asyncio.create_task(self._auto_standby_loop())
+    async def stop(self):
+        # Cancel all tracked background tasks
+        await self._background_tasks.cancel_all()
+        try:
+            await asyncio.wait_for(self.transport.stop(), timeout=3.0)
+        except (asyncio.TimeoutError, Exception) as e:
+            logger.warning("Transport stop timeout/error: %s", e)
+        await self.media.close_all()
+        if self._session:
+            await self._session.close()
+            self._session = None
+        logger.info("Router stopped")
 
     def touch_activity(self):
-        """Reset the inactivity timer (called on any user interaction)."""
         self._last_activity = time.monotonic()
+        self._standby_dispatched = False
 
-    def _is_playing(self) -> bool:
-        """Check if the player is currently playing (from cached media state)."""
-        if self._media_state and self._media_state.get("state") == "playing":
-            return True
-        # Also check source registry
-        for source in self.registry.all_available():
-            if source.state == "playing":
-                return True
+    # ── Player queries ──
+
+    async def _is_player_active(self) -> bool:
+        try:
+            async with self._session.get(
+                PLAYER_STATE,
+                timeout=aiohttp.ClientTimeout(total=1.0),
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    return data.get("state") in ("playing", "paused")
+        except Exception:
+            pass
         return False
 
+    # ── Auto-standby ──
+
     async def _auto_standby_loop(self):
-        """Check every 10 minutes whether to auto-standby."""
-        AUTO_OFF_IDLE = 30 * 60   # 30 minutes of inactivity
-        CHECK_INTERVAL = 10 * 60  # check every 10 minutes
+        timeout_min = int(cfg("auto_standby", "timeout", default=30))
+        if timeout_min <= 0:
+            return
         while True:
-            await asyncio.sleep(CHECK_INTERVAL)
-            idle = time.monotonic() - self._last_activity
-            if idle >= AUTO_OFF_IDLE and not self._is_playing():
-                logger.info("Auto-standby: idle %.0f min, nothing playing", idle / 60)
-                asyncio.ensure_future(self._player_stop())
+            try:
+                await asyncio.sleep(600)  # check every 10 minutes
+                idle_min = (time.monotonic() - self._last_activity) / 60
+                if idle_min < timeout_min:
+                    continue
+                if await self._is_player_active():
+                    self._standby_dispatched = False
+                    continue
+                if self._standby_dispatched:
+                    continue
+                logger.info("Auto-standby: idle %d min, nothing playing", int(idle_min))
+                self._spawn(self._player_stop(), name="auto_standby_stop")
                 if self._volume:
-                    asyncio.ensure_future(self._volume.power_off())
-                asyncio.ensure_future(self._screen_off())
+                    self._spawn(self._volume.power_off(), name="auto_standby_power_off")
+                self._spawn(self._screen_off(), name="auto_standby_screen_off")
+                self._standby_dispatched = True
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.exception("Auto-standby loop error: %s", e)
+                await asyncio.sleep(60)
+
+    # ── Startup recovery ──
 
     async def _probe_running_sources(self, startup=False):
-        """Ask each known source to re-register via its /resync endpoint.
-
-        This handles the case where the router restarts while sources are
-        still running — without this, the router would lose track of active
-        sources until they happen to change state.
-
-        When startup=True, uses the persisted active source to resolve
-        multi-source conflicts: only the previously-active source keeps its
-        playing/paused state; others are capped at "available".
-
-        Returns a list of source IDs that successfully resynced.
-        """
-        await asyncio.sleep(1)  # give the HTTP server a moment to bind
+        await asyncio.sleep(1)
         persisted_id = self.registry.consume_persisted_active() if startup else None
         if persisted_id:
             logger.info("Startup resync — persisted active: %s", persisted_id)
 
-        # For non-startup resyncs, prevent sources from stealing the active
-        # source — they re-register their remembered state which can be stale.
-        if not startup:
-            self.registry._resync_in_progress = True
-
+        self.registry._resync_in_progress = True
         resynced = []
         try:
             for source_id, port in DEFAULT_SOURCE_PORTS.items():
-                # JOIN lives on the player service — use /player/resync
                 path = "/player/resync" if source_id == "join" else "/resync"
                 try:
                     async with self._session.get(
@@ -571,93 +297,46 @@ class EventRouter:
         finally:
             self.registry._resync_in_progress = False
 
-        # Resolve multi-source conflict: only if the persisted source actually
-        # resynced successfully — if it's dead, let whoever is playing stay active
-        if persisted_id and persisted_id in resynced:
-            for source_id in resynced:
-                if source_id == persisted_id:
-                    continue
-                source = self.registry.get(source_id)
-                if source and source.state in ("playing", "paused"):
-                    source.state = "available"
-                    logger.info("Startup resync: demoted %s to available (persisted active: %s)",
-                                source_id, persisted_id)
-            # Ensure the persisted source is actually active
-            persisted = self.registry.get(persisted_id)
-            if persisted and persisted.state in ("playing", "paused"):
-                if self.registry._active_id != persisted_id:
-                    self.registry._active_id = persisted_id
-                    self.registry._persist_active()
-                    await self._broadcast("source_change", {
-                        "active_source": persisted_id,
-                        "source_name": persisted.name,
-                        "player": persisted.player,
-                    })
-                    logger.info("Startup resync: restored active source: %s", persisted_id)
+        if persisted_id:
+            await self.registry.restore_persisted_active(
+                persisted_id, resynced, self,
+            )
 
         return resynced
 
     async def _startup_recovery(self):
-        """Probe sources and recover media state from the player after restart."""
         await self._probe_running_sources(startup=True)
-        # Recover media state from the player — only if no source already set it
-        if self._media_state:
+        if self.media.state:
             logger.info("Media state already set by source resync, skipping player recovery")
             return
         try:
             async with self._session.get(
-                "http://localhost:8766/player/media",
+                PLAYER_MEDIA,
                 timeout=aiohttp.ClientTimeout(total=2.0),
             ) as resp:
                 if resp.status == 200:
                     data = await resp.json()
                     if data and data.get("title"):
-                        self._media_state = data
+                        self.media.state = data
                         logger.info("Recovered media state: %s — %s",
                                      data.get("artist", ""), data.get("title", ""))
-                        # Pre-cache TTS
                         title = data.get("title", "")
                         artist = data.get("artist", "")
                         if title and data.get("state") == "playing" and self._player_type == "local":
                             from lib.tts import tts_precache
                             tts_text = f"{title}, by {artist}" if artist else title
-                            asyncio.ensure_future(tts_precache(tts_text))
+                            self._spawn(tts_precache(tts_text), name="tts_precache")
         except Exception as e:
             logger.debug("Could not recover media state from player: %s", e)
 
-    async def stop(self):
-        if self._auto_off_task:
-            self._auto_off_task.cancel()
-        try:
-            await asyncio.wait_for(self.transport.stop(), timeout=3.0)
-        except (asyncio.TimeoutError, Exception) as e:
-            logger.warning("Transport stop timeout/error: %s", e)
-        # Close media WebSocket clients (don't wait forever)
-        for ws in list(self._media_ws_clients):
-            try:
-                await asyncio.wait_for(ws.close(), timeout=1.0)
-            except (asyncio.TimeoutError, Exception):
-                pass
-        self._media_ws_clients.clear()
-        if self._session:
-            await self._session.close()
-            self._session = None
-        logger.info("Router stopped")
+    # ── Menu ──
 
     def get_menu(self) -> dict:
-        """Build the current menu state from config menu order.
-
-        The menu order in config.json is top-to-bottom.  Static views are
-        always shown.  Source visibility is controlled by the ``visible``
-        setting: ``always`` = always in menu, ``auto`` (default) = only
-        when service is registered, ``never`` = never shown.
-        """
         items = []
         for entry in self._menu_order:
             entry_id = entry["id"]
             entry_cfg = entry.get("config", {})
             if "url" in entry_cfg:
-                # Webpage item — embedded iframe
                 items.append({
                     "id": entry_id, "title": entry["title"],
                     "type": "webpage", "url": entry_cfg["url"],
@@ -672,7 +351,7 @@ class EventRouter:
                     if source.visible == "auto" and source.state == "gone":
                         continue
                     item = source.to_menu_item()
-                    item["title"] = entry["title"]  # Use config title
+                    item["title"] = entry["title"]
                     items.append(item)
 
         active = self.registry.active_source
@@ -682,35 +361,33 @@ class EventRouter:
             "active_player": active.player if active else None,
         }
 
+    # ── Event routing ──
+
     async def route_event(self, payload: dict):
-        """Route an incoming event to the right destination."""
         self.touch_activity()
         action = payload.get("action", "")
         device_type = payload.get("device_type", "")
         active = self.registry.active_source
 
-        # 1. Active source handles this action? → forward if device type is handled locally
         is_local = (device_type == "Audio" and self._handle_audio) or \
                    (device_type == "Video" and self._handle_video)
+
+        # 1. Active source handles this action
         if is_local and active and active.state in ("playing", "paused") and action in active.handles:
-            # Forward to active source but do NOT bump _latest_action_ts —
-            # this is intra-source interaction (next/prev/scroll), not a source
-            # switch. Bumping here makes the player's media updates look stale
-            # because player_next/prev don't carry action_ts, so the player
-            # keeps broadcasting with the ts from the original play command.
             action_ts = self._latest_action_ts or 0
             logger.info("-> %s: %s (active source)", active.id, action)
             await self._forward_to_source(active, {**payload, "action_ts": action_ts})
             return
 
-        # 1a. Announce — TTS via player when source doesn't handle info/track/menu
-        if is_local and action in ("menu", "info", "track") and self._media_state:
-            if self._media_state.get("state") in ("playing", "paused"):
-                asyncio.ensure_future(self._player_announce())
+        # 1a. Announce — TTS
+        if is_local and action in ("menu", "info", "track") and self.media.state:
+            if self.media.state.get("state") in ("playing", "paused"):
+                logger.info("-> announce: %s (%s)", action,
+                            self.media.state.get("title", "?")[:40])
+                self._spawn(self._player_announce(), name="player_announce")
                 return
 
-        # 1b. No active source, stop → find any source that's actually playing
-        #     (sources only register as "playing" when BS5c started the playback)
+        # 1b. Stop with no active source
         if is_local and not active and action == "stop":
             playing = [s for s in self.registry.all_available()
                        if s.state in ("playing", "paused") and s.command_url
@@ -721,13 +398,10 @@ class EventRouter:
                     await self._forward_to_source(src, payload)
                 return
 
-        # 1b2. No active source → default source (if configured and handles the action)
+        # 1b2. Default source
         if is_local and not active and self._default_source_id:
             default = self.registry.get(self._default_source_id)
             if default and default.state != "gone" and default.command_url and action in default.handles:
-                # Stamp fresh action_ts — this is a user-initiated action
-                # (digit, next, etc.) that should carry a valid timestamp so
-                # the source can register and the player won't reject it.
                 action_ts = time.monotonic()
                 self._latest_action_ts = action_ts
                 logger.info("-> %s: %s (default source)", default.id, action)
@@ -735,7 +409,7 @@ class EventRouter:
                     default, {**payload, "action_ts": action_ts})
                 return
 
-        # 1c. No active source, transport action → forward to player directly
+        # 1c. Transport actions direct to player
         _TRANSPORT_ACTIONS = {
             "go": "toggle", "left": "prev", "right": "next",
             "up": "next", "down": "prev",
@@ -746,7 +420,7 @@ class EventRouter:
             logger.info("-> player direct: %s (no active source)", player_action)
             try:
                 async with self._session.post(
-                    f"http://localhost:8766/player/{player_action}",
+                    player_url(f"/player/{player_action}"),
                     timeout=aiohttp.ClientTimeout(total=1.0),
                 ) as resp:
                     logger.debug("Player responded: HTTP %d", resp.status)
@@ -754,79 +428,70 @@ class EventRouter:
                 logger.warning("Player direct send failed: %s", e)
             return
 
-        # 2. Action matches a registered source id or mapped source button?
+        # 2. Source button press
         source_id = self._source_buttons.get(action, action)
         source_by_action = self.registry.get(source_id)
         if source_by_action and source_by_action.state != "gone" and source_by_action.command_url:
-            # Already active and playing — nothing to do
             if source_by_action == self.registry.active_source and source_by_action.state == "playing":
-                logger.info("-> %s: already active, ignoring", source_id)
+                logger.info("-> %s: already active, waking screen", source_id)
+                self._spawn(self._wake_screen(), name="wake_screen")
                 return
             logger.info("-> %s: source button%s", source_id,
                         f" (mapped from {action})" if source_id != action else "")
-            # Wake screen + power on speakers (may be in standby)
-            asyncio.ensure_future(self._wake_screen())
+            self._spawn(self._wake_screen(), name="wake_screen")
             if self._volume and self._volume.is_on_cached() is False:
-                asyncio.ensure_future(self._volume.power_on())
-            # Stamp action timestamp — all downstream calls carry this to prevent races
+                self._spawn(self._volume.power_on(), name="power_on")
             action_ts = time.monotonic()
             self._latest_action_ts = action_ts
             await self._forward_to_source(
                 source_by_action, {**payload, "action": "activate", "action_ts": action_ts})
             return
 
-        # 4. Volume keys — handle locally via adapter
+        # 4. Volume
         if action in ("volup", "voldown") and is_local:
             delta = self._volume_step if action == "volup" else -self._volume_step
             new_vol = max(0, min(100, self.volume + delta))
             logger.info("-> volume: %.0f%% -> %.0f%% (%s)", self.volume, new_vol, action)
-            # Auto-power output on volume up (cached check only — no network query)
             if action == "volup" and self._volume and self._volume.is_on_cached() is False:
-                asyncio.ensure_future(self._volume.power_on())
-            # Fire-and-forget — adapter debounces internally, don't block event loop
-            asyncio.ensure_future(self.set_volume(new_vol))
+                self._spawn(self._volume.power_on(), name="vol_power_on")
+            self._spawn(self.set_volume(new_vol), name="set_volume")
             return
 
-        # 4b. Balance keys — handle locally via adapter
+        # 4b. Balance
         if action in ("chup", "chdown") and is_local:
             delta = self._balance_step if action == "chup" else -self._balance_step
             new_bal = max(-20, min(20, self.balance + delta))
             logger.info("-> balance: %d -> %d (%s)", self.balance, new_bal, action)
             self.balance = new_bal
             if self._volume:
-                asyncio.ensure_future(self._volume.set_balance(new_bal))
+                self._spawn(self._volume.set_balance(new_bal), name="set_balance")
             return
 
-        # 4c. Off — standby: stop playback, power off output, screen off
+        # 4c. Off / standby
         if action == "off" and is_local:
             logger.info("-> standby (off)")
-            # Stop player (source stays active so play/GO can resume it)
-            asyncio.ensure_future(self._player_stop())
-            # Power off speakers
+            self._spawn(self._player_stop(), name="off_stop")
             if self._volume:
-                asyncio.ensure_future(self._volume.power_off())
-            # Screen off
-            asyncio.ensure_future(self._screen_off())
-            # Still forward to HA (below) so it can handle automations
+                self._spawn(self._volume.power_off(), name="off_power")
+            self._spawn(self._screen_off(), name="off_screen")
 
-        # 4d. BLUE → JOIN default player
+        # 4d. BLUE → JOIN
         if action == "blue" and is_local:
             join_cfg = cfg("join")
             default_player = join_cfg.get("default_player") if join_cfg else None
             if default_player:
                 try:
                     async with self._session.post(
-                        "http://localhost:8766/player/join",
+                        PLAYER_JOIN,
                         json={"name": default_player},
                         timeout=aiohttp.ClientTimeout(total=5.0),
                     ) as resp:
-                        logger.info("BLUE→JOIN %s: HTTP %d",
-                                    default_player, resp.status)
+                        logger.info("BLUE→JOIN %s: HTTP %d", default_player, resp.status)
                 except Exception as e:
                     logger.warning("BLUE→JOIN failed: %s", e)
-                return  # consumed even on failure
+                return
 
-        # 5. Views that handle buttons locally (iframes) — suppress HA forwarding
+        # 5. Local button views
         if self.active_view in self._local_button_views and action in (
             "go", "left", "right", "up", "down",
         ):
@@ -838,61 +503,94 @@ class EventRouter:
         await self.transport.send_event(payload)
 
     async def _forward_to_source(self, source: Source, payload: dict):
-        """Forward a raw event payload to a source's command endpoint."""
         if not source.command_url or not self._session:
-            logger.warning("Cannot forward to %s (no url or session)", source.id)
             return
         try:
             async with self._session.post(
                 source.command_url,
                 json=payload,
-                timeout=aiohttp.ClientTimeout(total=1.0),
+                headers=correlation_headers(),
+                timeout=aiohttp.ClientTimeout(total=5.0),
             ) as resp:
-                logger.debug("%s responded: HTTP %d", source.id, resp.status)
+                logger.debug("Source %s responded: HTTP %d", source.id, resp.status)
         except Exception as e:
-            logger.warning("%s unreachable: %s", source.id, e)
+            logger.warning("Failed to forward to %s: %s", source.id, e)
+
+    # ── Volume ──
+
+    # Cooldown window: how long to ignore player-reported volume after a
+    # local (wheel-driven) set_volume. The Sonos monitor polls every 500ms
+    # and reads the speaker's hardware volume — mid-transition reads race
+    # with the commanded target and would flicker the UI arc between old
+    # and new values if fed back in.
+    _VOLUME_REPORT_COOLDOWN_S = 1.5
+
+    # ── UI ↔ hardware volume scaling ──
+    #
+    # ``self.volume`` is always in 0–100 UI scale (what the wheel shows).
+    # The adapter's ``_max_volume`` is the hardware value that UI 100
+    # maps to — it's a safety ceiling, not a clamp on mid-range values.
+    # Office's PowerLink/BeoLab 8000 (max=65 out of 127) is why this
+    # matters: pre-scaling, wheel positions above ~UI 65 did nothing.
+    # After scaling, the full wheel maps linearly onto 0..max_volume.
+
+    def _ui_to_hw(self, ui: float) -> float:
+        """Map a 0–100 UI volume to the adapter's 0–max_volume scale."""
+        if self._volume is None or self._volume._max_volume <= 0:
+            return 0.0
+        return ui * self._volume._max_volume / 100.0
+
+    def _hw_to_ui(self, hw: float) -> float:
+        """Map an adapter 0–max_volume reading back to 0–100 UI scale."""
+        if self._volume is None or self._volume._max_volume <= 0:
+            return 0.0
+        return hw * 100.0 / self._volume._max_volume
 
     async def set_volume(self, volume: float, broadcast: bool = True):
-        """Set volume (0-100). Routes to the appropriate output."""
         old_vol = self.volume
         self.volume = max(0, min(100, volume))
+        self._last_local_volume_set = time.monotonic()
         if broadcast:
-            asyncio.ensure_future(self._broadcast_volume())
-        # Auto-power on volume increase (same as IR volup path)
-        if self.volume > old_vol and self._volume and self._volume.is_on_cached() is False:
+            self._spawn(self._broadcast_volume(), name="broadcast_vol")
+        if self._volume is None:
+            logger.debug("set_volume: no adapter configured, skipping hardware call")
+            return
+        if self.volume > old_vol and self._volume.is_on_cached() is False:
             await self._volume.power_on()
-        await self._volume.set_volume(self.volume)
+        await self._volume.set_volume(self._ui_to_hw(self.volume))
 
     async def report_volume(self, volume: float):
-        """A device reports its current volume (e.g. Sonos says 'I'm at 40%').
-
-        Only accepted when the volume adapter matches the player type —
-        otherwise the player's volume is irrelevant (e.g. Sonos volume
-        doesn't matter when output goes through BeoLab 5).
-        """
         if not self._accept_player_volume:
             return
-        self.volume = max(0, min(100, volume))
-        logger.info("Volume reported: %.0f%%", self.volume)
+        # ``volume`` arrives in hardware scale (what the player read from
+        # the speaker). Convert to UI scale before comparing / storing.
+        ui_volume = self._hw_to_ui(volume)
+        # Suppress player-reported volume shortly after a local command —
+        # the Sonos polled read races with mid-transition speaker state
+        # and would flicker the UI arc between old and new targets.
+        since = time.monotonic() - self._last_local_volume_set
+        if since < self._VOLUME_REPORT_COOLDOWN_S:
+            logger.debug("Volume report ignored (%.2fs after local set): %.0f%%",
+                         since, ui_volume)
+            return
+        if round(ui_volume) == round(self.volume):
+            return
+        self.volume = max(0, min(100, ui_volume))
+        logger.info("Volume reported: %.0f%% (hw %.0f)", self.volume, volume)
         await self._broadcast_volume()
 
     async def _broadcast_volume(self):
-        """Push current volume to UI clients so the arc stays in sync."""
-        await self._broadcast("volume_update", {"volume": round(self.volume)})
+        await self.media.broadcast("volume_update", {"volume": round(self.volume)})
+
+    # ── Menu helpers ──
 
     def _get_config_title(self, source_id: str) -> str | None:
-        """Return the display title from config.json for a source, or None."""
         for entry in self._menu_order:
             if entry["id"] == source_id:
                 return entry["title"]
         return None
 
     def _get_after(self, source_id: str) -> str | None:
-        """Find the menu item that precedes this source in the config order.
-
-        Returns the id of the preceding item, or None if this source is
-        first or not found in the menu config.
-        """
         prev_id = None
         for entry in self._menu_order:
             if entry["id"] == source_id:
@@ -900,39 +598,12 @@ class EventRouter:
             prev_id = entry["id"]
         return None
 
-    async def _broadcast(self, event_type: str, data: dict):
-        """Broadcast an event to UI clients via input.py's webhook API."""
-        if not self._session:
-            return
-        try:
-            if event_type == "menu_item":
-                # menu_item events use the dedicated add/remove commands
-                action = data.get("action", "")
-                if action == "add":
-                    payload = {"command": "add_menu_item", "params": data}
-                elif action == "remove":
-                    payload = {"command": "remove_menu_item", "params": data}
-                else:
-                    payload = {"command": "broadcast", "params": {"type": event_type, "data": data}}
-            elif event_type == "navigate":
-                payload = {"command": "wake", "params": data}
-            else:
-                payload = {"command": "broadcast", "params": {"type": event_type, "data": data}}
-
-            async with self._session.post(
-                INPUT_WEBHOOK_URL,
-                json=payload,
-                timeout=aiohttp.ClientTimeout(total=1.0),
-            ) as resp:
-                logger.debug("Broadcast %s: HTTP %d", event_type, resp.status)
-        except Exception as e:
-            logger.warning("Broadcast %s failed: %s", event_type, e)
+    # ── Player control ──
 
     async def _player_stop(self):
-        """Stop the player service."""
         try:
             async with self._session.post(
-                "http://localhost:8766/player/stop",
+                PLAYER_STOP,
                 timeout=aiohttp.ClientTimeout(total=1.0),
             ) as resp:
                 logger.debug("Player stop: HTTP %d", resp.status)
@@ -940,119 +611,179 @@ class EventRouter:
             pass
 
     async def _player_announce(self):
-        """TTS announce current track via the player service (handles ducking)."""
-        if self._player_type != "local" or not self._media_state:
+        if self._player_type != "local" or not self.media.state:
             return
         try:
             async with self._session.post(
-                "http://localhost:8766/player/announce",
+                PLAYER_ANNOUNCE,
+                json=self.media.state,
                 timeout=aiohttp.ClientTimeout(total=10.0),
             ) as resp:
                 logger.debug("Player announce: HTTP %d", resp.status)
         except Exception as e:
             logger.warning("Player announce failed: %s", e)
 
-    async def _wake_screen(self):
-        """Turn the screen on via input service."""
+    # ── Screen control ──
+
+    async def _set_backlight(self, on: bool):
         try:
+            cmd = "screen_on" if on else "screen_off"
             async with self._session.post(
                 INPUT_WEBHOOK_URL,
-                json={"command": "screen_on"},
-                timeout=aiohttp.ClientTimeout(total=1.0),
+                json={"command": cmd},
+                headers=correlation_headers(),
+                timeout=aiohttp.ClientTimeout(total=2),
             ) as resp:
-                logger.debug("Screen on: HTTP %d", resp.status)
+                logger.debug("Backlight %s: HTTP %d", cmd, resp.status)
         except Exception as e:
-            logger.warning("Screen on failed: %s", e)
+            logger.warning("Backlight control failed: %s", e)
+
+    async def _wake_screen(self):
+        await self._set_backlight(True)
+        await self.media.broadcast("navigate", {"page": "now_playing"})
 
     async def _screen_off(self):
-        """Turn the screen off via input service."""
-        try:
-            async with self._session.post(
-                INPUT_WEBHOOK_URL,
-                json={"command": "screen_off"},
-                timeout=aiohttp.ClientTimeout(total=1.0),
-            ) as resp:
-                logger.debug("Screen off: HTTP %d", resp.status)
-        except Exception as e:
-            logger.warning("Screen off failed: %s", e)
+        await self._set_backlight(False)
 
-    # ── Media routing (player → UI via router) ──
+    # ── Canvas injection ──
 
-    async def _push_media(self, media_data: dict, reason: str = "update"):
-        """Push a media update to all connected media WebSocket clients."""
-        if not self._media_ws_clients:
-            return
-        msg = json.dumps({"type": "media_update", "data": media_data, "reason": reason})
-        dead = set()
-        for ws in self._media_ws_clients:
+    def _should_fetch_canvas(self, payload: dict) -> bool:
+        if payload.get("canvas_url"):
+            return False
+        spotify_src = self.registry.get("spotify")
+        if not spotify_src or spotify_src.state == "gone":
+            return False
+        return payload.get("state") == "playing"
+
+    async def _inject_canvas(self, payload: dict, generation: int,
+                              hinted_uri: str = ""):
+        if hinted_uri:
+            raw_uri = hinted_uri
+        else:
             try:
-                await ws.send_str(msg)
+                async with self._session.get(
+                    PLAYER_TRACK_URI,
+                    timeout=aiohttp.ClientTimeout(total=2.0),
+                ) as resp:
+                    if resp.status != 200:
+                        return
+                    data = await resp.json()
+                    raw_uri = data.get("track_uri", "")
             except Exception:
-                dead.add(ws)
-        self._media_ws_clients -= dead
+                return
 
-    async def _handle_media_ws(self, request: web.Request) -> web.WebSocketResponse:
-        """GET /router/ws — WebSocket endpoint for UI media updates."""
-        ws = web.WebSocketResponse()
-        await ws.prepare(request)
-        self._media_ws_clients.add(ws)
-        logger.info("Media WS client connected (%d total)", len(self._media_ws_clients))
+        track_id = extract_spotify_track_id(raw_uri)
+        if not track_id:
+            return
+
         try:
-            # Send cached media state to new client
-            if self._media_state:
-                await ws.send_str(json.dumps({
-                    "type": "media_update",
-                    "data": self._media_state,
-                    "reason": "client_connect",
-                }))
-            # Push-only — keep alive until client disconnects
-            async for _msg in ws:
-                pass
-        finally:
-            self._media_ws_clients.discard(ws)
-            logger.info("Media WS client disconnected (%d remaining)",
-                         len(self._media_ws_clients))
-        return ws
+            async with self._session.get(
+                spotify_canvas_url(track_id),
+                timeout=aiohttp.ClientTimeout(total=5.0),
+            ) as resp:
+                if resp.status != 200:
+                    return
+                data = await resp.json()
+                canvas_url = data.get("canvas_url", "")
+        except Exception:
+            return
+
+        if not canvas_url:
+            return
+        # Staleness guard: generation counter is bumped on every new media
+        # update, so any in-flight canvas fetch for a previous track bails out.
+        if self._canvas_generation != generation:
+            logger.info("Canvas injection stale (gen %d != %d), dropping",
+                        generation, self._canvas_generation)
+            return
+        current = self.media.state
+        if not current:
+            return
+        current["canvas_url"] = canvas_url
+        logger.info("Canvas injected: %s", canvas_url[:60])
+        await self.media.push_media(current, "canvas_inject")
+
+    # ── Media POST handler ──
 
     async def _handle_media_post(self, request: web.Request) -> web.Response:
-        """POST /router/media — player posts media updates here."""
         try:
             payload = await request.json()
-        except (json.JSONDecodeError, Exception):
+        except Exception:
             return web.json_response({"error": "invalid json"}, status=400)
 
-        reason = payload.pop("_reason", "update")
-        source_id = payload.pop("_source_id", None)
-        action_ts = payload.pop("_action_ts", 0)
-        is_active_source = source_id and source_id == self.registry._active_id
-        # Reject media from inactive sources
-        if source_id and not is_active_source:
-            logger.warning("Dropped media update from inactive source %s "
-                           "(active: %s)", source_id, self.registry._active_id)
-            return web.json_response({"status": "ok", "dropped": True})
-        # Reject stale timestamps — but only from sources (source_id set).
-        # Player-originated media (source_id=None) is trusted: the player has
-        # its own stale protection and always reflects current playback state.
-        # Active source media is also exempt — it may carry an old action_ts
-        # from its original activation while a newer source button bumped
-        # the global ts.
-        if source_id and action_ts and action_ts < self._latest_action_ts and not is_active_source:
-            logger.warning("Dropped stale media update (ts=%.3f < latest=%.3f)",
-                           action_ts, self._latest_action_ts)
-            return web.json_response({"status": "ok", "dropped": True})
-        self._media_state = payload
-        # Pre-cache TTS for instant announce on button press
+        rejection = self.media.validate_update(
+            payload, self.registry.active_id, self._latest_action_ts)
+        if rejection:
+            return web.json_response(rejection)
+
+        reason = payload.pop("_validated_reason", "update")
+        # Player-supplied track URI (if any) — used for canvas injection
+        # instead of calling back to /player/track_uri, which can observe
+        # stale state while this POST is still in flight.
+        hinted_uri = payload.pop("_track_uri", "")
+        # Stamp a normalized Spotify track_id on the payload (when
+        # detectable). The UI uses this for the canvas/artwork cycle's
+        # render-time match check — without it, a canvas fetched for
+        # the previous track can flash up briefly before the next
+        # media_update arrives.
+        # Source preference: ``_track_uri`` hint (added by
+        # PlayerBase.broadcast_media_update via get_track_uri) is most
+        # accurate, but on the very first eager broadcast after an
+        # external Sonos start, the monitor loop hasn't committed
+        # _current_track_id yet — so fall back to the Sonos-provided
+        # ``uri`` field which fetch_media_data populates from
+        # track_info directly.
+        for source in (hinted_uri, payload.get("uri")):
+            tid = extract_spotify_track_id(source) if source else None
+            if tid:
+                payload["track_id"] = tid
+                break
+        # Canvas injection for player-originated Spotify tracks
+        source_id = payload.get("_validated_source_id")
+        if payload.get("canvas_url"):
+            logger.info("Media has canvas_url: %s", payload["canvas_url"][:60])
+        elif not source_id and self._should_fetch_canvas(payload):
+            self._canvas_generation += 1
+            # Snapshot payload — it's mutated below (pop _validated_*) and
+            # passed to media.accept_and_push, which may further mutate it.
+            self._spawn(
+                self._inject_canvas(dict(payload), self._canvas_generation,
+                                    hinted_uri=hinted_uri),
+                name="canvas_inject")
+
+        # Pre-cache TTS
         title = payload.get("title", "")
         artist = payload.get("artist", "")
         if title and payload.get("state") == "playing" and self._player_type == "local":
             from lib.tts import tts_precache
             tts_text = f"{title}, by {artist}" if artist else title
-            asyncio.ensure_future(tts_precache(tts_text))
+            self._spawn(tts_precache(tts_text), name="tts_precache")
 
-        await self._push_media(payload, reason)
-        logger.info("Media update pushed to %d clients: %s",
-                     len(self._media_ws_clients), reason)
+        # Remove internal fields before caching
+        payload.pop("_validated_source_id", None)
+        payload.pop("_validated_reason", None)
+
+        await self.media.accept_and_push(payload, reason)
         return web.json_response({"status": "ok"})
+
+    # ── WS handler ──
+
+    async def _handle_ws(self, request: web.Request) -> web.WebSocketResponse:
+        return await self.media.handle_ws(
+            request,
+            get_source_snapshot=lambda: self.registry.active_source,
+            get_volume=lambda: self.volume,
+        )
+
+    async def _handle_media_get(self, request: web.Request) -> web.Response:
+        """GET /router/media — return cached media state for UI resync.
+
+        The UI calls this when entering the playing view if its in-memory
+        mediaInfo looks stale/empty. Belt-and-suspenders for the case
+        where a media broadcast was missed (e.g. the WS reconnected after
+        the last update, or a Sonos external start raced view entry).
+        """
+        return web.json_response(self.media.state or {})
 
 
 # ---------------------------------------------------------------------------
@@ -1062,86 +793,71 @@ router_instance = EventRouter()
 
 
 async def handle_event(request: web.Request) -> web.Response:
-    """POST /router/event — receive button events from bluetooth/masterlink."""
     try:
         payload = await request.json()
-    except (json.JSONDecodeError, Exception):
+    except Exception:
         return web.json_response({"error": "invalid json"}, status=400)
-
     await router_instance.route_event(payload)
     return web.json_response({"status": "ok"})
 
 
 async def handle_source(request: web.Request) -> web.Response:
-    """POST /router/source — source registers/updates its state."""
     try:
         data = await request.json()
-    except (json.JSONDecodeError, Exception):
+    except Exception:
         return web.json_response({"error": "invalid json"}, status=400)
 
     src_id = data.get("id")
     state = data.get("state")
     if not src_id or not state:
         return web.json_response({"error": "id and state required"}, status=400)
-
     if state not in ("available", "playing", "paused", "gone"):
         return web.json_response({"error": "invalid state"}, status=400)
 
-    # Extract optional fields
     fields = {}
-    for key in ("name", "command_url", "menu_preset", "handles", "navigate", "player", "auto_power", "action_ts", "manages_queue"):
+    for key in ("name", "command_url", "menu_preset", "handles", "navigate",
+                "player", "auto_power", "action_ts", "manages_queue"):
         if key in data:
             fields[key] = data[key]
 
     result = await router_instance.registry.update(src_id, state, router_instance, **fields)
-
     return web.json_response({
-        "status": "ok",
-        "source": src_id,
+        "status": "ok", "source": src_id,
         "active_source": router_instance.registry.active_id,
         **result,
     })
 
 
 async def handle_menu(request: web.Request) -> web.Response:
-    """GET /router/menu — return current menu state for UI."""
     return web.json_response(router_instance.get_menu())
 
 
 async def handle_volume_set(request: web.Request) -> web.Response:
-    """POST /router/volume — UI sets volume (no broadcast back to UI)."""
     try:
         data = await request.json()
-    except (json.JSONDecodeError, Exception):
+    except Exception:
         return web.json_response({"error": "invalid json"}, status=400)
-
     volume = data.get("volume")
     if volume is None or not isinstance(volume, (int, float)):
         return web.json_response({"error": "missing or invalid 'volume'"}, status=400)
-
     router_instance.touch_activity()
-    # broadcast=False: the UI already shows the change locally
     await router_instance.set_volume(float(volume), broadcast=False)
     return web.json_response({"status": "ok", "volume": router_instance.volume})
 
 
 async def handle_volume_report(request: web.Request) -> web.Response:
-    """POST /router/volume/report — device reports its current volume."""
     try:
         data = await request.json()
-    except (json.JSONDecodeError, Exception):
+    except Exception:
         return web.json_response({"error": "invalid json"}, status=400)
-
     volume = data.get("volume")
     if volume is None or not isinstance(volume, (int, float)):
         return web.json_response({"error": "missing or invalid 'volume'"}, status=400)
-
     await router_instance.report_volume(float(volume))
     return web.json_response({"status": "ok", "volume": router_instance.volume})
 
 
 async def handle_output_off(request: web.Request) -> web.Response:
-    """POST /router/output/off — power off the audio output (e.g. BeoLab 5)."""
     if router_instance._volume:
         await router_instance._volume.power_off()
         logger.info("Output powered off via /output/off")
@@ -1150,7 +866,6 @@ async def handle_output_off(request: web.Request) -> web.Response:
 
 
 async def handle_output_on(request: web.Request) -> web.Response:
-    """POST /router/output/on — power on the audio output (e.g. BeoLab 5)."""
     if router_instance._volume:
         await router_instance._volume.power_on()
         logger.info("Output powered on via /output/on")
@@ -1159,12 +874,10 @@ async def handle_output_on(request: web.Request) -> web.Response:
 
 
 async def handle_view(request: web.Request) -> web.Response:
-    """POST /router/view — UI reports which view is active."""
     try:
         data = await request.json()
-    except (json.JSONDecodeError, Exception):
+    except Exception:
         return web.json_response({"error": "invalid json"}, status=400)
-
     view = data.get("view")
     old = router_instance.active_view
     router_instance.active_view = view
@@ -1174,60 +887,49 @@ async def handle_view(request: web.Request) -> web.Response:
 
 
 async def handle_playback_override(request: web.Request) -> web.Response:
-    """POST /router/playback_override — clear active source on external playback.
-
-    Called by the player service when it detects that playback started
-    externally (e.g. from the Sonos app) rather than through a BS5c source.
-    Clearing the active source lets transport commands (left/right/up/down)
-    go directly to the player via _TRANSPORT_ACTIONS.
-    """
     try:
         data = await request.json()
     except Exception:
         data = {}
     force = data.get("force", False)
     action_ts = data.get("action_ts", 0)
+    # ``push_idle=False`` lets the caller suppress the idle media_update
+    # that clear_active_source normally broadcasts — used by the player's
+    # eager-broadcast path on external start, where the player is about
+    # to push fresh media and the idle push would wipe it.
+    push_idle = data.get("push_idle", True)
     if action_ts:
         router_instance._latest_action_ts = action_ts
     active = router_instance.registry.active_source
     if active and force:
         if active.manages_queue:
-            # Source owns its own playback (e.g. CD) — player state is irrelevant
             return web.json_response({
                 "status": "ok", "cleared": False,
                 "reason": f"{active.id} manages own playback"})
-        logger.info("Playback override: clearing active source %s", active.id)
-        await router_instance.registry.clear_active_source(router_instance)
+        logger.info("Playback override: clearing active source %s (push_idle=%s)",
+                    active.id, push_idle)
+        await router_instance.registry.clear_active_source(
+            router_instance, push_idle=push_idle)
         return web.json_response({"status": "ok", "cleared": True})
     reason = "no active source" if not active else "not forced"
     return web.json_response({"status": "ok", "cleared": False, "reason": reason})
 
 
 _last_resync_time: float = 0.0
-RESYNC_COOLDOWN = 5.0  # seconds — skip if last probe was recent
+RESYNC_COOLDOWN = 5.0
 
 
 async def handle_resync(request: web.Request) -> web.Response:
-    """POST /router/resync — re-probe all known sources for re-registration.
-
-    Called by input.py when a new UI client connects, ensuring all sources
-    are visible even if their original registration was missed.
-    Debounced: skips if the last probe completed less than RESYNC_COOLDOWN ago.
-    """
     global _last_resync_time
     now = time.monotonic()
     if now - _last_resync_time < RESYNC_COOLDOWN:
-        logger.debug("Resync debounced (%.1fs since last)", now - _last_resync_time)
         return web.json_response({"status": "ok", "resynced": [], "debounced": True})
-    # Set timestamp BEFORE probing to prevent concurrent resyncs from passing
-    # the debounce check while the first one is still running.
     _last_resync_time = now
     resynced = await router_instance._probe_running_sources()
     return web.json_response({"status": "ok", "resynced": resynced})
 
 
 async def handle_status(request: web.Request) -> web.Response:
-    """GET /router/status — return current routing state."""
     active = router_instance.registry.active_source
     result = {
         "active_source": router_instance.registry.active_id,
@@ -1243,46 +945,29 @@ async def handle_status(request: web.Request) -> web.Response:
             for s in router_instance.registry.all_available()
         },
     }
-    if router_instance._media_state:
-        result["media"] = router_instance._media_state
+    if router_instance.media.state:
+        result["media"] = router_instance.media.state
     return web.json_response(result)
 
 
 async def handle_queue(request: web.Request) -> web.Response:
-    """GET /router/queue — aggregated queue from player or source.
-
-    Queue authority matrix (source × player):
-
-                    Sonos/Bluesound    Local (mpv/librespot)
-    Spotify         Player             Source
-    Plex            Player             Source
-    CD              Source              Source
-    USB             Source              Source
-    News            —                   Source
-    Radio           —                   None (stream)
-    External        None                —
-
-    Logic: manages_queue=True → source first
-           manages_queue=False + local player → source first
-           manages_queue=False + remote player → player first
-    """
     start = int(request.query.get("start", "0"))
     max_items = int(request.query.get("max_items", "50"))
 
     source = router_instance.registry.active_source
-    source_url = None
-    player_url = f"http://localhost:8766/player/queue?start={start}&max_items={max_items}"
+    source_queue_url = None
+    player_queue_url = player_url(
+        f"/player/queue?start={start}&max_items={max_items}"
+    )
 
     if source and source.command_url:
-        # Derive source queue URL from command_url (replace /command with /queue)
         base = source.command_url.rsplit("/command", 1)[0]
-        source_url = f"{base}/queue?start={start}&max_items={max_items}"
+        source_queue_url = f"{base}/queue?start={start}&max_items={max_items}"
 
-    # Determine primary/secondary based on authority
     if source and (source.manages_queue or source.player == "local"):
-        primary, secondary = source_url, player_url
+        primary, secondary = source_queue_url, player_queue_url
     else:
-        primary, secondary = player_url, source_url
+        primary, secondary = player_queue_url, source_queue_url
 
     async def _fetch_queue(url):
         if not url:
@@ -1303,9 +988,8 @@ async def handle_queue(request: web.Request) -> web.Response:
     if not result:
         result = await _fetch_queue(secondary)
     if not result:
-        # Fall back to wrapping current media state as single track
-        if router_instance._media_state:
-            m = router_instance._media_state
+        m = router_instance.media.state
+        if m:
             result = {
                 "tracks": [{
                     "id": "q:0",
@@ -1313,11 +997,9 @@ async def handle_queue(request: web.Request) -> web.Response:
                     "artist": m.get("artist", ""),
                     "album": m.get("album", ""),
                     "artwork": m.get("artwork", ""),
-                    "index": 0,
-                    "current": True,
+                    "index": 0, "current": True,
                 }],
-                "current_index": 0,
-                "total": 1,
+                "current_index": 0, "total": 1,
             }
         else:
             result = {"tracks": [], "current_index": -1, "total": 0}
@@ -1326,7 +1008,6 @@ async def handle_queue(request: web.Request) -> web.Response:
 
 
 async def handle_queue_play(request: web.Request) -> web.Response:
-    """POST /router/queue/play — play a specific queue position."""
     try:
         data = await request.json()
     except Exception:
@@ -1335,9 +1016,7 @@ async def handle_queue_play(request: web.Request) -> web.Response:
     position = data.get("position", 0)
     source = router_instance.registry.active_source
 
-    # Determine authority (same logic as handle_queue)
     if source and (source.manages_queue or source.player == "local"):
-        # Source-managed: send play_index command
         if source.command_url:
             try:
                 async with router_instance._session.post(
@@ -1351,10 +1030,9 @@ async def handle_queue_play(request: web.Request) -> web.Response:
                 logger.warning("Source play_index failed: %s", e)
         return web.json_response({"status": "error"}, status=500)
     else:
-        # Player-managed: use play_from_queue
         try:
             async with router_instance._session.post(
-                "http://localhost:8766/player/play_from_queue",
+                PLAYER_PLAY_FROM_QUEUE,
                 json={"position": position},
                 timeout=aiohttp.ClientTimeout(total=10),
             ) as resp:
@@ -1365,15 +1043,32 @@ async def handle_queue_play(request: web.Request) -> web.Response:
             return web.json_response({"status": "error"}, status=500)
 
 
+async def handle_broadcast(request: web.Request) -> web.Response:
+    try:
+        payload = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid json"}, status=400)
+    event_type = payload.get("type", "unknown")
+    data = payload.get("data", {})
+    await router_instance.media.broadcast(event_type, data)
+    return web.json_response({"status": "ok"})
+
+
 # ---------------------------------------------------------------------------
 # App lifecycle
 # ---------------------------------------------------------------------------
 async def on_startup(app: web.Application):
     await router_instance.start()
+    # Event-loop lag detector: warns when a sync call blocks the loop
+    # for more than 300ms.  See services/lib/loop_monitor.py.
+    app["loop_monitor"] = LoopMonitor().start()
     asyncio.create_task(watchdog_loop())
 
 
 async def on_cleanup(app: web.Application):
+    monitor = app.get("loop_monitor")
+    if monitor is not None:
+        await monitor.stop()
     await router_instance.stop()
 
 
@@ -1390,7 +1085,7 @@ async def cors_middleware(request, handler):
 
 
 def create_app() -> web.Application:
-    app = web.Application(middlewares=[cors_middleware])
+    app = web.Application(middlewares=[cid_middleware, cors_middleware])
     app.router.add_post("/router/event", handle_event)
     app.router.add_post("/router/source", handle_source)
     app.router.add_get("/router/menu", handle_menu)
@@ -1402,8 +1097,10 @@ def create_app() -> web.Application:
     app.router.add_post("/router/output/on", handle_output_on)
     app.router.add_post("/router/resync", handle_resync)
     app.router.add_get("/router/status", handle_status)
-    app.router.add_get("/router/ws", router_instance._handle_media_ws)
+    app.router.add_get("/router/ws", router_instance._handle_ws)
     app.router.add_post("/router/media", router_instance._handle_media_post)
+    app.router.add_get("/router/media", router_instance._handle_media_get)
+    app.router.add_post("/router/broadcast", handle_broadcast)
     app.router.add_get("/router/queue", handle_queue)
     app.router.add_post("/router/queue/play", handle_queue_play)
     app.on_startup.append(on_startup)
@@ -1414,5 +1111,5 @@ def create_app() -> web.Application:
 if __name__ == "__main__":
     app = create_app()
     web.run_app(app, host="0.0.0.0", port=ROUTER_PORT,
-                shutdown_timeout=5.0,
+                shutdown_timeout=5.0, access_log=None,
                 print=lambda msg: logger.info(msg))

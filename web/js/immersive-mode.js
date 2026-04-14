@@ -17,6 +17,12 @@
     let isTracking = false;     // true while laser is actively driving progress
     let lastOverlayText = { title: '', artist: '', album: '' };
     let transitionCleanup = null;  // setTimeout ID for post-transition cleanup
+    // Armed by ws-dispatcher on source_change. The next view-change to
+    // menu/playing enters immersive eagerly — without waiting for
+    // media to arrive — so a remote-triggered source start never
+    // flashes the menu before immersive mode kicks in.
+    let eagerEntryArmed = false;
+    let eagerEntryArmedTimer = null;
 
     function isFullyImmersive() { return progress >= 1; }
     function isPartiallyImmersive() { return progress > 0; }
@@ -140,6 +146,18 @@
     function updateFromLaser() {
         const uiStore = window.uiStore;
         if (!uiStore || uiStore.currentRoute !== 'menu/playing') return;
+
+        // Menu always wins — never track or transform artwork while the
+        // menu is visible, or the large artwork overlaps menu items.
+        if (uiStore.menuVisible) {
+            if (isTracking) {
+                isTracking = false;
+                progress = 0;
+                setTrackingMode(false);
+                applyProgress(0);
+            }
+            return;
+        }
 
         const angle = uiStore.wheelPointerAngle;
 
@@ -275,9 +293,16 @@
         const uiStore = window.uiStore;
         if (!uiStore) { setTimeout(init, 200); return; }
 
-        // 1. Menu visibility: exit immersive when menu reappears
+        // 1. Menu visibility: exit immersive when menu reappears.
+        // Menu always wins — if laser happens to be in the tracking zone
+        // when the menu is unhidden, force isTracking=false so the large
+        // transformed artwork doesn't overlap the menu.
         document.addEventListener('bs5c:menu-visibility', (e) => {
-            if (e.detail.visible && isPartiallyImmersive() && !isTracking) {
+            if (e.detail.visible && isPartiallyImmersive()) {
+                if (isTracking) {
+                    isTracking = false;
+                    setTrackingMode(false);
+                }
                 animatedExit();
             }
         });
@@ -308,8 +333,17 @@
                         syncOverlayText(false);
                         applyProgress(progress);
                     }, 100);
-                } else if (!wasPlaying && isPlaying()) {
-                    // Waking to playing view while music is active — go straight to immersive
+                } else if (eagerEntryArmed || (!wasPlaying && isPlaying())) {
+                    // Either (a) a remote source-start just armed us, or
+                    // (b) we're waking to an already-playing view. Go
+                    // straight to immersive without waiting for media.
+                    // The media_update that follows will populate the
+                    // overlay text via the bs5c:media-text-updated path.
+                    if (eagerEntryArmed) {
+                        eagerEntryArmed = false;
+                        clearTimeout(eagerEntryArmedTimer);
+                        eagerEntryArmedTimer = null;
+                    }
                     setTimeout(() => {
                         ensureOverlay();
                         uiStore.setMenuVisible(false);
@@ -329,17 +363,49 @@
 
         // Initial setup
         if (uiStore.currentRoute === 'menu/playing') {
-            resetIdleTimer();
-            ensureOverlay();
+            // Media state may not be loaded yet — check periodically
+            let startupChecks = 0;
+            const startupCheck = () => {
+                if (isPlaying() && !isPartiallyImmersive()) {
+                    ensureOverlay();
+                    uiStore.setMenuVisible(false);
+                    animatedEnter();
+                    return; // done — don't keep polling
+                }
+                startupChecks++;
+                if (startupChecks < 10) {
+                    setTimeout(startupCheck, 500);
+                } else {
+                    // Media never arrived — fall back to idle timer
+                    resetIdleTimer();
+                    ensureOverlay();
+                }
+            };
+            setTimeout(startupCheck, 500);
         }
 
         console.log('[IMMERSIVE] Module initialized (v6.0)');
+    }
+
+    /** Arm immersive-on-first-view-to-menu/playing.
+     *
+     * Called by ws-dispatcher when source_change indicates a new
+     * active source has been activated (remote button, digit, etc.).
+     * The flag auto-expires in 3s so a stale arm can't linger. */
+    function armEagerEntry() {
+        eagerEntryArmed = true;
+        clearTimeout(eagerEntryArmedTimer);
+        eagerEntryArmedTimer = setTimeout(() => {
+            eagerEntryArmed = false;
+            eagerEntryArmedTimer = null;
+        }, 3000);
     }
 
     // Expose for debugging / manual toggle
     window.ImmersiveMode = {
         enter: animatedEnter,
         exit: animatedExit,
+        armEagerEntry,
         get active() { return isPartiallyImmersive(); },
         get progress() { return progress; },
         syncText: () => syncOverlayText(false)

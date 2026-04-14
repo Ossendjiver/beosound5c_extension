@@ -1,0 +1,112 @@
+[
+  {
+    "stationuuid": "960c660b-0601-11e8-ae97-52543be04c81",
+    "name": "Sveriges Radio - P1",
+    "url_resolved": "https://live1.sr.se/p1-aac-320",
+    "favicon": "https://sverigesradio.se/dist/images/apple-touch-icon-default.png",
+    "country": "Sweden",
+    "tags": "news,public radio,sveriges radio",
+    "codec": "AAC",
+    "bitrate": 312,
+    "votes": 3193
+  },
+  {
+    "stationuuid": "960c62c1-0601-11e8-ae97-52543be04c81",
+    "name": "Sveriges Radio - P2",
+    "url_resolved": "https://live1.sr.se/p2-aac-320",
+    "favicon": "https://sverigesradio.se/dist/images/apple-touch-icon-default.png",
+    "country": "Sweden",
+    "tags": "sveriges radio",
+    "codec": "AAC",
+    "bitrate": 328,
+    "votes": 498
+  },
+  {
+    "stationuuid": "960c4e01-0601-11e8-ae97-52543be04c81",
+    "name": "Sveriges Radio - P3",
+    "url_resolved": "https://live1.sr.se/p3-aac-320",
+    "favicon": "https://sverigesradio.se/dist/images/apple-touch-icon-default.png",
+    "country": "Sweden",
+    "tags": "public radio,sveriges radio,youth",
+    "codec": "AAC",
+    "bitrate": 312,
+    "votes": 1649
+  },
+  {
+    "stationuuid": "962c1da9-0601-11e8-ae97-52543be04c81",
+    "name": "Sveriges Radio - P4 Plus",
+    "url_resolved": "https://live1.sr.se/p4plus-aac-320",
+    "favicon": "https://sverigesradio.se/dist/images/apple-touch-icon-default.png",
+    "country": "Sweden",
+    "tags": "sveriges radio",
+    "codec": "AAC",
+    "bitrate": 320,
+    "votes": 500
+  },
+  {
+    "stationuuid": "9617a958-0601-11e8-ae97-52543be04c81",
+    "name": "Radio Paradise Main Mix (EU) 320k AAC",
+    "url_resolved": "http://stream-uk1.radioparadise.com/aac-320",
+    "favicon": "https://radioparadise.com/apple-touch-icon.png",
+    "country": "The United States Of America",
+    "tags": "california,eclectic,free,internet,non-commercial,paradise,radio",
+    "codec": "AAC",
+    "bitrate": 320,
+    "votes": 282839
+  },
+  {
+    "stationuuid": "3cfe2415-c27d-43ef-8145-65e632708574",
+    "name": "Radio Paradise Mellow Mix",
+    "url_resolved": "http://stream.radioparadise.com/mellow-320",
+    "favicon": "https://radioparadise.com/apple-touch-icon.png",
+    "country": "The United States Of America",
+    "tags": "eclectic,mellow,paradise,radio",
+    "codec": "AAC",
+    "bitrate": 320,
+    "votes": 0
+  },
+  {
+    "stationuuid": "48705146-2da6-437a-b4b1-051463003575",
+    "name": "Radio Paradise Rock Mix (EU) 320 AAC",
+    "url_resolved": "http://stream-uk1.radioparadise.com/rock-320",
+    "favicon": "https://radioparadise.com/apple-touch-icon.png",
+    "country": "The United States Of America",
+    "tags": "eclectic,paradise,radio,rock",
+    "codec": "AAC",
+    "bitrate": 320,
+    "votes": 0
+  },
+  {
+    "stationuuid": "566476bf-d03c-4cac-b5d3-468f99a874b8",
+    "name": "Radio Paradise Global Mix",
+    "url_resolved": "https://stream.radioparadise.com/world-etc-320",
+    "favicon": "https://radioparadise.com/apple-touch-icon.png",
+    "country": "The United States Of America",
+    "tags": "eclectic,global,paradise,radio,world",
+    "codec": "AAC",
+    "bitrate": 320,
+    "votes": 0
+  },
+  {
+    "stationuuid": "3c0b37c0-644b-4178-b63c-1a3b3e31b01f",
+    "name": "Linn Jazz",
+    "url_resolved": "http://mscp3.live-streams.nl:8340/jazz-high.aac",
+    "favicon": "https://www.linn.co.uk/images/favicons/apple-touch-icon.png",
+    "country": "United Kingdom",
+    "tags": "audiophile,jazz,linn",
+    "codec": "AAC",
+    "bitrate": 320,
+    "votes": 0
+  },
+  {
+    "stationuuid": "686a0847-a519-460d-b351-831e1a80d516",
+    "name": "Linn Classical",
+    "url_resolved": "http://radio.linn.co.uk:8004/autodj",
+    "favicon": "https://www.linn.co.uk/images/favicons/apple-touch-icon.png",
+    "country": "United Kingdom",
+    "tags": "audiophile,classical,linn",
+    "codec": "MP3",
+    "bitrate": 320,
+    "votes": 0
+  }
+]

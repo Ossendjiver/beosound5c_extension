@@ -60,7 +60,7 @@ class PowerLinkVolume(VolumeAdapter):
                 return vol
         except Exception as e:
             logger.warning("Could not read PowerLink volume: %s", e)
-            return 0
+            return None
 
     def is_on_cached(self) -> bool | None:
         return self._cached_on

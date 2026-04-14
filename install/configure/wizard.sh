@@ -14,6 +14,7 @@ run_wizard() {
     # Ensure config infrastructure exists
     cfg_ensure
     secrets_ensure
+    radio_favs_ensure
 
     case "$step" in
         all)

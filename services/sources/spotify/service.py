@@ -20,10 +20,13 @@ from datetime import datetime, timedelta
 
 from aiohttp import web
 
+# Shared library (services/) — must come first so ``lib`` is importable
+# by sibling modules that now import from it (e.g. spotify_tokens).
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 # Sibling imports (this directory)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from auth import SpotifyAuth
-from tokens import load_tokens, save_tokens, delete_tokens
+from spotify_auth import SpotifyAuth, RemoteSpotifyAuth
+from spotify_tokens import load_tokens, save_tokens, delete_tokens
 from pkce import (
     generate_code_verifier,
     generate_code_challenge,
@@ -31,11 +34,10 @@ from pkce import (
     exchange_code,
 )
 
-# Shared library (services/)
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from lib.config import cfg
 from lib.source_base import SourceBase
 from lib.digit_playlists import DigitPlaylistMixin
+from lib.spotify_canvas import SpotifyCanvasClient, normalize_spotify_track_uri
 
 logging.basicConfig(level=logging.INFO, format='[%(levelname)s] %(message)s')
 log = logging.getLogger('beo-source-spotify')
@@ -102,7 +104,12 @@ class SpotifyService(DigitPlaylistMixin, SourceBase):
 
     def __init__(self):
         super().__init__()
-        self.auth = SpotifyAuth()
+        token_master = cfg("spotify", "token_master", default="")
+        if token_master:
+            log.info("Using remote token master: %s", token_master)
+            self.auth = RemoteSpotifyAuth(token_master)
+        else:
+            self.auth = SpotifyAuth()
         self.playlists = []
         self.state = "stopped"  # stopped | playing | paused
         self.now_playing = None  # current track metadata
@@ -113,11 +120,14 @@ class SpotifyService(DigitPlaylistMixin, SourceBase):
         self._fetching_playlists = False  # True while initial fetch is running
         self._last_playlist_id = None  # last playlist we queued on the player
         self._last_track_uri = None   # last Spotify track URI seen on player
+        self._track_advanced_at = -10.0 # monotonic time of last _advance_track_uri call
+        self._track_gen = 0           # incremented on every track change; background tasks abort if stale
         self._last_play_time = 0      # monotonic time of last play command (debounce)
         self._last_refresh = 0  # monotonic timestamp of last completed refresh
         self._last_refresh_wall = None  # wall-clock datetime of last completed refresh
         self._last_refresh_duration = None  # seconds the last refresh took
         self._display_name = None  # Spotify display name from /v1/me
+        self._canvas = SpotifyCanvasClient()  # reads SPOTIFY_SP_DC from env
 
     async def on_start(self):
         # Load credentials (may fail — setup flow will handle it)
@@ -128,7 +138,11 @@ class SpotifyService(DigitPlaylistMixin, SourceBase):
             self._detect_player()
 
             # Fetch display name from Spotify profile
-            asyncio.create_task(self._fetch_display_name())
+            self._spawn(self._fetch_display_name(), name="fetch_display_name")
+
+            # Pre-warm canvas client (TOTP secrets + web token) in background
+            if self._canvas.configured:
+                self._spawn(self._warmup_canvas(), name="warmup_canvas")
 
             # Check if a player service supports Spotify (Sonos natively,
             # or local player with go-librespot)
@@ -189,6 +203,16 @@ class SpotifyService(DigitPlaylistMixin, SourceBase):
             self.playlists = []
         self._reload_digit_playlists()
 
+    async def _warmup_canvas(self):
+        """Pre-warm canvas client (TOTP secrets + web token) so first track is fast."""
+        try:
+            if await self._canvas.warmup():
+                log.info("Canvas client warmed up")
+            else:
+                log.warning("Canvas client warmup failed — canvas won't be available")
+        except Exception as e:
+            log.warning("Canvas warmup error: %s", e)
+
     async def _fetch_display_name(self):
         """Fetch Spotify display name from /v1/me."""
         try:
@@ -211,11 +235,46 @@ class SpotifyService(DigitPlaylistMixin, SourceBase):
 
     def add_routes(self, app):
         app.router.add_get('/playlists', self._handle_playlists)
+        app.router.add_get('/token', self._handle_token)
+        app.router.add_get('/canvas', self._handle_canvas)
         app.router.add_get('/setup-status', self._handle_setup_status)
         app.router.add_get('/setup', self._handle_setup)
         app.router.add_get('/start-auth', self._handle_start_auth)
         app.router.add_get('/callback', self._handle_callback)
         app.router.add_post('/logout', self._handle_logout)
+
+    async def _handle_canvas(self, request):
+        """GET /canvas?track_id=<id> — return canvas URL for a track.
+
+        Accepts ``track_id`` (bare 22-char id, the canonical form used
+        by ``endpoints.spotify_canvas_url``) or ``uri`` (legacy: any
+        Spotify URI in any format). Both are normalized to
+        ``spotify:track:<id>`` before lookup, so callers don't have to
+        care whether they have a Sonos-wrapped URI, a web URL, or a
+        bare id.
+
+        Historical bug: this handler used to read ``uri`` while the
+        URL builder sent ``track_id``, so player-originated canvas
+        injection silently returned empty for every external/Sonos
+        playback start. The mismatch is fixed here and locked by
+        ``test_canvas_endpoint.py``.
+        """
+        raw = request.query.get("track_id") or request.query.get("uri", "")
+        if not raw or not self._canvas.configured:
+            return web.json_response(
+                {"canvas_url": ""}, headers=self._cors_headers())
+        track_uri = normalize_spotify_track_uri(raw)
+        if not track_uri:
+            return web.json_response(
+                {"canvas_url": ""}, headers=self._cors_headers())
+        try:
+            url = await self._canvas.get_canvas_url(track_uri)
+            return web.json_response(
+                {"canvas_url": url or ""}, headers=self._cors_headers())
+        except Exception as e:
+            log.warning("Canvas lookup failed for %s: %s", track_uri, e)
+            return web.json_response(
+                {"canvas_url": ""}, headers=self._cors_headers())
 
     async def handle_status(self) -> dict:
         return {
@@ -240,11 +299,16 @@ class SpotifyService(DigitPlaylistMixin, SourceBase):
         return {'status': 'ok', 'resynced': False}
 
     async def handle_activate(self, data):
-        """Source button pressed — resume or start, never pause."""
+        """Source button pressed — resume or start, never pause.
+        Plays from cache even if OAuth token is revoked — go-librespot
+        has its own auth. Only blocks if there are no playlists at all."""
         if self.auth.revoked:
-            log.warning("Activate: Spotify needs re-authentication")
-            await self.register("available")
-            return
+            if not self.playlists:
+                log.warning("Activate: Spotify needs re-authentication and no cached playlists")
+                await self.register("available")
+                return
+            log.info("Activate: OAuth revoked, playing from cache (%d playlists)",
+                     len(self.playlists))
         # Base: pre-broadcast cached metadata + register + activate_playback
         await super().handle_activate(data)
 
@@ -285,24 +349,148 @@ class SpotifyService(DigitPlaylistMixin, SourceBase):
                 break
         return 0
 
+    def _advance_track_uri(self, direction: int):
+        """Update _last_track_uri by moving direction (+1/-1) in the playlist.
+
+        Called immediately on next/prev so the position is tracked locally
+        without waiting for a player poll (which may lag behind)."""
+        if not self._last_playlist_id or not self._last_track_uri:
+            return
+        for pl in self.playlists:
+            if pl.get('id') == self._last_playlist_id:
+                tracks = pl.get('tracks', [])
+                if not tracks:
+                    return
+                for i, track in enumerate(tracks):
+                    if track.get('uri') == self._last_track_uri:
+                        new_idx = i + direction
+                        if 0 <= new_idx < len(tracks):
+                            self._last_track_uri = tracks[new_idx].get('uri')
+                        else:
+                            # Beyond our local cache — clear so we don't
+                            # broadcast stale metadata; the player's event
+                            # will provide the correct track info.
+                            self._last_track_uri = None
+                        self._track_advanced_at = time.monotonic()
+                        self._track_gen += 1
+                        return
+                break
+
+    def _lookup_track_meta(self, track_uri):
+        """Return the cached track dict for a URI, or None."""
+        if not track_uri or not self._last_playlist_id:
+            return None
+        for pl in self.playlists:
+            if pl.get('id') == self._last_playlist_id:
+                for track in pl.get('tracks', []):
+                    if track.get('uri') == track_uri:
+                        return track
+                break
+        return None
+
+    async def _resolve_and_broadcast(self, track_uri, reason, canvas_url=""):
+        """Broadcast media for track_uri using best available metadata.
+        Tries: playlist cache → live player → _last_media fallback.
+
+        ``track_uri`` is forwarded to the router so it can stamp a
+        normalized ``track_id`` on the outgoing payload — this is what
+        keeps the UI's canvas-vs-artwork cycle from going "no opinion"
+        on source rebroadcasts (e.g. resync on activate after
+        switching back to Spotify from another source)."""
+        meta = self._lookup_track_meta(track_uri)
+        if meta:
+            await self.post_media_update(
+                title=meta.get("name", ""),
+                artist=meta.get("artist", ""),
+                album=meta.get("album", ""),
+                artwork=meta.get("image", ""),
+                state="playing", reason=reason, canvas_url=canvas_url,
+                track_uri=track_uri,
+            )
+            return
+        fresh = await self._player_get("media")
+        if fresh and fresh.get("title"):
+            await self.post_media_update(
+                title=fresh.get("title", ""),
+                artist=fresh.get("artist", ""),
+                album=fresh.get("album", ""),
+                artwork=fresh.get("artwork", ""),
+                state="playing", reason=reason, canvas_url=canvas_url,
+                track_uri=track_uri,
+            )
+            return
+        if self._last_media:
+            media = {k: v for k, v in self._last_media.items() if k != "canvas_url"}
+            await self.post_media_update(
+                **media, state="playing", reason=reason, canvas_url=canvas_url,
+                track_uri=track_uri,
+            )
+
+    async def _broadcast_current_track(self):
+        """Pre-broadcast metadata for the current _last_track_uri.
+        Broadcasts immediately with cached canvas, then fetches fresh canvas
+        in background and re-broadcasts if found."""
+        track_uri = self._last_track_uri
+        cached_canvas = ""
+        if track_uri:
+            cached_canvas = self._canvas.get_cached(track_uri) or ""
+        await self._resolve_and_broadcast(track_uri, "track_change", cached_canvas)
+        if self._canvas.configured and track_uri:
+            gen = self._track_gen
+            self._spawn(
+                self._fetch_and_broadcast_canvas(track_uri, gen),
+                name="canvas_fetch")
+
+    async def _fetch_and_broadcast_canvas(self, track_uri, gen):
+        """Fetch canvas URL and re-broadcast media if found.
+        gen: the _track_gen snapshot at task creation — aborts if stale."""
+        try:
+            url = await asyncio.wait_for(
+                self._canvas.get_canvas_url(track_uri), timeout=5.0)
+            if url:
+                # Validate the track hasn't changed while we were fetching
+                if self._track_gen == gen:
+                    await self._resolve_and_broadcast(track_uri, "update", url)
+                else:
+                    log.debug("Canvas skipped — track generation changed (%d → %d)",
+                              gen, self._track_gen)
+        except asyncio.TimeoutError:
+            log.warning("Canvas fetch timed out for %s", track_uri)
+        except Exception as e:
+            log.warning("Canvas fetch error: %s", e)
+
     async def handle_command(self, cmd, data) -> dict:
+        # Captured by _handle_command_route before yielding — immune to
+        # concurrent overwrites of self._action_ts.
+        action_ts = data.get('_action_ts')
+
         if cmd == 'digit':
             digit = data.get('action', '0')
             playlist = self._get_digit_playlist(digit)
             if playlist:
                 log.info("Digit %s -> playlist %s", digit, playlist.get('id'))
-                await self._play_playlist(playlist['id'])
+                await self._play_playlist(playlist['id'], action_ts=action_ts)
             else:
                 log.info("No playlist mapped to digit %s", digit)
 
         elif cmd == 'play_playlist':
             playlist_id = data.get('playlist_id', '')
             track_index = data.get('track_index')
-            await self._play_playlist(playlist_id, track_index)
+            shuffle = data.get('shuffle', False)
+            if shuffle and track_index is None:
+                # Shuffle: pick a random starting track
+                for pl in self.playlists:
+                    if pl.get('id') == playlist_id:
+                        tracks = pl.get('tracks', [])
+                        if tracks:
+                            import random
+                            track_index = random.randint(0, len(tracks) - 1)
+                        break
+            await self._play_playlist(playlist_id, track_index, action_ts=action_ts)
 
         elif cmd == 'play_track':
             uri = data.get('uri', '')
-            await self._play_track(uri)
+            await self._play_track(uri, action_ts=action_ts)
 
         elif cmd == 'play_index':
             index = data.get('index', 0)
@@ -310,7 +498,7 @@ class SpotifyService(DigitPlaylistMixin, SourceBase):
                 log.info("play_index %d in playlist %s", index, self._last_playlist_id)
                 # Reset debounce so play_index always works
                 self._last_play_time = 0
-                await self._play_playlist(self._last_playlist_id, track_index=index)
+                await self._play_playlist(self._last_playlist_id, track_index=index, action_ts=action_ts)
             else:
                 log.warning("play_index but no active playlist")
 
@@ -353,7 +541,7 @@ class SpotifyService(DigitPlaylistMixin, SourceBase):
             return f"https://open.spotify.com/{parts[1]}/{parts[2]}"
         return uri
 
-    async def _play_playlist(self, playlist_id, track_index=None):
+    async def _play_playlist(self, playlist_id, track_index=None, action_ts=None):
         """Start playing a playlist, optionally at a specific track."""
         now = time.monotonic()
         if now - self._last_play_time < 2 and self._last_playlist_id == playlist_id:
@@ -373,40 +561,54 @@ class SpotifyService(DigitPlaylistMixin, SourceBase):
                 if 0 <= track_index < len(tracks):
                     track_meta = tracks[track_index]
                     track_uri = track_meta.get('uri', '')
-                # Liked Songs: collect track URIs for individual queueing
-                # (Sonos ShareLink can't handle spotify:collection:tracks)
-                if playlist_id == "liked-songs":
-                    all_track_uris = [t['uri'] for t in tracks if t.get('uri')]
+                # Collect track URIs for individual queueing — avoids the
+                # disruptive backfill that removes the playing track
+                all_track_uris = [t['uri'] for t in tracks if t.get('uri')]
                 break
-        if playlist_id == "liked-songs":
-            # Local player: play single track URI (librespot handles it)
-            # Sonos: pass track_uris for individual queueing via ShareLink
-            url = self._spotify_uri_to_url(track_uri) if track_uri else None
+        # Playlist URL for librespot context; track_uris handles Sonos queueing
+        # For real Spotify playlists, pass the playlist URI so librespot
+        # queues the entire playlist (preventing autoplay from kicking in
+        # after the first track).  Liked Songs uses spotify:collection:tracks.
+        if playlist_id and playlist_id.startswith(('liked', 'collection')):
+            play_uri = "spotify:collection:tracks"
+        elif playlist_id:
+            play_uri = f"https://open.spotify.com/playlist/{playlist_id}"
         else:
-            url = f"https://open.spotify.com/playlist/{playlist_id}"
+            play_uri = self._spotify_uri_to_url(track_uri) if track_uri else None
         log.info("Play playlist %s (track_index=%s, track_uri=%s, track_uris=%s)",
                  playlist_id, track_index, track_uri,
                  f"{len(all_track_uris)} tracks" if all_track_uris else "none")
         # Register as playing FIRST so router accepts the media update
         self.state = "playing"
         self._last_playlist_id = playlist_id
+        self._last_track_uri = track_uri
+        self._track_gen += 1
         await self.register("playing", auto_power=True)
         # Pre-broadcast metadata for instant PLAYING view (source is now active)
+        # Canvas is fetched in background to avoid blocking the UI transition
         if track_meta:
+            cached_canvas = self._canvas.get_cached(track_uri) or "" if track_uri else ""
             await self.post_media_update(
                 title=track_meta.get("name", ""),
                 artist=track_meta.get("artist", ""),
+                album=track_meta.get("album", ""),
                 artwork=track_meta.get("image", ""),
                 state="playing",
                 reason="track_change",
+                canvas_url=cached_canvas,
             )
+            if self._canvas.configured and track_uri:
+                self._spawn(
+                    self._fetch_and_broadcast_canvas(track_uri, self._track_gen),
+                    name="canvas_fetch")
         self._start_polling()
         ok = await self.player_play(
-            uri=url, track_uri=track_uri, track_uris=all_track_uris)
+            uri=play_uri, track_uri=track_uri, track_uris=all_track_uris,
+            action_ts=action_ts)
         if not ok:
             log.error("Player service failed to start playlist")
 
-    async def _play_track(self, uri):
+    async def _play_track(self, uri, action_ts=None):
         """Play a specific track."""
         url = self._spotify_uri_to_url(uri)
         log.info("Play track %s", url)
@@ -414,7 +616,7 @@ class SpotifyService(DigitPlaylistMixin, SourceBase):
         self.state = "playing"
         await self.register("playing", auto_power=True)
         self._start_polling()
-        ok = await self.player_play(uri=url)
+        ok = await self.player_play(uri=url, action_ts=action_ts)
         if not ok:
             log.error("Player service failed to start track")
 
@@ -458,8 +660,14 @@ class SpotifyService(DigitPlaylistMixin, SourceBase):
         elif self.state == "paused":
             await self._resume()
         elif self.state == "stopped" and self.playlists:
-            # Play first playlist
-            await self._play_playlist(self.playlists[0]['id'])
+            # Resume from last known position, or start first playlist
+            if self._last_playlist_id:
+                track_index = self._find_track_index(
+                    self._last_playlist_id, self._last_track_uri)
+                await self._play_playlist(self._last_playlist_id,
+                                          track_index=track_index)
+            else:
+                await self._play_playlist(self.playlists[0]['id'])
 
     async def _resume(self):
         if await self.player_resume():
@@ -474,13 +682,21 @@ class SpotifyService(DigitPlaylistMixin, SourceBase):
 
     async def _next(self):
         if await self.player_next():
+            self._advance_track_uri(1)
+            await self._broadcast_current_track()
             await asyncio.sleep(0.5)
             await self._poll_now_playing()
+        else:
+            log.warning("player_next() failed — command dropped")
 
     async def _prev(self):
         if await self.player_prev():
+            self._advance_track_uri(-1)
+            await self._broadcast_current_track()
             await asyncio.sleep(0.5)
             await self._poll_now_playing()
+        else:
+            log.warning("player_prev() failed — command dropped")
 
     async def _stop(self):
         await self.player_stop()
@@ -648,7 +864,19 @@ class SpotifyService(DigitPlaylistMixin, SourceBase):
                 # Cache current track URI for resume-from-position on activate
                 uri = await self.player_track_uri()
                 if uri and uri.startswith("spotify:"):
-                    self._last_track_uri = uri
+                    if uri != self._last_track_uri:
+                        # Ignore stale player reports right after a local
+                        # next/prev advance — the player hasn't caught up yet
+                        grace = time.monotonic() - self._track_advanced_at < 5.0
+                        if grace:
+                            log.debug("Poll ignoring stale player URI %s (advanced to %s %.1fs ago)",
+                                      uri, self._last_track_uri,
+                                      time.monotonic() - self._track_advanced_at)
+                        else:
+                            # Genuine auto-advance at end of song
+                            self._last_track_uri = uri
+                            self._track_gen += 1
+                            await self._broadcast_current_track()
                 if self.state != "playing":
                     self.state = "playing"
                     await self.register("playing")
@@ -686,6 +914,20 @@ class SpotifyService(DigitPlaylistMixin, SourceBase):
             }
         }, headers=self._cors_headers())
 
+    async def _handle_token(self, request):
+        """Serve current access token to follower devices."""
+        if not self.auth.is_configured:
+            return web.json_response({"error": "not configured"}, status=503)
+        try:
+            token = await self.auth.get_token()
+            remaining = max(0, int(self.auth._token_expiry - time.monotonic()))
+            return web.json_response({
+                "access_token": token,
+                "expires_in": remaining,
+            })
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=503)
+
     async def _handle_playlists(self, request):
         if not self.auth.is_configured:
             return web.json_response({
@@ -704,9 +946,9 @@ class SpotifyService(DigitPlaylistMixin, SourceBase):
 
         # Trigger background refresh if >5 min since last sync
         if self._should_refresh() and not self._fetching_playlists:
-            self._fetching_playlists = True  # set before create_task to prevent double-trigger
+            self._fetching_playlists = True  # set before spawn to prevent double-trigger
             log.info("Playlist view opened — refreshing in background")
-            asyncio.create_task(self._refresh_playlists())
+            self._spawn(self._refresh_playlists(), name="refresh_playlists")
 
         return web.json_response(
             self.playlists,
@@ -886,7 +1128,7 @@ label{{display:block;margin-top:12px;color:#666;font-size:13px;text-transform:up
             await self.register("available")
 
             # Fetch display name
-            asyncio.create_task(self._fetch_display_name())
+            self._spawn(self._fetch_display_name(), name="fetch_display_name")
 
             # Kick off playlist refresh in background (no initial delay)
             self._fetching_playlists = True

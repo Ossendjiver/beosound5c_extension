@@ -5,7 +5,7 @@
     "PLAYING": "playing",
     "JOIN": "join",
     "CD": "cd",
-    "USB": { "id": "usb", "mounts": [{ "name": "USB", "path": "/mnt/usb-music" }] },
+    "USB": "usb",
     "SPOTIFY": "spotify",
     "APPLE MUSIC": "apple_music",
     "TIDAL": "tidal",
@@ -25,7 +25,7 @@
     { "id": "all_off", "name": "All off", "icon": "power", "color": "#c55" }
   ],
 
-  "player": { "type": "sonos", "ip": "192.168.0.190" },
+  "player": { "type": "sonos", "ip": "192.168.1.100" },
   "bluetooth": { "remote_mac": "" },
   "home_assistant": {
     "url": "http://homeassistant.local:8123",
@@ -34,14 +34,14 @@
   "transport": { "mode": "webhook" },
   "volume": {
     "type": "sonos",
-    "host": "192.168.0.190",
+    "host": "192.168.1.100",
     "max": 70,
     "step": 3,
     "output_name": "Sonos"
   },
   "cd": { "device": "/dev/sr0" },
   "join": {},
-  "spotify": { "client_id": "", "source": "radio" },
-  "news": { "guardian_api_key": "test" },
-  "showing": { "entity_id": "media_player.loft_apple_tv" }
+  "spotify": { "client_id": "" },
+  "radio": { "source": "radio" },
+  "news": { "guardian_api_key": "test" }
 }

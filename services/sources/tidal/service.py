@@ -19,13 +19,14 @@ from datetime import datetime, timedelta
 
 from aiohttp import web
 
+# Shared library (services/) — must come first so ``lib`` is importable
+# by sibling modules that now import from it (e.g. tidal_tokens).
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 # Sibling imports (this directory)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from auth import TidalAuth
-from tokens import load_tokens, save_tokens, delete_tokens
+from tidal_auth import TidalAuth
+from tidal_tokens import load_tokens, save_tokens, delete_tokens
 
-# Shared library (services/)
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from lib.config import cfg
 from lib.source_base import SourceBase
 from lib.digit_playlists import DigitPlaylistMixin
@@ -629,7 +630,7 @@ class TidalService(DigitPlaylistMixin, SourceBase):
         if self._should_refresh() and not self._fetching_playlists:
             self._fetching_playlists = True
             log.info("Playlist view opened — refreshing in background")
-            asyncio.create_task(self._refresh_playlists())
+            self._spawn(self._refresh_playlists(), name="refresh_playlists")
 
         return web.json_response(
             self.playlists,

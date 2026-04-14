@@ -21,6 +21,23 @@ def _reset_config_cache():
     config_mod._config = None
 
 
+@pytest.fixture(autouse=True)
+def _reset_action_ts_ctx():
+    """Reset the action_ts ContextVar between tests.
+
+    ``_action_ts_ctx.set(X)`` outside a task leaks into sibling tests
+    (ContextVars are thread-local, not test-local).  Several tests set
+    it at module scope; this fixture clears it around each test so
+    assertions about "no action_ts" aren't contaminated by earlier runs.
+    """
+    import lib.source_base as sb
+    token = sb._action_ts_ctx.set(0.0)
+    try:
+        yield
+    finally:
+        sb._action_ts_ctx.reset(token)
+
+
 @pytest.fixture
 def config_file(tmp_path, monkeypatch):
     """Provide a temp config file path and patch _SEARCH_PATHS to use it.

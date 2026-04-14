@@ -23,13 +23,14 @@ from datetime import datetime, timedelta
 import aiohttp
 from aiohttp import web
 
+# Shared library (services/) — must come first so ``lib`` is importable
+# by sibling modules that now import from it (e.g. plex_tokens).
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 # Sibling imports (this directory)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from auth import PlexAuth
-from tokens import load_tokens, save_tokens, delete_tokens
+from plex_auth import PlexAuth
+from plex_tokens import load_tokens, save_tokens, delete_tokens
 
-# Shared library (services/)
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from lib.config import cfg
 from lib.source_base import SourceBase
 from lib.digit_playlists import DigitPlaylistMixin
@@ -75,6 +76,7 @@ class PlexService(DigitPlaylistMixin, SourceBase):
     name = "PLEX"
     port = 8778
     manages_queue = True
+    DIGIT_PLAYLISTS_FILE = DIGIT_PLAYLISTS_FILE
     action_map = {
         "play": "toggle",
         "pause": "toggle",
@@ -195,6 +197,22 @@ class PlexService(DigitPlaylistMixin, SourceBase):
             await self.register(state)
             await self._resync_media()
             return {'status': 'ok', 'resynced': True}
+
+        # Auth not configured — try loading tokens from disk (server may
+        # have been unreachable at startup but tokens exist on disk)
+        loop = asyncio.get_running_loop()
+        recovered = await loop.run_in_executor(None, self.auth.load)
+        if recovered:
+            log.info("Plex auth recovered on resync — initialising")
+            self._load_playlists()
+            self._detect_player()
+            await self.register("available")
+            self._refresh_task = asyncio.create_task(
+                self._delayed_refresh(delay=10))
+            self._nightly_task = asyncio.create_task(
+                self._nightly_refresh_loop())
+            return {'status': 'ok', 'resynced': True, 'recovered': True}
+
         return {'status': 'ok', 'resynced': False}
 
     async def activate_playback(self):
@@ -635,7 +653,7 @@ class PlexService(DigitPlaylistMixin, SourceBase):
         if self._should_refresh() and not self._fetching_playlists:
             self._fetching_playlists = True
             log.info("Playlist view opened - refreshing in background")
-            asyncio.create_task(self._refresh_playlists())
+            self._spawn(self._refresh_playlists(), name="refresh_playlists")
 
         return web.json_response(
             self.playlists,

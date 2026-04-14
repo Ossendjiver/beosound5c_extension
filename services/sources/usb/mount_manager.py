@@ -15,58 +15,98 @@ log = logging.getLogger('beo-usb')
 class MountManager:
     """Manages USB mount points from config. Auto-detects BM5 drives."""
 
-    def __init__(self, mounts_config):
-        self.config = mounts_config or []
+    def __init__(self, paths):
+        self.paths = paths or []
         self.mounts = []  # list of (name, browser) -- BM5Library or FileBrowser
 
     async def init(self):
-        """Initialize all mounts from config."""
-        for i, mc in enumerate(self.config):
-            name = mc.get('name', f'USB {i+1}')
-            mount_type = mc.get('type', 'plain')
-            path = mc.get('path')
-
-            if mount_type == 'bm5':
-                browser = await self._init_bm5(name, path)
-            else:
-                browser = FileBrowser(path, name) if path else None
-
+        """Initialize mounts from configured paths, then auto-detect if needed."""
+        for path in self.paths:
+            browser = await self._init_path(path)
             if browser:
+                name = getattr(browser, 'name', Path(path).name)
                 self.mounts.append((name, browser))
-                log.info("Mount [%d] %s: %s (%s)", i, name,
-                         type(browser).__name__,
-                         getattr(browser, 'mount', getattr(browser, 'root', '?')))
-            else:
-                log.warning("Mount [%d] %s: not available", i, name)
 
-    async def _init_bm5(self, name, manual_path=None):
-        """Initialize a BM5 library. Auto-detect if no path given."""
-        if manual_path:
-            lib = BM5Library(manual_path, name)
-            if lib.available:
-                lib.open()
-                return lib
-            log.warning("BM5 manual path not available: %s", manual_path)
+        # No configured paths, or none worked — auto-detect BM5 HDD
+        if not any(isinstance(b, BM5Library) for _, b in self.mounts):
+            browser = await self._auto_detect_bm5()
+            if browser:
+                self.mounts.append((browser.name, browser))
+
+    async def _init_path(self, path):
+        """Initialize a single path as BM5Library or FileBrowser.
+        If the path is an empty directory, try mounting an NTFS partition there."""
+        p = Path(path)
+        if not p.is_dir():
+            log.warning("Path not found: %s", path)
             return None
 
-        # Auto-detect: scan for NTFS partitions with BM5 marker
-        mount_point = await self._auto_detect_bm5(name)
-        if mount_point:
-            lib = BM5Library(mount_point, name)
+        # Empty dir — likely an unmounted mount point
+        if not any(p.iterdir()):
+            if not await self._try_mount_to(path):
+                log.warning("Empty mount point, no NTFS partition found: %s", path)
+                return None
+
+        # Check for BM5 drive
+        if (p / "BM-Share" / "Music").is_dir():
+            lib = BM5Library(path)
             if lib.available:
                 lib.open()
+                log.info("BM5 library at %s: %s", path, lib.name)
                 return lib
+
+        # Plain filesystem
+        browser = FileBrowser(path)
+        if browser.available:
+            return browser
         return None
 
-    async def _auto_detect_bm5(self, name):
-        """Scan block devices for NTFS partition with BM5 marker."""
-        slug = re.sub(r'[^a-z0-9]+', '-', name.lower()).strip('-')
-        mount_target = f"/mnt/beo-usb-{slug}"
+    async def _try_mount_to(self, target_path):
+        """Try to mount an unmounted NTFS partition at target_path."""
+        try:
+            result = await asyncio.create_subprocess_exec(
+                'lsblk', '--json', '-o', 'NAME,FSTYPE,MOUNTPOINT,SIZE',
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            stdout, _ = await result.communicate()
+            data = json.loads(stdout)
+        except Exception as e:
+            log.warning("lsblk failed: %s", e)
+            return False
 
-        # Check if already mounted at target
+        candidates = []
+        for dev in data.get('blockdevices', []):
+            self._collect_ntfs(dev, candidates)
+
+        for dev_name, mountpoint in candidates:
+            if mountpoint:
+                continue
+            dev_path = f"/dev/{dev_name}"
+            for fs in ('ntfs3', 'ntfs-3g'):
+                proc = await asyncio.create_subprocess_exec(
+                    'sudo', 'mount', '-t', fs, '-o', 'ro,uid=1000,gid=1000',
+                    dev_path, target_path,
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.DEVNULL,
+                )
+                await proc.wait()
+                if proc.returncode == 0:
+                    log.info("Mounted %s at %s (%s)", dev_path, target_path, fs)
+                    return True
+        return False
+
+    async def _auto_detect_bm5(self):
+        """Scan block devices for NTFS partition with BM5 marker."""
+        mount_target = "/mnt/beo-usb-auto"
+
+        # Check if already mounted at target from a previous run
         if Path(mount_target).is_dir() and (Path(mount_target) / "BM-Share" / "Music").is_dir():
-            log.info("BM5 already mounted at %s", mount_target)
-            return mount_target
+            lib = BM5Library(mount_target)
+            if lib.available:
+                lib.open()
+                log.info("BM5 already mounted at %s", mount_target)
+                return lib
 
         try:
             result = await asyncio.create_subprocess_exec(
@@ -85,84 +125,76 @@ class MountManager:
             self._collect_ntfs(dev, candidates)
 
         for dev_name, mountpoint in candidates:
-            # If already mounted somewhere, check for marker
+            # Already mounted somewhere — check for BM5 marker
             if mountpoint:
-                marker = Path(mountpoint) / "BM-Share" / "Music"
-                if marker.is_dir():
-                    log.info("BM5 found at existing mount: %s", mountpoint)
-                    return mountpoint
+                if (Path(mountpoint) / "BM-Share" / "Music").is_dir():
+                    lib = BM5Library(mountpoint)
+                    if lib.available:
+                        lib.open()
+                        log.info("BM5 found at existing mount: %s", mountpoint)
+                        return lib
                 continue
 
-            # Try temp-mounting to check
+            # Probe unmounted partition
             dev_path = f"/dev/{dev_name}"
             tmp_mount = f"/tmp/beo-usb-probe-{dev_name}"
             try:
                 Path(tmp_mount).mkdir(parents=True, exist_ok=True)
-                proc = await asyncio.create_subprocess_exec(
-                    'sudo', 'mount', '-t', 'ntfs3', '-o', 'ro',
-                    dev_path, tmp_mount,
-                    stdout=asyncio.subprocess.DEVNULL,
-                    stderr=asyncio.subprocess.DEVNULL,
-                )
-                await proc.wait()
-                if proc.returncode != 0:
-                    # Try ntfs-3g fallback
+                mounted = False
+                for fs in ('ntfs3', 'ntfs-3g'):
                     proc = await asyncio.create_subprocess_exec(
-                        'sudo', 'mount', '-t', 'ntfs-3g', '-o', 'ro',
+                        'sudo', 'mount', '-t', fs, '-o', 'ro',
                         dev_path, tmp_mount,
                         stdout=asyncio.subprocess.DEVNULL,
                         stderr=asyncio.subprocess.DEVNULL,
                     )
                     await proc.wait()
+                    if proc.returncode == 0:
+                        mounted = True
+                        break
+                if not mounted:
+                    continue
 
-                marker = Path(tmp_mount) / "BM-Share" / "Music"
-                if marker.is_dir():
-                    # Found! Move to permanent mount point
+                if (Path(tmp_mount) / "BM-Share" / "Music").is_dir():
+                    # Found BM5 — remount at permanent location
+                    await self._umount(tmp_mount)
                     await asyncio.create_subprocess_exec(
-                        'sudo', 'umount', tmp_mount,
-                        stdout=asyncio.subprocess.DEVNULL,
-                        stderr=asyncio.subprocess.DEVNULL,
-                    )
-                    proc = await asyncio.create_subprocess_exec(
                         'sudo', 'mkdir', '-p', mount_target,
                         stdout=asyncio.subprocess.DEVNULL,
                         stderr=asyncio.subprocess.DEVNULL,
                     )
-                    await proc.wait()
-                    proc = await asyncio.create_subprocess_exec(
-                        'sudo', 'mount', '-t', 'ntfs3', '-o', 'ro',
-                        dev_path, mount_target,
-                        stdout=asyncio.subprocess.DEVNULL,
-                        stderr=asyncio.subprocess.DEVNULL,
-                    )
-                    await proc.wait()
-                    if proc.returncode != 0:
+                    for fs in ('ntfs3', 'ntfs-3g'):
                         proc = await asyncio.create_subprocess_exec(
-                            'sudo', 'mount', '-t', 'ntfs-3g', '-o', 'ro',
+                            'sudo', 'mount', '-t', fs, '-o', 'ro',
                             dev_path, mount_target,
                             stdout=asyncio.subprocess.DEVNULL,
                             stderr=asyncio.subprocess.DEVNULL,
                         )
                         await proc.wait()
-                    log.info("BM5 auto-mounted: %s -> %s", dev_path, mount_target)
-                    return mount_target
+                        if proc.returncode == 0:
+                            lib = BM5Library(mount_target)
+                            if lib.available:
+                                lib.open()
+                                log.info("BM5 auto-mounted: %s -> %s", dev_path, mount_target)
+                                return lib
                 else:
-                    await asyncio.create_subprocess_exec(
-                        'sudo', 'umount', tmp_mount,
-                        stdout=asyncio.subprocess.DEVNULL,
-                        stderr=asyncio.subprocess.DEVNULL,
-                    )
+                    await self._umount(tmp_mount)
             except Exception as e:
                 log.warning("Probe failed for %s: %s", dev_path, e)
             finally:
-                # Clean up tmp mount dir
                 try:
                     Path(tmp_mount).rmdir()
                 except OSError:
                     pass
 
-        log.warning("No BM5 drive found")
         return None
+
+    async def _umount(self, path):
+        await asyncio.create_subprocess_exec(
+            'sudo', 'umount', path,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
 
     def _collect_ntfs(self, dev, candidates):
         """Recursively collect NTFS partitions from lsblk output."""

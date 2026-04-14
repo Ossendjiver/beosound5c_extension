@@ -31,7 +31,10 @@ from aiohttp import web
 from PIL import Image
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from lib.background_tasks import BackgroundTaskSet
 from lib.config import cfg
+from lib.endpoints import PLAYER_PORT, ROUTER_PORT
+from lib.loop_monitor import LoopMonitor
 from lib.watchdog import watchdog_loop
 
 logging.basicConfig(level=logging.DEBUG, format='[%(levelname)s] %(message)s')
@@ -44,9 +47,11 @@ logging.getLogger('zeroconf').setLevel(logging.WARNING)
 XMPP_PORT = 5222
 ART_PORT = 8080
 
-# Internal BS5c service URLs
-ROUTER_URL = "http://localhost:8770"
-PLAYER_URL = "http://localhost:8766"
+# Internal BS5c service URLs.  beo6 uses these as base URLs with many
+# dynamic paths, so we keep the bare base rather than importing every
+# individual endpoint constant.
+ROUTER_URL = f"http://localhost:{ROUTER_PORT}"
+PLAYER_URL = f"http://localhost:{PLAYER_PORT}"
 
 # BeoNet identity
 DEVICE_SERIAL = cfg("beo6", "serial", default="00000001")
@@ -455,19 +460,29 @@ class BeoNetSession:
     async def _handle_skip(self, iq_id, el):
         """Handle skip — jump by offset in the queue."""
         offset = int(el.get('offset', '0'))
-        log.info("Skip command: offset=%d", offset)
+        queue_id = el.get('queue-id', '')
+        log.info("Skip command: offset=%d queue-id=%s", offset, queue_id)
 
-        if offset == 0:
-            # Resume/play current track
+        if offset == 0 and queue_id:
+            # Beo6 encodes clicked track's router queue position in queue-id
+            position = int(queue_id)
+            log.info("Skip play: queue position=%d", position)
+            self.service.state = "playing"
+            self.service.pq_revision += 1
+            self.service.queue_id = str(self.service.pq_revision)
+            self.service.queue_position = 0
+            self.service._play_suppress_until = time.monotonic() + 5
             try:
                 async with self.service._http.post(
-                    f"{PLAYER_URL}/player/resume",
-                    json={},
-                    timeout=aiohttp.ClientTimeout(total=5),
+                    f"{ROUTER_URL}/router/queue/play",
+                    json={"position": position},
+                    timeout=aiohttp.ClientTimeout(total=10),
                 ) as resp:
-                    log.info("Resume (skip 0) -> %d", resp.status)
+                    log.info("Queue play position %d -> %d", position, resp.status)
             except Exception as e:
-                log.error("Resume failed: %s", e)
+                log.error("Queue play failed: %s", e)
+        elif offset == 0:
+            pass  # no track id — no-op
         elif offset == 1:
             await self.service.skip_next()
         elif offset == -1:
@@ -550,6 +565,7 @@ class Beo6Service:
         self._http: aiohttp.ClientSession | None = None
         self._media_ws: aiohttp.ClientWebSocketResponse | None = None
         self._media_ws_task: asyncio.Task | None = None
+        self._background_tasks = BackgroundTaskSet(log, label="beo6")
 
         # Source config
         self.source_id = cfg("beo6", "source", default="spotify")
@@ -605,7 +621,7 @@ class Beo6Service:
         """Start the XMPP server, cover art server, and mDNS advertisement."""
         # Check if beo6 is configured
         beo6_cfg = cfg("beo6")
-        if not beo6_cfg:
+        if beo6_cfg is None:
             log.info("No beo6 config — exiting")
             from lib.watchdog import sd_notify
             sd_notify("READY=1\nSTATUS=Not configured, exiting")
@@ -629,16 +645,19 @@ class Beo6Service:
         log.info("Cover art server on port %d", ART_PORT)
 
         # Start mDNS advertisement
-        asyncio.create_task(self._advertise_mdns())
+        self._background_tasks.spawn(self._advertise_mdns(), name="advertise_mdns")
 
-        # Subscribe to router media updates
-        self._media_ws_task = asyncio.create_task(self._media_ws_loop())
+        # Subscribe to router media updates (kept separate so we can reconnect)
+        self._media_ws_task = self._background_tasks.spawn(
+            self._media_ws_loop(), name="media_ws_loop")
 
         # Initial content fetch + state sync
-        asyncio.create_task(self._fetch_content())
-        asyncio.create_task(self._sync_initial_state())
+        self._background_tasks.spawn(self._fetch_content(), name="fetch_content_initial")
+        self._background_tasks.spawn(self._sync_initial_state(), name="sync_initial_state")
 
-        # Watchdog
+        # Watchdog — kept as a bare create_task since it runs for the
+        # process lifetime and lib/watchdog.py has no exception surface
+        # worth tracking.
         asyncio.create_task(watchdog_loop())
 
         log.info("Beo6 service ready (source=%s, jid=%s)", self.source_id, JID)
@@ -964,11 +983,13 @@ class Beo6Service:
                         # Source not ready (setup_needed, loading, etc.)
                         log.info("Source not ready: %s", data)
                         await asyncio.sleep(30)
-                        asyncio.create_task(self._fetch_content())
+                        self._background_tasks.spawn(
+                            self._fetch_content(), name="fetch_content_retry")
         except Exception as e:
             log.warning("Failed to fetch content: %s — retrying in 30s", e)
             await asyncio.sleep(30)
-            asyncio.create_task(self._fetch_content())
+            self._background_tasks.spawn(
+                self._fetch_content(), name="fetch_content_retry")
 
     def _build_content_index(self):
         """Build flat track list, artist index, and album index from playlists."""
@@ -983,7 +1004,7 @@ class Beo6Service:
             pl_name = pl.get('name', '')
             pl_image = pl.get('image', '')
 
-            for t in pl.get('tracks', []):
+            for pl_track_idx, t in enumerate(pl.get('tracks', [])):
                 t_artist = t.get('artist', '') or 'Unknown'
                 t_album = pl_name  # Use playlist name as album
                 t_image = t.get('image', pl_image)
@@ -1026,6 +1047,7 @@ class Beo6Service:
                     'play_count': 0,
                     'last_played': 0,
                     '_playlist_id': pl.get('id', ''),
+                    '_playlist_idx': pl_track_idx,
                 })
                 alb['tracks'].append(track_id)
                 track_id += 1
@@ -1077,7 +1099,8 @@ class Beo6Service:
         # Refresh content if stale (>5 min)
         if time.monotonic() - self._last_content_fetch > 300:
             self._last_content_fetch = time.monotonic()
-            asyncio.create_task(self._fetch_content())
+            self._background_tasks.spawn(
+                self._fetch_content(), name="fetch_content_refresh")
 
         if content_type == 'track':
             return self._query_tracks(first, last, filters, order_by, order_sort, attrs, seed_key, seed_value)
@@ -1457,16 +1480,7 @@ class Beo6Service:
                     playlist_tracks = pl.get('tracks', [])
                     track_count = len(playlist_tracks)
                     break
-            # Find the clicked track's position in the playlist
-            track_index = 0
-            track_uri = track.get('uri', '')
-            for i, pt in enumerate(playlist_tracks):
-                if track_uri and pt.get('uri') == track_uri:
-                    track_index = i
-                    break
-                if pt.get('name') == track.get('title') and pt.get('artist') == track.get('artist'):
-                    track_index = i
-                    break
+            track_index = track.get('_playlist_idx', 0)
 
             # Set now-playing immediately so Beo6 shows the right track
             if 0 <= track_index < len(playlist_tracks):
@@ -1644,6 +1658,7 @@ async def main():
     service = Beo6Service()
     await service.start()
 
+    loop_monitor = LoopMonitor().start()
     stop_event = asyncio.Event()
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):
@@ -1651,6 +1666,8 @@ async def main():
 
     await stop_event.wait()
 
+    await loop_monitor.stop()
+    await service._background_tasks.cancel_all()
     if service._http:
         await service._http.close()
 

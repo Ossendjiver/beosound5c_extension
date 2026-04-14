@@ -71,7 +71,12 @@ class Transport:
         self._mqtt_client = None
         self._mqtt_task: asyncio.Task | None = None
         self._command_handler = None
+        self._extra_subscriptions: list[tuple[str, callable]] = []
         self._running = False
+
+    def add_subscription(self, topic: str, handler):
+        """Add an extra MQTT topic subscription with its own handler."""
+        self._extra_subscriptions.append((topic, handler))
 
     @property
     def _use_webhook(self) -> bool:
@@ -156,7 +161,7 @@ class Transport:
             async with self._session.post(
                 self.webhook_url,
                 json=payload,
-                timeout=aiohttp.ClientTimeout(total=0.5),
+                timeout=aiohttp.ClientTimeout(total=2.0),
                 raise_for_status=True,
             ) as resp:
                 logger.debug("Webhook sent: %s (HTTP %d)", payload.get("action"), resp.status)
@@ -215,15 +220,35 @@ class Transport:
                     await client.subscribe(self.topic_in)
                     logger.info("MQTT subscribed to %s", self.topic_in)
 
+                    # Subscribe to extra topics (e.g. lydbro-one)
+                    for extra_topic, _ in self._extra_subscriptions:
+                        await client.subscribe(extra_topic)
+                        logger.info("MQTT subscribed to %s (extra)", extra_topic)
+
                     async for message in client.messages:
-                        if message.topic.matches(self.topic_in):
+                        try:
+                            data = json.loads(message.payload.decode())
+                        except json.JSONDecodeError:
+                            logger.warning("MQTT invalid JSON: %s", message.payload)
+                            continue
+
+                        # Check extra subscriptions first
+                        handled = False
+                        for extra_topic, handler in self._extra_subscriptions:
+                            if message.topic.matches(extra_topic):
+                                try:
+                                    await handler(data)
+                                except Exception as e:
+                                    logger.error("MQTT extra handler error (%s): %s",
+                                                 extra_topic, e)
+                                handled = True
+                                break
+
+                        if not handled and message.topic.matches(self.topic_in):
                             try:
-                                data = json.loads(message.payload.decode())
                                 logger.info("MQTT command received: %s", data)
                                 if self._command_handler:
                                     await self._command_handler(data)
-                            except json.JSONDecodeError:
-                                logger.warning("MQTT invalid JSON: %s", message.payload)
                             except Exception as e:
                                 logger.error("MQTT command handler error: %s", e)
 

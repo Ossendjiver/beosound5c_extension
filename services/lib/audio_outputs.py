@@ -7,17 +7,20 @@ PipeWire sink naming conventions.
 
 Usage:
     audio = AudioOutputs()
-    outputs = audio.get_outputs()        # list all available sinks
-    await audio.set_output(sink_name)    # switch default + move streams
-    sink = audio.find_sink(ip="192.168.1.135")  # find by IP
-    sink = audio.find_sink(type="bluetooth")     # find by type
+    outputs = await audio.get_outputs()        # list all available sinks
+    await audio.set_output(sink_name)          # switch default + move streams
+    sink = await audio.find_sink(ip="192.168.1.135")  # find by IP
+    sink = await audio.find_sink(type="bluetooth")     # find by type
+
+Every method that shells out runs the subprocess via
+``asyncio.create_subprocess_exec`` so the event loop stays responsive
+— previously pactl calls could block the loop for multiple seconds.
 """
 
 import asyncio
 import logging
 import os
 import re
-import subprocess
 
 log = logging.getLogger(__name__)
 
@@ -67,7 +70,27 @@ class AudioOutputs:
         self._env = os.environ.copy()
         self._env.setdefault("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
 
-    def get_outputs(self):
+    async def _run(self, *args, timeout: float = 3.0,
+                   capture: bool = True) -> tuple[str, int]:
+        """Run a subprocess without blocking the event loop.
+
+        Returns (stdout_text, returncode).  Kills the process on timeout.
+        """
+        proc = await asyncio.create_subprocess_exec(
+            *args,
+            stdout=asyncio.subprocess.PIPE if capture else asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+            env=self._env,
+        )
+        try:
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+            raise
+        return (stdout.decode("utf-8", "replace") if stdout else ""), (proc.returncode or 0)
+
+    async def get_outputs(self):
         """List all available audio sinks with type classification.
 
         Returns list of dicts:
@@ -78,23 +101,15 @@ class AudioOutputs:
             bluetooth, hdmi, optical, usb, analog, other
         """
         try:
-            short = subprocess.run(
-                ["pactl", "list", "sinks", "short"],
-                capture_output=True, text=True, timeout=3, env=self._env,
-            )
-            full = subprocess.run(
-                ["pactl", "list", "sinks"],
-                capture_output=True, text=True, timeout=3, env=self._env,
-            )
-            default = subprocess.run(
-                ["pactl", "get-default-sink"],
-                capture_output=True, text=True, timeout=3, env=self._env,
-            ).stdout.strip()
+            short_out, _ = await self._run("pactl", "list", "sinks", "short")
+            full_out, _ = await self._run("pactl", "list", "sinks")
+            default_out, _ = await self._run("pactl", "get-default-sink")
+            default = default_out.strip()
 
             # Parse descriptions from full output
             descriptions = {}
             current_name = None
-            for line in full.stdout.split("\n"):
+            for line in full_out.split("\n"):
                 line = line.strip()
                 if line.startswith("Name:"):
                     current_name = line.split(":", 1)[1].strip()
@@ -102,7 +117,7 @@ class AudioOutputs:
                     descriptions[current_name] = line.split(":", 1)[1].strip()
 
             outputs = []
-            for line in short.stdout.strip().split("\n"):
+            for line in short_out.strip().split("\n"):
                 if not line.strip():
                     continue
                 parts = line.split("\t")
@@ -130,7 +145,7 @@ class AudioOutputs:
             log.error("Failed to list audio outputs: %s", e)
             return []
 
-    def find_sink(self, *, ip=None, type=None, name_contains=None):
+    async def find_sink(self, *, ip=None, type=None, name_contains=None):
         """Find a sink matching the given criteria. Returns dict or None.
 
         Args:
@@ -138,7 +153,7 @@ class AudioOutputs:
             type: Match sinks of this type (airplay, bluetooth, hdmi, etc.)
             name_contains: Match sinks whose name contains this substring
         """
-        for output in self.get_outputs():
+        for output in await self.get_outputs():
             if ip and ip not in output["name"]:
                 continue
             if type and output["type"] != type:
@@ -148,7 +163,7 @@ class AudioOutputs:
             return output
         return None
 
-    def check_pipewire_health(self):
+    async def check_pipewire_health(self):
         """Quick check if PipeWire/PulseAudio can handle audio streams.
 
         Tests by running ``pactl info`` and checking for a valid server
@@ -158,17 +173,14 @@ class AudioOutputs:
         Returns True if healthy, False if broken.
         """
         try:
-            result = subprocess.run(
-                ["pactl", "info"],
-                capture_output=True, text=True, timeout=3, env=self._env,
-            )
-            for line in result.stdout.split("\n"):
+            stdout, rc = await self._run("pactl", "info")
+            for line in stdout.split("\n"):
                 if "Server Protocol Version" in line:
                     version = line.split(":", 1)[1].strip()
                     if version == "4294967295":
                         log.warning("PipeWire broken: invalid protocol version")
                         return False
-            return result.returncode == 0
+            return rc == 0
         except Exception as e:
             log.warning("PipeWire health check failed: %s", e)
             return False
@@ -181,14 +193,15 @@ class AudioOutputs:
         """
         log.warning("Restarting PipeWire stack...")
         try:
-            subprocess.run(
-                ["systemctl", "--user", "restart", "pipewire", "pipewire-pulse", "wireplumber"],
-                capture_output=True, timeout=10, env=self._env,
+            await self._run(
+                "systemctl", "--user", "restart",
+                "pipewire", "pipewire-pulse", "wireplumber",
+                timeout=10, capture=False,
             )
             # Wait for sinks to re-appear (mDNS RAOP discovery takes a few seconds)
             for attempt in range(15):
                 await asyncio.sleep(2)
-                outputs = self.get_outputs()
+                outputs = await self.get_outputs()
                 if outputs:
                     log.info("PipeWire restarted — %d sinks available after %ds",
                              len(outputs), (attempt + 1) * 2)
@@ -205,7 +218,7 @@ class AudioOutputs:
         Call this before starting playback to avoid silent failures.
         Returns True if audio subsystem is ready.
         """
-        if self.check_pipewire_health():
+        if await self.check_pipewire_health():
             return True
         return await self.restart_pipewire()
 
@@ -220,11 +233,11 @@ class AudioOutputs:
             return False
 
         # Auto-heal PipeWire if broken
-        if not self.check_pipewire_health():
+        if not await self.check_pipewire_health():
             if not await self.restart_pipewire():
                 return False
 
-        sink = self.find_sink(ip=ip)
+        sink = await self.find_sink(ip=ip)
         if sink and sink.get("active"):
             return True
         if sink:
@@ -233,7 +246,7 @@ class AudioOutputs:
         # Sink gone — wait for PipeWire to rediscover it
         for attempt in range(5):
             await asyncio.sleep(1)
-            sink = self.find_sink(ip=ip)
+            sink = await self.find_sink(ip=ip)
             if sink:
                 log.info("AirPlay sink reappeared after %ds", attempt + 1)
                 return await self.set_output(sink["name"])
@@ -247,22 +260,17 @@ class AudioOutputs:
         Returns True on success, False on failure.
         """
         try:
-            subprocess.run(
-                ["pactl", "set-default-sink", sink_name],
-                capture_output=True, timeout=3, check=True, env=self._env,
-            )
+            _, rc = await self._run("pactl", "set-default-sink", sink_name)
+            if rc != 0:
+                log.error("set-default-sink %s returned rc=%d", sink_name, rc)
+                return False
             # Move any active playback streams to the new sink
-            result = subprocess.run(
-                ["pactl", "list", "sink-inputs", "short"],
-                capture_output=True, text=True, timeout=3, env=self._env,
-            )
-            for line in result.stdout.strip().split("\n"):
+            inputs_out, _ = await self._run("pactl", "list", "sink-inputs", "short")
+            for line in inputs_out.strip().split("\n"):
                 if line.strip():
                     stream_id = line.split("\t")[0]
-                    subprocess.run(
-                        ["pactl", "move-sink-input", stream_id, sink_name],
-                        capture_output=True, timeout=3, env=self._env,
-                    )
+                    await self._run(
+                        "pactl", "move-sink-input", stream_id, sink_name)
 
             self.current_sink = sink_name
             log.info("Audio output -> %s", sink_name)
@@ -290,7 +298,7 @@ def _classify_airplay(sink_name):
     """Sub-classify an AirPlay sink by extracting and matching the hostname.
 
     RAOP sink names follow: raop_sink.<hostname>.<ip>.<port>
-    e.g. raop_sink.Sonos-48A6B8246BFC.local.192.168.0.190.7000
+    e.g. raop_sink.Sonos-XXXXXXXXXXXX.local.192.168.1.100.7000
     """
     # Strip "raop_sink." prefix, then take everything before the IP
     rest = sink_name.removeprefix("raop_sink.")

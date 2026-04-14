@@ -6,16 +6,23 @@ import os
 import logging
 import aiohttp
 from aiohttp import web, ClientSession
+from lib.background_tasks import BackgroundTaskSet
 from lib.transport import Transport
 from lib.config import cfg
+from lib.correlation import install_logging
+from lib.endpoints import (
+    ROUTER_BROADCAST,
+    ROUTER_OUTPUT_OFF,
+    ROUTER_RESYNC,
+)
+from lib.loop_monitor import LoopMonitor
 from lib.watchdog import watchdog_loop
 
-# Logging setup
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger('beo-input')
+logger = install_logging('beo-input')
+
+# Module-level background task set — exceptions in fire-and-forget tasks
+# go to the journal instead of disappearing.
+_background_tasks = BackgroundTaskSet(logger, label="input")
 
 VID, PID = 0x0cd4, 0x1112
 BTN_MAP = {0x20:'left', 0x10:'right', 0x40:'go', 0x80:'power'}
@@ -28,9 +35,7 @@ transport = Transport()
 # Base path for BeoSound 5c installation (from env, or derive from script location)
 BS5C_BASE_PATH = os.getenv('BS5C_BASE_PATH', os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-# Media server connection
-MEDIA_SERVER_URL = 'ws://localhost:8766/ws'
-media_server_ws = None
+ROUTER_BROADCAST_URL = ROUTER_BROADCAST
 
 # Shared HTTP client session (created lazily in async context)
 _http_session = None
@@ -339,11 +344,24 @@ def get_bt_remotes() -> list:
     return remotes
 
 
+async def _run_cmd(*args, timeout: float = 3.0) -> int:
+    """Run a subprocess without blocking the asyncio event loop."""
+    proc = await asyncio.create_subprocess_exec(
+        *args, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+    try:
+        await asyncio.wait_for(proc.wait(), timeout=timeout)
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.wait()
+        raise
+    return proc.returncode or 0
+
+
 async def start_bt_pairing() -> dict:
     """Start Bluetooth discoverable + scanning mode for pairing."""
     try:
-        subprocess.run(['bluetoothctl', 'discoverable', 'on'], capture_output=True, timeout=3)
-        subprocess.run(['bluetoothctl', 'scan', 'on'], capture_output=True, timeout=3)
+        await _run_cmd('bluetoothctl', 'discoverable', 'on', timeout=3)
+        await _run_cmd('bluetoothctl', 'scan', 'on', timeout=3)
         logger.info('BT pairing mode started')
         return {'status': 'started', 'message': 'Scanning for remotes... Press pairing button on remote.'}
     except Exception as e:
@@ -391,7 +409,7 @@ async def start_log_stream(ws, service: str):
             except Exception as e:
                 logger.error('Log stream error: %s', e)
 
-        asyncio.create_task(stream_logs())
+        _background_tasks.spawn(stream_logs(), name=f"log_stream_{service}")
     except Exception as e:
         logger.error('Log stream failed to start: %s', e)
 
@@ -405,20 +423,34 @@ async def stop_log_stream(ws):
         del log_stream_processes[ws_id]
         logger.info('Log stream stopped')
 
-def restart_service(action: str):
+_ALLOWED_SERVICES = {
+    'beo-bluetooth', 'beo-masterlink', 'beo-router', 'beo-input', 'beo-http', 'beo-ui',
+    'beo-player-sonos', 'beo-player-bluesound', 'beo-player-local',
+    'beo-source-cd', 'beo-source-spotify', 'beo-source-plex', 'beo-source-radio',
+    'beo-source-usb', 'beo-source-news', 'beo-source-tidal', 'beo-source-apple-music',
+    'beo-librespot', 'beo-health', 'beo-beo6',
+}
+
+async def restart_service(action: str):
     """Restart a service or reboot the system."""
     logger.info('Executing restart action: %s', action)
     try:
         if action == 'reboot':
-            subprocess.Popen(['sudo', 'reboot'])
+            subprocess.Popen(['sudo', 'reboot'])  # fire-and-forget, non-blocking
         elif action == 'restart-all':
             subprocess.Popen(['sudo', 'systemctl', 'restart', 'beo-masterlink', 'beo-bluetooth', 'beo-router', 'beo-player-sonos', 'beo-source-cd', 'beo-source-spotify', 'beo-input', 'beo-http', 'beo-ui'])
         elif action.startswith('restart-'):
             service = 'beo-' + action.replace('restart-', '')
             # CD source: eject disc first, use correct service name
             if service == 'beo-cd':
-                subprocess.run(['eject', '/dev/sr0'], timeout=5, capture_output=True)
+                try:
+                    await _run_cmd('eject', '/dev/sr0', timeout=5)
+                except asyncio.TimeoutError:
+                    logger.warning('eject /dev/sr0 timed out — proceeding with restart')
                 service = 'beo-source-cd'
+            if service not in _ALLOWED_SERVICES:
+                logger.warning('Blocked restart of unknown service: %s', service)
+                return
             subprocess.Popen(['sudo', 'systemctl', 'restart', service])
     except Exception as e:
         logger.error('Restart error: %s', e)
@@ -569,6 +601,20 @@ async def handle_camera_snapshot(request):
             headers={'Access-Control-Allow-Origin': '*'}
         )
 
+async def _forward_to_router(event_type: str, data: dict):
+    """Forward a UI event to the router's broadcast endpoint for WS delivery."""
+    try:
+        s = await get_http_session()
+        async with s.post(
+            ROUTER_BROADCAST_URL,
+            json={'type': event_type, 'data': data},
+            timeout=aiohttp.ClientTimeout(total=2),
+        ) as resp:
+            logger.debug('→ router broadcast %s: HTTP %d', event_type, resp.status)
+    except Exception as e:
+        logger.warning('Router broadcast %s failed: %s', event_type, e)
+
+
 async def process_command(data: dict) -> dict:
     """Process an incoming command (from HTTP webhook or MQTT).
 
@@ -588,7 +634,7 @@ async def process_command(data: dict) -> dict:
         # Also power off audio output (BeoLab 5 etc.)
         try:
             s = await get_http_session()
-            await s.post('http://localhost:8770/router/output/off', timeout=aiohttp.ClientTimeout(total=2))
+            await s.post(ROUTER_OUTPUT_OFF, timeout=aiohttp.ClientTimeout(total=2))
         except Exception:
             pass
         return {'status': 'ok', 'screen': 'off'}
@@ -601,52 +647,42 @@ async def process_command(data: dict) -> dict:
     elif command == 'show_page':
         page = params.get('page', 'now_playing')
         logger.info('Showing page: %s', page)
-        await broadcast(json.dumps({
-            'type': 'navigate',
-            'data': {'page': page}
-        }))
+        await _forward_to_router('navigate', {'page': page})
         return {'status': 'ok', 'page': page}
 
     elif command == 'restart':
         target = params.get('target', 'all')
         logger.info('Restarting: %s', target)
         if target == 'system':
-            restart_service('reboot')
+            await restart_service('reboot')
         else:
-            restart_service('restart-all')
+            await restart_service('restart-all')
         return {'status': 'ok', 'restart': target}
 
     elif command == 'wake':
         page = params.get('page', 'now_playing')
         logger.info('Waking up and showing: %s', page)
         set_backlight(True)
-        await broadcast(json.dumps({
-            'type': 'navigate',
-            'data': {'page': page}
-        }))
+        await _forward_to_router('navigate', {'page': page})
         return {'status': 'ok', 'screen': 'on', 'page': page}
 
     elif command == 'status':
-        info = get_system_info()
+        # get_system_info() runs ~7 blocking subprocess.run calls with multi-
+        # second timeouts; stay off the event loop.
+        info = await asyncio.get_running_loop().run_in_executor(None, get_system_info)
         info['screen'] = 'on' if is_backlight_on() else 'off'
         return {'status': 'ok', **info}
 
     elif command == 'next_screen':
         logger.info('Next screen')
         set_backlight(True)
-        await broadcast(json.dumps({
-            'type': 'navigate',
-            'data': {'page': 'next'}
-        }))
+        await _forward_to_router('navigate', {'page': 'next'})
         return {'status': 'ok', 'action': 'next_screen'}
 
     elif command == 'prev_screen':
         logger.info('Previous screen')
         set_backlight(True)
-        await broadcast(json.dumps({
-            'type': 'navigate',
-            'data': {'page': 'previous'}
-        }))
+        await _forward_to_router('navigate', {'page': 'previous'})
         return {'status': 'ok', 'action': 'prev_screen'}
 
     elif command == 'show_camera':
@@ -657,71 +693,60 @@ async def process_command(data: dict) -> dict:
 
         logger.info('Showing camera overlay: %s (%s)', title, camera_entity)
         set_backlight(True)
-        await broadcast(json.dumps({
-            'type': 'camera_overlay',
-            'data': {
-                'action': 'show',
-                'title': title,
-                'camera_entity': camera_entity,
-                'camera_id': camera_id,
-                'actions': actions
-            }
-        }))
+        await _forward_to_router('camera_overlay', {
+            'action': 'show',
+            'title': title,
+            'camera_entity': camera_entity,
+            'camera_id': camera_id,
+            'actions': actions
+        })
         return {'status': 'ok', 'command': 'show_camera', 'title': title}
 
     elif command == 'dismiss_camera':
         logger.info('Dismissing camera overlay')
-        await broadcast(json.dumps({
-            'type': 'camera_overlay',
-            'data': {
-                'action': 'hide'
-            }
-        }))
+        await _forward_to_router('camera_overlay', {'action': 'hide'})
         return {'status': 'ok', 'command': 'dismiss_camera'}
 
     elif command == 'add_menu_item':
         preset = params.get('preset')
         logger.info('Adding menu item (preset=%s)', preset)
-        msg = {'type': 'menu_item', 'data': {'action': 'add'}}
+        data = {'action': 'add'}
         if preset:
-            msg['data']['preset'] = preset
+            data['preset'] = preset
         else:
-            msg['data'].update({
+            data.update({
                 'title': params.get('title', 'Item'),
                 'path': params.get('path', 'menu/item'),
                 'after': params.get('after', 'menu/playing')
             })
-        await broadcast(json.dumps(msg))
+        await _forward_to_router('menu_item', data)
         return {'status': 'ok', 'command': 'add_menu_item'}
 
     elif command == 'remove_menu_item':
         path = params.get('path')
         preset = params.get('preset')
         logger.info('Removing menu item (path=%s, preset=%s)', path, preset)
-        msg = {'type': 'menu_item', 'data': {'action': 'remove'}}
+        data = {'action': 'remove'}
         if path:
-            msg['data']['path'] = path
+            data['path'] = path
         if preset:
-            msg['data']['preset'] = preset
-        await broadcast(json.dumps(msg))
+            data['preset'] = preset
+        await _forward_to_router('menu_item', data)
         return {'status': 'ok', 'command': 'remove_menu_item'}
 
     elif command in ('hide_menu_item', 'show_menu_item'):
         path = params.get('path')
         action = 'hide' if command == 'hide_menu_item' else 'show'
         logger.info('%s menu item: %s', action.capitalize(), path)
-        await broadcast(json.dumps({
-            'type': 'menu_item',
-            'data': {'action': action, 'path': path}
-        }))
+        await _forward_to_router('menu_item', {'action': action, 'path': path})
         return {'status': 'ok', 'command': command}
 
     elif command == 'broadcast':
-        # Forward an arbitrary event to all WebSocket clients (used by cd.py etc.)
+        # Forward an arbitrary event to UI via router WS
         evt_type = params.get('type', 'unknown')
         evt_data = params.get('data', {})
         logger.info('Broadcasting event: %s', evt_type)
-        await broadcast(json.dumps({'type': evt_type, 'data': evt_data}))
+        await _forward_to_router(evt_type, evt_data)
         return {'status': 'ok', 'command': 'broadcast', 'event_type': evt_type}
 
     else:
@@ -937,7 +962,7 @@ async def handle_bt_remotes(request):
 async def handler(ws, path=None):
     clients.add(ws)
     # Ask router to re-probe all sources so menu items are up-to-date for this new client
-    asyncio.create_task(_notify_sources_resync())
+    _background_tasks.spawn(_notify_sources_resync(), name="notify_sources_resync")
     recv_task = asyncio.create_task(receive_commands(ws))
     try:
         await ws.wait_closed()
@@ -951,7 +976,7 @@ async def _notify_sources_resync():
     """Ask router to re-probe all sources (handles any service that restarted)."""
     try:
         session = await get_http_session()
-        async with session.post('http://localhost:8770/router/resync',
+        async with session.post(ROUTER_RESYNC,
                                 timeout=aiohttp.ClientTimeout(total=10)) as resp:
             if resp.status == 200:
                 data = await resp.json()
@@ -975,11 +1000,6 @@ async def receive_commands(ws):
             msg = json.loads(raw)
             logger.debug('WS received: %s', msg)
 
-            # Handle media requests by forwarding to media server
-            if msg.get('type') == 'media_request':
-                await forward_to_media_server(raw)
-                continue
-
             # Handle hardware commands
             if msg.get('type') != 'command':
                 continue
@@ -993,20 +1013,24 @@ async def receive_commands(ws):
             elif cmd == 'backlight':
                 set_backlight(bool(params.get('on',True)))
             elif cmd == 'get_logs':
-                logs = get_service_logs(params.get('service', 'beo-input'), params.get('lines', 100))
-                await ws.send(json.dumps({'type': 'logs', 'service': params.get('service'), 'logs': logs}))
+                service = params.get('service', 'beo-input')
+                lines = params.get('lines', 100)
+                logs = await asyncio.get_running_loop().run_in_executor(
+                    None, get_service_logs, service, lines)
+                await ws.send(json.dumps({'type': 'logs', 'service': service, 'logs': logs}))
             elif cmd == 'start_log_stream':
                 await start_log_stream(ws, params.get('service', 'beo-masterlink'))
             elif cmd == 'stop_log_stream':
                 await stop_log_stream(ws)
             elif cmd == 'get_system_info':
-                info = get_system_info()
+                info = await asyncio.get_running_loop().run_in_executor(
+                    None, get_system_info)
                 await ws.send(json.dumps({'type': 'system_info', **info}))
             elif cmd == 'get_network_status':
                 net = await asyncio.get_running_loop().run_in_executor(None, get_network_status)
                 await ws.send(json.dumps({'type': 'network_status', **net}))
             elif cmd == 'restart_service':
-                restart_service(params.get('action', ''))
+                await restart_service(params.get('action', ''))
             elif cmd == 'refresh_playlists':
                 await refresh_spotify_playlists(ws)
             elif cmd == 'get_bt_remotes':
@@ -1071,7 +1095,7 @@ def parse_report(rep: list, loop=None):
                 if not is_backlight_on():
                     try:
                         asyncio.run_coroutine_threadsafe(
-                            _output_power('http://localhost:8770/router/output/off'), loop)
+                            _output_power(ROUTER_OUTPUT_OFF), loop)
                     except Exception:
                         pass
                 last_power_press_time = current_time
@@ -1168,53 +1192,6 @@ def scan_loop(loop):
 
     _hid_alive = False
 
-# ——— Media server communication ———
-
-async def connect_to_media_server():
-    """Connect to the media server and handle bidirectional communication."""
-    global media_server_ws
-    
-    while True:
-        try:
-            logger.info("Connecting to media server at %s", MEDIA_SERVER_URL)
-            media_server_ws = await websockets.connect(MEDIA_SERVER_URL)
-            logger.info("Connected to media server")
-            
-            # Listen for messages from media server
-            async for message in media_server_ws:
-                try:
-                    data = json.loads(message)
-                    logger.debug("Received from media server: %s", data.get('type', 'unknown'))
-                    
-                    # Forward media updates to web clients
-                    if data.get('type') == 'media_update':
-                        await broadcast(message)
-                        
-                except json.JSONDecodeError:
-                    logger.warning("Invalid JSON from media server: %s", message)
-                except Exception as e:
-                    logger.error("Error processing media server message: %s", e)
-                    
-        except websockets.exceptions.ConnectionClosed:
-            logger.warning("Media server connection closed, reconnecting in 5s...")
-            media_server_ws = None
-            await asyncio.sleep(5)
-        except Exception as e:
-            logger.error("Error connecting to media server: %s, retrying in 5s...", e)
-            media_server_ws = None
-            await asyncio.sleep(5)
-
-async def forward_to_media_server(message):
-    """Forward messages from web clients to media server."""
-    if media_server_ws and not media_server_ws.closed:
-        try:
-            await media_server_ws.send(message)
-            logger.debug("Forwarded to media server: %s", json.loads(message).get('type', 'unknown'))
-        except Exception as e:
-            logger.error("Error forwarding to media server: %s", e)
-    else:
-        logger.warning("Media server not connected, cannot forward message")
-
 # ——— Main & server start ———
 
 async def main():
@@ -1242,7 +1219,7 @@ async def main():
     app.router.add_options('/bt/remotes', handle_bt_remotes)  # CORS preflight
     app.router.add_get('/camera/stream', handle_camera_stream)
     app.router.add_get('/camera/snapshot', handle_camera_snapshot)
-    runner = web.AppRunner(app)
+    runner = web.AppRunner(app, access_log=None)
     await runner.setup()
     http_site = web.TCPSite(runner, '0.0.0.0', 8767)
     await http_site.start()
@@ -1254,16 +1231,18 @@ async def main():
     # Turn screen on at startup so the display is always visible after boot
     set_backlight(True)
 
-    # Start media server connection task
-    media_task = asyncio.create_task(connect_to_media_server())
-
     # Start systemd watchdog heartbeat
     asyncio.create_task(watchdog_loop())
+
+    # Event-loop lag detector
+    loop_monitor = LoopMonitor().start()
 
     try:
         # Wait for server to close
         await ws_srv.wait_closed()
     finally:
+        await loop_monitor.stop()
+        await _background_tasks.cancel_all()
         await transport.stop()
         if _http_session and not _http_session.closed:
             await _http_session.close()

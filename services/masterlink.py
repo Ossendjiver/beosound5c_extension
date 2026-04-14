@@ -21,7 +21,10 @@ from collections import defaultdict
 # Ensure services/ is on the path for sibling imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from lib.background_tasks import BackgroundTaskSet
 from lib.config import cfg
+from lib.endpoints import INPUT_LED_PULSE, ROUTER_EVENT
+from lib.loop_monitor import LoopMonitor
 from lib.watchdog import watchdog_loop
 
 # Logging setup
@@ -33,7 +36,7 @@ logger = logging.getLogger('beo-masterlink')
 
 # Configuration variables
 BEOSOUND_DEVICE_NAME = cfg("device", default="BeoSound5c")
-ROUTER_URL = "http://localhost:8770/router/event"
+ROUTER_URL = ROUTER_EVENT
 MIXER_PORT = int(os.getenv('MIXER_PORT', '8768'))
 
 # Volume — the PC2 0xE3 command sets volume as an absolute byte (0-127).
@@ -172,6 +175,7 @@ class PC2Device:
         self.sender_thread = None
         self.session = None
         self.loop = None
+        self._background_tasks = BackgroundTaskSet(logger, label="masterlink")
         self.mixer_state = {
             'speakers_on': False,
             'muted': False,
@@ -347,6 +351,8 @@ class PC2Device:
                 connector=connector,
                 timeout=aiohttp.ClientTimeout(total=2.0),
             )
+            # Runs on the sender-thread's dedicated event loop.
+            self._loop_monitor = LoopMonitor().start()
             logger.info("Initialized session (router: %s)", ROUTER_URL)
         except Exception as e:
             logger.error("Failed to initialize session: %s", e, exc_info=True)
@@ -370,11 +376,9 @@ class PC2Device:
 
     async def _send_webhook_async(self, message):
         """Send a message to the router service."""
-        # Visual feedback: pulse LED on button press (fire-and-forget)
-        try:
-            asyncio.create_task(self._pulse_led())
-        except Exception:
-            pass
+        # Visual feedback: pulse LED on button press (fire-and-forget).
+        # Tracked so exceptions land in the journal instead of vanishing.
+        self._background_tasks.spawn(self._pulse_led(), name="pulse_led")
 
         # Prepare payload
         webhook_data = {
@@ -401,7 +405,7 @@ class PC2Device:
     async def _pulse_led(self):
         """Pulse LED for visual feedback (fire-and-forget)"""
         try:
-            async with self.session.get('http://localhost:8767/led?mode=pulse', timeout=aiohttp.ClientTimeout(total=0.5)) as resp:
+            async with self.session.get(INPUT_LED_PULSE, timeout=aiohttp.ClientTimeout(total=0.5)) as resp:
                 pass
         except Exception:
             pass  # Ignore errors - this is just visual feedback
@@ -599,7 +603,10 @@ class PC2Device:
             for _ in range(abs(diff)):
                 self.send_message(direction)
                 time.sleep(0.02)
+            # Update both tracked and confirmed so queued requests don't
+            # re-step from a stale baseline (USB feedback may lag).
             self.mixer_state['volume'] = target
+            self.mixer_state['volume_confirmed'] = target
         logger.info("Volume set to %d (%d steps from confirmed %d)",
                      target, abs(diff), current)
 
@@ -738,6 +745,13 @@ class PC2Device:
         # Clean up mixer HTTP server
         if self.loop and self._mixer_runner:
             asyncio.run_coroutine_threadsafe(self._mixer_runner.cleanup(), self.loop)
+
+        # Cancel any pending LED pulse tasks.  run_coroutine_threadsafe
+        # returns a concurrent.futures.Future; we don't wait on it since
+        # shutdown is already racing the loop thread.
+        if self.loop:
+            asyncio.run_coroutine_threadsafe(
+                self._background_tasks.cancel_all(), self.loop)
 
         # Close aiohttp session
         if self.loop and self.session:

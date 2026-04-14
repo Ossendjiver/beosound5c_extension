@@ -76,8 +76,7 @@ class TestPlexQueue:
             "player": {"type": "local"},
         })
         from sources.plex.service import PlexService
-        svc = PlexService()
-        return svc
+        return PlexService()
 
     def test_plex_manages_queue_true(self, plex_service):
         assert plex_service.manages_queue is True
@@ -135,9 +134,9 @@ class TestPlexQueue:
 class TestSpotifyQueue:
     """SpotifyService.get_queue() returns playlist tracks for local player.
 
-    We can't import SpotifyService directly due to sibling import conflicts
-    (plex/auth.py vs spotify/auth.py). Test the queue logic via SourceBase
-    with the same algorithm Spotify uses.
+    We don't import SpotifyService directly because its module pulls in the
+    full Spotify stack (aiohttp sessions, PKCE, etc.).  Test the queue logic
+    via SourceBase with the same algorithm Spotify uses.
     """
 
     def _make_spotify_like_source(self):

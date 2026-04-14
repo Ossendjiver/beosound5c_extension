@@ -1,3 +1,4 @@
+from __future__ import annotations
 # BeoSound 5c
 # Copyright (C) 2024-2026 Markus Kirsten
 # SPDX-License-Identifier: GPL-3.0-or-later
@@ -37,18 +38,33 @@ import os
 import signal
 import sys
 import time
+from contextvars import ContextVar
 
 from aiohttp import web, ClientSession
 
+from .background_tasks import BackgroundTaskSet
 from .config import cfg
+from .correlation import set_id, HEADER as CID_HEADER
+from .endpoints import (
+    PLAYER_COMMAND,
+    ROUTER_BROADCAST,
+    ROUTER_MEDIA,
+    ROUTER_SOURCE,
+    source_url,
+)
+from .loop_monitor import LoopMonitor
 from .http_utils import CORS_HEADERS
 from .watchdog import watchdog_loop
 
 log = logging.getLogger()
 
-INPUT_WEBHOOK_URL = "http://localhost:8767/webhook"
-ROUTER_SOURCE_URL = "http://localhost:8770/router/source"
-PLAYER_COMMAND_URL = "http://localhost:8766/player"
+# Per-coroutine action timestamp — prevents concurrent request handlers
+# from corrupting each other's timestamps via the shared self._action_ts.
+_action_ts_ctx: ContextVar[float] = ContextVar("action_ts", default=0.0)
+
+# Back-compat aliases for callers that still import these names.
+ROUTER_SOURCE_URL = ROUTER_SOURCE
+PLAYER_COMMAND_URL = PLAYER_COMMAND
 
 
 class SourceBase:
@@ -71,6 +87,18 @@ class SourceBase:
         self._last_media: dict | None = None  # cached by post_media_update()
         self._registered_state: str | None = None  # last state sent to register()
         self._action_ts: float = 0.0  # monotonic timestamp from router activation
+        self._background_tasks = BackgroundTaskSet(
+            log, label=f"{self.id or 'source'}")
+
+    # ── Background task tracking ──
+
+    def _spawn(self, coro, *, name: str | None = None):
+        """Launch a fire-and-forget task with lifecycle tracking.
+
+        All tasks are cancelled during shutdown; exceptions are logged
+        rather than silently swallowed.
+        """
+        return self._background_tasks.spawn(coro, name=name)
 
     # ── Router registration ──
 
@@ -82,7 +110,7 @@ class SourceBase:
         if state not in ("gone",):
             payload.update({
                 "name": self.name,
-                "command_url": f"http://localhost:{self.port}/command",
+                "command_url": source_url(self.port, "/command"),
                 "menu_preset": self.id,
                 "handles": list(self.action_map.keys()),
                 "player": self.player,
@@ -92,8 +120,9 @@ class SourceBase:
             payload["navigate"] = True
         if auto_power:
             payload["auto_power"] = True
-        if self._action_ts:
-            payload["action_ts"] = self._action_ts
+        ts = _action_ts_ctx.get() or self._action_ts
+        if ts:
+            payload["action_ts"] = ts
         for attempt in range(_retries):
             try:
                 async with self._http_session.post(
@@ -110,32 +139,45 @@ class SourceBase:
                 else:
                     log.warning("Router unreachable after %d attempts: %s", _retries, e)
 
-    # ── UI broadcasting via input.py ──
+    # ── UI broadcasting via router WS ──
+
+    ROUTER_BROADCAST_URL = ROUTER_BROADCAST
 
     async def broadcast(self, event_type, data):
-        """Broadcast an event to UI clients via input.py's webhook API."""
+        """Broadcast an event to UI clients via the router's WebSocket."""
         try:
             async with self._http_session.post(
-                INPUT_WEBHOOK_URL,
-                json={"command": "broadcast", "params": {"type": event_type, "data": data}},
+                self.ROUTER_BROADCAST_URL,
+                json={"type": event_type, "data": data},
                 timeout=5,
             ) as resp:
-                log.info("→ input.py: broadcast %s (HTTP %d)", event_type, resp.status)
+                log.info("→ router: broadcast %s (HTTP %d)", event_type, resp.status)
         except Exception as e:
             log.error("Failed to broadcast %s: %s", event_type, e)
 
     # ── Media update (unified path: source → router → UI) ──
 
-    ROUTER_MEDIA_URL = "http://localhost:8770/router/media"
+    ROUTER_MEDIA_URL = ROUTER_MEDIA
 
     async def post_media_update(self, title="", artist="", album="",
                                 artwork="", state="playing",
                                 duration=0, position=0, reason="track_change",
-                                back_artwork="", track_number=0):
+                                back_artwork="", track_number=0,
+                                canvas_url="", track_uri=""):
         """Push a media update to the router for unified PLAYING view rendering.
         All sources should use this instead of source-specific _update broadcasts
         for metadata that appears on the PLAYING view.
-        Automatically caches the payload for replay on activate."""
+        Automatically caches the payload for replay on activate.
+
+        ``track_uri`` is forwarded to the router as ``_track_uri`` (any
+        format — Spotify URI, Sonos-wrapped, etc.). The router extracts
+        a normalized Spotify ``track_id`` from it and stamps the
+        outgoing payload, so the UI's canvas-vs-artwork cycle has a
+        stable id to render-time match against. Sources that know
+        their track URI (e.g. Spotify, after ``_last_track_uri`` is
+        set) MUST pass it — without it, post-source-switch broadcasts
+        leave ``track_id`` empty and the cycle falls through to "no
+        opinion" mode."""
         payload = {
             "title": title,
             "artist": artist,
@@ -151,13 +193,29 @@ class SourceBase:
             payload["back_artwork"] = back_artwork
         if track_number:
             payload["track_number"] = track_number
-        if self._action_ts:
-            payload["_action_ts"] = self._action_ts
-        # Cache for instant replay on source button activate
+        if canvas_url:
+            payload["canvas_url"] = canvas_url
+        if track_uri:
+            payload["_track_uri"] = track_uri
+        ts = _action_ts_ctx.get() or self._action_ts
+        if ts:
+            payload["_action_ts"] = ts
+        # Cache for instant replay on source button activate. The
+        # track_uri is stored alongside so _resync_media can verify
+        # the cached canvas still belongs to the track the player is
+        # currently on (external track advances invalidate the canvas
+        # but not the rest of the metadata shape).
         self._last_media = {
             "title": title, "artist": artist, "album": album,
             "artwork": artwork, "back_artwork": back_artwork,
+            "track_uri": track_uri,
         }
+        # Always update canvas_url (including clearing it) so stale
+        # canvas from a previous track doesn't persist through resyncs.
+        if canvas_url:
+            self._last_media["canvas_url"] = canvas_url
+        else:
+            self._last_media.pop("canvas_url", None)
         try:
             async with self._http_session.post(
                 self.ROUTER_MEDIA_URL, json=payload, timeout=5,
@@ -175,17 +233,40 @@ class SourceBase:
         # Prefer live player media over cached _last_media
         fresh = await self._player_get("media")
         if fresh and fresh.get("title"):
+            # Only reuse the cached canvas if the fresh track is the
+            # SAME track we cached for. An external track advance
+            # (Sonos app skip, queue auto-next) would otherwise pair
+            # the new track's metadata with the previous track's
+            # canvas video — which is exactly the Kitchen bug where
+            # "Nothing Compares 2 U" was paired with a completely
+            # different song's canvas. Match by Spotify track id
+            # (extracted from any URI shape — Sonos-wrapped, bare,
+            # etc.) so normalization differences between player
+            # services and sources don't cause false mismatches.
+            cached_canvas = ""
+            if self._last_media:
+                from lib.spotify_canvas import extract_spotify_track_id
+                cached_id = extract_spotify_track_id(
+                    self._last_media.get("track_uri", ""))
+                fresh_id = extract_spotify_track_id(fresh.get("uri", ""))
+                if cached_id and cached_id == fresh_id:
+                    cached_canvas = self._last_media.get("canvas_url", "")
             media = {
                 "title": fresh.get("title", ""),
                 "artist": fresh.get("artist", ""),
                 "album": fresh.get("album", ""),
                 "artwork": fresh.get("artwork", ""),
+                "canvas_url": cached_canvas,
             }
             await self.post_media_update(
                 **media, state=self._registered_state, reason="resync")
         elif self._last_media:
+            # Strip fields that aren't parameters of post_media_update —
+            # track_uri is stored for resync matching but not a kwarg.
+            replay = {k: v for k, v in self._last_media.items()
+                      if k != "track_uri"}
             await self.post_media_update(
-                **self._last_media, state=self._registered_state, reason="resync")
+                **replay, state=self._registered_state, reason="resync")
 
     # ── Player service client helpers ──
 
@@ -222,7 +303,7 @@ class SourceBase:
             return None
 
     async def player_play(self, uri=None, url=None, track_uri=None, meta=None,
-                          radio=False, track_uris=None) -> bool:
+                          radio=False, track_uris=None, action_ts=None) -> bool:
         """Ask the player service to play a URI or URL.
         track_uri: Spotify track URI to start at within a playlist/album.
         meta: optional dict with display metadata (title, artist, album,
@@ -244,26 +325,39 @@ class SourceBase:
             body["radio"] = True
         if track_uris:
             body["track_uris"] = track_uris
-        # Always stamp fresh monotonic — _action_ts can be stale relative
-        # to the player's latest_action_ts (e.g. after direct arc commands
-        # bumped the player's ts higher than the router's).
-        body["action_ts"] = time.monotonic()
+        # Carry this source's authority timestamp so the player can reject
+        # stale play commands from sources that were superseded by a newer
+        # activation.  _action_ts is kept in sync by player_next/prev/resume.
+        # Prefer explicit action_ts (from data["_action_ts"], immune to
+        # concurrent overwrites) over self._action_ts (shared mutable field).
+        ts = action_ts or _action_ts_ctx.get() or self._action_ts or time.monotonic()
+        body["action_ts"] = ts
         return await self._player_post("play", body)
 
     async def player_pause(self) -> bool:
         return await self._player_post("pause")
 
     async def player_resume(self) -> bool:
-        return await self._player_post("resume", {"action_ts": time.monotonic()})
+        ts = time.monotonic()
+        self._action_ts = ts
+        _action_ts_ctx.set(ts)
+        return await self._player_post("resume", {"action_ts": ts})
 
     async def player_next(self) -> bool:
-        return await self._player_post("next", {"action_ts": time.monotonic()})
+        ts = time.monotonic()
+        self._action_ts = ts
+        _action_ts_ctx.set(ts)
+        return await self._player_post("next", {"action_ts": ts})
 
     async def player_prev(self) -> bool:
-        return await self._player_post("prev", {"action_ts": time.monotonic()})
+        ts = time.monotonic()
+        self._action_ts = ts
+        _action_ts_ctx.set(ts)
+        return await self._player_post("prev", {"action_ts": ts})
 
     async def player_stop(self) -> bool:
-        return await self._player_post("stop")
+        ts = _action_ts_ctx.get() or self._action_ts or 0
+        return await self._player_post("stop", {"action_ts": ts})
 
     async def player_state(self) -> str:
         """Get the player's current state ("playing"|"paused"|"stopped"|"unknown")."""
@@ -325,13 +419,16 @@ class SourceBase:
         # Let subclass add extra routes
         self.add_routes(app)
 
-        self._runner = web.AppRunner(app)
+        self._runner = web.AppRunner(app, access_log=None)
         await self._runner.setup()
         site = web.TCPSite(self._runner, "0.0.0.0", self.port)
         await site.start()
         log.info("HTTP API on port %d", self.port)
 
         self._http_session = ClientSession()
+        # Event-loop lag detector: warns when a sync call blocks the
+        # loop for more than the default threshold.
+        self._loop_monitor = LoopMonitor().start()
 
         # Start systemd watchdog heartbeat before on_start — sends READY=1
         # immediately so Type=notify doesn't fail if on_start blocks/crashes
@@ -342,6 +439,12 @@ class SourceBase:
     async def stop(self):
         """Shutdown hook — override on_stop() for cleanup."""
         await self.on_stop()
+        # Cancel any tracked background tasks spawned via _spawn()
+        await self._background_tasks.cancel_all()
+
+        if getattr(self, "_loop_monitor", None) is not None:
+            await self._loop_monitor.stop()
+            self._loop_monitor = None
         # Deregister from router so menu doesn't show a dead source
         try:
             await self.register('gone')
@@ -383,18 +486,21 @@ class SourceBase:
 
     async def _handle_command_route(self, request):
         try:
+            # Propagate correlation ID from router
+            cid = request.headers.get(CID_HEADER)
+            if cid:
+                set_id(cid)
+
             data = await request.json()
 
             # Raw action from router (forwarded event)
             action = data.get("action")
             if action:
-                # Pick up action_ts from router-forwarded events;
-                # if missing/zero, stamp fresh (same as direct commands)
-                if data.get("action_ts"):
-                    self._action_ts = data["action_ts"]
-                else:
-                    self._action_ts = time.monotonic()
-                # Source button activation — resume or start playback
+                # Pick up action_ts from router-forwarded events
+                ts = data.get("action_ts") or time.monotonic()
+                self._action_ts = ts
+                _action_ts_ctx.set(ts)
+                # Source button activation
                 if action == "activate":
                     result = await self.handle_activate(data)
                     resp = {"status": "ok", "command": "activate"}
@@ -414,9 +520,14 @@ class SourceBase:
                             headers=self._cors_headers(),
                         )
             else:
-                # Direct command from UI JS — stamp fresh action_ts
-                self._action_ts = time.monotonic()
+                # Direct command from UI JS
+                ts = time.monotonic()
+                self._action_ts = ts
+                _action_ts_ctx.set(ts)
                 cmd = data.get("command", "")
+
+            # Snapshot for subclasses that pass data["_action_ts"] to player_play
+            data["_action_ts"] = _action_ts_ctx.get()
 
             result = await self.handle_command(cmd, data)
             resp = {"status": "ok", "command": cmd}
@@ -473,7 +584,9 @@ class SourceBase:
         Default: registers as playing (stops old source), pre-broadcasts
         cached metadata, then calls activate_playback() for source-specific
         resume/start logic.  Override activate_playback() instead of this."""
-        self._action_ts = data.get("action_ts", 0) or 0
+        ts = data.get("action_ts", 0) or 0
+        self._action_ts = ts
+        _action_ts_ctx.set(ts)
         await self.register("playing", auto_power=True)
         if self._last_media:
             await self.post_media_update(

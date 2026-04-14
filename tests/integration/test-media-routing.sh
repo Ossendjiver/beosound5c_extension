@@ -18,7 +18,7 @@
 #   - Sonos speaker idle (not grouped, not playing)
 # ─────────────────────────────────────────────────────────────────────
 
-HOST="${HOST:-beosound5c-office.kirstenhome}"
+HOST="${HOST:-beosound5c.local}"
 ROUTER="http://localhost:8770"
 PLAYER="http://localhost:8766"
 INPUT="http://localhost:8767"

@@ -970,3 +970,49 @@ html, body {
   font-weight: 300;
   line-height: 2;
 }
+
+/* ── Spotify Canvas Video Panel ────────────────────────────────── */
+
+.canvas-panel {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 1024px;
+  height: 768px;
+  z-index: 99989;
+  opacity: 0;
+  pointer-events: none;
+  transition: none;
+  background: #000;
+}
+
+.canvas-video {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  min-width: 100%;
+  min-height: 100%;
+  width: auto;
+  height: auto;
+  object-fit: cover;
+}
+
+/* Thin progress bar at bottom edge */
+.canvas-progress {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: rgba(255, 255, 255, 0.1);
+  z-index: 3;
+}
+
+.canvas-progress-fill {
+  height: 100%;
+  width: 0%;
+  background: rgba(255, 255, 255, 0.5);
+  transition: width 0.1s linear;
+}
+

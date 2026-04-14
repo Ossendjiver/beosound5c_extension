@@ -41,7 +41,10 @@ import aiohttp
 
 # Ensure services/ is on the path for sibling imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from lib.background_tasks import BackgroundTaskSet
 from lib.config import cfg
+from lib.endpoints import INPUT_LED_PULSE, ROUTER_EVENT
+from lib.loop_monitor import LoopMonitor
 from lib.watchdog import watchdog_loop
 
 # ---------------------------------------------------------------------------
@@ -60,7 +63,7 @@ logger = logging.getLogger("bluetooth_hid")
 DEVICE_NAME = cfg("device", default="BeoSound5c")
 BEOREMOTE_MAC = cfg("bluetooth", "remote_mac", default="")
 DRY_RUN = "--dry-run" in sys.argv
-ROUTER_URL = "http://localhost:8770/router/event"
+ROUTER_URL = ROUTER_EVENT
 
 # ---------------------------------------------------------------------------
 # Linux input constants
@@ -191,6 +194,7 @@ class BluetoothHIDService:
 
         self._running = True
         self._loop: asyncio.AbstractEventLoop | None = None
+        self._background_tasks = BackgroundTaskSet(logger, label="bluetooth")
 
     # --- Lifecycle ---
 
@@ -202,6 +206,7 @@ class BluetoothHIDService:
             self.led_session = aiohttp.ClientSession(
                 timeout=aiohttp.ClientTimeout(total=0.5),
             )
+        self._loop_monitor = LoopMonitor().start()
         logger.info("Service started (%s)",
                      "DRY RUN" if DRY_RUN else f"router: {ROUTER_URL}")
 
@@ -213,6 +218,10 @@ class BluetoothHIDService:
         for task in self._hold_tasks.values():
             task.cancel()
         self._hold_tasks.clear()
+        await self._background_tasks.cancel_all()
+        if getattr(self, "_loop_monitor", None) is not None:
+            await self._loop_monitor.stop()
+            self._loop_monitor = None
         if not DRY_RUN:
             if self.router_session:
                 await self.router_session.close()
@@ -357,7 +366,7 @@ class BluetoothHIDService:
         )
 
         # LED pulse on every press
-        asyncio.create_task(self._pulse_led())
+        self._background_tasks.spawn(self._pulse_led(), name="pulse_led")
 
         # --- Mode switching ---
         if is_mode_key:
@@ -442,7 +451,7 @@ class BluetoothHIDService:
             return
         try:
             async with self.led_session.get(
-                "http://localhost:8767/led?mode=pulse"
+                INPUT_LED_PULSE
             ):
                 pass
         except Exception:

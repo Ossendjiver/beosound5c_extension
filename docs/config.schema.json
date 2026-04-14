@@ -69,7 +69,7 @@
           "type": "string",
           "pattern": "^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$|^$",
           "description": "MAC address of the paired BeoRemote One. Empty string to disable Bluetooth remote.",
-          "examples": ["48:D0:CF:BD:CE:35", ""]
+          "examples": ["AA:BB:CC:DD:EE:FF", ""]
         }
       },
       "additionalProperties": false

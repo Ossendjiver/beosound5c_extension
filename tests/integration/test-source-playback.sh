@@ -15,7 +15,7 @@
 #   - At least one source with playable content (USB recommended)
 # ─────────────────────────────────────────────────────────────────────
 
-HOST="${HOST:-beosound5c-office.kirstenhome}"
+HOST="${HOST:-beosound5c.local}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REMOTE_SCRIPT="/tmp/test-source-playback.py"
 

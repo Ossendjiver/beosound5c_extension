@@ -23,7 +23,7 @@ PROJECT_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, '..', '..', '..'))
 sys.path.insert(0, SCRIPT_DIR)
 sys.path.insert(0, os.path.join(PROJECT_ROOT, 'services'))
 
-from auth import get_access_token
+from spotify_auth import get_access_token
 from lib.digit_playlists import detect_digit_playlist, build_digit_mapping
 
 DIGIT_PLAYLISTS_FILE = os.path.join(PROJECT_ROOT, 'web', 'json', 'digit_playlists.json')
@@ -65,6 +65,7 @@ def fetch_playlist_tracks(token, playlist_id):
                 tracks.append({
                     'name': track['name'],
                     'artist': ', '.join([a['name'] for a in track.get('artists', []) if a.get('name')]),
+                    'album': track.get('album', {}).get('name', ''),
                     'id': track['id'],
                     'uri': track.get('uri', ''),
                     'url': ext_url,
@@ -114,6 +115,7 @@ def fetch_liked_songs(token):
                 tracks.append({
                     'name': track['name'],
                     'artist': ', '.join([a['name'] for a in track.get('artists', []) if a.get('name')]),
+                    'album': track.get('album', {}).get('name', ''),
                     'id': track['id'],
                     'uri': track.get('uri', ''),
                     'url': ext_url,
@@ -204,6 +206,38 @@ def fetch_user_playlists(token):
 
 
 
+# Fields every track dict must have. Any cached playlist whose first
+# track is missing one of these is dropped from the incremental-sync
+# cache so the playlist is re-fetched with the current schema —
+# snapshot-id matching alone would otherwise preserve the old shape
+# indefinitely.
+REQUIRED_TRACK_FIELDS = ('album',)
+
+
+def _load_cache(output_file):
+    """Load the playlist cache from ``output_file`` for incremental sync.
+
+    Returns ``(cache, stale_schema_count)`` where ``cache`` is a dict
+    keyed by playlist id with ``{snapshot_id, tracks}`` values, and
+    ``stale_schema_count`` is the number of cache entries dropped
+    because their tracks were missing fields in REQUIRED_TRACK_FIELDS.
+    """
+    with open(output_file, 'r') as f:
+        cached_playlists = json.load(f)
+    cache = {}
+    stale_schema = 0
+    for cp in cached_playlists:
+        tracks = cp.get('tracks', [])
+        if tracks and any(f not in tracks[0] for f in REQUIRED_TRACK_FIELDS):
+            stale_schema += 1
+            continue
+        cache[cp['id']] = {
+            'snapshot_id': cp.get('snapshot_id', ''),
+            'tracks': tracks,
+        }
+    return cache, stale_schema
+
+
 def main():
     force = '--force' in sys.argv
 
@@ -237,18 +271,14 @@ def main():
         log(f"ERROR: Failed to get access token: {e}")
         return 1
 
-    # Load cached data for incremental sync
+    # Load cached data for incremental sync. See _load_cache below.
     cache = {}
     if not force and os.path.exists(output_file):
         try:
-            with open(output_file, 'r') as f:
-                cached_playlists = json.load(f)
-            for cp in cached_playlists:
-                cache[cp['id']] = {
-                    'snapshot_id': cp.get('snapshot_id', ''),
-                    'tracks': cp.get('tracks', [])
-                }
-            log(f"Loaded cache with {len(cache)} playlists")
+            cache, stale_schema = _load_cache(output_file)
+            log(f"Loaded cache with {len(cache)} playlists"
+                + (f" ({stale_schema} dropped for stale schema)"
+                   if stale_schema else ""))
         except Exception as e:
             log(f"Could not load cache: {e}")
 

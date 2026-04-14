@@ -60,6 +60,8 @@ class BluesoundPlayer(PlayerBase):
 
     async def _bluos_get(self, path: str, timeout: float = 10) -> ElementTree.Element | None:
         """GET a BluOS endpoint, parse XML response. Returns root Element or None."""
+        if self._http_session is None or self._http_session.closed:
+            return None
         url = f"{self.base_url}{path}"
         try:
             async with self._http_session.get(
@@ -177,7 +179,7 @@ class BluesoundPlayer(PlayerBase):
             logger.error("No BlueSound IP configured (set player.ip in config)")
             sys.exit(1)
         logger.info("Starting BlueSound player for %s", self.base_url)
-        self._monitor_task = asyncio.create_task(self._monitor_bluos())
+        self._monitor_task = self._spawn(self._monitor_bluos(), name="bluos_monitor")
 
     # ── Monitoring (long-poll loop) ──
 
@@ -218,16 +220,18 @@ class BluesoundPlayer(PlayerBase):
                 ):
                     logger.info("Playback started (was: %s), triggering wake",
                                 self._current_playback_state)
-                    asyncio.create_task(self.trigger_wake())
+                    self._spawn(self.trigger_wake(), name="trigger_wake")
                     if self.seconds_since_command() > 3.0:
                         logger.info("External playback detected, clearing active source")
-                        asyncio.create_task(
-                            self.notify_router_playback_override(force=True))
+                        self._spawn(
+                            self.notify_router_playback_override(force=True),
+                            name="playback_override")
                 elif state == "stopped" and self._current_playback_state == "playing":
                     if self.seconds_since_command() > 3.0:
                         logger.info("External stop detected")
-                        asyncio.create_task(
-                            self.notify_router_playback_override(force=True))
+                        self._spawn(
+                            self.notify_router_playback_override(force=True),
+                            name="playback_override")
 
                 self._current_playback_state = state
 
@@ -235,7 +239,9 @@ class BluesoundPlayer(PlayerBase):
                 vol_str = self._xml_text(root, "volume")
                 if vol_str:
                     try:
-                        asyncio.create_task(self.report_volume_to_router(int(vol_str)))
+                        self._spawn(
+                            self.report_volume_to_router(int(vol_str)),
+                            name="report_volume")
                     except ValueError:
                         pass
 
@@ -295,12 +301,13 @@ class BluesoundPlayer(PlayerBase):
                     logger.info("Track changed: %s — %s", artist, title)
 
                     # Prefetch upcoming artwork
-                    asyncio.create_task(self._prefetch_queue_artwork())
+                    self._spawn(self._prefetch_queue_artwork(), name="prefetch_artwork")
 
                     # External track change? Clear active source
                     if self.seconds_since_command() > 3.0:
-                        asyncio.create_task(
-                            self.notify_router_playback_override(force=True))
+                        self._spawn(
+                            self.notify_router_playback_override(force=True),
+                            name="playback_override")
 
                 elif self._cached_media_data:
                     # Update position/state in cached data without full broadcast

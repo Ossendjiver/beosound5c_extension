@@ -33,15 +33,20 @@ window.JoinView = (() => {
     const SCROLL_STEP = _ac.scrollStep;
     const SNAP_DELAY = _ac.snapDelay;
 
-    /** Reset transient state. */
+    /** Reset transient state.
+     *
+     * ``devices`` and ``isGrouped`` deliberately persist across
+     * destroy→init cycles so the view renders instantly from the
+     * previous snapshot on nav-back. The existing background refresh
+     * (started below by init's poll timer) patches any changes in
+     * place — we don't need to block on a fresh fetch to draw
+     * something useful. */
     function resetState() {
         if (arcSnapTimer) clearTimeout(arcSnapTimer);
         if (arcAnimFrame) cancelAnimationFrame(arcAnimFrame);
         if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
         menuActive = false;
         loading = false;
-        devices = [];
-        isGrouped = false;
         arcItems = [];
         arcTargetIndex = 0;
         arcCurrentIndex = 0;
@@ -57,13 +62,11 @@ window.JoinView = (() => {
         if (!document.getElementById('join-view')) return;
         resetState();
         menuActive = true;
-        loading = true;
-        renderLoading();
 
         // Fetch default_player from config (once)
         if (defaultPlayer === null) {
             try {
-                const paths = ['json/config.json', '../config/default.json'];
+                const paths = ['/json/config.json', '/config/default.json'];
                 for (const path of paths) {
                     try {
                         const resp = await fetch(path);
@@ -79,30 +82,42 @@ window.JoinView = (() => {
             }
         }
 
-        // Fetch network devices and group status in parallel
-        try {
-            const [netResp, statusResp] = await Promise.all([
-                fetch(`${PLAYER_URL}/player/network`),
-                fetch(`${PLAYER_URL}/player/status`),
-            ]);
-            if (netResp.ok) devices = await netResp.json();
-            if (statusResp.ok) {
-                const status = await statusResp.json();
-                isGrouped = !!status.is_grouped;
-            }
-        } catch (e) {
-            console.warn('[JOIN] Network fetch failed:', e);
-        }
-
-        if (!menuActive) return;  // destroyed while fetching
-        loading = false;
-
-        if (devices.length === 0) {
-            renderEmpty();
-        } else {
+        // Cached-first render: if we have a previous snapshot, draw it
+        // immediately so the view isn't blank while the network fetch
+        // is in flight. refreshDevices() below patches any changes in
+        // place, so the user never sees a loading spinner on nav-back.
+        if (devices.length > 0) {
             buildArcItems();
             renderArc();
             startAnimation();
+            // Background refresh — fire-and-forget, patches in place.
+            refreshDevices();
+        } else {
+            loading = true;
+            renderLoading();
+            try {
+                const [netResp, statusResp] = await Promise.all([
+                    fetch(`${PLAYER_URL}/player/network`),
+                    fetch(`${PLAYER_URL}/player/status`),
+                ]);
+                if (netResp.ok) devices = await netResp.json();
+                if (statusResp.ok) {
+                    const status = await statusResp.json();
+                    isGrouped = !!status.is_grouped;
+                }
+            } catch (e) {
+                console.warn('[JOIN] Network fetch failed:', e);
+            }
+            if (!menuActive) return;  // destroyed while fetching
+            loading = false;
+
+            if (devices.length === 0) {
+                renderEmpty();
+            } else {
+                buildArcItems();
+                renderArc();
+                startAnimation();
+            }
         }
 
         // Poll for changes while view is open

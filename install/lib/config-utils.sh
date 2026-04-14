@@ -70,6 +70,21 @@ SKEL
     fi
 }
 
+# Ensure radio_favourites.json exists (seed default SR P1-P4 + Radio
+# Paradise so digits 1-4 on the remote immediately play SR channels).
+radio_favs_ensure() {
+    local favs_file="$CONFIG_DIR/radio_favourites.json"
+    if [ -f "$favs_file" ]; then
+        return 0
+    fi
+    mkdir -p "$CONFIG_DIR"
+    local default_favs="$INSTALL_DIR/config/radio_favourites.default.json"
+    if [ -f "$default_favs" ]; then
+        cp "$default_favs" "$favs_file"
+        chmod 644 "$favs_file"
+    fi
+}
+
 # Ensure secrets.env exists (create empty template if missing)
 secrets_ensure() {
     mkdir -p "$CONFIG_DIR"

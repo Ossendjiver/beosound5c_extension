@@ -83,7 +83,7 @@ const AppConfig = {
     }
 
     // Try deployed config first, then dev fallback
-    var paths = ['json/config.json', '../config/default.json'];
+    var paths = ['/json/config.json', '/config/default.json'];
     var loaded = false;
     for (var i = 0; i < paths.length && !loaded; i++) {
         try {

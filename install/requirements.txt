@@ -32,3 +32,12 @@ plexapi>=4.15.0
 
 # Text-to-speech (news source)
 edge-tts>=6.1.0
+
+# Spotify Canvas protobuf API
+protobuf>=6.33.0
+
+# CD drive monitoring (udev events)
+pyudev>=0.24.0
+
+# Spotify Canvas (protobuf for gRPC decoding)
+protobuf>=4.0.0

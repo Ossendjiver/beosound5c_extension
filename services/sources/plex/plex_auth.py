@@ -14,7 +14,7 @@ import sys
 import urllib3
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from tokens import load_tokens, save_tokens
+from plex_tokens import load_tokens, save_tokens
 
 # Shared library (services/)
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))

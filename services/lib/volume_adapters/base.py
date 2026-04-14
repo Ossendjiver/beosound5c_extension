@@ -43,8 +43,16 @@ class VolumeAdapter(ABC):
             self._debounce_handle.cancel()
         loop = asyncio.get_running_loop()
         self._debounce_handle = loop.call_later(
-            self._debounce_ms / 1000, lambda: asyncio.ensure_future(self._do_flush())
+            self._debounce_ms / 1000,
+            lambda: asyncio.ensure_future(self._do_flush_with_logging()),
         )
+
+    async def _do_flush_with_logging(self):
+        """Wrap _do_flush so debounce callback exceptions don't vanish."""
+        try:
+            await self._do_flush()
+        except Exception as e:
+            log.exception("Volume adapter flush failed: %s", e)
 
     async def _do_flush(self):
         """Send the pending volume to hardware."""

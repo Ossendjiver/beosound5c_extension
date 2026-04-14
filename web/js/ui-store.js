@@ -1,616 +1,149 @@
 /**
- * Soft crossfade for text changes on the playing view.
- * Fades out, swaps text, fades back in. Cancels pending swaps on rapid updates.
+ * UIStore — thin coordinator that wires together MediaManager, MenuManager,
+ * and ViewManager.  Owns input handling (laser, wheel, keyboard) and the
+ * arc pointer.  Exposes backward-compatible window.uiStore API by delegating
+ * to the individual managers.
+ *
+ * Load order (index.html):
+ *   media-manager.js → menu-manager.js → view-manager.js → ui-store.js
  */
-function crossfadeText(el, newText) {
-    if (!el) return;
-    if (el.textContent === newText) return;
-    clearTimeout(el._crossfadeTimer);
-    el.style.opacity = '0';
-    el._crossfadeTimer = setTimeout(() => {
-        el.textContent = newText;
-        el.style.removeProperty('opacity');
-        document.dispatchEvent(new CustomEvent('bs5c:media-text-updated'));
-    }, 200);
-}
-window.crossfadeText = crossfadeText;
-
-const DEFAULT_PLAYING_PRESET = {
-    // All sources push metadata via the unified router media path.
-    // media_update events reach this preset via handleMediaUpdate() → updateNowPlayingView().
-    onUpdate(container, data) {
-        const titleEl = container.querySelector('.media-view-title');
-        const artistEl = container.querySelector('.media-view-artist');
-        const albumEl = container.querySelector('.media-view-album');
-        crossfadeText(titleEl, data.title || '—');
-        crossfadeText(artistEl, data.artist || '—');
-        crossfadeText(albumEl, data.album || '—');
-        const img = container.querySelector('.playing-artwork');
-        if (img && window.ArtworkManager) {
-            window.ArtworkManager.displayArtwork(img, data.artwork, 'noArtwork');
-        }
-        // Back artwork (show/hide back face based on availability)
-        const backFace = container.querySelector('.playing-back');
-        const backImg = container.querySelector('.playing-artwork-back');
-        if (backFace && backImg) {
-            if (data.back_artwork) {
-                backImg.src = data.back_artwork;
-                backFace.style.display = '';
-            } else if (!backFace.querySelector('.cd-back-tracklist')) {
-                // No back artwork and no source-populated content — hide
-                backFace.style.display = 'none';
-                // Un-flip if back was removed while flipped
-                const flipper = container.querySelector('.playing-flipper');
-                if (flipper) flipper.classList.remove('flipped');
-            }
-        }
-    },
-    onMount(container) {
-        const flipper = container.querySelector('.playing-flipper');
-        if (flipper) {
-            flipper._clickHandler = () => {
-                const back = flipper.querySelector('.playing-back');
-                if (back && back.style.display !== 'none') {
-                    flipper.classList.add('playing-flipper-snap');
-                    flipper.classList.toggle('flipped');
-                    setTimeout(() => flipper.classList.remove('playing-flipper-snap'), 200);
-                }
-            };
-            flipper.addEventListener('click', flipper._clickHandler);
-        }
-    },
-    onRemove(container) {
-        const flipper = container.querySelector('.playing-flipper');
-        if (flipper?._clickHandler) {
-            flipper.removeEventListener('click', flipper._clickHandler);
-        }
-    }
-};
 
 class UIStore {
     constructor() {
+        // ── Create managers ──
+        this.media = new MediaManager();
+        this.menu = new MenuManager();
+        this.view = new ViewManager();
+
+        // ── Wire cross-references ──
+        this.view.menuManager = this.menu;
+        this.view.mediaManager = this.media;
+
+        this.menu.onNavigate = (path) => this.view.navigateToView(path);
+        this.menu.onMenuLoaded = (data) => {
+            if (data.active_source) {
+                this.media.activeSource = data.active_source;
+                this.media.activeSourcePlayer = data.active_player || null;
+                this.media.setActivePlayingPreset(data.active_source);
+            }
+        };
+        this.menu.onItemHover = (angle) => {
+            this.wheelPointerAngle = angle;
+            if (window.LaserPositionMapper) {
+                this.laserPosition = Math.round(window.LaserPositionMapper.angleToLaserPosition(angle));
+            }
+            this.handleWheelChange();
+        };
+
+        // Keep menu manager informed of current route for removeMenuItem
+        const origNav = this.view.navigateToView.bind(this.view);
+        this.view.navigateToView = (path) => {
+            origNav(path);
+            this.menu._currentRoute = this.view.currentRoute;
+        };
+
+        // ── Input / pointer state ──
         this.wheelPointerAngle = 180;
         this.topWheelPosition = 0;
-        
-        // Initialize laser position from constants (matches hardware-input.js)
         this.laserPosition = window.Constants?.laser?.defaultPosition || 93;
-        
-        // Debug info
+
+        // ── Debug ──
         this.debugEnabled = true;
         this.debugVisible = false;
         this.wsMessages = [];
         this.maxWsMessages = 50;
-        
-        // Media info
-        this.mediaInfo = {
-            title: '—',
-            artist: '—',
-            album: '—',
-            artwork: '',
-            state: 'idle'
-        };
-        
-        // SHOWING view media info (fetched from backend)
-        this.appleTVMediaInfo = {
-            title: '—',
-            friendly_name: '—',
-            app_name: '—',
-            artwork: '',
-            state: 'unknown'
-        };
-        
-        // Artwork cache delegated to ArtworkManager
-        
-        // Menu items from centralized constants (static views only — sources/webpages added by router)
-        this.menuItems = (window.Constants?.menuItems || [
-            {title: 'PLAYING', path: 'menu/playing'},
-            {title: 'SCENES', path: 'menu/scenes'},
-            {title: 'SYSTEM', path: 'menu/system'},
-            {title: 'SHOWING', path: 'menu/showing'}
-        ]).map(item => ({title: item.title, path: item.path}));
 
-        // Get constants from centralized config
-        const c = window.Constants || {};
-        this.radius = c.arc?.radius || 1000;
-        this.angleStep = c.arc?.menuAngleStep || 5;
-        
-        // Menu visibility state (simplified)
-        this.menuVisible = true;
+        // ── Initialize ──
+        this._initializeUI();
+        this._setupEventListeners();
+        this.view.updateView();
 
-        // Navigation transition timeout (for cancellation)
-        this.navigationTimeout = null;
-        
-        // Initialize views first
-        this.views = {
-            'menu/showing': {
-                title: 'SHOWING',
-                content: `
-                    <div id="status-page" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; color: white; text-align: center; background-color: rgba(0,0,0,0.4);">
-                        <div id="apple-tv-artwork-container" style="width: 60%; aspect-ratio: 1; margin: 20px; position: relative; display: flex; justify-content: center; align-items: center; overflow: hidden; border-radius: 8px; box-shadow: 0 5px 15px rgba(0,0,0,0.3);">
-                            <img id="apple-tv-artwork" src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7" alt="Apple TV Media" style="width: 100%; height: 100%; object-fit: contain; transition: opacity 0.6s ease;">
-                        </div>
-                        <div id="apple-tv-media-info" style="width: 80%; padding: 10px;">
-                            <div id="apple-tv-media-title" style="font-size: 24px; font-weight: bold; margin-bottom: 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">—</div>
-                            <div id="apple-tv-media-details" style="font-size: 18px; margin-bottom: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">—</div>
-                            <div id="apple-tv-state">Unknown</div>
-                        </div>
-                    </div>`
-            },
-            'menu/system': {
-                title: 'System',
-                content: `
-                    <div id="system-container" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center;">
-                        <iframe id="system-iframe" src="softarc/system.html" style="width: 100%; height: 100%; border: none; border-radius: 8px; box-shadow: 0 5px 15px rgba(0,0,0,0.3);" allowfullscreen></iframe>
-                    </div>
-                `
-            },
-            'menu/scenes': {
-                title: 'Scenes',
-                content: `
-                    <div id="scenes-container" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center;">
-                    </div>
-                `,
-                preloadId: 'preload-scenes'
-            },
-            'menu/playing': {
-                title: 'PLAYING',
-                content: `
-                    <div id="now-playing" class="media-view">
-                        <div class="playing-artwork-slot media-view-artwork">
-                            <div class="playing-flipper">
-                                <div class="playing-face playing-front">
-                                    <img class="playing-artwork" src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7" alt="Album Art">
-                                </div>
-                                <div class="playing-face playing-back" style="display:none">
-                                    <img class="playing-artwork-back" src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7" alt="">
-                                </div>
-                            </div>
-                        </div>
-                        <div class="playing-info-slot media-view-info">
-                            <div id="media-title" class="media-view-title">—</div>
-                            <div id="media-artist" class="media-view-artist">—</div>
-                            <div id="media-album" class="media-view-album">—</div>
-                        </div>
-                    </div>`
-            },
-        };
-
-        // Active source tracking (source registry)
-        this.activeSource = null;          // id of active source, or null (HA fallback)
-        this.activeSourcePlayer = null;    // "local" | "remote" | null — who renders audio
-        this.activePlayingPreset = DEFAULT_PLAYING_PRESET;
-        this._menuLoaded = false;          // true after _fetchMenu completes
-
-        // Set initial route
-        this.currentRoute = 'menu/playing';
-        this.currentView = null;
-
-        // Initialize UI
-        this.initializeUI();
-        this.setupEventListeners();
-        this.updateView();
-
-        // Ensure menu starts visible
         setTimeout(() => {
-            this.setMenuVisible(true);
+            this.view.setMenuVisible(true);
         }, 100);
 
-        // Media info will be received via WebSocket from media server
-
-        // Set up Apple TV media info refresh for SHOWING view
-        this.setupAppleTVMediaInfoRefresh();
+        // Apple TV refresh starts on-demand when navigating to SHOWING view
 
         // Fetch menu from router (async, non-blocking)
-        this._fetchMenu();
-    }
-    
-    // REMOVED: requestMediaUpdate - now using push-based updates from media server
-    // Media server automatically pushes updates when:
-    // 1. Client connects
-    // 2. Track changes  
-    // 3. External control detected
-    
-    // Handle media update from WebSocket (via router)
-    handleMediaUpdate(data, reason = 'update') {
-        // Suppression of local-source metadata is handled by the router —
-        // if we receive an update here, it should be displayed.
-
-        // Only log the reason, not the full data object
-        console.log(`[MEDIA-WS] ${reason}: ${data.title} - ${data.artist}`);
-
-        // Update media info
-        this.mediaInfo = {
-            title: data.title || '—',
-            artist: data.artist || '—',
-            album: data.album || '—',
-            artwork: data.artwork || '',
-            back_artwork: data.back_artwork || '',
-            state: data.state || 'unknown',
-            position: data.position || '0:00',
-            duration: data.duration || '0:00'
-        };
-
-        // Update the now playing view if it's active
-        if (this.currentRoute === 'menu/playing') {
-            this.updateNowPlayingView();
-        }
-    }
-    
-    // Update the now playing view with current media info
-    updateNowPlayingView() {
-        const container = document.getElementById('now-playing');
-        if (container && this.activePlayingPreset?.onUpdate) {
-            this.activePlayingPreset.onUpdate(container, this.mediaInfo);
-        }
+        this.menu.fetchMenu();
     }
 
-    // Fetch Apple TV media info from backend (which proxies HA)
-    async fetchAppleTVMediaInfo() {
-        // Check for development mode (Mac + localhost) - use mock data
-        const isMac = navigator.platform.toLowerCase().includes('mac');
-        const isLocalhost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+    // ── Backward-compatible property access ──
+    // External code (ws-dispatcher, hardware-input, immersive-mode, etc.)
+    // accesses these via window.uiStore.X — delegate to the right manager.
 
-        if (isMac && isLocalhost && window.EmulatorMockData) {
-            const mockData = window.EmulatorMockData.getCurrentAppleTVShow();
-            this.appleTVMediaInfo = {
-                title: mockData.title || '—',
-                friendly_name: mockData.friendly_name || '—',
-                app_name: mockData.app_name || '—',
-                artwork: mockData.artwork || window.EmulatorMockData.generateShowingArtwork(mockData),
-                state: mockData.state || 'playing'
-            };
+    get mediaInfo() { return this.media.mediaInfo; }
+    set mediaInfo(v) { this.media.mediaInfo = v; }
 
-            if (this.currentRoute === 'menu/showing') {
-                this.updateAppleTVMediaView();
-            }
-            return;
-        }
+    get activeSource() { return this.media.activeSource; }
+    set activeSource(v) { this.media.activeSource = v; }
 
-        try {
-            const response = await fetch('http://localhost:8767/appletv');
-            if (!response.ok) return;
+    get activeSourcePlayer() { return this.media.activeSourcePlayer; }
+    set activeSourcePlayer(v) { this.media.activeSourcePlayer = v; }
 
-            const data = await response.json();
-            this.appleTVMediaInfo = {
-                title: data.title || '—',
-                friendly_name: data.friendly_name || '—',
-                app_name: data.app_name || '—',
-                artwork: data.artwork || '',
-                state: data.state
-            };
+    get activePlayingPreset() { return this.media.activePlayingPreset; }
 
-            if (this.currentRoute === 'menu/showing') {
-                this.updateAppleTVMediaView();
-            }
-        } catch (error) {
-            console.error('Error fetching Apple TV info:', error);
-        }
-    }
+    get menuItems() { return this.menu.menuItems; }
 
-    // Update the SHOWING view with Apple TV media info
-    updateAppleTVMediaView() {
-        const artworkEl = document.getElementById('apple-tv-artwork');
-        const titleEl = document.getElementById('apple-tv-media-title');
-        const detailsEl = document.getElementById('apple-tv-media-details');
-        const stateEl = document.getElementById('apple-tv-state');
+    get currentRoute() { return this.view.currentRoute; }
+    set currentRoute(v) { this.view.currentRoute = v; }
 
-        if (titleEl) titleEl.textContent = this.appleTVMediaInfo.title;
-        if (detailsEl) detailsEl.textContent = this.appleTVMediaInfo.app_name;
-        if (stateEl) stateEl.textContent = this.appleTVMediaInfo.state;
+    get menuVisible() { return this.view.menuVisible; }
 
-        // Use centralized artwork manager for display
-        if (artworkEl && window.ArtworkManager) {
-            window.ArtworkManager.displayArtwork(artworkEl, this.appleTVMediaInfo.artwork, 'showing');
-        }
-    }
+    get _navGuardUntil() { return this.view._navGuardUntil; }
 
-    // Set up periodic refresh for Apple TV media info
-    setupAppleTVMediaInfoRefresh() {
-        // Fetch immediately
-        this.fetchAppleTVMediaInfo();
+    get views() { return this.menu.views; }
 
-        // Then refresh every 5 seconds
-        setInterval(() => {
-            this.fetchAppleTVMediaInfo();
-        }, 5000);
-    }
+    get _menuLoaded() { return this.menu._menuLoaded; }
 
-    // ── Router menu & source preset management ──
+    // ── Delegated methods ──
 
-    async _fetchMenu() {
-        try {
-            const resp = await fetch(`${window.AppConfig?.routerUrl || 'http://localhost:8770'}/router/menu`);
-            const data = await resp.json();
-            if (!data || !data.items) return;
+    handleMediaUpdate(data, reason) { this.media.handleMediaUpdate(data, reason); }
+    updateNowPlayingView() { this.media.updateNowPlayingView(); }
+    setActivePlayingPreset(sourceId) { this.media.setActivePlayingPreset(sourceId); }
 
-            // Load source view scripts on demand
-            for (const item of data.items) {
-                if (item.dynamic && item.preset && !window.SourcePresets?.[item.preset]) {
-                    await this._loadSourceScript(item.preset);
-                }
-            }
+    navigateToView(path) { this.view.navigateToView(path); this.menu._currentRoute = this.view.currentRoute; }
+    setMenuVisible(visible) { this.view.setMenuVisible(visible); }
 
-            // Rebuild menu items from router response
-            const newItems = [];
-            for (const item of data.items) {
-                const path = `menu/${item.id}`;
+    addMenuItem(item, afterPath, viewDef) { this.menu.addMenuItem(item, afterPath, viewDef); }
+    removeMenuItem(path) { this.menu._currentRoute = this.view.currentRoute; this.menu.removeMenuItem(path); }
 
-                // Webpage items: iframe view (preserved across navigations via rescue logic)
-                if (item.type === 'webpage' && item.url) {
-                    const containerId = `webpage-container-${item.id}`;
-                    this.views[path] = {
-                        title: item.title,
-                        content: `<div id="${containerId}" class="webpage-container" style="position:absolute;top:0;left:0;width:100%;height:100%;"></div>`,
-                        _webpage: { iframeId: `preload-webpage-${item.id}`, containerId, url: item.url }
-                    };
-                    newItems.push({ title: item.title, path });
-                }
-                // Dynamic sources: always register view from preset (even if menu item already exists)
-                else if (item.dynamic && item.preset) {
-                    // Load source script if not yet available
-                    if (!window.SourcePresets?.[item.preset]) {
-                        await this._loadSourceScript(item.preset);
-                    }
-                    const preset = window.SourcePresets?.[item.preset];
-                    if (preset) {
-                        newItems.push({ title: item.title, path: preset.item.path });
-                        if (preset.view) {
-                            this.views[preset.item.path] = preset.view;
-                        }
-                    } else {
-                        newItems.push({ title: item.title, path });
-                    }
-                } else {
-                    const existing = this.menuItems.find(m => m.path === path);
-                    newItems.push(existing || { title: item.title, path });
-                }
-            }
-            this.menuItems = newItems;
+    _loadSourceScript(preset) { return this.menu.loadSourceScript(preset); }
+    _reloadAllSourceIframes() { this.menu.reloadAllSourceIframes(); }
 
-            // Sync to laser position mapper
-            if (window.LaserPositionMapper?.updateMenuItems) {
-                window.LaserPositionMapper.updateMenuItems(this.menuItems);
-            }
+    // ── Debug logging ──
 
-            // Restore active source and player type
-            if (data.active_source) {
-                this.activeSource = data.active_source;
-                this.activeSourcePlayer = data.active_player || null;
-                this.setActivePlayingPreset(data.active_source);
-            }
-
-            this._menuLoaded = true;
-            this._menuRetries = 0;
-            this.renderMenuItems();
-            console.log(`[MENU] Loaded ${newItems.length} items from router (active: ${data.active_source || 'none'})`);
-        } catch (e) {
-            this._menuLoaded = true;  // allow media updates even if router is down
-            // Retry with backoff until router comes up (safety net for startup races)
-            const attempt = (this._menuRetries = (this._menuRetries || 0) + 1);
-            if (attempt <= 15) {
-                const delay = Math.min(attempt * 2000, 10000);
-                console.log(`[MENU] Router unavailable, retrying in ${delay / 1000}s (attempt ${attempt})`);
-                setTimeout(() => this._fetchMenu(), delay);
-            } else {
-                console.log('[MENU] Router unavailable after 15 attempts, using defaults');
-            }
-        }
-    }
-
-    /**
-     * Dynamically load a source's view script (web/sources/{preset}/view.js).
-     */
-    _loadSourceScript(preset) {
-        return new Promise(resolve => {
-            const script = document.createElement('script');
-            script.src = `sources/${preset}/view.js`;
-            script.onload = () => {
-                console.log(`[MENU] Loaded source script: ${preset}`);
-                // Auto-register source iframe if the view declares iframeSrc
-                const sp = window.SourcePresets?.[preset];
-                if (sp?.view?.preloadId && sp.view.iframeSrc) {
-                    this._preloadSourceIframe(sp.view.preloadId, sp.view.iframeSrc);
-                    if (sp.item?.path) {
-                        window.IframeMessenger?.registerIframe(sp.item.path, sp.view.preloadId);
-                    }
-                }
-                resolve();
-            };
-            script.onerror = () => {
-                console.warn(`[MENU] Source script not found: ${preset}`);
-                resolve();
-            };
-            document.head.appendChild(script);
+    logWebsocketMessage(message) {
+        this.wsMessages.unshift({
+            time: new Date().toLocaleTimeString(),
+            message
         });
-    }
-
-    /**
-     * Switch the PLAYING view to a source's preset (or default).
-     */
-    setActivePlayingPreset(sourceId) {
-        const preset = sourceId && window.SourcePresets?.[sourceId]?.playing;
-        const newPreset = preset || DEFAULT_PLAYING_PRESET;
-        if (newPreset === this.activePlayingPreset) return;
-
-        const container = document.getElementById('now-playing');
-        if (!container) {
-            this.activePlayingPreset = newPreset;
-            return;
+        if (this.wsMessages.length > this.maxWsMessages) {
+            this.wsMessages.length = this.maxWsMessages;
         }
-
-        if (this.activePlayingPreset?.onRemove) this.activePlayingPreset.onRemove(container);
-        this.activePlayingPreset = newPreset;
-        if (this.activePlayingPreset.onMount) this.activePlayingPreset.onMount(container);
-        if (this.currentRoute === 'menu/playing') this.updateNowPlayingView();
     }
 
-    // Update the SHOWING view (called when navigating to view)
-    updateShowingView() {
-        // Use cached info immediately, fetch will update async
-        this.updateAppleTVMediaView();
-        // Also trigger a fresh fetch
-        this.fetchAppleTVMediaInfo();
-    }
-    
-    // Initialize UI
-    initializeUI() {
-        // Draw initial arcs
+    // ── UI initialization ──
+
+    _initializeUI() {
         const mainArc = document.getElementById('mainArc');
-        mainArc.setAttribute('d', arcs.drawArc(arcs.cx, arcs.cy, this.radius, 158, 202));
+        mainArc.setAttribute('d', arcs.drawArc(arcs.cx, arcs.cy, this.menu.radius, 158, 202));
 
-        // Volume arc removed - no longer needed
-        // const volumeArc = document.getElementById('volumeArc');
-        // this.updateVolumeArc();
-
-        // Setup menu items
-        this.renderMenuItems();
+        this.menu.renderMenuItems();
         this.updatePointer();
-
-        // Preload iframes for faster navigation
-        this.preloadIframes();
+        this.menu.preloadIframes();
     }
 
-    // Preload iframe content in background for instant navigation
-    // Source iframes (spotify, apple_music, etc.) are preloaded dynamically
-    // via _loadSourceScript() when their view.js declares iframeSrc.
-    preloadIframes() {
-        const iframesToPreload = [
-            { id: 'preload-scenes', src: 'softarc/scenes.html' }
-        ];
-
-        // Create a hidden container for preloaded iframes
-        let preloadContainer = document.getElementById('iframe-preload-container');
-        if (!preloadContainer) {
-            preloadContainer = document.createElement('div');
-            preloadContainer.id = 'iframe-preload-container';
-            preloadContainer.style.cssText = 'position:absolute;left:-9999px;top:-9999px;width:1px;height:1px;overflow:hidden;';
-            document.body.appendChild(preloadContainer);
-        }
-
-        iframesToPreload.forEach(({ id, src }) => {
-            if (!document.getElementById(id)) {
-                const iframe = document.createElement('iframe');
-                iframe.id = id;
-                iframe.src = src;
-                iframe.style.cssText = 'width:1024px;height:768px;border:none;';
-                preloadContainer.appendChild(iframe);
-                console.log(`[PRELOAD] Loading ${src}`);
-            }
-        });
-
-        // Store preloaded state
-        this.iframesPreloaded = true;
-    }
-
-    /**
-     * Preload a source iframe into the hidden container.
-     * Called automatically when a source script declares iframeSrc in its view.
-     */
-    _preloadSourceIframe(id, src) {
-        if (document.getElementById(id)) return; // already exists
-
-        let preloadContainer = document.getElementById('iframe-preload-container');
-        if (!preloadContainer) {
-            preloadContainer = document.createElement('div');
-            preloadContainer.id = 'iframe-preload-container';
-            preloadContainer.style.cssText = 'position:absolute;left:-9999px;top:-9999px;width:1px;height:1px;overflow:hidden;';
-            document.body.appendChild(preloadContainer);
-        }
-
-        const iframe = document.createElement('iframe');
-        iframe.id = id;
-        iframe.src = src;
-        iframe.style.cssText = 'width:1024px;height:768px;border:none;';
-        preloadContainer.appendChild(iframe);
-        console.log(`[PRELOAD] Loading source iframe: ${src}`);
-    }
-
-    /**
-     * Send reload-data to all source iframes that have a preloadId.
-     * Called when navigating to PLAYING or on reload-playlists relay.
-     */
-    _reloadAllSourceIframes() {
-        for (const sp of Object.values(window.SourcePresets || {})) {
-            if (sp.view?.preloadId) {
-                const iframe = document.getElementById(sp.view.preloadId);
-                if (iframe?.contentWindow) {
-                    iframe.contentWindow.postMessage({ type: 'reload-data' }, '*');
-                }
-            }
-        }
-    }
-
-    // Move a preloaded iframe into the current view container
-    attachPreloadedIframe(preloadId) {
-        // Build maps dynamically from SourcePresets + built-in views
-        let containerId = null;
-        let iframeSrc = null;
-
-        // Check SourcePresets first
-        for (const sp of Object.values(window.SourcePresets || {})) {
-            if (sp.view?.preloadId === preloadId) {
-                containerId = sp.view.containerId;
-                iframeSrc = sp.view.iframeSrc;
-                break;
-            }
-        }
-
-        // Fall back to built-in views (scenes, security)
-        if (!containerId) {
-            const builtins = {
-                'preload-scenes': { container: 'scenes-container', src: 'softarc/scenes.html' },
-                'preload-security': { container: 'security-container', src: 'softarc/security.html' },
-            };
-            const b = builtins[preloadId];
-            if (b) { containerId = b.container; iframeSrc = b.src; }
-        }
-
-        if (!containerId) {
-            console.warn(`[PRELOAD] No mapping for ${preloadId}`);
-            return;
-        }
-
-        const container = document.getElementById(containerId);
-        if (!container) {
-            console.warn(`[PRELOAD] Container ${containerId} not found`);
-            return;
-        }
-
-        // Check if iframe is already in this container
-        let iframe = container.querySelector('iframe');
-        if (iframe) {
-            console.log(`[PRELOAD] Iframe already in ${containerId}`);
-            return;
-        }
-
-        // Find the preloaded iframe (might be in preload container or need fresh load)
-        iframe = document.getElementById(preloadId);
-        if (iframe) {
-            // Style the iframe for display
-            iframe.style.cssText = 'width: 100%; height: 100%; border: none; border-radius: 8px; box-shadow: 0 5px 15px rgba(0,0,0,0.3);';
-            // Move iframe from preload container to view container
-            container.appendChild(iframe);
-            console.log(`[PRELOAD] Attached ${preloadId} to ${containerId}`);
-        } else if (iframeSrc) {
-            // Fallback: create iframe if preload failed
-            iframe = document.createElement('iframe');
-            iframe.id = preloadId;
-            iframe.src = iframeSrc;
-            iframe.style.cssText = 'width: 100%; height: 100%; border: none; border-radius: 8px; box-shadow: 0 5px 15px rgba(0,0,0,0.3);';
-            container.appendChild(iframe);
-            console.log(`[PRELOAD] Created fresh iframe for ${containerId}`);
-        }
-    }
-
+    // ── Pointer ──
 
     updatePointer() {
         const pointerDot = document.getElementById('pointerDot');
         const pointerLine = document.getElementById('pointerLine');
         const mainMenu = document.getElementById('mainMenu');
-        
-        const point = arcs.getArcPoint(this.radius, 0, this.wheelPointerAngle);
+
+        const point = arcs.getArcPoint(this.menu.radius, 0, this.wheelPointerAngle);
         const transform = `rotate(${this.wheelPointerAngle - 90}deg)`;
-        
+
         [pointerDot, pointerLine].forEach(element => {
             element.setAttribute('cx', point.x);
             element.setAttribute('cy', point.y);
@@ -618,7 +151,6 @@ class UIStore {
             element.style.transform = transform;
         });
 
-        // Toggle slide-out class based on angle range
         if (mainMenu) {
             if (this.wheelPointerAngle > 203 || this.wheelPointerAngle < 155) {
                 mainMenu.classList.add('slide-out');
@@ -628,112 +160,76 @@ class UIStore {
         }
     }
 
-    renderMenuItems() {
-        const menuContainer = document.getElementById('menuItems');
-        menuContainer.innerHTML = '';
+    // ── Input handling ──
 
-        const visibleItems = this.menuItems;
-        visibleItems.forEach((item, index) => {
-            const itemElement = document.createElement('div');
-            itemElement.className = 'list-item';
-            itemElement.dataset.path = item.path;
-            itemElement.textContent = item.title;
+    handleWheelChange() {
+        this.wheelPointerAngle = Math.max(150, Math.min(210, this.wheelPointerAngle));
 
-            const itemAngle = this.getStartItemAngle() + (visibleItems.length - 1 - index) * this.angleStep;
-            const position = arcs.getArcPoint(this.radius, 20, itemAngle);
+        if (!this.laserPosition || !window.LaserPositionMapper) {
+            console.error('[UI] Laser position system required but not available');
+            return;
+        }
 
-            Object.assign(itemElement.style, {
-                position: 'absolute',
-                left: `${position.x - 100}px`,
-                top: `${position.y - 25}px`,
-                width: '100px',
-                height: '50px',
-                cursor: 'pointer'
-            });
+        const result = window.LaserPositionMapper.resolveMenuSelection(this.laserPosition);
 
-            itemElement.addEventListener('mouseenter', () => {
-                this.wheelPointerAngle = itemAngle;
-                if (window.LaserPositionMapper) {
-                    this.laserPosition = Math.round(window.LaserPositionMapper.angleToLaserPosition(itemAngle));
-                }
-                this.handleWheelChange();
-            });
+        // Determine effective path — overlays navigate to PLAYING/SHOWING
+        let effectivePath = result.path;
+        if (result.isOverlay) {
+            effectivePath = result.angle >= 200 ? 'menu/playing' : 'menu/showing';
+        }
 
-            // Highlight if this item matches the last selected path
-            if (item.path === this._lastSelectedPath) {
-                itemElement.classList.add('selectedItem');
-            }
+        // Menu visibility
+        if (result.isOverlay && this.view.menuVisible) {
+            this.view.setMenuVisible(false);
+        } else if (!result.isOverlay && !this.view.menuVisible) {
+            this.view.setMenuVisible(true);
+        }
 
-            menuContainer.appendChild(itemElement);
-        });
-    }
+        // Navigate when the effective path differs
+        if (effectivePath && effectivePath !== this.view.currentRoute) {
+            this.view.navigateToView(effectivePath);
+            this.menu._currentRoute = this.view.currentRoute;
+        }
 
-    getStartItemAngle() {
-        const visibleCount = this.menuItems.length;
-        const totalSpan = this.angleStep * (visibleCount - 1);
-        return 180 - totalSpan / 2;
-    }
-
-    /**
-     * Bold the menu item at selectedIndex; click when selectedPath changes.
-     */
-    _applyMenuHighlight(selectedIndex, selectedPath) {
-        const menuContainer = document.getElementById('menuItems');
-        if (!menuContainer) return;
-
-        const menuElements = menuContainer.querySelectorAll('.list-item');
-        menuElements.forEach((el, i) => {
-            if (i === selectedIndex) {
-                el.classList.add('selectedItem');
-            } else {
-                el.classList.remove('selectedItem');
-            }
-        });
-
-        // Click exactly when the bolded item changes — one click per highlight change
-        if (selectedPath && selectedPath !== this._lastSelectedPath) {
+        // Bold + click (only for non-overlay menu items)
+        if (this.menu.applyMenuHighlight(result.selectedIndex, result.path)) {
             this.sendClickCommand();
         }
-        this._lastSelectedPath = selectedPath;
+
+        this.updatePointer();
+        this.topWheelPosition = 0;
+
+        document.dispatchEvent(new CustomEvent('bs5c:wheel-change'));
     }
 
+    setLaserPosition(position) {
+        this.laserPosition = position;
+    }
 
-
-    // Send click command to server (graceful fallback)
     sendClickCommand() {
-        try {
-            const ws = new WebSocket(AppConfig.websocket.input);
-            
-            const timeout = setTimeout(() => {
-                ws.close();
-            }, 1000); // 1 second timeout
-            
-            ws.onopen = () => {
-                clearTimeout(timeout);
-                const message = {
-                    type: 'command',
-                    command: 'click',
-                    params: {}
-                };
-                ws.send(JSON.stringify(message));
-                console.log('Sent click command to server');
-                ws.close();
-            };
-            
-            ws.onerror = () => {
-                clearTimeout(timeout);
-                // Silently fail - main server not available (standalone mode)
-            };
-            
-            ws.onclose = () => {
-                clearTimeout(timeout);
-            };
-        } catch (error) {
-            // Silently fail - main server not available (standalone mode)
+        const ws = window.hardwareWebSocket;
+        if (ws && ws.readyState === WebSocket.OPEN) {
+            try {
+                ws.send(JSON.stringify({ type: 'command', command: 'click', params: {} }));
+            } catch (error) {
+                // Silently fail - connection may have closed between check and send
+            }
         }
     }
 
-    setupEventListeners() {
+    forwardButtonToActiveIframe(button) {
+        if (window.IframeMessenger) {
+            window.IframeMessenger.sendButtonEvent(this.view.currentRoute, button);
+        }
+    }
+
+    forwardKeyboardToActiveIframe(event) {
+        if (window.IframeMessenger) {
+            window.IframeMessenger.sendKeyboardEvent(this.view.currentRoute, event);
+        }
+    }
+
+    _setupEventListeners() {
         document.addEventListener('keydown', (event) => {
             switch (event.key) {
                 case "ArrowUp":
@@ -745,28 +241,23 @@ class UIStore {
                     this.handleWheelChange();
                     break;
                 case "ArrowLeft":
-                    if (this.currentRoute === 'menu/playing') {
+                    if (this.view.currentRoute === 'menu/playing') {
                         // Webhook handled by dummy hardware system
                     } else {
-                        // Forward left button to active iframe for hierarchical navigation
                         this.forwardButtonToActiveIframe('left');
-                        // Also forward keyboard event for iframe handling
                         this.forwardKeyboardToActiveIframe(event);
                     }
                     break;
                 case "ArrowRight":
-                    if (this.currentRoute === 'menu/playing') {
+                    if (this.view.currentRoute === 'menu/playing') {
                         // Webhook handled by dummy hardware system
                     } else {
-                        // Forward right button to active iframe for hierarchical navigation
                         this.forwardButtonToActiveIframe('right');
-                        // Also forward keyboard event for iframe handling
                         this.forwardKeyboardToActiveIframe(event);
                     }
                     break;
                 case "Enter":
-                    // Forward Enter key to active iframe for "go" functionality
-                    if (this.currentRoute !== 'menu/playing') {
+                    if (this.view.currentRoute !== 'menu/playing') {
                         this.forwardKeyboardToActiveIframe(event);
                     }
                     break;
@@ -797,470 +288,38 @@ class UIStore {
             }
         });
 
-        // Volume wheel handling removed - wheel events now ONLY control laser pointer
-        // Volume can be controlled via left/right arrow keys when not in now playing view
-
         document.getElementById('menuItems').addEventListener('click', (event) => {
             const clickedItem = event.target.closest('.list-item');
             if (!clickedItem) return;
 
             const children = Array.from(clickedItem.parentElement.children);
             const index = children.indexOf(clickedItem);
-            const itemAngle = this.getStartItemAngle() + (children.length - 1 - index) * this.angleStep;
+            const itemAngle = this.menu.getStartItemAngle() + (children.length - 1 - index) * this.menu.angleStep;
             this.wheelPointerAngle = itemAngle;
             if (window.LaserPositionMapper) {
                 this.laserPosition = Math.round(window.LaserPositionMapper.angleToLaserPosition(itemAngle));
             }
             this.handleWheelChange();
-            
-            // Send click command to server
+
             this.sendClickCommand();
         });
     }
 
-    handleWheelChange() {
-        this.wheelPointerAngle = Math.max(150, Math.min(210, this.wheelPointerAngle));
+    // ── Test helpers ──
 
-        if (!this.laserPosition || !window.LaserPositionMapper) {
-            console.error('[UI] Laser position system required but not available');
-            return;
-        }
-
-        const result = window.LaserPositionMapper.resolveMenuSelection(this.laserPosition);
-
-        // Determine effective path — overlays navigate to PLAYING/SHOWING
-        let effectivePath = result.path;
-        if (result.isOverlay) {
-            effectivePath = result.angle >= 200 ? 'menu/playing' : 'menu/showing';
-        }
-
-        // Menu visibility
-        if (result.isOverlay && this.menuVisible) {
-            this.setMenuVisible(false);
-        } else if (!result.isOverlay && !this.menuVisible) {
-            this.setMenuVisible(true);
-        }
-
-        // Navigate when the effective path differs from currentRoute
-        if (effectivePath && effectivePath !== this.currentRoute) {
-            this.navigateToView(effectivePath);
-        }
-
-        // Bold + click (only for non-overlay menu items)
-        this._applyMenuHighlight(result.selectedIndex, result.path);
-
-        this.updatePointer();
-        this.topWheelPosition = 0;
-
-        document.dispatchEvent(new CustomEvent('bs5c:wheel-change'));
-    }
-
-    // Simplified menu visibility control
-    setMenuVisible(visible) {
-        if (this.menuVisible === visible) return; // No change needed
-
-        this.menuVisible = visible;
-        document.dispatchEvent(new CustomEvent('bs5c:menu-visibility', { detail: { visible } }));
-
-        // Get menu elements
-        const menuElements = this.getMenuElements();
-        if (menuElements.length === 0) {
-            console.warn('No menu elements found for visibility control');
-            return;
-        }
-        
-        // Update visibility immediately
-        menuElements.forEach(element => {
-            element.style.transition = 'none';
-            element.style.display = visible ? 'block' : 'none';
-            element.style.opacity = visible ? '1' : '0';
-            element.style.transform = 'translateX(0px)';
-        });
-        
-        // Ensure content stays visible
-        this.ensureContentVisible();
-    }
-    
-    // Get menu elements for animation
-    getMenuElements() {
-        const menuItems = document.getElementById('menuItems');
-        const mainArc = document.querySelector('#mainMenu svg');
-        const anglePointer = document.getElementById('anglePointer');
-        return [menuItems, mainArc, anglePointer].filter(el => el);
-    }
-    
-    // Ensure content area stays visible during all animations
-    ensureContentVisible() {
-        const contentArea = document.getElementById('contentArea');
-        if (contentArea) {
-            // Only ensure visibility and position, don't interfere with opacity transitions
-            // that might be happening for artwork or other content
-            contentArea.style.transform = 'translateX(0px)';
-            contentArea.style.visibility = 'visible';
-            
-            // Don't force opacity to 1 or remove transitions as this can interfere
-            // with artwork fade-in/fade-out animations
-            
-            // Force a reflow to ensure styles are applied
-            contentArea.offsetHeight;
-        }
-    }
-    
-    
-
-    reportViewToRouter(view) {
-        const url = `${window.AppConfig?.routerUrl || 'http://localhost:8770'}/router/view`;
-        fetch(url, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ view })
-        }).catch(() => {}); // fire-and-forget
-    }
-
-    navigateToView(path) {
-        // Skip if already on the target route (avoids unnecessary DOM rebuild
-        // which causes artwork flicker, e.g. when wake trigger fires while
-        // already viewing the playing page)
-        if (path === this.currentRoute) return;
-
-        // Cancel any pending navigation transition
-        if (this.navigationTimeout) {
-            clearTimeout(this.navigationTimeout);
-            this.navigationTimeout = null;
-        }
-
-        const from = this.currentRoute;
-
-        // Update route immediately to prevent repeated navigation triggers
-        this.currentRoute = path;
-
-        document.dispatchEvent(new CustomEvent('bs5c:view-change', { detail: { from, to: path } }));
-
-        // Gate iframe click messages during navigation (prevents spurious clicks
-        // from softarc checkForSelectionClick when preloaded iframes are attached)
-        this._navGuardUntil = Date.now() + 600;
-
-        // Report view to router so BeoRemote buttons are routed correctly
-        this.reportViewToRouter(path);
-
-        // For overlay transitions, update immediately to prevent content hiding
-        const isOverlayTransition = path === 'menu/playing' || path === 'menu/showing';
-
-        // When arriving at PLAYING, tell all source iframes to reload their data
-        // so playlist additions/removals are picked up.
-        if (path === 'menu/playing') {
-            this._reloadAllSourceIframes();
-        }
-
-        if (isOverlayTransition) {
-            // Overlay transitions: update immediately and ensure content stays visible
-            this.updateView();
-            this.ensureContentVisible(); // Force content to stay visible
-        } else {
-            // Regular menu navigation: update immediately (removed fade to prevent visibility issues)
-            const contentArea = document.getElementById('contentArea');
-            if (contentArea) {
-                contentArea.style.opacity = 0;
-                this.navigationTimeout = setTimeout(() => {
-                    this.updateView();
-                    this.navigationTimeout = null;
-                }, 150); // Reduced from 250ms for snappier transitions
-            } else {
-                this.updateView();
-            }
-        }
-    }
-
-    updateView() {
-        
-        const contentArea = document.getElementById('contentArea');
-        if (!contentArea) {
-            console.error('Content area not found');
-            return;
-        }
-
-        const view = this.views[this.currentRoute];
-        if (!view) {
-            console.error('View not found for route:', this.currentRoute);
-            // Fallback to playing view if route not found
-            this.currentRoute = 'menu/playing';
-            this.updateView();
-            return;
-        }
-
-        // Teardown previous view's preset (e.g. CDView.destroy()) before replacing content
-        if (this._previousRoute && this._previousRoute !== this.currentRoute && window.SourcePresets) {
-            for (const preset of Object.values(window.SourcePresets)) {
-                if (preset.item.path === this._previousRoute && preset.onRemove) {
-                    preset.onRemove();
-                }
-            }
-        }
-        this._previousRoute = this.currentRoute;
-
-        // Rescue preloaded iframes before replacing content (prevents reload + stale init clicks)
-        // Call destroy() on ArcList instances to clean up intervals, listeners, and WebSockets
-        const preloadContainer = document.getElementById('iframe-preload-container');
-        if (preloadContainer) {
-            contentArea.querySelectorAll('iframe[id^="preload-"]').forEach(iframe => {
-                try {
-                    const win = iframe.contentWindow;
-                    const inst = win?.arcListInstance || win?.arcList;
-                    if (inst && typeof inst.destroy === 'function') {
-                        inst.destroy();
-                    }
-                    // Clean up SystemPanel if present (system.html)
-                    if (win?.systemPanel && typeof win.systemPanel.destroy === 'function') {
-                        win.systemPanel.destroy();
-                    }
-                } catch (e) { /* cross-origin or unloaded iframe */ }
-                iframe.style.cssText = 'width:1024px;height:768px;border:none;';
-                preloadContainer.appendChild(iframe);
-            });
-        }
-
-        // Update content while it's faded out
-        contentArea.innerHTML = view.content;
-
-        // If view has a preloaded iframe, move it into the container
-        if (view.preloadId) {
-            this.attachPreloadedIframe(view.preloadId);
-        }
-
-        // Webpage views: reuse existing iframe or create on first visit
-        // iframe id starts with "preload-" so the rescue logic preserves it across navigations
-        if (view._webpage) {
-            const { iframeId, containerId, url } = view._webpage;
-            const container = document.getElementById(containerId);
-            if (container) {
-                let iframe = document.getElementById(iframeId);
-                if (!iframe) {
-                    iframe = document.createElement('iframe');
-                    iframe.id = iframeId;
-                    iframe.className = 'webpage-iframe';
-                    iframe.src = url;
-                }
-                iframe.style.cssText = 'width:100%;height:100%;border:none;';
-                container.appendChild(iframe);
-            }
-        }
-
-        // Immediately update with cached info for playing view
-        if (this.currentRoute === 'menu/playing') {
-            // Force re-apply preset — content was just rebuilt so slots need re-injection
-            this.activePlayingPreset = null;
-            this.setActivePlayingPreset(this.activeSource);
-            this.updateNowPlayingView();
-            // Media info will be pushed automatically by media server
-        }
-        // Update SHOWING view with static fallback
-        else if (this.currentRoute === 'menu/showing') {
-            this.updateShowingView();
-        }
-
-        // Fire onMount for dynamic menu presets (e.g. CD loading sequence)
-        if (window.SourcePresets) {
-            for (const preset of Object.values(window.SourcePresets)) {
-                if (preset.item.path === this.currentRoute && preset.onMount) {
-                    preset.onMount();
-                }
-            }
-        }
-
-        // Fade the content back in (but not for overlay transitions where we want it always visible)
-        const isOverlayView = this.currentRoute === 'menu/playing' || this.currentRoute === 'menu/showing';
-        if (isOverlayView) {
-            // For overlay views, ensure content is immediately visible
-            contentArea.style.opacity = 1;
-        } else {
-            // For regular navigation, fade back in
-            setTimeout(() => {
-                contentArea.style.opacity = 1;
-            }, 50);
-        }
-    }
-
-    // Set the current laser position
-    setLaserPosition(position) {
-        this.laserPosition = position;
-    }
-    
-    /**
-     * Forward button press to active iframe for hierarchical navigation
-     */
-    forwardButtonToActiveIframe(button) {
-        if (window.IframeMessenger) {
-            window.IframeMessenger.sendButtonEvent(this.currentRoute, button);
-        }
-    }
-
-    /**
-     * Forward keyboard event to active iframe for enhanced navigation
-     */
-    forwardKeyboardToActiveIframe(event) {
-        if (window.IframeMessenger) {
-            window.IframeMessenger.sendKeyboardEvent(this.currentRoute, event);
-        }
-    }
-
-    /**
-     * Add a menu item dynamically at runtime.
-     * @param {object} item - {title, path} for the new menu item
-     * @param {string} afterPath - Insert after this path (e.g. 'menu/playing')
-     * @param {object} [viewDef] - Optional view definition {title, content}
-     */
-    addMenuItem(item, afterPath, viewDef) {
-        // Don't add duplicates
-        if (this.menuItems.some(m => m.path === item.path)) {
-            console.log(`[MENU] Item ${item.path} already exists`);
-            return;
-        }
-
-        // Find insertion point
-        const afterIndex = this.menuItems.findIndex(m => m.path === afterPath);
-        const insertAt = afterIndex !== -1 ? afterIndex + 1 : this.menuItems.length;
-        this.menuItems.splice(insertAt, 0, { title: item.title, path: item.path });
-
-        // Register view content
-        if (viewDef) {
-            this.views[item.path] = viewDef;
-        }
-
-        // Sync to laser position mapper
-        if (window.LaserPositionMapper?.updateMenuItems) {
-            window.LaserPositionMapper.updateMenuItems(this.menuItems);
-        }
-
-        console.log(`[MENU] Added "${item.title}" after ${afterPath} (now ${this.menuItems.length} items)`);
-        this.renderMenuItemsAnimated();
-    }
-
-    /**
-     * Remove a menu item dynamically at runtime.
-     * @param {string} path - Path of the item to remove (e.g. 'menu/cd')
-     */
-    removeMenuItem(path) {
-        const index = this.menuItems.findIndex(m => m.path === path);
-        if (index === -1) {
-            console.log(`[MENU] Item ${path} not found`);
-            return;
-        }
-
-        // If currently viewing the removed item, navigate to adjacent
-        if (this.currentRoute === path) {
-            const adjacentPath = this.menuItems[index - 1]?.path || this.menuItems[index + 1]?.path || 'menu/playing';
-            this.navigateToView(adjacentPath);
-        }
-
-        this.menuItems.splice(index, 1);
-        delete this.views[path];
-
-        // Sync to laser position mapper
-        if (window.LaserPositionMapper?.updateMenuItems) {
-            window.LaserPositionMapper.updateMenuItems(this.menuItems);
-        }
-
-        console.log(`[MENU] Removed "${path}" (now ${this.menuItems.length} items)`);
-        this.renderMenuItemsAnimated();
-    }
-
-    /**
-     * Re-render menu items with FLIP animation.
-     * Existing items slide to their new positions, new items fade in.
-     */
-    renderMenuItemsAnimated() {
-        const menuContainer = document.getElementById('menuItems');
-        if (!menuContainer) return;
-
-        // --- FIRST: record old positions keyed by data-path ---
-        const oldPositions = {};
-        menuContainer.querySelectorAll('.list-item[data-path]').forEach(el => {
-            const rect = el.getBoundingClientRect();
-            oldPositions[el.dataset.path] = { left: rect.left, top: rect.top };
-        });
-
-        // --- Rebuild DOM (skip hidden items) ---
-        menuContainer.innerHTML = '';
-        const visibleItems = this.menuItems;
-        visibleItems.forEach((item, index) => {
-            const itemElement = document.createElement('div');
-            itemElement.className = 'list-item';
-            itemElement.dataset.path = item.path;
-            itemElement.textContent = item.title;
-
-            const itemAngle = this.getStartItemAngle() + (visibleItems.length - 1 - index) * this.angleStep;
-            const position = arcs.getArcPoint(this.radius, 20, itemAngle);
-
-            Object.assign(itemElement.style, {
-                position: 'absolute',
-                left: `${position.x - 100}px`,
-                top: `${position.y - 25}px`,
-                width: '100px',
-                height: '50px',
-                cursor: 'pointer'
-            });
-
-            itemElement.addEventListener('mouseenter', () => {
-                this.wheelPointerAngle = itemAngle;
-                if (window.LaserPositionMapper) {
-                    this.laserPosition = Math.round(window.LaserPositionMapper.angleToLaserPosition(itemAngle));
-                }
-                this.handleWheelChange();
-            });
-
-            if (item.path === this._lastSelectedPath) {
-                itemElement.classList.add('selectedItem');
-            }
-
-            menuContainer.appendChild(itemElement);
-        });
-
-        // --- LAST + INVERT + PLAY ---
-        menuContainer.querySelectorAll('.list-item[data-path]').forEach(el => {
-            const path = el.dataset.path;
-            const newRect = el.getBoundingClientRect();
-
-            if (oldPositions[path]) {
-                // Existing item that moved — animate from old to new position
-                const dx = oldPositions[path].left - newRect.left;
-                const dy = oldPositions[path].top - newRect.top;
-                if (Math.abs(dx) > 0.5 || Math.abs(dy) > 0.5) {
-                    el.animate([
-                        { transform: `translate(${dx}px, ${dy}px)` },
-                        { transform: 'translate(0, 0)' }
-                    ], { duration: 300, easing: 'ease-out' });
-                }
-            } else {
-                // New item — fade in with delay
-                el.animate([
-                    { opacity: 0, transform: 'translateX(-20px)' },
-                    { opacity: 1, transform: 'translateX(0)' }
-                ], { duration: 300, delay: 150, easing: 'ease-out', fill: 'backwards' });
-            }
-        });
-    }
-
-    /**
-     * Test helper: add a source menu item (for console testing without router)
-     * Usage: uiStore.testAddSource('cd') or uiStore.testAddSource('demo')
-     */
     testAddSource(sourceId) {
         const preset = window.SourcePresets?.[sourceId];
         if (!preset) {
             console.error(`SourcePresets.${sourceId} not loaded`);
             return;
         }
-        this.addMenuItem(preset.item, preset.after, preset.view);
+        this.menu.addMenuItem(preset.item, preset.after, preset.view);
         setTimeout(() => {
             const container = document.getElementById('contentArea');
             if (preset.onAdd) preset.onAdd(container);
         }, 50);
     }
 
-    /**
-     * Test helper: remove a source menu item
-     * Usage: uiStore.testRemoveSource('cd')
-     */
     testRemoveSource(sourceId) {
         const preset = window.SourcePresets?.[sourceId];
         if (!preset) {
@@ -1268,17 +327,17 @@ class UIStore {
             return;
         }
         if (preset.onRemove) preset.onRemove();
-        this.removeMenuItem(preset.item.path);
+        this.menu._currentRoute = this.view.currentRoute;
+        this.menu.removeMenuItem(preset.item.path);
     }
 }
 
-// Initialize UIStore and make functions globally accessible
+// ── Bootstrap ──
+
 document.addEventListener('DOMContentLoaded', () => {
-    // Create the UI store and make it globally accessible
     const uiStore = new UIStore();
     window.uiStore = uiStore;
-    
-    // Make the sendClickCommand function globally accessible
+
     window.sendClickCommand = () => {
         if (window.uiStore) {
             window.uiStore.sendClickCommand();
@@ -1300,37 +359,29 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     };
 
-    // Wait for artwork to load before hiding splash
     const waitForArtwork = () => {
         const artworkEl = document.querySelector('#now-playing .playing-artwork');
         if (artworkEl && artworkEl.src && artworkEl.src !== '' && artworkEl.src !== window.location.href) {
-            // Artwork src is set, wait for it to actually load
             if (artworkEl.complete && artworkEl.naturalHeight > 0) {
                 hideSplash();
             } else {
                 artworkEl.onload = hideSplash;
-                artworkEl.onerror = hideSplash; // Hide anyway on error
+                artworkEl.onerror = hideSplash;
             }
         } else {
-            // No artwork yet, check again shortly
             setTimeout(waitForArtwork, 100);
         }
     };
 
-    // Start checking for artwork after a brief delay, with a max timeout
     setTimeout(waitForArtwork, 300);
-
-    // Fallback: hide splash after max wait time regardless
     setTimeout(hideSplash, 3000);
 
     // Relay messages from child iframes
     window.addEventListener('message', (event) => {
         if (event.data?.type === 'reload-playlists') {
-            // Tell all source iframes to reload their data
-            uiStore._reloadAllSourceIframes();
+            uiStore.menu.reloadAllSourceIframes();
         } else if (event.data?.type === 'click') {
-            // Only forward iframe clicks after navigation has settled
-            if (!uiStore._navGuardUntil || Date.now() > uiStore._navGuardUntil) {
+            if (!uiStore.view._navGuardUntil || Date.now() > uiStore.view._navGuardUntil) {
                 uiStore.sendClickCommand();
             }
         }

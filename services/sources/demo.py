@@ -191,7 +191,8 @@ class DemoService(SourceBase):
         if self._mpv_process:
             self._mpv_process.terminate()
             try:
-                self._mpv_process.wait(timeout=2)
+                await asyncio.get_running_loop().run_in_executor(
+                    None, self._mpv_process.wait, 2)
             except subprocess.TimeoutExpired:
                 self._mpv_process.kill()
             self._mpv_process = None

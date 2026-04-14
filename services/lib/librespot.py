@@ -48,11 +48,10 @@ class LibrespotClient:
     async def start(self):
         self._session = aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(total=10))
-        if self.connected:
-            self._start_event_stream()
+        self._start_event_stream()
 
     async def stop(self):
-        self._stop_event_stream()
+        await self._stop_event_stream()
         if self._session:
             await self._session.close()
             self._session = None
@@ -62,13 +61,14 @@ class LibrespotClient:
         if not self._ws_task or self._ws_task.done():
             self._ws_task = asyncio.create_task(self._event_loop())
 
-    def _stop_event_stream(self):
+    async def _stop_event_stream(self):
         if self._ws_task:
             self._ws_task.cancel()
             try:
-                self._ws_task = None
-            except Exception:
+                await self._ws_task
+            except (asyncio.CancelledError, Exception):
                 pass
+            self._ws_task = None
 
     async def check_available(self) -> bool:
         """Check if go-librespot is reachable and get its device ID."""
@@ -114,14 +114,10 @@ class LibrespotClient:
                 await session.close()
 
     async def wait_for_ready(self, timeout=30) -> bool:
-        """Wait for go-librespot to become reachable (e.g. after boot)."""
-        deadline = asyncio.get_event_loop().time() + timeout
-        while asyncio.get_event_loop().time() < deadline:
-            if await self.check_available():
-                return True
-            await asyncio.sleep(2)
-        log.warning("go-librespot not reachable after %ds", timeout)
-        return False
+        """Deprecated — systemd ExecStartPost ensures librespot is ready
+        before the player starts.  Kept for compatibility but should not
+        be called in normal boot flow."""
+        return await self.check_available()
 
     # -- Playback commands --
 
@@ -188,6 +184,8 @@ class LibrespotClient:
                 async with self._session.ws_connect(
                     f'ws://localhost:{LIBRESPOT_PORT}/events'
                 ) as ws:
+                    # Grab device_id and mark as available
+                    await self.check_available()
                     log.info("go-librespot event stream connected")
                     retry_delay = 1
                     async for msg in ws:
@@ -197,11 +195,13 @@ class LibrespotClient:
                                           aiohttp.WSMsgType.ERROR):
                             break
             except asyncio.CancelledError:
+                self.connected = False
                 return
             except Exception as e:
                 log.warning("go-librespot WS error: %s (retry in %ds)",
                             e, retry_delay)
 
+            self.connected = False
             await asyncio.sleep(retry_delay)
             retry_delay = min(retry_delay * 2, 30)
 

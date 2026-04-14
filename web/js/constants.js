@@ -97,11 +97,16 @@ const Constants = {
         baseXOffset: 100
     },
 
-    // Placeholder artwork SVGs
+    // Placeholder artwork SVGs.
+    // `blank`      : fully transparent — used during idle/boot so nothing flashes
+    // `noArtwork`  : silent dark square with a subtle vinyl-circle glyph; shown
+    //                when media is actually playing but the service returned no art
+    // `showing`    : same aesthetic for the Apple-TV SHOWING view
     placeholders: {
-        noArtwork: "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='200'%3E%3Crect width='200' height='200' fill='%23333'/%3E%3Ctext x='100' y='100' font-family='Arial' font-size='14' fill='%23999' text-anchor='middle' dominant-baseline='middle'%3ENo Artwork%3C/text%3E%3Ctext x='100' y='120' font-family='Arial' font-size='14' fill='%23999' text-anchor='middle' dominant-baseline='middle'%3EAvailable%3C/text%3E%3C/svg%3E",
-        artworkUnavailable: "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='200'%3E%3Crect width='200' height='200' fill='%23333'/%3E%3Ctext x='100' y='100' font-family='Arial' font-size='14' fill='%23999' text-anchor='middle' dominant-baseline='middle'%3EArtwork%3C/text%3E%3Ctext x='100' y='120' font-family='Arial' font-size='14' fill='%23999' text-anchor='middle' dominant-baseline='middle'%3EUnavailable%3C/text%3E%3C/svg%3E",
-        showing: "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='200'%3E%3Crect width='200' height='200' fill='%23222'/%3E%3Ctext x='100' y='100' font-family='Arial' font-size='16' fill='%23666' text-anchor='middle' dominant-baseline='middle'%3ESHOWING%3C/text%3E%3C/svg%3E"
+        blank: "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7",
+        noArtwork: "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 200 200'><rect width='200' height='200' fill='%231a1a1a'/><circle cx='100' cy='100' r='62' stroke='%23333' stroke-width='1.5' fill='none'/><circle cx='100' cy='100' r='24' stroke='%23333' stroke-width='1' fill='none'/><circle cx='100' cy='100' r='4' fill='%23333'/></svg>",
+        artworkUnavailable: "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 200 200'><rect width='200' height='200' fill='%231a1a1a'/><circle cx='100' cy='100' r='62' stroke='%23333' stroke-width='1.5' fill='none'/><circle cx='100' cy='100' r='24' stroke='%23333' stroke-width='1' fill='none'/><circle cx='100' cy='100' r='4' fill='%23333'/></svg>",
+        showing: "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 200 200'><rect width='200' height='200' fill='%23151515'/><circle cx='100' cy='100' r='62' stroke='%23333' stroke-width='1.5' fill='none'/><circle cx='100' cy='100' r='24' stroke='%23333' stroke-width='1' fill='none'/><circle cx='100' cy='100' r='4' fill='%23333'/></svg>"
     }
 };
 
