@@ -37,6 +37,33 @@ BS5C_BASE_PATH = os.getenv('BS5C_BASE_PATH', os.path.dirname(os.path.dirname(os.
 
 ROUTER_BROADCAST_URL = ROUTER_BROADCAST
 
+# ——— Update management ———
+
+GITHUB_RELEASES_URL = 'https://api.github.com/repos/mkirsten/beosound5c/releases/latest'
+_update_cache: dict = {'data': None, 'fetched_at': 0.0}
+_UPDATE_CACHE_TTL = 3600  # seconds
+_update_in_progress = False
+_update_step = 'idle'  # 'downloading' | 'extracting' | 'installing' | 'restarting'
+_MOCK_UPDATE = False
+_UPDATE_EXCLUDES = [
+    'web/json/config.json',
+    'web/json/spotify_playlists.json',
+    'web/json/digit_playlists.json',
+    'web/json/apple_music_playlists.json',
+    'web/json/apple_music_digit_playlists.json',
+    'web/json/tidal_playlists.json',
+    'web/json/tidal_digit_playlists.json',
+    'web/json/plex_playlists.json',
+    'web/json/plex_digit_playlists.json',
+    'web/assets/cd-cache',
+    'services/sources/spotify/spotify_tokens.json',
+    'services/sources/apple_music/apple_music_tokens.json',
+    'services/sources/tidal/tidal_tokens.json',
+    'services/sources/plex/plex_tokens.json',
+    'services/sources/radio/radio_last_station.json',
+    'services/sources/radio/radio_favourites.json',
+]
+
 # Shared HTTP client session (created lazily in async context)
 _http_session = None
 
@@ -279,6 +306,493 @@ def get_network_status() -> dict:
     except Exception as e:
         logger.error('Network check error: %s', e)
     return net
+
+def _parse_semver(tag: str) -> tuple:
+    """Parse 'v0.7.0', 'v0.7.0-dev.21', 'v0.7.0-21-gabc' into a comparable int tuple."""
+    import re
+    t = re.sub(r'[-+].*$', '', tag.lstrip('v'))
+    try:
+        return tuple(int(x) for x in t.split('.'))
+    except ValueError:
+        return (0, 0, 0)
+
+
+def _is_newer(latest: str, current: str) -> bool:
+    return _parse_semver(latest) > _parse_semver(current)
+
+
+def _get_current_version() -> str:
+    """Read installed version from VERSION file, fallback to git describe."""
+    try:
+        with open(os.path.join(BS5C_BASE_PATH, 'VERSION')) as f:
+            v = f.read().strip()
+            if v:
+                return v
+    except Exception:
+        pass
+    try:
+        result = subprocess.run(
+            ['git', 'describe', '--tags', '--always'],
+            capture_output=True, text=True, timeout=2, cwd=BS5C_BASE_PATH
+        )
+        if result.stdout.strip():
+            return result.stdout.strip()
+    except Exception:
+        pass
+    return '--'
+
+
+async def _fetch_latest_release():
+    """Fetch latest GitHub release info. Cached for 1 hour."""
+    now = time.time()
+    if _update_cache['data'] and now - _update_cache['fetched_at'] < _UPDATE_CACHE_TTL:
+        return _update_cache['data']
+    try:
+        session = await get_http_session()
+        async with session.get(
+            GITHUB_RELEASES_URL,
+            headers={'Accept': 'application/vnd.github.v3+json', 'User-Agent': 'beosound5c'},
+            timeout=aiohttp.ClientTimeout(total=10),
+        ) as resp:
+            if resp.status != 200:
+                return None
+            data = await resp.json()
+            result = {
+                'latest': data.get('tag_name', ''),
+                'release_url': data.get('html_url', ''),
+                'tarball_url': data.get('tarball_url', ''),
+                'release_notes': (data.get('body') or '').strip(),
+                'published_at': data.get('published_at', ''),
+            }
+            _update_cache['data'] = result
+            _update_cache['fetched_at'] = now
+            return result
+    except Exception as e:
+        logger.warning('GitHub release check failed: %s', e)
+        return None
+
+
+async def _run_update():
+    """Download and install the latest release, then restart all beo-* services."""
+    global _update_in_progress, _update_step
+    import tempfile, shutil
+
+    tmp_dir = tempfile.mkdtemp(prefix='beo5c-update-')
+    try:
+        release = await _fetch_latest_release()
+        if not release or not release.get('tarball_url'):
+            raise RuntimeError('No release info available')
+
+        latest_tag = release['latest']
+        tarball_path = os.path.join(tmp_dir, 'release.tar.gz')
+        extract_dir = os.path.join(tmp_dir, 'src')
+        os.makedirs(extract_dir)
+
+        logger.info('[update] Downloading %s', latest_tag)
+        _update_step = 'downloading'
+        session = await get_http_session()
+        async with session.get(
+            release['tarball_url'],
+            headers={'User-Agent': 'beosound5c'},
+            timeout=aiohttp.ClientTimeout(total=120),
+            allow_redirects=True,
+        ) as resp:
+            if resp.status not in (200, 302):
+                raise RuntimeError(f'Download failed: HTTP {resp.status}')
+            with open(tarball_path, 'wb') as f:
+                async for chunk in resp.content.iter_chunked(65536):
+                    f.write(chunk)
+
+        logger.info('[update] Extracting')
+        _update_step = 'extracting'
+        await asyncio.get_running_loop().run_in_executor(
+            None,
+            lambda: subprocess.run(
+                ['tar', 'xzf', tarball_path, '-C', extract_dir, '--strip-components=1'],
+                capture_output=True, timeout=60, check=True,
+            ),
+        )
+
+        logger.info('[update] Installing files to %s', BS5C_BASE_PATH)
+        _update_step = 'installing'
+        exclude_args = []
+        for exc in _UPDATE_EXCLUDES:
+            exclude_args += ['--exclude', exc]
+        await asyncio.get_running_loop().run_in_executor(
+            None,
+            lambda: subprocess.run(
+                ['rsync', '-a'] + exclude_args + [extract_dir + '/', BS5C_BASE_PATH + '/'],
+                capture_output=True, timeout=60, check=True,
+            ),
+        )
+
+        # Write new VERSION file and invalidate cache
+        with open(os.path.join(BS5C_BASE_PATH, 'VERSION'), 'w') as f:
+            f.write(latest_tag + '\n')
+        _update_cache['data'] = None
+        _update_cache['fetched_at'] = 0.0
+
+        logger.info('[update] Scheduling service restart')
+        _update_step = 'restarting'
+
+        # Discover active beo-* services
+        res = subprocess.run(
+            ['systemctl', 'list-units', 'beo-*.service', '--state=active',
+             '--no-legend', '--no-pager', '--plain'],
+            capture_output=True, text=True, timeout=5,
+        )
+        services = [
+            line.split()[0].removesuffix('.service')
+            for line in res.stdout.splitlines() if line.split()
+        ]
+        backend = [s for s in services if s != 'beo-ui']
+        has_ui = 'beo-ui' in services
+
+        parts = ['sleep 2']
+        if backend:
+            parts.append(f"sudo systemctl restart {' '.join(backend)}")
+        if has_ui:
+            parts.append('sleep 3 && sudo systemctl restart beo-ui')
+
+        subprocess.Popen(
+            ['bash', '-c', ' && '.join(parts)],
+            start_new_session=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+    except Exception as e:
+        logger.error('[update] Failed: %s', e)
+        _update_in_progress = False
+        _update_step = 'idle'
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+async def handle_update_check(request):
+    """GET /update/check — current version vs latest GitHub release."""
+    current = _get_current_version()
+
+    if _MOCK_UPDATE:
+        parts = _parse_semver(current)
+        fake_latest = f'v{parts[0]}.{parts[1]}.{parts[2] + 1}' if parts != (0, 0, 0) else 'v0.0.1'
+        return web.json_response({
+            'current': current,
+            'update_in_progress': _update_in_progress,
+            'update_step': _update_step,
+            'latest': fake_latest,
+            'update_available': not _update_in_progress,
+            'release_url': 'https://github.com/mkirsten/beosound5c/releases',
+            'release_notes': (
+                'Test release — verifying the update flow.\n\n'
+                '- Update badge appears on Info tab\n'
+                '- Release notes shown before updating\n'
+                '- GO button triggers the update\n'
+                '- Live step indicators: downloading → extracting → installing → restarting\n'
+                '- Reconnect polling after services restart'
+            ),
+        }, headers={'Access-Control-Allow-Origin': '*'})
+
+    release = await _fetch_latest_release()
+
+    result = {'current': current, 'update_in_progress': _update_in_progress, 'update_step': _update_step}
+    if release:
+        latest = release['latest']
+        result['latest'] = latest
+        result['update_available'] = _is_newer(latest, current) and not _update_in_progress
+        result['release_url'] = release['release_url']
+        result['release_notes'] = release['release_notes']
+    else:
+        result['update_available'] = False
+        result['error'] = 'Could not reach GitHub'
+
+    return web.json_response(result, headers={'Access-Control-Allow-Origin': '*'})
+
+
+async def handle_update_run(request):
+    """POST /update/run — start background update, return 202 immediately."""
+    global _update_in_progress
+    if request.method == 'OPTIONS':
+        return web.Response(headers={
+            'Access-Control-Allow-Origin': '*',
+            'Access-Control-Allow-Methods': 'POST, OPTIONS',
+            'Access-Control-Allow-Headers': 'Content-Type',
+        })
+
+    if _update_in_progress:
+        return web.json_response(
+            {'status': 'already_in_progress'},
+            status=409,
+            headers={'Access-Control-Allow-Origin': '*'},
+        )
+
+    release = await _fetch_latest_release()
+    if not release:
+        return web.json_response(
+            {'status': 'error', 'message': 'Cannot reach GitHub'},
+            status=503,
+            headers={'Access-Control-Allow-Origin': '*'},
+        )
+
+    current = _get_current_version()
+    if not _MOCK_UPDATE and not _is_newer(release['latest'], current):
+        return web.json_response(
+            {'status': 'up_to_date'},
+            headers={'Access-Control-Allow-Origin': '*'},
+        )
+
+    _update_in_progress = True
+    _background_tasks.spawn(_run_update(), name='system_update')
+
+    return web.json_response(
+        {'status': 'started', 'latest': release['latest']},
+        status=202,
+        headers={'Access-Control-Allow-Origin': '*'},
+    )
+
+
+def _get_device_ip() -> str:
+    """Return the primary LAN IP address of this device."""
+    try:
+        result = subprocess.run(['hostname', '-I'], capture_output=True, text=True, timeout=2)
+        if result.stdout:
+            return result.stdout.strip().split()[0]
+    except Exception:
+        pass
+    return '127.0.0.1'
+
+
+async def handle_qrcode(request):
+    """GET /qrcode — QR code PNG pointing to this device's config page."""
+    try:
+        import qrcode as _qrcode
+        import io
+        ip = _get_device_ip()
+        url = f'http://{ip}/config'
+        qr = _qrcode.QRCode(
+            error_correction=_qrcode.constants.ERROR_CORRECT_M,
+            box_size=8,
+            border=2,
+        )
+        qr.add_data(url)
+        qr.make(fit=True)
+        img = qr.make_image(fill_color='white', back_color='black')
+        buf = io.BytesIO()
+        img.save(buf, format='PNG')
+        return web.Response(
+            body=buf.getvalue(),
+            content_type='image/png',
+            headers={'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-cache'},
+        )
+    except ImportError:
+        return web.json_response(
+            {'error': 'qrcode package not installed'},
+            status=503,
+            headers={'Access-Control-Allow-Origin': '*'},
+        )
+    except Exception as e:
+        logger.warning('QR code generation failed: %s', e)
+        return web.Response(status=500, headers={'Access-Control-Allow-Origin': '*'})
+
+
+async def handle_discover_sonos(request):
+    """GET /discover/sonos — find Sonos speakers on the local network."""
+    try:
+        import soco
+        loop = asyncio.get_event_loop()
+        devices = await loop.run_in_executor(None, lambda: soco.discover(timeout=5) or set())
+        result = sorted(
+            [{'ip': d.ip_address, 'name': d.player_name} for d in devices],
+            key=lambda x: x['name'],
+        )
+        return web.json_response(result, headers={'Access-Control-Allow-Origin': '*'})
+    except ImportError:
+        return web.json_response(
+            {'error': 'soco not installed'},
+            status=503,
+            headers={'Access-Control-Allow-Origin': '*'},
+        )
+    except Exception as e:
+        logger.warning('Sonos discovery failed: %s', e)
+        return web.json_response([], headers={'Access-Control-Allow-Origin': '*'})
+
+
+async def handle_discover_bluesound(request):
+    """GET /discover/bluesound — find BluOS/Bluesound players via mDNS (_musc._tcp)."""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            'avahi-browse', '-r', '-t', '-p', '_musc._tcp',
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
+        devices = []
+        seen: set = set()
+        for line in stdout.decode(errors='replace').splitlines():
+            parts = line.split(';')
+            # avahi-browse -p resolved record: =;<iface>;<proto>;<name>;<type>;<domain>;<host>;<addr>;<port>;<txt>
+            if len(parts) < 9 or parts[0] != '=' or parts[2] != 'IPv4':
+                continue
+            name, addr = parts[3], parts[7]
+            if addr and addr not in seen:
+                seen.add(addr)
+                devices.append({'name': name, 'ip': addr})
+        devices.sort(key=lambda x: x['name'])
+        return web.json_response(devices, headers={'Access-Control-Allow-Origin': '*'})
+    except asyncio.TimeoutError:
+        return web.json_response([], headers={'Access-Control-Allow-Origin': '*'})
+    except FileNotFoundError:
+        logger.debug('avahi-browse not found — Bluesound discovery unavailable')
+        return web.json_response([], headers={'Access-Control-Allow-Origin': '*'})
+    except Exception as e:
+        logger.warning('Bluesound discovery failed: %s', e)
+        return web.json_response([], headers={'Access-Control-Allow-Origin': '*'})
+
+
+async def _write_secrets(updates: dict) -> None:
+    """Update specific env vars in /etc/beosound5c/secrets.env, preserving others."""
+    secrets_path = '/etc/beosound5c/secrets.env'
+    # Read current content via sudo
+    try:
+        read_proc = await asyncio.create_subprocess_exec(
+            'sudo', 'cat', secrets_path,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        stdout, _ = await asyncio.wait_for(read_proc.communicate(), timeout=5)
+        lines = stdout.decode(errors='replace').splitlines(keepends=True)
+    except Exception:
+        lines = []
+
+    # Replace matching lines, append any new ones
+    new_lines = []
+    seen: set = set()
+    for line in lines:
+        key = line.split('=', 1)[0].strip() if '=' in line else None
+        if key and key in updates:
+            val = updates[key].replace('\\', '\\\\').replace('"', '\\"')
+            new_lines.append(f'{key}="{val}"\n')
+            seen.add(key)
+        else:
+            new_lines.append(line if line.endswith('\n') else line + '\n')
+    for key, val in updates.items():
+        if key not in seen:
+            val_esc = val.replace('\\', '\\\\').replace('"', '\\"')
+            new_lines.append(f'{key}="{val_esc}"\n')
+
+    content = ''.join(new_lines)
+    try:
+        write_proc = await asyncio.create_subprocess_exec(
+            'sudo', 'tee', secrets_path,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await asyncio.wait_for(write_proc.communicate(content.encode()), timeout=10)
+        if write_proc.returncode != 0:
+            msg = stderr.decode().strip() if stderr else 'tee failed'
+            logger.error('Secrets write failed: %s', msg)
+    except asyncio.TimeoutError:
+        logger.error('Timeout writing secrets.env')
+    except Exception as e:
+        logger.error('Secrets write error: %s', e)
+
+
+async def handle_config_save(request):
+    """POST /config — write a new config.json and restart all beo-* services."""
+    if request.method == 'OPTIONS':
+        return web.Response(headers={
+            'Access-Control-Allow-Origin': '*',
+            'Access-Control-Allow-Methods': 'POST, OPTIONS',
+            'Access-Control-Allow-Headers': 'Content-Type',
+        })
+
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response(
+            {'status': 'error', 'message': 'Invalid JSON'},
+            status=400,
+            headers={'Access-Control-Allow-Origin': '*'},
+        )
+
+    if not isinstance(body, dict) or not body.get('device'):
+        return web.json_response(
+            {'status': 'error', 'message': 'Config must be a JSON object with a "device" field'},
+            status=400,
+            headers={'Access-Control-Allow-Origin': '*'},
+        )
+
+    # Extract secrets — they go to secrets.env, not config.json
+    raw_secrets = body.pop('_secrets', None) or {}
+    _SECRET_KEY_MAP = {'ha_token': 'HA_TOKEN', 'mqtt_user': 'MQTT_USER', 'mqtt_password': 'MQTT_PASSWORD'}
+    secrets_to_write = {
+        _SECRET_KEY_MAP[k]: v
+        for k, v in raw_secrets.items()
+        if k in _SECRET_KEY_MAP and v
+    }
+
+    config_path = '/etc/beosound5c/config.json'
+    config_json = json.dumps(body, indent=2, ensure_ascii=False)
+
+    try:
+        # Write via sudo tee so the service user doesn't need direct write access
+        proc = await asyncio.create_subprocess_exec(
+            'sudo', 'tee', config_path,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await asyncio.wait_for(proc.communicate(config_json.encode()), timeout=10)
+        if proc.returncode != 0:
+            msg = stderr.decode().strip() if stderr else 'sudo tee failed'
+            logger.error('Config write failed: %s', msg)
+            return web.json_response(
+                {'status': 'error', 'message': msg},
+                status=500,
+                headers={'Access-Control-Allow-Origin': '*'},
+            )
+    except asyncio.TimeoutError:
+        return web.json_response(
+            {'status': 'error', 'message': 'Timeout writing config'},
+            status=500,
+            headers={'Access-Control-Allow-Origin': '*'},
+        )
+
+    if secrets_to_write:
+        await _write_secrets(secrets_to_write)
+        logger.info('Secrets updated: %s', ', '.join(secrets_to_write.keys()))
+
+    logger.info('Config saved to %s — scheduling service restart', config_path)
+
+    # Restart all beo-* services after a short delay so the HTTP response
+    # can be sent before this process itself is killed and restarted.
+    async def _restart():
+        await asyncio.sleep(1.5)
+        try:
+            # beo-input is LAST: systemctl processes each service in order,
+            # and killing beo-input kills this subprocess's cgroup. All other
+            # services must be restarted before that happens.
+            # beo-ui (Chromium) is omitted: it reconnects to backends automatically.
+            await asyncio.create_subprocess_exec(
+                'sudo', 'systemctl', 'restart',
+                'beo-router',
+                'beo-player-sonos', 'beo-player-bluesound', 'beo-source-spotify',
+                'beo-source-tidal', 'beo-source-apple-music', 'beo-source-plex',
+                'beo-source-radio', 'beo-source-cd', 'beo-source-usb',
+                'beo-source-news', 'beo-bluetooth', 'beo-masterlink',
+                'beo-input',
+            )
+        except Exception as e:
+            logger.error('Service restart failed: %s', e)
+
+    _background_tasks.spawn(_restart(), name='config_restart')
+
+    return web.json_response(
+        {'status': 'ok', 'message': 'Config saved, services restarting'},
+        headers={'Access-Control-Allow-Origin': '*'},
+    )
+
 
 def get_bt_remotes() -> list:
     """Get paired Bluetooth devices with connection info."""
@@ -802,6 +1316,13 @@ async def handle_health(request):
         'hid_connected': dev is not None,
     })
 
+async def handle_info(request):
+    """GET /info — device info (IP, hostname) for UI use."""
+    return web.json_response(
+        {'ip_address': _get_device_ip(), 'hostname': subprocess.run(['hostname'], capture_output=True, text=True).stdout.strip()},
+        headers={'Access-Control-Allow-Origin': '*'},
+    )
+
 async def handle_led(request):
     """Quick LED control for visual feedback. GET /led?mode=pulse|on|off|blink"""
     mode = request.query.get('mode', 'pulse')
@@ -1214,11 +1735,20 @@ async def main():
     app.router.add_get('/people', handle_people)
     app.router.add_options('/people', handle_people)  # CORS preflight
     app.router.add_get('/health', handle_health)
+    app.router.add_get('/info', handle_info)
     app.router.add_get('/led', handle_led)
     app.router.add_get('/bt/remotes', handle_bt_remotes)
     app.router.add_options('/bt/remotes', handle_bt_remotes)  # CORS preflight
     app.router.add_get('/camera/stream', handle_camera_stream)
     app.router.add_get('/camera/snapshot', handle_camera_snapshot)
+    app.router.add_get('/update/check', handle_update_check)
+    app.router.add_post('/update/run', handle_update_run)
+    app.router.add_options('/update/run', handle_update_run)
+    app.router.add_get('/qrcode', handle_qrcode)
+    app.router.add_get('/discover/sonos', handle_discover_sonos)
+    app.router.add_get('/discover/bluesound', handle_discover_bluesound)
+    app.router.add_post('/config', handle_config_save)
+    app.router.add_options('/config', handle_config_save)
     runner = web.AppRunner(app, access_log=None)
     await runner.setup()
     http_site = web.TCPSite(runner, '0.0.0.0', 8767)

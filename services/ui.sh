@@ -20,14 +20,28 @@ if [ -f "$SPLASH_IMAGE" ] && command -v fbi &>/dev/null && ! pidof plymouthd &>/
   echo "[$(date '+%Y-%m-%d %H:%M:%S')] Splash screen displayed (fbi fallback)"
 fi
 
-# Chromium profile — may be a symlink to /tmp (tmpfs), so resolve and create target
+# Chromium profile — kept on SD so cookies and login state survive reboots.
 CHROMIUM_DATA_DIR="$HOME/.config/chromium"
 export CHROMIUM_DATA_DIR  # Export for xinit subshell
-if [ -L "$CHROMIUM_DATA_DIR" ]; then
-  mkdir -p "$(readlink -f "$CHROMIUM_DATA_DIR" 2>/dev/null || readlink "$CHROMIUM_DATA_DIR")"
-else
-  mkdir -p "$CHROMIUM_DATA_DIR"
-fi
+mkdir -p "$CHROMIUM_DATA_DIR/Default"
+
+# Redirect GPU/shader/code caches from SD to tmpfs.
+# HTTP cache is already disabled via --disable-cache / --disk-cache-size=0.
+# Symlinks persist on SD; /tmp target dirs are recreated here each boot.
+_cache_to_tmp() {
+  local src="$1" dst="$2"
+  mkdir -p "$dst"
+  if [ ! -L "$src" ]; then
+    rm -rf "$src"
+    ln -s "$dst" "$src"
+  fi
+}
+_cache_to_tmp "$CHROMIUM_DATA_DIR/GrShaderCache"        /tmp/chromium-gr-shader
+_cache_to_tmp "$CHROMIUM_DATA_DIR/ShaderCache"          /tmp/chromium-shader
+_cache_to_tmp "$CHROMIUM_DATA_DIR/GraphiteDawnCache"    /tmp/chromium-graphite
+_cache_to_tmp "$CHROMIUM_DATA_DIR/Default/GPUCache"     /tmp/chromium-gpu-cache
+_cache_to_tmp "$CHROMIUM_DATA_DIR/Default/Code Cache"   /tmp/chromium-code-cache
+unset -f _cache_to_tmp
 
 log() {
   echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"
@@ -99,7 +113,7 @@ xinit /bin/bash -c '
   # Wait for HTTP server to be ready
   log "Waiting for HTTP server..."
   for i in {1..30}; do
-    if curl -s -o /dev/null -w "%{http_code}" http://localhost:8000/ | grep -q "200"; then
+    if curl -s -o /dev/null -w "%{http_code}" http://localhost/ | grep -q "200"; then
       log "HTTP server ready"
       break
     fi
@@ -174,7 +188,7 @@ xinit /bin/bash -c '
       --disk-cache-size=0 \
       --media-cache-size=0 \
       --kiosk \
-      --app=http://localhost:8000 \
+      --app=http://localhost \
       --start-fullscreen \
       --window-size=1024,768 \
       --window-position=0,0 \

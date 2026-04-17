@@ -14,6 +14,8 @@
     <link rel="icon" type="image/png" sizes="512x512" href="../assets/favicons/android-chrome-512x512.png">
     <link rel="manifest" href="../assets/favicons/site.webmanifest">
     <meta name="theme-color" content="#000000">
+    <link rel="stylesheet" href="splash.css">
+    <script src="../assets/qrcode.min.js"></script>
 
     <script>
         if (/Mac/.test(navigator.userAgent) && /^(localhost|127\.0\.0\.1)$/.test(location.hostname))
@@ -72,6 +74,11 @@
 
         .section-content.active {
             display: block;
+        }
+        .section-content.active.config-section {
+            display: flex;
+            align-items: center;
+            justify-content: center;
         }
 
         /* Info section */
@@ -508,6 +515,248 @@
             font-family: 'Monaco', 'Consolas', monospace;
         }
 
+        /* ── Update UI ── */
+
+        .update-badge {
+            display: inline-block;
+            font-size: 11px;
+            color: #0af;
+            background: rgba(0, 170, 255, 0.08);
+            border: 1px solid rgba(0, 170, 255, 0.25);
+            border-radius: 3px;
+            padding: 1px 7px;
+            margin-left: 10px;
+            font-family: 'Monaco', 'Consolas', monospace;
+            vertical-align: middle;
+        }
+
+        .update-callout {
+            display: none;
+            align-items: center;
+            gap: 14px;
+            padding: 14px 18px;
+            border: 1px solid rgba(0, 170, 255, 0.25);
+            border-left: 3px solid #0af;
+            background: rgba(0, 170, 255, 0.04);
+            border-radius: 4px;
+            margin-top: 16px;
+            margin-bottom: 22px;
+            max-width: 420px;
+        }
+
+        .update-callout.visible { display: flex; }
+
+        .up-to-date-callout {
+            display: none;
+            align-items: center;
+            gap: 10px;
+            padding: 8px 14px;
+            border-left: 3px solid #4a4;
+            background: rgba(68, 170, 68, 0.04);
+            border-radius: 4px;
+            margin-top: 16px;
+            margin-bottom: 22px;
+            max-width: 220px;
+            font-size: 12px;
+            color: #4a4;
+            letter-spacing: 0.5px;
+        }
+
+        .up-to-date-callout.visible { display: flex; }
+
+        .up-to-date-check {
+            font-size: 14px;
+            line-height: 1;
+        }
+
+        .update-callout-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            flex-shrink: 0;
+            background: #0af;
+            box-shadow: 0 0 6px #0af;
+            animation: callout-pulse 2s ease-in-out infinite;
+        }
+
+        @keyframes callout-pulse {
+            0%, 100% { opacity: 1; box-shadow: 0 0 6px #0af; }
+            50% { opacity: 0.4; box-shadow: 0 0 2px #0af; }
+        }
+
+        .update-callout-label {
+            font-size: 10px;
+            color: #0af;
+            text-transform: uppercase;
+            letter-spacing: 1.5px;
+            margin-bottom: 4px;
+        }
+
+        .update-callout-version {
+            font-size: 20px;
+            font-weight: 300;
+            color: #fff;
+            font-family: 'Monaco', 'Consolas', monospace;
+        }
+
+        .update-notes {
+            margin-bottom: 22px;
+            max-width: 650px;
+        }
+
+        .update-notes-label {
+            font-size: 11px;
+            color: #555;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 8px;
+        }
+
+        .update-notes-body {
+            font-size: 13px;
+            color: #888;
+            line-height: 1.6;
+            white-space: pre-wrap;
+            max-height: 150px;
+            overflow-y: auto;
+        }
+
+        .update-release-link {
+            display: inline-block;
+            margin-top: 10px;
+            font-size: 12px;
+            color: #0af;
+            font-family: 'Monaco', 'Consolas', monospace;
+            text-decoration: none;
+        }
+
+        /* Update overlay — full-screen, shown during update */
+        #update-overlay {
+            display: none;
+            position: fixed;
+            inset: 0;
+            background: #000;
+            z-index: 1000;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 16px;
+        }
+
+        #update-overlay.active { display: flex; }
+
+        .update-overlay-label {
+            font-size: 11px;
+            color: #444;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+        }
+
+        .update-overlay-version {
+            font-size: 28px;
+            font-weight: 300;
+            color: #fff;
+            font-family: 'Monaco', 'Consolas', monospace;
+        }
+
+        .update-overlay-status {
+            font-size: 13px;
+            color: #0af;
+            min-height: 20px;
+        }
+
+        .update-dots {
+            display: flex;
+            gap: 8px;
+            margin-top: 4px;
+        }
+
+        .update-dot {
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: #222;
+            animation: dot-pulse 1.4s ease-in-out infinite;
+        }
+
+        .update-dot:nth-child(2) { animation-delay: 0.23s; }
+        .update-dot:nth-child(3) { animation-delay: 0.46s; }
+
+        @keyframes dot-pulse {
+            0%, 100% { background: #222; }
+            50% { background: #0af; }
+        }
+
+        /* ── Release notes screen ── */
+
+        #release-notes-screen {
+            display: none;
+            position: fixed;
+            inset: 0;
+            background: #000;
+            z-index: 999;
+            flex-direction: column;
+            padding: 40px 60px;
+        }
+
+        #release-notes-screen.active { display: flex; }
+
+        .rn-app-name {
+            font-size: 11px;
+            color: #444;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            margin-bottom: 8px;
+        }
+
+        .rn-version {
+            font-size: 28px;
+            font-weight: 300;
+            color: #fff;
+            font-family: 'Monaco', 'Consolas', monospace;
+            margin-bottom: 24px;
+        }
+
+        .rn-label {
+            font-size: 11px;
+            color: #555;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 10px;
+        }
+
+        .rn-body {
+            flex: 1;
+            overflow-y: auto;
+            font-size: 14px;
+            color: #999;
+            line-height: 1.75;
+            white-space: pre-wrap;
+            scroll-behavior: smooth;
+        }
+
+        .rn-body::-webkit-scrollbar { width: 4px; }
+        .rn-body::-webkit-scrollbar-track { background: #000; }
+        .rn-body::-webkit-scrollbar-thumb { background: #333; border-radius: 2px; }
+
+        .rn-hint-bar {
+            display: flex;
+            gap: 30px;
+            margin-top: 20px;
+            font-size: 11px;
+            color: #444;
+            padding-top: 14px;
+            border-top: 1px solid #1a1a1a;
+        }
+
+        .rn-hint-bar .key {
+            background: #1a1a1a;
+            padding: 2px 6px;
+            border-radius: 3px;
+            color: #666;
+            margin-right: 4px;
+        }
+
         /* Scrollbar styling */
         .section-content::-webkit-scrollbar {
             width: 6px;
@@ -521,6 +770,15 @@
             background: #333;
             border-radius: 3px;
         }
+
+        /* ── Config section — lydbro design ── */
+
+        .config-section {
+            cursor: auto;
+        }
+        .config-section * { cursor: auto; }
+        .config-section input, .config-section select, .config-section button { cursor: pointer; }
+        .config-section input[type=text], .config-section input[type=number], .config-section input[type=password] { cursor: text; }
     </style>
 </head>
 <body>
@@ -530,12 +788,30 @@
             <div class="section-tab" data-section="services">Services</div>
             <div class="section-tab" data-section="remotes">Remotes</div>
             <div class="section-tab" data-section="people">People</div>
+            <div class="section-tab" data-section="config">Config</div>
         </nav>
 
         <!-- Info Section -->
         <div class="section-content info-section active" id="info">
             <h1>BeoSound 5c</h1>
             <div class="version">Build: <span id="git-tag">--</span></div>
+            <div id="update-callout" class="update-callout">
+                <div class="update-callout-dot"></div>
+                <div>
+                    <div class="update-callout-label">Update available</div>
+                    <div class="update-callout-version" id="callout-version">--</div>
+                </div>
+            </div>
+            <div id="up-to-date-callout" class="up-to-date-callout">
+                <span class="up-to-date-check">✓</span>
+                Up to date
+            </div>
+            <div id="update-notes" class="update-notes" style="display:none">
+                <div class="update-notes-label">What's new</div>
+                <div class="update-notes-body" id="update-notes-body"></div>
+                <a id="update-release-link" class="update-release-link" href="#" target="_blank">View release page →</a>
+            </div>
+
             <div class="repo-link">github.com/mkirsten/beosound5c</div>
             <p class="description">
                 A modern software recreation of the iconic Bang & Olufsen BeoSound 5,
@@ -550,6 +826,10 @@
                 <li>Home Assistant webhook integration for smart home control</li>
             </ul>
             <div class="creator">Created by <span>Markus Kirsten</span></div>
+
+            <div class="section-hint" id="info-hint" style="display:none">
+                <span class="key">GO</span> What's new in <span id="info-hint-version"></span>
+            </div>
         </div>
 
         <!-- Services Section (subcards) -->
@@ -596,13 +876,54 @@
             </div>
         </div>
 
+        <!-- Config Section -->
+        <div class="section-content config-section" id="config">
+            <div class="splash-card" style="text-align:center;">
+                <h2 style="color:#fff;font-size:22px;font-weight:300;letter-spacing:3px;margin-bottom:12px;">CONFIGURE</h2>
+                <p style="font-size:13px;color:#666;margin-bottom:20px;">Scan with your phone<br>to configure this device</p>
+                <div class="setup-qr" id="cfg-qr-container"></div>
+                <div class="setup-url" id="cfg-qr-url" style="margin-top:12px;font-size:12px;color:#555;word-break:break-all;max-width:280px;"></div>
+            </div>
+        </div>
+
         <div class="nav-hint">
             <span><span class="key">LEFT/RIGHT</span> Sections</span>
             <span><span class="key">WHEEL</span> Scroll / Select</span>
         </div>
     </div>
 
+    <!-- Release notes screen -->
+    <div id="release-notes-screen">
+        <div class="rn-app-name">BeoSound 5c</div>
+        <div class="rn-version" id="rn-version">--</div>
+        <div class="rn-label">What's new</div>
+        <div class="rn-body" id="rn-body"></div>
+        <div class="rn-hint-bar">
+            <span><span class="key">LEFT</span> Back</span>
+            <span><span class="key">UP / DOWN</span> Scroll</span>
+            <span><span class="key">GO</span> Install update</span>
+        </div>
+    </div>
+
+
+
+    <!-- Update overlay -->
+    <div id="update-overlay">
+        <div class="update-overlay-label">Updating</div>
+        <div class="update-overlay-version" id="overlay-version">--</div>
+        <div class="update-overlay-status" id="overlay-status">Downloading...</div>
+        <div class="update-dots">
+            <div class="update-dot"></div>
+            <div class="update-dot"></div>
+            <div class="update-dot"></div>
+        </div>
+    </div>
+
     <script>
+        // API base — works from both the device's own Chromium (localhost)
+        // and external browsers (uses actual device hostname)
+        const API = 'http://' + location.hostname + ':8767';
+
         // ── History buffer for sparkline charts ──
         const HISTORY = { cpu_temp: [], memory: [] };
         const HISTORY_MAX = 30;  // ~2.5 min at 5s refresh
@@ -1022,9 +1343,89 @@
         }
 
 
+        // ── Config helpers ──
+
+        function esc(s) {
+            return String(s ?? '').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+        }
+
+        function cfgGet(obj, path) {
+            return path.reduce((o, k) => (o != null ? o[k] : undefined), obj);
+        }
+
+        const BEO4_SOURCES = [
+            { value: 'radio',   label: 'Radio' },
+            { value: 'cd',      label: 'CD' },
+            { value: 'amem',    label: 'A.MEM' },
+            { value: 'n.radio', label: 'N.Radio' },
+            { value: 'n.music', label: 'N.Music' },
+            { value: 'server',  label: 'Server' },
+            { value: 'spotify', label: 'Spotify' },
+            { value: 'dvd',     label: 'DVD' },
+            { value: 'dtv',     label: 'DTV' },
+            { value: 'v.aux',   label: 'V.Aux' },
+            { value: 'a.aux',   label: 'A.Aux' },
+            { value: 'tv',      label: 'TV' },
+            { value: 'media',   label: 'Media' },
+            { value: 'vmem',    label: 'V.Mem' },
+            { value: 'pc',      label: 'PC' },
+            { value: 'youtube', label: 'YouTube' },
+            { value: 'usb2',    label: 'USB' },
+        ];
+
+        const CFG_SOURCE_DEFS = [
+            { key: 'PLAYING', label: 'Playing', fixed: true },
+            { key: 'JOIN', label: 'Join (multi-room)', fields: [
+                { fid: 'ir_source', label: 'IR trigger', path: ['join','source'], isIr: true, optional: true },
+                { fid: 'default_player', label: 'Default Sonos group', path: ['join','default_player'], placeholder: 'e.g. Kitchen and Dining', optional: true },
+            ]},
+            { key: 'SPOTIFY', label: 'Spotify', authPort: 8771, fields: [
+                { fid: 'ir_source', label: 'IR trigger', path: ['spotify','source'], isIr: true, optional: true },
+                { fid: 'client_id', label: 'Client ID', path: ['spotify','client_id'], placeholder: 'From developer.spotify.com' },
+                { fid: 'token_master', label: 'Token master URL', path: ['spotify','token_master'], placeholder: 'http://other-device:8771', optional: true, hint: 'Share token across multiple devices' },
+            ]},
+            { key: 'TIDAL', label: 'Tidal', authPort: 8777, fields: [
+                { fid: 'ir_source', label: 'IR trigger', path: ['tidal','source'], isIr: true, optional: true },
+            ]},
+            { key: 'APPLE MUSIC', label: 'Apple Music', authPort: 8778, fields: [
+                { fid: 'ir_source', label: 'IR trigger', path: ['apple_music','source'], isIr: true, optional: true },
+            ]},
+            { key: 'PLEX', label: 'Plex', authPort: 8772, fields: [
+                { fid: 'ir_source', label: 'IR trigger', path: ['plex','source'], isIr: true, optional: true },
+                { fid: 'url', label: 'Server URL', path: ['plex','url'], placeholder: 'https://plex.server:32400', optional: true, hint: 'Leave blank for local server' },
+            ]},
+            { key: 'RADIO', label: 'Radio', fields: [
+                { fid: 'ir_source', label: 'IR trigger', path: ['radio','source'], isIr: true, optional: true },
+            ]},
+            { key: 'CD', label: 'CD', fields: [
+                { fid: 'ir_source', label: 'IR trigger', path: ['cd','source'], isIr: true, optional: true },
+                { fid: 'device', label: 'Device path', path: ['cd','device'], placeholder: '/dev/sr0' },
+            ]},
+            { key: 'USB', label: 'USB', fields: [
+                { fid: 'ir_source', label: 'IR trigger', path: ['usb','source'], isIr: true, optional: true },
+            ]},
+            { key: 'NEWS', label: 'News', fields: [
+                { fid: 'guardian_api_key', label: 'Guardian API key', path: ['news','guardian_api_key'], placeholder: 'From theguardian.com/developer' },
+            ]},
+            { key: 'SCENES', label: 'Scenes' },
+            { key: 'SECURITY', label: 'Security Camera', isUrl: true, fields: [
+                { fid: 'url', label: 'Camera URL', path: ['_security_url'], placeholder: 'http://homeassistant.local:8123/cameras' },
+            ]},
+            { key: 'SYSTEM', label: 'System', fixed: true },
+            { key: 'SHOWING', label: 'Now Playing on TV', fields: [
+                { fid: 'entity_id', label: 'HA entity', path: ['showing','entity_id'], placeholder: 'media_player.apple_tv' },
+            ]},
+        ];
+
+        const CFG_SOURCE_VIEWS = {
+            'PLAYING':'playing','JOIN':'join','SPOTIFY':'spotify','TIDAL':'tidal',
+            'APPLE MUSIC':'apple_music','PLEX':'plex','RADIO':'radio','CD':'cd',
+            'USB':'usb','NEWS':'news','SCENES':'scenes','SYSTEM':'system','SHOWING':'showing',
+        };
+
         class SystemPanel {
             constructor() {
-                this.sections = ['info', 'services', 'remotes', 'people'];
+                this.sections = ['info', 'services', 'remotes', 'people', 'config'];
                 this.currentSection = 0;
                 this.inputWs = null;
                 this.serviceStatus = {};
@@ -1045,6 +1446,11 @@
                 this.lastNavTime = 0;
                 this.navDebounceMs = 80;
 
+                // Update state
+                this.updateAvailable = false;
+                this.latestVersion = null;
+                this.relNotesVisible = false;
+
                 this.init();
             }
 
@@ -1055,6 +1461,10 @@
                 window.addEventListener('message', this._messageHandler);
 
                 document.addEventListener('keydown', (e) => {
+                    // Don't steal keys when a form element has focus
+                    const tag = document.activeElement?.tagName;
+                    if (['INPUT','SELECT','TEXTAREA','BUTTON'].includes(tag)) return;
+
                     if (e.key === 'ArrowLeft') this.handleButton('left');
                     else if (e.key === 'ArrowRight') this.handleButton('right');
                     else if (e.key === 'ArrowUp') this.handleNav('counter', 1);
@@ -1076,6 +1486,7 @@
                 this.connectInputWebSocket();
                 this.fetchPeople();
                 this.fetchBTRemotes();
+                this.checkUpdate();
 
                 this._intervals = [
                     setInterval(() => this.fetchPeople(), 30000),
@@ -1213,6 +1624,12 @@
 
                 const section = this.sections[this.currentSection];
 
+                if (this.relNotesVisible) {
+                    if (button === 'go') this.startUpdate();
+                    else if (button === 'left') this.hideReleaseNotes();
+                    return;
+                }
+
                 if (button === 'left') {
                     this.currentSection = (this.currentSection - 1 + this.sections.length) % this.sections.length;
                     this.updateSection();
@@ -1220,7 +1637,9 @@
                     this.currentSection = (this.currentSection + 1) % this.sections.length;
                     this.updateSection();
                 } else if (button === 'go') {
-                    if (section === 'services') {
+                    if (section === 'info' && this.updateAvailable) {
+                        this.showReleaseNotes();
+                    } else if (section === 'services') {
                         this.restartSubcardService();
                     } else if (section === 'remotes') {
                         const selected = this.remoteItems[this.currentRemoteItem];
@@ -1235,6 +1654,12 @@
                 const now = Date.now();
                 if (now - this.lastNavTime < this.navDebounceMs) return;
                 this.lastNavTime = now;
+
+                if (this.relNotesVisible) {
+                    const body = document.getElementById('rn-body');
+                    body.scrollTop += (direction === 'clock' ? 1 : -1) * speed * 30;
+                    return;
+                }
 
                 const section = this.sections[this.currentSection];
 
@@ -1254,6 +1679,9 @@
                         }
                         this.updateRemoteSelection();
                     }
+                } else if (section === 'config') {
+                    document.getElementById('config').scrollTop +=
+                        (direction === 'clock' ? 1 : -1) * speed * 50;
                 }
             }
 
@@ -1289,6 +1717,150 @@
                 if (section === 'people') {
                     this.fetchPeople();
                 }
+
+                if (section === 'config') {
+                    this.loadConfig();
+                }
+            }
+
+            // ── Update ──
+
+            async checkUpdate() {
+                try {
+                    const resp = await fetch(API + '/update/check');
+                    if (!resp.ok) return;
+                    const data = await resp.json();
+                    if (data.update_in_progress) {
+                        this.showUpdateOverlay(data.latest || '...');
+                        this.pollReconnect();
+                    } else if (data.update_available && data.latest) {
+                        this.updateAvailable = true;
+                        this.latestVersion = data.latest;
+                        this.showUpdateInfo(data);
+                    } else if (data.current) {
+                        this.showUpToDate();
+                    }
+                } catch (e) { /* offline or service not running */ }
+            }
+
+            showUpdateInfo(data) {
+                document.getElementById('callout-version').textContent = data.latest;
+                document.getElementById('update-callout').className = 'update-callout visible';
+
+                if (data.release_notes) {
+                    document.getElementById('update-notes-body').textContent = data.release_notes;
+                    document.getElementById('update-release-link').href = data.release_url || '#';
+                    document.getElementById('update-notes').style.display = 'block';
+                }
+
+                document.getElementById('info-hint-version').textContent = data.latest;
+                document.getElementById('info-hint').style.display = '';
+            }
+
+            showUpToDate() {
+                document.getElementById('up-to-date-callout').className = 'up-to-date-callout visible';
+            }
+
+            showReleaseNotes() {
+                document.getElementById('rn-version').textContent = this.latestVersion || '--';
+                document.getElementById('rn-body').textContent =
+                    document.getElementById('update-notes-body').textContent || 'No release notes available.';
+                document.getElementById('rn-body').scrollTop = 0;
+                document.getElementById('release-notes-screen').className = 'active';
+                this.relNotesVisible = true;
+            }
+
+            hideReleaseNotes() {
+                document.getElementById('release-notes-screen').className = '';
+                this.relNotesVisible = false;
+            }
+
+            async startUpdate() {
+                if (!this.updateAvailable || !this.latestVersion) return;
+                this.hideReleaseNotes();
+                this.showUpdateOverlay(this.latestVersion);
+                try {
+                    const resp = await fetch(API + '/update/run', { method: 'POST' });
+                    if (resp.status === 202) {
+                        this.pollReconnect();
+                    } else if (resp.ok) {
+                        this.hideUpdateOverlay(); // up_to_date
+                    } else {
+                        const d = await resp.json().catch(() => ({}));
+                        this._overlayError(d.message || 'Update failed');
+                    }
+                } catch (e) {
+                    this._overlayError('Could not reach service');
+                }
+            }
+
+            showUpdateOverlay(version) {
+                document.getElementById('overlay-version').textContent = version;
+                document.getElementById('overlay-status').textContent = 'Downloading...';
+                document.getElementById('overlay-status').style.color = '';
+                document.querySelectorAll('.update-dot').forEach(d => {
+                    d.style.animation = '';
+                    d.style.background = '';
+                });
+                document.getElementById('update-overlay').className = 'active';
+            }
+
+            hideUpdateOverlay() {
+                document.getElementById('update-overlay').className = '';
+            }
+
+            _overlayError(msg) {
+                document.getElementById('overlay-status').textContent = msg;
+                document.getElementById('overlay-status').style.color = '#a44';
+                document.querySelectorAll('.update-dot').forEach(d => {
+                    d.style.animation = 'none';
+                    d.style.background = '#333';
+                });
+            }
+
+            pollReconnect() {
+                const statusEl = document.getElementById('overlay-status');
+                const stepLabels = {
+                    downloading: 'Downloading...',
+                    extracting: 'Extracting...',
+                    installing: 'Installing files...',
+                    restarting: 'Restarting...',
+                };
+                let attempts = 0;
+
+                const poll = async () => {
+                    try {
+                        const resp = await fetch(API + '/update/check');
+                        if (resp.ok) {
+                            const data = await resp.json();
+                            if (data.update_in_progress) {
+                                statusEl.style.color = '';
+                                statusEl.textContent = stepLabels[data.update_step] || 'Updating...';
+                            } else {
+                                // Done — services have restarted
+                                statusEl.style.color = '#4a4';
+                                statusEl.textContent = 'Updated to ' + (data.current || this.latestVersion);
+                                document.querySelectorAll('.update-dot').forEach(d => {
+                                    d.style.animation = 'none';
+                                    d.style.background = '#4a4';
+                                });
+                                setTimeout(() => location.reload(), 2500);
+                                return;
+                            }
+                        }
+                    } catch (e) {
+                        // Backend restarting
+                        statusEl.style.color = '#555';
+                        statusEl.textContent = 'Waiting to reconnect...';
+                    }
+                    attempts++;
+                    if (attempts < 60) {
+                        setTimeout(poll, 2000);
+                    } else {
+                        this._overlayError('Restart taking longer than expected — try reloading');
+                    }
+                };
+                setTimeout(poll, 2000);
             }
 
             // ── Service restart ──
@@ -1450,6 +2022,42 @@
                     .map(part => part.charAt(0).toUpperCase())
                     .slice(0, 2)
                     .join('');
+            }
+
+            // ── Config ──
+
+            async loadConfig() {
+                if (this._cfgQrDone) return;
+                this._cfgQrDone = true;
+                const container = document.getElementById('cfg-qr-container');
+                const urlEl = document.getElementById('cfg-qr-url');
+                if (!container) return;
+                try {
+                    const resp = await fetch('http://localhost:8767/info');
+                    const data = await resp.json();
+                    const ip = data.ip_address || location.hostname;
+                    const hostname = data.hostname;
+                    const url = `http://${ip}/config`;
+                    const displayUrl = hostname
+                        ? `http://${hostname}.local/config`
+                        : url;
+                    if (typeof QRCode !== 'undefined') {
+                        new QRCode(container, {
+                            text: url,
+                            width: 180,
+                            height: 180,
+                            colorDark: '#000000',
+                            colorLight: '#ffffff',
+                            correctLevel: QRCode.CorrectLevel.M,
+                        });
+                    } else {
+                        container.innerHTML = `<img src="http://localhost:8767/qrcode" style="width:180px;height:180px;">`;
+                    }
+                    if (urlEl) urlEl.textContent = displayUrl;
+                } catch (e) {
+                    if (container) container.innerHTML = `<img src="http://localhost:8767/qrcode" style="width:180px;height:180px;">`;
+                    if (urlEl) urlEl.textContent = 'Scan to configure';
+                }
             }
 
             destroy() {
