@@ -478,7 +478,6 @@ function initMediaWebSocket() {
     try {
         const mediaWs = new WebSocket(AppConfig.websocket.media);
         window.mediaWebSocket = mediaWs;
-        let wasConnected = false;
 
         mediaWs.onerror = () => {
             // Auto-activate demo mode on media server failure if autoDetect enabled
@@ -488,26 +487,22 @@ function initMediaWebSocket() {
         };
 
         mediaWs.onopen = () => {
-            const isReconnect = wasConnected;
-            wasConnected = true;
             _mediaBackoffMs = window.WsBackoff.WS_RECONNECT_BASE_MS;
             console.log('[MEDIA] Router media WS connected');
             if (window.uiStore && window.uiStore.logWebsocketMessage) {
                 window.uiStore.logWebsocketMessage('Media server connected');
             }
-            // On reconnect, rebuild the menu from the router's current config.
-            // This handles config changes (e.g. TIDAL removed) that would
-            // otherwise linger in the DOM indefinitely — fetchMenu() replaces
-            // menuItems entirely, so removed sources vanish without triggering
-            // individual removeMenuItem() side-effects (view deletion, nav).
-            if (isReconnect && window.uiStore) {
+            // Always refresh the menu on (re)connect — the router may have
+            // restarted with a different config (sources added/removed).
+            // fetchMenu() replaces menuItems entirely so stale items vanish.
+            if (window.uiStore) {
                 window.uiStore.menu?.fetchMenu();
             }
         };
 
         mediaWs.onclose = () => {
             window.mediaWebSocket = null;
-            if (wasConnected) {
+            if (_mediaReconnectCount > 0) {
                 console.log('[MEDIA] Router media WS disconnected - will reconnect');
             }
             _mediaReconnectCount++;

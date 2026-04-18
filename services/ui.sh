@@ -23,7 +23,13 @@ fi
 # Chromium profile — kept on SD so cookies and login state survive reboots.
 CHROMIUM_DATA_DIR="$HOME/.config/chromium"
 export CHROMIUM_DATA_DIR  # Export for xinit subshell
-mkdir -p "$CHROMIUM_DATA_DIR/Default"
+# If the profile dir is a symlink (e.g. sd-hardening points it to tmpfs),
+# recreate the symlink target on each boot — tmpfs is wiped on power cycle.
+if [ -L "$CHROMIUM_DATA_DIR" ]; then
+  mkdir -p "$(readlink "$CHROMIUM_DATA_DIR")/Default"
+else
+  mkdir -p "$CHROMIUM_DATA_DIR/Default"
+fi
 
 # Redirect GPU/shader/code caches from SD to tmpfs.
 # HTTP cache is already disabled via --disable-cache / --disk-cache-size=0.
