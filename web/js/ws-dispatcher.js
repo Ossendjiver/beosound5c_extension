@@ -27,10 +27,9 @@ let mediaReconnectTimer = null;
 // Reconnect backoff: start at 3s, grow ×1.6 up to 60s (see ws-backoff.js).
 // Resets to base on a successful open. Prevents the Pi + backend from
 // spinning on 3s reconnects forever during sustained network outages.
-const WS_RECONNECT_BASE_MS = window.WsBackoff.WS_RECONNECT_BASE_MS;
 const _nextBackoff = window.WsBackoff.wsNextBackoff;
-let _hwBackoffMs = WS_RECONNECT_BASE_MS;
-let _mediaBackoffMs = WS_RECONNECT_BASE_MS;
+let _hwBackoffMs = window.WsBackoff.WS_RECONNECT_BASE_MS;
+let _mediaBackoffMs = window.WsBackoff.WS_RECONNECT_BASE_MS;
 
 // ── Resource health monitoring ──
 // Logs Chromium resource stats every 10 minutes to help diagnose
@@ -360,7 +359,7 @@ function connectHardwareWebSocket() {
             clearTimeout(connectionTimeout);
             wasConnected = true;
             window.hardwareWebSocket = ws;
-            _hwBackoffMs = WS_RECONNECT_BASE_MS;
+            _hwBackoffMs = window.WsBackoff.WS_RECONNECT_BASE_MS;
             console.log('[WS] Real hardware connected - switching from emulation mode');
 
             if (window.dummyHardwareManager) {
@@ -491,7 +490,7 @@ function initMediaWebSocket() {
         mediaWs.onopen = () => {
             const isReconnect = wasConnected;
             wasConnected = true;
-            _mediaBackoffMs = WS_RECONNECT_BASE_MS;
+            _mediaBackoffMs = window.WsBackoff.WS_RECONNECT_BASE_MS;
             console.log('[MEDIA] Router media WS connected');
             if (window.uiStore && window.uiStore.logWebsocketMessage) {
                 window.uiStore.logWebsocketMessage('Media server connected');

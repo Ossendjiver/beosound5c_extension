@@ -38,5 +38,13 @@ class SonosVolume(VolumeAdapter):
             logger.warning("Could not read Sonos volume: %s", e)
             return None
 
+    async def power_off(self) -> None:
+        try:
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(None, self._speaker.pause)
+            logger.info("Sonos paused on power off")
+        except Exception as e:
+            logger.warning("Sonos pause failed: %s", e)
+
     async def is_on(self) -> bool:
         return True  # Sonos is always on
