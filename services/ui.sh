@@ -110,11 +110,20 @@ xinit /bin/bash -c '
 
   log "X session started, launching Chromium with crash recovery..."
 
-  # Wait for HTTP server to be ready
+  # Detect which port the HTTP server is on.
+  # Port 80 is standard (v0.7.2+). Port 8000 is the legacy default — a device
+  # upgrading from <0.7.2 via OTA won't have had its service file updated yet,
+  # so it falls back gracefully without showing a black screen.
+  HTTP_PORT=80
   log "Waiting for HTTP server..."
   for i in {1..30}; do
     if curl -s -o /dev/null -w "%{http_code}" http://localhost/ | grep -q "200"; then
-      log "HTTP server ready"
+      HTTP_PORT=80
+      log "HTTP server ready (port 80)"
+      break
+    elif curl -s -o /dev/null -w "%{http_code}" http://localhost:8000/ | grep -q "200"; then
+      HTTP_PORT=8000
+      log "HTTP server ready (port 8000 — legacy, service file not yet updated)"
       break
     fi
     sleep 0.5
@@ -188,7 +197,7 @@ xinit /bin/bash -c '
       --disk-cache-size=0 \
       --media-cache-size=0 \
       --kiosk \
-      --app=http://localhost \
+      --app=http://localhost:${HTTP_PORT} \
       --start-fullscreen \
       --window-size=1024,768 \
       --window-position=0,0 \

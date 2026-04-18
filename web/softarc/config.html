@@ -1,0 +1,698 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+    <title>BeoSound 5c — Configure</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        html, body { background: #000; color: #eee; font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; min-height: 100vh; }
+
+        /* Header */
+        .cfg-header { padding: 20px 16px 12px; border-bottom: 1px solid #111; }
+        .cfg-header-title { font-size: 13px; font-weight: 500; color: #888; letter-spacing: 0.15em; text-transform: uppercase; }
+        .cfg-header-device { font-size: 22px; font-weight: 300; color: #eee; margin-top: 2px; }
+
+        /* Page body */
+        .cfg-body { padding: 16px; max-width: 640px; margin: 0 auto; }
+
+        /* Cards */
+        .cfg-card { background: #0a0a0a; border: 1px solid #1e1e1e; border-radius: 8px; padding: 16px; margin-bottom: 12px; }
+        .cfg-card h2 { font-size: 11px; font-weight: 600; color: #666; letter-spacing: 0.1em; text-transform: uppercase; margin-bottom: 14px; }
+
+        /* Labels and inputs */
+        label { display: block; color: #555; font-size: 12px; margin: 14px 0 5px; }
+        label:first-of-type { margin-top: 0; }
+        input[type=text], input[type=number], input[type=password] {
+            background: #111; color: #eee; border: 1px solid #252525;
+            border-radius: 8px; padding: 11px 12px; font-size: 15px;
+            width: 100%; outline: none; font-family: inherit;
+            -webkit-appearance: none; appearance: none;
+        }
+        input[type=text]:focus, input[type=number]:focus { border-color: #0af; }
+        input::placeholder { color: #2a2a2a; }
+        select {
+            background: #111; color: #eee; border: 1px solid #252525;
+            border-radius: 8px; padding: 11px 12px; font-size: 15px;
+            width: 100%; outline: none; font-family: inherit;
+            -webkit-appearance: none; appearance: none;
+            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%23555' fill='none' stroke-width='1.5'/%3E%3C/svg%3E");
+            background-repeat: no-repeat; background-position: right 12px center; padding-right: 32px;
+        }
+        select:focus { border-color: #0af; }
+        select option { background: #111; }
+        .hint { font-size: 12px; color: #444; margin: 4px 0 0; }
+
+        /* Row layouts */
+        .row-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+        .input-row { display: flex; gap: 8px; align-items: flex-end; }
+        .input-row input, .input-row select { flex: 1; min-width: 0; }
+
+        /* Buttons */
+        .btn-subtle {
+            background: none; border: 1px solid #2a2a2a; color: #666;
+            border-radius: 8px; padding: 10px 16px; font-size: 14px;
+            cursor: pointer; white-space: nowrap; font-family: inherit; flex-shrink: 0;
+        }
+        .btn-subtle.ok { border-color: #16a34a; color: #16a34a; }
+        .btn-subtle.fail { border-color: #ef4444; color: #ef4444; }
+
+        .btn-save {
+            width: 100%; background: rgba(0,170,255,0.08); color: #0af;
+            border: 1px solid rgba(0,170,255,0.25); border-radius: 8px;
+            padding: 14px; font-size: 15px; font-family: inherit; cursor: pointer;
+        }
+
+        /* Source section headers */
+        .sec-header { display: flex; align-items: center; gap: 10px; padding: 10px 0; border-top: 1px solid #181818; }
+        .sec-header:first-child { border-top: none; padding-top: 0; }
+        .sec-header input[type=checkbox] { width: 20px; height: 20px; accent-color: #0af; cursor: pointer; flex-shrink: 0; }
+        .sec-header label { margin: 0; color: #aaa; font-size: 15px; font-weight: 500; cursor: pointer; text-transform: none; letter-spacing: 0; }
+        .sec-header input:checked + label { color: #eee; }
+        .sec-header input:disabled + label { color: #444; }
+
+        .sub-section { margin: 4px 0 4px 30px; padding: 12px; background: #111; border-radius: 8px; border: 1px solid #1a1a1a; }
+        .sub-section label { margin: 10px 0 5px; font-size: 12px; color: #555; text-transform: none; letter-spacing: 0; }
+        .sub-section label:first-child { margin-top: 0; }
+
+        /* Conditional visibility */
+        .cfg-cond { display: none; }
+        .cfg-cond.show { display: block; }
+
+        /* Auth link */
+        .cfg-auth-link {
+            display: inline-block; margin-top: 10px; font-size: 13px; color: #0af;
+            text-decoration: none; border: 1px solid rgba(0,170,255,0.2);
+            border-radius: 6px; padding: 5px 12px;
+        }
+
+        /* Discovery list */
+        .cfg-discover-list { display: none; margin-top: 8px; border: 1px solid #1e1e1e; border-radius: 8px; overflow: hidden; }
+        .cfg-discover-list.show { display: block; }
+        .cfg-discover-item { display: flex; justify-content: space-between; align-items: center; padding: 12px 14px; border-bottom: 1px solid #111; cursor: pointer; }
+        .cfg-discover-item:last-child { border-bottom: none; }
+        .cfg-discover-item:active { background: #111; }
+        .cfg-discover-name { font-size: 14px; color: #ccc; }
+        .cfg-discover-ip { font-size: 12px; color: #444; font-family: monospace; }
+        .cfg-discover-empty { display: block; padding: 12px 14px; font-size: 13px; color: #444; }
+
+        /* Compat hint */
+        .compat-hint { font-size: 12px; color: #7a4a00; margin: 4px 0 0; display: none; }
+
+        /* Save bar */
+        .cfg-save-bar { padding: 8px 0 40px; }
+
+        /* Restart modal */
+        #restart-popup { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.85); z-index: 100; align-items: center; justify-content: center; }
+        #restart-popup.active { display: flex; }
+        .restart-modal { background: #0a0a0a; border: 1px solid #1e1e1e; border-radius: 12px; padding: 28px 32px; text-align: center; max-width: 300px; }
+        .restart-modal-title { font-size: 14px; font-weight: 600; color: #eee; margin-bottom: 10px; }
+        .restart-modal-status { font-size: 14px; color: #0af; margin-bottom: 8px; }
+        .restart-modal-hint { font-size: 12px; color: #444; line-height: 1.5; }
+
+        /* Instructions box */
+        .cfg-instructions { font-size: 13px; color: #666; background: #0d0d0d; border: 1px solid #1a2a3a; border-radius: 6px; padding: 10px 12px; margin: 0 0 10px; line-height: 1.6; }
+        .cfg-instructions a { color: #0af; text-decoration: none; }
+        .cfg-instructions code { font-family: monospace; font-size: 12px; background: #000; border: 1px solid #1e1e1e; border-radius: 3px; padding: 1px 5px; color: #88c0d0; word-break: break-all; }
+    </style>
+</head>
+<body>
+
+<div class="cfg-header">
+    <div class="cfg-header-title">BeoSound 5c</div>
+    <div class="cfg-header-device" id="cfg-header-device">Configure</div>
+</div>
+
+<div class="cfg-body">
+    <div id="cfg-content">
+        <div style="padding:40px 0; text-align:center; color:#333; font-size:14px">Loading...</div>
+    </div>
+</div>
+
+<div id="restart-popup">
+    <div class="restart-modal">
+        <div class="restart-modal-title">Saving configuration</div>
+        <div class="restart-modal-status" id="restart-status">Writing...</div>
+        <div class="restart-modal-hint">Services will restart automatically.<br>The page will reload when ready.</div>
+    </div>
+</div>
+
+<script>
+const API = 'http://' + location.hostname + ':8767';
+
+function esc(s) { return String(s ?? '').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function cfgGet(obj, path) { return path.reduce((o, k) => (o != null ? o[k] : undefined), obj); }
+
+const BEO4_SOURCES = [
+    { value: 'radio',   label: 'Radio' },
+    { value: 'cd',      label: 'CD' },
+    { value: 'amem',    label: 'A.MEM' },
+    { value: 'n.radio', label: 'N.Radio' },
+    { value: 'n.music', label: 'N.Music' },
+    { value: 'server',  label: 'Server' },
+    { value: 'spotify', label: 'Spotify' },
+    { value: 'dvd',     label: 'DVD' },
+    { value: 'dtv',     label: 'DTV' },
+    { value: 'v.aux',   label: 'V.Aux' },
+    { value: 'a.aux',   label: 'A.Aux' },
+    { value: 'tv',      label: 'TV' },
+    { value: 'media',   label: 'Media' },
+    { value: 'vmem',    label: 'V.Mem' },
+    { value: 'pc',      label: 'PC' },
+    { value: 'youtube', label: 'YouTube' },
+    { value: 'usb2',    label: 'USB' },
+];
+
+const CFG_SOURCE_DEFS = [
+    { key: 'PLAYING', label: 'Playing', fixed: true },
+    { key: 'JOIN', label: 'Join (multi-room)', fields: [
+        { fid: 'ir_source', label: 'IR trigger', path: ['join','source'], isIr: true, optional: true },
+        { fid: 'default_player', label: 'Default Sonos group', path: ['join','default_player'], placeholder: 'e.g. Kitchen and Dining', optional: true },
+    ]},
+    { key: 'SPOTIFY', label: 'Spotify', authPort: 8771,
+      infoHtml: `Go to <a href="https://developer.spotify.com/dashboard" target="_blank" rel="noreferrer">developer.spotify.com/dashboard</a> → Create app. Add this Redirect URI:<br><code>http://${location.hostname}:8771/callback</code><br>Paste your Client ID below, then click <em>Authenticate →</em> to log in.`,
+      fields: [
+        { fid: 'ir_source', label: 'IR trigger', path: ['spotify','source'], isIr: true, optional: true },
+        { fid: 'client_id', label: 'Client ID', path: ['spotify','client_id'], placeholder: 'From Spotify Dashboard' },
+        { fid: 'token_master', label: 'Token master URL', path: ['spotify','token_master'], placeholder: 'http://other-device:8771', optional: true, hint: 'Share tokens across multiple devices' },
+    ]},
+    { key: 'TIDAL', label: 'Tidal', authPort: 8777, fields: [
+        { fid: 'ir_source', label: 'IR trigger', path: ['tidal','source'], isIr: true, optional: true },
+    ]},
+    { key: 'APPLE MUSIC', label: 'Apple Music', authPort: 8778, fields: [
+        { fid: 'ir_source', label: 'IR trigger', path: ['apple_music','source'], isIr: true, optional: true },
+    ]},
+    { key: 'PLEX', label: 'Plex', authPort: 8772, fields: [
+        { fid: 'ir_source', label: 'IR trigger', path: ['plex','source'], isIr: true, optional: true },
+        { fid: 'url', label: 'Server URL', path: ['plex','url'], placeholder: 'https://plex.server:32400', optional: true, hint: 'Leave blank for local server' },
+    ]},
+    { key: 'RADIO', label: 'Radio', fields: [
+        { fid: 'ir_source', label: 'IR trigger', path: ['radio','source'], isIr: true, optional: true },
+    ]},
+    { key: 'CD', label: 'CD', fields: [
+        { fid: 'ir_source', label: 'IR trigger', path: ['cd','source'], isIr: true, optional: true },
+        { fid: 'device', label: 'Device path', path: ['cd','device'], placeholder: '/dev/sr0' },
+    ]},
+    { key: 'USB', label: 'USB', fields: [
+        { fid: 'ir_source', label: 'IR trigger', path: ['usb','source'], isIr: true, optional: true },
+    ]},
+    { key: 'NEWS', label: 'News', fields: [
+        { fid: 'guardian_api_key', label: 'Guardian API key', path: ['news','guardian_api_key'], placeholder: 'From theguardian.com/developer' },
+    ]},
+    { key: 'SCENES', label: 'Scenes', hint: 'Edit scene names, icons and HA scripts in <code>/etc/beosound5c/config.json</code> → <code>"scenes"</code> array.' },
+    { key: 'SECURITY', label: 'Security Camera', isUrl: true, fields: [
+        { fid: 'url', label: 'Camera URL', path: ['_security_url'], placeholder: 'http://homeassistant.local:8123/cameras' },
+    ]},
+    { key: 'SYSTEM', label: 'System', fixed: true },
+    { key: 'SHOWING', label: 'Now Playing on TV', fields: [
+        { fid: 'entity_id', label: 'HA entity', path: ['showing','entity_id'], placeholder: 'media_player.apple_tv' },
+    ]},
+];
+
+// [id, label, compatible-player-types (space-separated)]
+const VOLUME_TYPES = [
+    ['sonos',     'Sonos',          'sonos'],
+    ['beolab5',   'BeoLab 5',       'sonos bluesound local'],
+    ['powerlink', 'PowerLink',      'local'],
+    ['bluesound', 'Bluesound',      'bluesound'],
+    ['hdmi',      'HDMI',           'local'],
+    ['spdif',     'S/PDIF',         'local'],
+    ['rca',       'RCA',            'local'],
+    ['c4amp',     'C4 Amplifier',   'local'],
+    ['local',     'Software / none','local'],
+];
+// Volume adapters that need a host/IP field
+const VOLUME_HOST_TYPES = ['beolab5', 'bluesound', 'c4amp'];
+
+const CFG_SOURCE_VIEWS = {
+    'PLAYING':'playing','JOIN':'join','SPOTIFY':'spotify','TIDAL':'tidal',
+    'APPLE MUSIC':'apple_music','PLEX':'plex','RADIO':'radio','CD':'cd',
+    'USB':'usb','NEWS':'news','SCENES':'scenes','SYSTEM':'system','SHOWING':'showing',
+};
+
+let _cfg = null;
+
+async function init() {
+    try {
+        const resp = await fetch('../json/config.json');
+        if (!resp.ok) throw new Error();
+        _cfg = await resp.json();
+        document.getElementById('cfg-header-device').textContent = _cfg.device || 'Configure';
+        render(_cfg);
+    } catch(e) {
+        document.getElementById('cfg-content').innerHTML = '<div style="padding:40px 0; text-align:center; color:#555; font-size:14px">Could not load config.json</div>';
+    }
+}
+
+function render(cfg) {
+    document.getElementById('cfg-content').innerHTML =
+        renderDevice(cfg) +
+        renderPlayer(cfg) +
+        renderVolume(cfg) +
+        renderHA(cfg) +
+        renderSources(cfg) +
+        `<div class="cfg-save-bar"><button class="btn-save" id="cfg-save">Save &amp; Restart Services</button></div>`;
+    setupListeners();
+    updateIrDropdowns();
+    updateVolumeOptions();
+}
+
+function renderDevice(cfg) {
+    return `<div class="cfg-card">
+        <h2>Device</h2>
+        <label for="cfg-device">Device name</label>
+        <input id="cfg-device" type="text" value="${esc(cfg.device)}" placeholder="e.g. Living Room">
+    </div>`;
+}
+
+function renderPlayer(cfg) {
+    const p = cfg.player || {};
+    const showIp = p.type === 'sonos' || p.type === 'bluesound';
+    return `<div class="cfg-card">
+        <h2>Player</h2>
+        <label for="cfg-player-type">Type</label>
+        <select id="cfg-player-type">
+            <option value="sonos" ${p.type==='sonos'?'selected':''}>Sonos</option>
+            <option value="bluesound" ${p.type==='bluesound'?'selected':''}>Bluesound</option>
+            <option value="local" ${p.type==='local'?'selected':''}>Local (mpv)</option>
+        </select>
+        <div id="cfg-player-ip-cond" class="cfg-cond${showIp?' show':''}">
+            <label for="cfg-player-ip">IP address</label>
+            <div class="input-row">
+                <input id="cfg-player-ip" type="text" value="${esc(p.ip)}" placeholder="192.168.1.100">
+                <button class="btn-subtle" onclick="testPlayerConn(event)">Test</button>
+                <button class="btn-subtle" onclick="discoverPlayer(event)">Discover</button>
+            </div>
+            <div id="cfg-player-results" class="cfg-discover-list"></div>
+        </div>
+    </div>`;
+}
+
+function renderVolume(cfg) {
+    const v = cfg.volume || {};
+    const playerType = (cfg.player || {}).type || 'sonos';
+    const compatTypes = VOLUME_TYPES.filter(([,, c]) => c.split(' ').includes(playerType));
+    const showHost = VOLUME_HOST_TYPES.includes(v.type);
+    return `<div class="cfg-card">
+        <h2>Volume</h2>
+        <label for="cfg-volume-type">Output type</label>
+        <select id="cfg-volume-type">
+            ${compatTypes.map(([v2, l]) => `<option value="${v2}" ${v.type===v2?'selected':''}>${l}</option>`).join('')}
+        </select>
+        <div id="cfg-volume-host-cond" class="cfg-cond${showHost?' show':''}">
+            <label for="cfg-volume-host">Host / IP</label>
+            <input id="cfg-volume-host" type="text" value="${esc(v.host)}" placeholder="hostname.local or 192.168.x.x">
+        </div>
+        <label for="cfg-volume-output">Output name</label>
+        <input id="cfg-volume-output" type="text" value="${esc(v.output_name)}" placeholder="e.g. BeoLab 5">
+        <div class="row-2" style="margin-top:14px">
+            <div>
+                <label for="cfg-volume-max">Max volume</label>
+                <input id="cfg-volume-max" type="number" min="1" max="100" value="${v.max ?? 80}">
+            </div>
+            <div>
+                <label for="cfg-volume-step">Step size</label>
+                <input id="cfg-volume-step" type="number" min="1" max="20" value="${v.step ?? 3}">
+            </div>
+        </div>
+    </div>`;
+}
+
+function renderHA(cfg) {
+    const ha = cfg.home_assistant || {};
+    const t = cfg.transport || {};
+    const showMqtt = t.mode === 'mqtt' || t.mode === 'both';
+    const tokenProfileHref = ha.url ? esc(ha.url.replace(/\/$/, '')) + '/profile' : '#';
+    return `<div class="cfg-card">
+        <h2>Home Assistant</h2>
+        <label for="cfg-ha-url">HA URL</label>
+        <div class="input-row">
+            <input id="cfg-ha-url" type="text" value="${esc(ha.url)}" placeholder="http://homeassistant.local:8123">
+            <button class="btn-subtle" onclick="testHAConn(event)">Test</button>
+            <button class="btn-subtle" onclick="discoverHA(event)">Discover</button>
+        </div>
+        <label for="cfg-ha-webhook">Webhook URL</label>
+        <input id="cfg-ha-webhook" type="text" value="${esc(ha.webhook_url)}" placeholder="http://.../api/webhook/beosound5c">
+        <label for="cfg-ha-token">Access token <span style="color:#333;font-weight:400">(leave blank to keep existing)</span></label>
+        <input id="cfg-ha-token" type="password" placeholder="Long-lived access token" autocomplete="new-password">
+        <div style="margin-top:6px"><a id="cfg-ha-token-link" class="cfg-auth-link" href="${tokenProfileHref}" target="_blank" rel="noreferrer">Create token in Home Assistant →</a></div>
+        <label for="cfg-transport-mode">Transport</label>
+        <select id="cfg-transport-mode">
+            <option value="webhook" ${t.mode==='webhook'?'selected':''}>Webhook only</option>
+            <option value="mqtt" ${t.mode==='mqtt'?'selected':''}>MQTT only</option>
+            <option value="both" ${t.mode==='both'?'selected':''}>Both (webhook + MQTT)</option>
+        </select>
+        <div id="cfg-mqtt-cond" class="cfg-cond${showMqtt?' show':''}">
+            <label for="cfg-mqtt-broker">MQTT broker</label>
+            <input id="cfg-mqtt-broker" type="text" value="${esc(t.mqtt_broker)}" placeholder="homeassistant.local">
+            <div class="row-2" style="margin-top:10px">
+                <div>
+                    <label for="cfg-mqtt-port">MQTT port</label>
+                    <input id="cfg-mqtt-port" type="number" value="${t.mqtt_port ?? 1883}">
+                </div>
+                <div></div>
+            </div>
+            <div class="row-2" style="margin-top:10px">
+                <div>
+                    <label for="cfg-mqtt-user">MQTT username <span style="color:#333;font-weight:400">(optional)</span></label>
+                    <input id="cfg-mqtt-user" type="text" placeholder="Leave blank to keep existing" autocomplete="off">
+                </div>
+                <div>
+                    <label for="cfg-mqtt-password">MQTT password <span style="color:#333;font-weight:400">(optional)</span></label>
+                    <input id="cfg-mqtt-password" type="password" placeholder="Leave blank to keep existing" autocomplete="new-password">
+                </div>
+            </div>
+        </div>
+    </div>`;
+}
+
+function renderSources(cfg) {
+    const menu = cfg.menu || {};
+    const usedIr = {};
+    CFG_SOURCE_DEFS.forEach(src => {
+        if (!src.fields) return;
+        const kn = src.key.replace(/ /g,'_').toLowerCase();
+        const irField = src.fields.find(f => f.isIr);
+        if (irField) { const val = cfgGet(cfg, irField.path) || ''; if (val) usedIr[val] = kn; }
+    });
+
+    const rows = CFG_SOURCE_DEFS.map(src => {
+        const kn = src.key.replace(/ /g,'_').toLowerCase();
+        const enabled = src.fixed || (src.key in menu);
+        const hasFields = !!(src.fields && src.fields.length);
+
+        const checkHtml = src.fixed
+            ? `<input type="checkbox" checked disabled>`
+            : `<input type="checkbox" id="cfg-src-${kn}-toggle" class="cfg-src-toggle" data-key="${src.key}" ${enabled?'checked':''}>`;
+
+        const authHtml = src.authPort
+            ? `<a class="cfg-auth-link" href="http://${location.hostname}:${src.authPort}/" target="_blank">Authenticate →</a>`
+            : '';
+
+        const infoBlock = src.infoHtml ? `<div class="cfg-instructions">${src.infoHtml}</div>` : '';
+        const hintHtml = (!hasFields && src.hint) ? `<div style="margin:2px 0 4px 30px;font-size:12px;color:#444">${src.hint}</div>` : '';
+        const fieldsHtml = hasFields ? `<div id="cfg-src-${kn}-body" class="sub-section cfg-cond${enabled?' show':''}">
+            ${infoBlock}${src.fields.map(f => {
+                if (f.isIr) {
+                    const currentVal = cfgGet(cfg, f.path) || '';
+                    const opts = BEO4_SOURCES.map(s => {
+                        const takenBy = usedIr[s.value];
+                        const isSelf = takenBy === kn;
+                        const isTaken = takenBy && !isSelf;
+                        return `<option value="${s.value}" ${s.value===currentVal?'selected':''} ${isTaken?'disabled':''}>${s.label}${isTaken?' (used)':''}</option>`;
+                    }).join('');
+                    return `<label>IR trigger <span style="color:#333;font-weight:400">(optional)</span></label>
+                        <select id="cfg-src-${kn}-${f.fid}" class="cfg-ir-select" data-kn="${kn}">
+                            <option value="">— none —</option>${opts}
+                        </select>`;
+                }
+                let val = '';
+                if (f.path[0] === '_security_url') {
+                    const entry = menu[src.key];
+                    val = typeof entry === 'object' ? esc(entry.url || '') : '';
+                } else {
+                    val = esc(cfgGet(cfg, f.path) || '');
+                }
+                return `<label>${f.label}${f.optional?' <span style="color:#333;font-weight:400">(optional)</span>':''}</label>
+                    <input id="cfg-src-${kn}-${f.fid}" type="text" value="${val}" placeholder="${esc(f.placeholder||'')}">
+                    ${f.hint ? `<div class="hint">${f.hint}</div>` : ''}`;
+            }).join('')}
+            ${authHtml}
+        </div>` : (authHtml ? `<div id="cfg-src-${kn}-body" class="sub-section cfg-cond${enabled?' show':''}">${authHtml}</div>` : '');
+
+        return `<div class="sec-header">
+            ${checkHtml}
+            <label for="${src.fixed ? '' : `cfg-src-${kn}-toggle`}">${src.label}</label>
+        </div>${hintHtml}${fieldsHtml}`;
+    }).join('');
+
+    return `<div class="cfg-card"><h2>Sources</h2><div id="cfg-sources-list">${rows}</div></div>`;
+}
+
+function setupListeners() {
+    document.getElementById('cfg-ha-url')?.addEventListener('input', e => {
+        const link = document.getElementById('cfg-ha-token-link');
+        if (link) link.href = (e.target.value.trim().replace(/\/$/, '') || '') + '/profile';
+    });
+    document.getElementById('cfg-player-type')?.addEventListener('change', e => {
+        const show = ['sonos','bluesound'].includes(e.target.value);
+        document.getElementById('cfg-player-ip-cond').classList.toggle('show', show);
+        const r = document.getElementById('cfg-player-results');
+        if (r) { r.innerHTML = ''; r.classList.remove('show'); }
+        updateVolumeOptions();
+    });
+    document.getElementById('cfg-volume-type')?.addEventListener('change', e => {
+        document.getElementById('cfg-volume-host-cond')?.classList.toggle('show', VOLUME_HOST_TYPES.includes(e.target.value));
+    });
+    document.getElementById('cfg-transport-mode')?.addEventListener('change', e => {
+        const show = ['mqtt','both'].includes(e.target.value);
+        document.getElementById('cfg-mqtt-cond').classList.toggle('show', show);
+    });
+    document.querySelectorAll('.cfg-src-toggle').forEach(toggle => {
+        const kn = toggle.dataset.key.replace(/ /g,'_').toLowerCase();
+        const body = document.getElementById(`cfg-src-${kn}-body`);
+        toggle.addEventListener('change', e => { if (body) body.classList.toggle('show', e.target.checked); });
+    });
+    document.getElementById('cfg-sources-list')?.addEventListener('change', e => {
+        if (e.target.classList.contains('cfg-ir-select')) updateIrDropdowns();
+    });
+    document.getElementById('cfg-save')?.addEventListener('click', saveConfig);
+}
+
+function updateVolumeOptions() {
+    const playerType = document.getElementById('cfg-player-type')?.value || 'sonos';
+    const volSelect = document.getElementById('cfg-volume-type');
+    if (!volSelect) return;
+    const currentVal = volSelect.value;
+    const compatible = VOLUME_TYPES.filter(([,, c]) => c.split(' ').includes(playerType));
+    volSelect.innerHTML = compatible.map(([v, l]) =>
+        `<option value="${v}" ${v === currentVal ? 'selected' : ''}>${l}</option>`
+    ).join('');
+    // If previously selected type is no longer compatible, pick first option
+    if (!compatible.some(([v]) => v === currentVal)) {
+        const first = compatible[0];
+        if (first) volSelect.value = first[0];
+    }
+    const newVal = volSelect.value;
+    document.getElementById('cfg-volume-host-cond')?.classList.toggle('show', VOLUME_HOST_TYPES.includes(newVal));
+}
+
+function updateIrDropdowns() {
+    const selects = document.querySelectorAll('.cfg-ir-select');
+    const usedBy = {};
+    selects.forEach(sel => { if (sel.value) usedBy[sel.value] = sel.dataset.kn; });
+    selects.forEach(sel => {
+        const current = sel.value, self = sel.dataset.kn;
+        let html = '<option value="">— none —</option>';
+        BEO4_SOURCES.forEach(s => {
+            const takenBy = usedBy[s.value], isSelf = takenBy === self, isTaken = takenBy && !isSelf;
+            html += `<option value="${s.value}" ${s.value===current?'selected':''} ${isTaken?'disabled':''}>${s.label}${isTaken?' (used)':''}</option>`;
+        });
+        sel.innerHTML = html; sel.value = current;
+    });
+}
+
+async function discoverPlayer(event) {
+    const btn = event.currentTarget;
+    const playerType = document.getElementById('cfg-player-type')?.value || 'sonos';
+    const endpoint = playerType === 'bluesound' ? '/discover/bluesound' : '/discover/sonos';
+    const resultEl = document.getElementById('cfg-player-results');
+    btn.textContent = 'Scanning...'; btn.disabled = true;
+    resultEl.classList.remove('show');
+    try {
+        const resp = await fetch(API + endpoint, { signal: AbortSignal.timeout(12000) });
+        const devices = await resp.json();
+        if (!Array.isArray(devices) || !devices.length) {
+            resultEl.innerHTML = '<span class="cfg-discover-empty">No devices found — enter IP manually</span>';
+        } else {
+            resultEl.innerHTML = devices.map(d =>
+                `<div class="cfg-discover-item" onclick="pickPlayer('${esc(d.ip)}','${esc(d.name)}')">
+                    <span class="cfg-discover-name">${esc(d.name)}</span>
+                    <span class="cfg-discover-ip">${esc(d.ip)}</span>
+                </div>`
+            ).join('');
+        }
+        resultEl.classList.add('show');
+    } catch(e) {
+        resultEl.innerHTML = '<span class="cfg-discover-empty">Scan failed — enter IP manually</span>';
+        resultEl.classList.add('show');
+    }
+    btn.textContent = 'Discover'; btn.disabled = false;
+}
+
+function pickPlayer(ip, name) {
+    document.getElementById('cfg-player-ip').value = ip;
+    const out = document.getElementById('cfg-volume-output');
+    if (out && !out.value) out.value = name;
+    document.getElementById('cfg-player-results').classList.remove('show');
+}
+
+async function discoverHA(event) {
+    const btn = event.currentTarget;
+    btn.textContent = 'Checking...'; btn.disabled = true;
+    const candidates = ['homeassistant.local', 'ha.local', 'hass.local'];
+    for (const host of candidates) {
+        try {
+            const resp = await fetch(`http://${host}:8123/api/`, { signal: AbortSignal.timeout(2500) });
+            if ([200, 401, 403].includes(resp.status)) {
+                const url = `http://${host}:8123`;
+                document.getElementById('cfg-ha-url').value = url;
+                const wh = document.getElementById('cfg-ha-webhook');
+                if (!wh.value) wh.value = `${url}/api/webhook/beosound5c`;
+                const link = document.getElementById('cfg-ha-token-link');
+                if (link) link.href = url.replace(/\/$/, '') + '/profile';
+                btn.textContent = 'Found ✓'; btn.className = 'btn-subtle ok';
+                setTimeout(() => { btn.textContent = 'Discover'; btn.className = 'btn-subtle'; btn.disabled = false; }, 3000);
+                return;
+            }
+        } catch(e) {}
+    }
+    btn.textContent = 'Not found'; btn.className = 'btn-subtle fail';
+    setTimeout(() => { btn.textContent = 'Discover'; btn.className = 'btn-subtle'; btn.disabled = false; }, 3000);
+}
+
+async function testPlayerConn(event) {
+    const btn = event.target;
+    const ip = document.getElementById('cfg-player-ip')?.value?.trim();
+    if (!ip) { btn.textContent = 'No IP'; return; }
+    btn.textContent = 'Testing...';
+    try {
+        await fetch(`http://${ip}:1400/xml/device_description.xml`, { signal: AbortSignal.timeout(3000), mode: 'no-cors' });
+        btn.textContent = 'Reachable ✓'; btn.className = 'btn-subtle ok';
+    } catch(e) {
+        btn.textContent = e.name === 'TimeoutError' ? 'Timed out' : 'Unreachable'; btn.className = 'btn-subtle fail';
+    }
+    setTimeout(() => { btn.textContent = 'Test'; btn.className = 'btn-subtle'; }, 3000);
+}
+
+async function testHAConn(event) {
+    const btn = event.target;
+    const url = document.getElementById('cfg-ha-url')?.value?.trim();
+    if (!url) { btn.textContent = 'No URL'; return; }
+    const token = document.getElementById('cfg-ha-token')?.value?.trim();
+    btn.textContent = 'Testing...';
+    try {
+        const headers = token ? { 'Authorization': `Bearer ${token}` } : {};
+        const resp = await fetch(`${url}/api/`, { headers, signal: AbortSignal.timeout(3000) });
+        if (resp.status === 200) {
+            btn.textContent = token ? 'Auth OK ✓' : 'Reachable ✓'; btn.className = 'btn-subtle ok';
+        } else if (resp.status === 401) {
+            btn.textContent = 'Bad token'; btn.className = 'btn-subtle fail';
+        } else if (resp.status === 403) {
+            btn.textContent = 'Reachable ✓'; btn.className = 'btn-subtle ok';
+        } else { btn.textContent = 'Error ' + resp.status; btn.className = 'btn-subtle fail'; }
+    } catch(e) { btn.textContent = 'Unreachable'; btn.className = 'btn-subtle fail'; }
+    setTimeout(() => { btn.textContent = 'Test'; btn.className = 'btn-subtle'; }, 3000);
+}
+
+function buildConfig() {
+    const cfg = JSON.parse(JSON.stringify(_cfg || {}));
+    cfg.device = document.getElementById('cfg-device')?.value || cfg.device;
+    const pt = document.getElementById('cfg-player-type')?.value;
+    cfg.player = cfg.player || {}; cfg.player.type = pt;
+    if (['sonos','bluesound'].includes(pt)) { cfg.player.ip = document.getElementById('cfg-player-ip')?.value || ''; }
+    else { delete cfg.player.ip; }
+    const vt = document.getElementById('cfg-volume-type')?.value;
+    cfg.volume = cfg.volume || {}; cfg.volume.type = vt;
+    if (VOLUME_HOST_TYPES.includes(vt)) { cfg.volume.host = document.getElementById('cfg-volume-host')?.value || ''; }
+    else { delete cfg.volume.host; }
+    cfg.volume.output_name = document.getElementById('cfg-volume-output')?.value || '';
+    cfg.volume.max = parseInt(document.getElementById('cfg-volume-max')?.value) || 80;
+    cfg.volume.step = parseInt(document.getElementById('cfg-volume-step')?.value) || 3;
+    cfg.home_assistant = cfg.home_assistant || {};
+    cfg.home_assistant.url = document.getElementById('cfg-ha-url')?.value || '';
+    cfg.home_assistant.webhook_url = document.getElementById('cfg-ha-webhook')?.value || '';
+    const tm = document.getElementById('cfg-transport-mode')?.value;
+    cfg.transport = cfg.transport || {}; cfg.transport.mode = tm;
+    if (['mqtt','both'].includes(tm)) {
+        cfg.transport.mqtt_broker = document.getElementById('cfg-mqtt-broker')?.value || '';
+        const p = parseInt(document.getElementById('cfg-mqtt-port')?.value);
+        if (p && p !== 1883) cfg.transport.mqtt_port = p; else delete cfg.transport.mqtt_port;
+    } else { delete cfg.transport.mqtt_broker; delete cfg.transport.mqtt_port; }
+    const newMenu = {};
+    CFG_SOURCE_DEFS.forEach(src => {
+        const kn = src.key.replace(/ /g,'_').toLowerCase();
+        const toggle = document.getElementById(`cfg-src-${kn}-toggle`);
+        const enabled = src.fixed || (toggle && toggle.checked);
+        if (!enabled) return;
+        if (src.isUrl) {
+            const url = document.getElementById(`cfg-src-${kn}-url`)?.value?.trim();
+            if (url) newMenu[src.key] = { url };
+        } else {
+            newMenu[src.key] = CFG_SOURCE_VIEWS[src.key] || kn;
+        }
+        (src.fields || []).forEach(f => {
+            if (f.path[0] === '_security_url') return;
+            const val = document.getElementById(`cfg-src-${kn}-${f.fid}`)?.value?.trim();
+            // IR fields: always write (even blank) so "— none —" clears a previous assignment
+            if (!f.isIr && !val) return;
+            let obj = cfg;
+            for (let i = 0; i < f.path.length - 1; i++) { if (!obj[f.path[i]]) obj[f.path[i]] = {}; obj = obj[f.path[i]]; }
+            const leaf = f.path[f.path.length - 1];
+            if (f.isIr && !val) { delete obj[leaf]; } else { obj[leaf] = val; }
+        });
+    });
+    cfg.menu = newMenu;
+    const _secrets = {};
+    const haToken = document.getElementById('cfg-ha-token')?.value?.trim();
+    if (haToken) _secrets.ha_token = haToken;
+    const mqttUser = document.getElementById('cfg-mqtt-user')?.value?.trim();
+    if (mqttUser) _secrets.mqtt_user = mqttUser;
+    const mqttPass = document.getElementById('cfg-mqtt-password')?.value?.trim();
+    if (mqttPass) _secrets.mqtt_password = mqttPass;
+    if (Object.keys(_secrets).length) cfg._secrets = _secrets;
+    return cfg;
+}
+
+async function saveConfig() {
+    const cfg = buildConfig();
+    const popup = document.getElementById('restart-popup');
+    const status = document.getElementById('restart-status');
+    popup.classList.add('active');
+    status.style.color = '#0af'; status.textContent = 'Saving configuration...';
+    try {
+        const resp = await fetch(API + '/config', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(cfg),
+        });
+        if (resp.ok) {
+            status.textContent = 'Restarting services...';
+            pollReconnect();
+        } else {
+            const d = await resp.json().catch(() => ({}));
+            status.textContent = d.message || 'Save failed';
+            status.style.color = '#a44';
+        }
+    } catch(e) {
+        status.textContent = 'Could not reach device';
+        status.style.color = '#a44';
+    }
+}
+
+function pollReconnect() {
+    let attempts = 0;
+    const status = document.getElementById('restart-status');
+    const poll = async () => {
+        try {
+            const resp = await fetch(API + '/update/check', { signal: AbortSignal.timeout(2000) });
+            if (resp.ok) {
+                const data = await resp.json();
+                if (!data.update_in_progress) {
+                    status.style.color = '#4a4'; status.textContent = 'Done — reloading...';
+                    setTimeout(() => location.reload(), 1500);
+                    return;
+                }
+            }
+        } catch(e) { if (status) status.textContent = 'Waiting for device...'; }
+        attempts++;
+        if (attempts < 60) setTimeout(poll, 2000);
+        else { status.style.color = '#a44'; status.textContent = 'Taking too long — reload manually'; }
+    };
+    setTimeout(poll, 2000);
+}
+
+init();
+</script>
+</body>
+</html>

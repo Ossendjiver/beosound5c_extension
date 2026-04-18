@@ -792,7 +792,6 @@ class SpotifyService(DigitPlaylistMixin, SourceBase):
         """Clear Spotify tokens and playlists, return to setup mode."""
         log.info("Logging out of Spotify")
 
-        # Stop background tasks
         self.auth.stop_keepalive()
         if self._refresh_task:
             self._refresh_task.cancel()
@@ -1127,7 +1126,6 @@ label{{display:block;margin-top:12px;color:#666;font-size:13px;text-transform:up
             # Register as available now that we have credentials
             await self.register("available")
 
-            # Fetch display name
             self._spawn(self._fetch_display_name(), name="fetch_display_name")
 
             # Kick off playlist refresh in background (no initial delay)

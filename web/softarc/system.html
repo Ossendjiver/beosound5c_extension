@@ -931,8 +931,8 @@
         // ── Subcard definitions ──
         const SUBCARDS = [
             {
-                id: 'overview',
-                title: 'OVERVIEW',
+                id: 'system',
+                title: 'SYSTEM',
                 service: null,
                 fetch: async () => {
                     const results = {};
@@ -946,78 +946,6 @@
                             .then(r => r.json()).then(d => results.router = d).catch(() => {}),
                         fetch('http://localhost:8766/player/status')
                             .then(r => r.json()).then(d => results.player = d).catch(() => {}),
-                    ]);
-                    return results;
-                },
-                render: (data) => {
-                    const inp = data?.input || {};
-                    const rtr = data?.router || {};
-                    const plr = data?.player || {};
-                    const cfg = inp.config || {};
-                    const svcs = inp.services || {};
-
-                    let html = '<div class="subcard-body">';
-                    html += row('Device', cfg.device || inp.hostname);
-                    html += row('IP', inp.ip_address);
-                    html += row('Version', inp.git_tag);
-                    html += row('Uptime', inp.uptime);
-
-                    // Services summary
-                    const total = Object.keys(svcs).length;
-                    const running = Object.values(svcs).filter(s => s === 'Running').length;
-                    if (total > 0) {
-                        html += row('Services', `${running}/${total} running`, running === total ? 'ok' : 'warn');
-                    }
-
-                    // Sources configured
-                    if (rtr.sources && Object.keys(rtr.sources).length > 0) {
-                        const names = Object.values(rtr.sources).map(s => s.name);
-                        html += row('Sources', names.join(', '));
-                    }
-
-                    // Audio HAT
-                    if (inp.audio_hat) html += row('Audio HAT', inp.audio_hat);
-
-                    // Audio output
-                    html += row('Output', rtr.output_device || '—');
-
-                    // Player
-                    if (plr.player) {
-                        const info = plr.player === 'sonos'
-                            ? `Sonos — ${plr.speaker_name || '?'} (${plr.speaker_ip || '?'})`
-                            : plr.player;
-                        html += row('Player', info);
-                    } else {
-                        html += row('Player', rtr.active_player || '—');
-                    }
-
-                    html += '</div>';
-
-                    // Show services with issues
-                    const issues = Object.entries(svcs).filter(([_, s]) => s !== 'Running');
-                    if (issues.length > 0) {
-                        html += sectionLabel('Issues');
-                        html += '<div class="svc-list">';
-                        for (const [name, status] of issues) {
-                            html += `<div class="svc-item"><span class="svc-dot stopped"></span><span class="svc-name">${name} (${status})</span></div>`;
-                        }
-                        html += '</div>';
-                    }
-                    return html;
-                },
-            },
-            {
-                id: 'system',
-                title: 'SYSTEM',
-                service: null,
-                fetch: async () => {
-                    const results = {};
-                    await Promise.all([
-                        fetch('http://localhost:8767/webhook', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ command: 'status' }),
-                        }).then(r => r.json()).then(d => results.input = d).catch(() => {}),
                     ]);
 
                     // Accumulate history for charts
@@ -1037,11 +965,39 @@
                 },
                 render: (data) => {
                     const inp = data?.input || {};
-                    const svcs = inp.services || {};
+                    const rtr = data?.router || {};
+                    const plr = data?.player || {};
                     const cfg = inp.config || {};
+                    const svcs = inp.services || {};
                     const hist = data?.history || {};
 
-                    let html = '';
+                    // Device overview
+                    let html = '<div class="subcard-body">';
+                    html += row('Device', cfg.device || inp.hostname);
+                    html += row('IP', inp.ip_address);
+                    html += row('Version', inp.git_tag);
+                    html += row('Uptime', inp.uptime);
+
+                    // Sources configured
+                    if (rtr.sources && Object.keys(rtr.sources).length > 0) {
+                        const names = Object.values(rtr.sources).map(s => s.name);
+                        html += row('Sources', names.join(', '));
+                    }
+
+                    // Audio output
+                    if (inp.audio_hat) html += row('Audio HAT', inp.audio_hat);
+                    html += row('Output', rtr.output_device || '—');
+
+                    // Player
+                    if (plr.player) {
+                        const info = plr.player === 'sonos'
+                            ? `Sonos — ${plr.speaker_name || '?'} (${plr.speaker_ip || '?'})`
+                            : plr.player;
+                        html += row('Player', info);
+                    } else if (rtr.active_player) {
+                        html += row('Player', rtr.active_player);
+                    }
+                    html += '</div>';
 
                     // Performance
                     html += sectionLabel('Performance');
@@ -1063,22 +1019,22 @@
                         html += meterBar(memPct, 100, memCol);
                     }
 
-                    // Network
-                    html += sectionLabel('Network');
-                    html += '<div class="subcard-body">';
-                    html += row('Hostname', inp.hostname);
-                    html += row('IP', inp.ip_address);
-                    html += row('Device', cfg.device);
-                    if (inp.interfaces) {
+                    // Network interfaces
+                    if (inp.interfaces && Object.keys(inp.interfaces).length > 0) {
+                        html += sectionLabel('Network');
+                        html += '<div class="subcard-body">';
                         for (const [iface, info] of Object.entries(inp.interfaces)) {
                             html += row(iface, typeof info === 'string' ? info : JSON.stringify(info));
                         }
+                        html += '</div>';
                     }
-                    html += '</div>';
 
                     // All services
-                    html += sectionLabel('All Services');
-                    if (Object.keys(svcs).length > 0) {
+                    const total = Object.keys(svcs).length;
+                    if (total > 0) {
+                        const issues = Object.entries(svcs).filter(([_, s]) => s !== 'Running');
+                        const running = total - issues.length;
+                        html += sectionLabel(`Services — ${running}/${total} running`);
                         html += '<div class="svc-list">';
                         for (const [name, status] of Object.entries(svcs)) {
                             const cls = status === 'Running' ? 'running' : (status === 'Inactive' || status === 'Failed') ? 'stopped' : 'warning';
@@ -1824,6 +1780,7 @@
                     downloading: 'Downloading...',
                     extracting: 'Extracting...',
                     installing: 'Installing files...',
+                    'post-update': 'Applying system changes...',
                     restarting: 'Restarting...',
                 };
                 let attempts = 0;

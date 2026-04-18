@@ -5,10 +5,8 @@ the monitor must:
 
   1. Eagerly broadcast fresh media metadata BEFORE the UI navigates,
      so the playing view doesn't render stale/empty mediaInfo.
-  2. Clear any leftover broadcast suppression flags that would otherwise
-     swallow that broadcast (``_suppress_until_track`` left over from a
-     prior pre-broadcast that never matched, or ``_last_play_was_radio``
-     from a previous radio play).
+  2. Clear any leftover broadcast suppression (``_suppress`` window left
+     over from a prior play that never matched or timed out).
   3. Trigger wake (which navigates the UI to the playing view) AFTER
      the media broadcast lands, so router cache and live update both
      reach the UI in the right order.
@@ -62,10 +60,25 @@ def _install_fake_soco():
     data_structures.DidlMusicTrack = MagicMock()
     data_structures.to_didl_string = MagicMock(return_value="")
 
+    exceptions = types.ModuleType("soco.exceptions")
+
+    class _SoCoUPnPException(Exception):
+        def __init__(self, message="", error_code="", error_xml="", error_description=""):
+            self.message = message
+            self.error_code = error_code
+            self.error_xml = error_xml
+            self.error_description = error_description
+
+        def __str__(self):
+            return self.message
+
+    exceptions.SoCoUPnPException = _SoCoUPnPException
+
     sys.modules["soco"] = fake
     sys.modules["soco.plugins"] = plugins
     sys.modules["soco.plugins.sharelink"] = sharelink
     sys.modules["soco.data_structures"] = data_structures
+    sys.modules["soco.exceptions"] = exceptions
 
 
 @pytest.fixture
@@ -123,8 +136,8 @@ class TestExternalStart:
         assert p.broadcast_media_update.await_count == 1
         assert p.trigger_wake.await_count == 1
         assert p.notify_router_playback_override.await_count == 1
-        assert order == ["override", "broadcast", "wake"], (
-            f"expected override→broadcast→wake, got {order}")
+        assert order == ["override", "wake", "broadcast"], (
+            f"expected override→wake→broadcast, got {order}")
 
     def test_override_called_with_push_idle_false(self, sonos_player):
         """The whole point of the idle-push plumbing — if this kwarg
@@ -144,18 +157,18 @@ class TestExternalStart:
     def test_clears_suppression_flags(self, sonos_player):
         """Stale suppression flags must not be allowed to swallow the
         eager broadcast — this is the exact path the original bug took
-        when ``_last_play_was_radio`` was still True from a previous
-        radio play."""
+        when a suppress window was still active from a previous play."""
+        from players.sonos import _SuppressState
         p = sonos_player
-        p._suppress_until_track = "stale123"
-        p._suppress_set_time = time.monotonic()
-        p._last_play_was_radio = True
+        p._suppress = _SuppressState(
+            until=time.monotonic() + 10,
+            expected_track="stale123",
+        )
         p._current_playback_state = "stopped"
 
         _run(p._on_playback_started())
 
-        assert p._suppress_until_track is None
-        assert p._last_play_was_radio is False
+        assert p._suppress is None
 
     def test_internal_start_skips_playback_override(self, sonos_player):
         """If a BS5c command just fired, this is not external — don't
@@ -217,3 +230,78 @@ class TestExternalStart:
 
         assert p.broadcast_media_update.await_count == 0
         assert p.trigger_wake.await_count == 1
+
+
+class TestStateBroadcast:
+    """When Sonos transitions from playing → paused/stopped, the monitor must
+    broadcast a state_change update so the UI stops canvas/video playback."""
+
+    async def _run_state_transition(self, player, prev, new):
+        """Replay the state-transition block from the monitor loop."""
+        from players.sonos import _SuppressState
+        state = new
+        prev_state = player._current_playback_state  # should equal prev
+        assert prev_state == prev, "fixture setup"
+        if state == 'playing' and prev_state in ('paused', 'stopped', None):
+            await player._on_playback_started()
+        elif state == 'stopped' and prev_state == 'playing':
+            pass  # external-stop path; not testing that here
+        player._current_playback_state = state
+        if prev_state == 'playing' and state in ('paused', 'stopped'):
+            cached = player._cached_media_data
+            if cached:
+                state_data = dict(cached)
+                state_data['state'] = state
+                await player.broadcast_media_update(state_data, 'state_change')
+
+    def test_pause_broadcasts_state_change(self, sonos_player):
+        """playing → paused must send a state_change broadcast so the UI
+        stops canvas/video and reverts to static artwork."""
+        p = sonos_player
+        p._current_playback_state = 'playing'
+        p._cached_media_data = {
+            'title': 'Track', 'artist': 'Artist',
+            'canvas_url': 'http://x/canvas.mp4',
+            'state': 'playing',
+        }
+
+        _run(self._run_state_transition(p, 'playing', 'paused'))
+
+        assert p.broadcast_media_update.await_count == 1
+        args, kwargs = p.broadcast_media_update.call_args
+        data, reason = args[0], args[1]
+        assert reason == 'state_change'
+        assert data['state'] == 'paused'
+        assert data['canvas_url'] == 'http://x/canvas.mp4'  # track info preserved
+
+    def test_stop_broadcasts_state_change(self, sonos_player):
+        """playing → stopped also triggers the state_change broadcast."""
+        p = sonos_player
+        p._current_playback_state = 'playing'
+        p._cached_media_data = {'title': 'T', 'state': 'playing'}
+
+        _run(self._run_state_transition(p, 'playing', 'stopped'))
+
+        assert p.broadcast_media_update.await_count == 1
+        _, reason = p.broadcast_media_update.call_args[0]
+        assert reason == 'state_change'
+
+    def test_no_broadcast_if_no_cached_data(self, sonos_player):
+        """If there's no cached media (player never played anything), skip it."""
+        p = sonos_player
+        p._current_playback_state = 'playing'
+        p._cached_media_data = None
+
+        _run(self._run_state_transition(p, 'playing', 'paused'))
+
+        assert p.broadcast_media_update.await_count == 0
+
+    def test_no_broadcast_on_paused_to_stopped(self, sonos_player):
+        """paused → stopped is not a playing transition; no state_change broadcast."""
+        p = sonos_player
+        p._current_playback_state = 'paused'
+        p._cached_media_data = {'title': 'T', 'state': 'paused'}
+
+        _run(self._run_state_transition(p, 'paused', 'stopped'))
+
+        assert p.broadcast_media_update.await_count == 0

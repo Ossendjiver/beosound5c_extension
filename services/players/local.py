@@ -28,6 +28,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from lib.player_base import PlayerBase
 from lib.librespot import LibrespotClient, share_url_to_uri
+from lib.timings import USER_ACTION_HORIZON
 
 IPC_SOCKET = '/tmp/beo-player-local.sock'
 
@@ -267,7 +268,7 @@ class LocalPlayer(PlayerBase):
             # Detect external control (someone started from Spotify app)
             play_origin = data.get('play_origin', '')
             if play_origin and play_origin != 'go-librespot':
-                if self.seconds_since_command() > 3.0:
+                if self.seconds_since_command() > USER_ACTION_HORIZON:
                     logger.info("External Spotify control detected (origin=%s)",
                                 play_origin)
                     await self.notify_router_playback_override(force=True)

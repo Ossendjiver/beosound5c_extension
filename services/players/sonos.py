@@ -32,6 +32,7 @@ from aiohttp import web
 try:
     import soco
     from soco import SoCo
+    from soco.exceptions import SoCoUPnPException
     from soco.plugins.sharelink import ShareLinkPlugin
     from soco.plugins.sharelink import AppleMusicShare
 except ImportError:
@@ -58,14 +59,34 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from lib.config import cfg
 from lib.endpoints import ROUTER_SOURCE
 from lib.player_base import PlayerBase
+from lib.timings import USER_ACTION_HORIZON
 
 # Configuration
 SONOS_IP = cfg("player", "ip", default="192.168.0.190")
 POLL_INTERVAL = 0.5  # seconds between change checks (fast for responsive track changes)
 PREFETCH_COUNT = 5  # number of upcoming tracks to prefetch
 
+
+from dataclasses import dataclass
+
+@dataclass
+class _SuppressState:
+    """Active broadcast-suppression window set after a play command.
+
+    Cleared early when ``expected_track`` is seen in the track URI (Spotify
+    track-switch path), or unconditionally at ``until`` (timeout / radio path).
+    """
+    until: float                    # time.monotonic() deadline
+    expected_track: str | None      # URI fragment to match; None = wait for deadline
+
 # Thread pool for blocking SoCo calls
 executor = ThreadPoolExecutor(max_workers=6)
+
+
+async def _resolved(value):
+    """Instantly-resolved coroutine — used as a no-op stand-in when an
+    optional executor call is skipped (e.g. no coordinator available)."""
+    return value
 
 # Logging setup
 logging.basicConfig(
@@ -194,7 +215,8 @@ class SonosArtworkViewer:
 
     async def prefetch_upcoming_artwork(self, count=3):
         """Prefetch artwork for upcoming tracks in background."""
-        urls = self.get_queue_artwork_urls(count=count)
+        loop = asyncio.get_running_loop()
+        urls = await loop.run_in_executor(executor, self.get_queue_artwork_urls, count)
         if not urls:
             logger.debug("No upcoming tracks to prefetch")
             return
@@ -244,10 +266,9 @@ class MediaServer(PlayerBase):
         self._current_track_id = None
         self._current_position = None
         self._last_update_time = 0
-        # Broadcast suppression during Spotify track switches
-        self._suppress_until_track = None   # Spotify track ID to wait for
-        self._suppress_set_time = 0.0       # monotonic time when suppression was set
-        self._last_play_was_radio = False    # only suppress monitor for radio plays
+        # Broadcast suppression window (set by play(), cleared by monitor/playback_started).
+        # Unifies the old _suppress_until_track / _suppress_set_time / _last_play_was_radio.
+        self._suppress: _SuppressState | None = None
         self._queue_backfill_task: asyncio.Task | None = None
         # JOIN feature: one-time discovery map + default-player monitor
         self._sonos_devices: dict[str, str] = {}   # player_name → ip
@@ -301,17 +322,24 @@ class MediaServer(PlayerBase):
         track_uris: list of spotify:track:xxx URIs to queue individually
                     (used for Liked Songs and other non-playlist collections).
         """
-        self._last_play_was_radio = radio
+        if radio:
+            self._suppress = _SuppressState(
+                until=time.monotonic() + USER_ACTION_HORIZON,
+                expected_track=None,
+            )
+            logger.info("Suppressing monitor broadcasts for %.0fs (radio)", USER_ACTION_HORIZON)
+        elif track_uri and ":" in track_uri:
+            suppress_id = track_uri.split(":")[-1]
+            self._suppress = _SuppressState(
+                until=time.monotonic() + USER_ACTION_HORIZON,
+                expected_track=suppress_id,
+            )
+            logger.info("Suppressing broadcasts until track %s appears", suppress_id[:12])
+        else:
+            self._suppress = None
         try:
             loop = asyncio.get_running_loop()
             coordinator = self.sonos_viewer.get_coordinator()
-
-            # Suppress monitor broadcasts while the queue is being rebuilt
-            if track_uri and ":" in track_uri:
-                suppress_id = track_uri.split(":")[-1]
-                self._suppress_until_track = suppress_id
-                self._suppress_set_time = time.monotonic()
-                logger.info("Suppressing broadcasts until track %s appears", suppress_id[:12])
 
             # Queue individual tracks (for Liked Songs and other non-playlist collections)
             # Check before uri path so Sonos queues all tracks, not just the first one
@@ -474,6 +502,7 @@ class MediaServer(PlayerBase):
             coordinator = self.sonos_viewer.get_coordinator()
             await loop.run_in_executor(None, coordinator.next)
             logger.info("Next track")
+            self._spawn(self._broadcast_after_skip(), name="skip_poll")
             return True
         except Exception as e:
             logger.error("Next track failed: %s", e)
@@ -485,10 +514,42 @@ class MediaServer(PlayerBase):
             coordinator = self.sonos_viewer.get_coordinator()
             await loop.run_in_executor(None, coordinator.previous)
             logger.info("Previous track")
+            self._spawn(self._broadcast_after_skip(), name="skip_poll")
             return True
         except Exception as e:
             logger.error("Previous track failed: %s", e)
             return False
+
+    async def _broadcast_after_skip(self):
+        """Proactive poll 150ms after a skip to broadcast the new track
+        without waiting for the regular 500ms monitor cycle.
+
+        Safe to run concurrently with the monitor loop: _current_track_id
+        deduplication ensures only one broadcast fires per track change.
+        If Sonos hasn't settled yet (still returns old URI), the check
+        short-circuits and the monitor loop catches the change as normal.
+        """
+        await asyncio.sleep(0.15)
+        try:
+            loop = asyncio.get_running_loop()
+            track_info = await loop.run_in_executor(
+                executor, self.sonos_viewer.get_current_track_info)
+            if not track_info:
+                return
+            track_id = track_info.get('uri', '')
+            if not track_id or track_id == self._current_track_id:
+                return  # Sonos hasn't settled yet; monitor loop will catch it
+            if self._suppress and time.monotonic() < self._suppress.until:
+                return  # Respect broadcast suppression window
+            self._current_track_id = track_id
+            self._current_position = None  # prevent monitor's position-jump check from
+                                           # firing a concurrent broadcast while we fetch
+            logger.info("Early track broadcast after skip")
+            media_data = await self.fetch_media_data()
+            if media_data:
+                await self.broadcast_media_update(media_data, "track_change")
+        except Exception as e:
+            logger.debug("Early skip broadcast failed: %s", e)
 
     async def stop(self) -> bool:
         try:
@@ -497,6 +558,13 @@ class MediaServer(PlayerBase):
             await loop.run_in_executor(None, coordinator.pause)
             logger.info("Stopped (paused)")
             return True
+        except SoCoUPnPException as e:
+            if e.error_code == '701':
+                # Already paused/stopped — desired state reached, not an error
+                logger.debug("Stop: already paused (UPnP 701)")
+                return True
+            logger.error("Stop failed: %s", e)
+            return False
         except Exception as e:
             logger.error("Stop failed: %s", e)
             return False
@@ -982,9 +1050,9 @@ class MediaServer(PlayerBase):
 
         Order matters:
           1. Clear any leftover broadcast suppression so the eager broadcast
-             can't be swallowed (e.g. by a stale ``_last_play_was_radio``
-             flag from a prior radio play, or by a ``_suppress_until_track``
-             waiting for a track that will never arrive).
+             can't be swallowed by a stale ``_suppress`` window from a prior
+             play command (e.g. radio suppress still active, or track-switch
+             window waiting for a URI that will never arrive).
           2. Push a fresh media_update so the router cache (and therefore
              every connected UI client) holds the new track *before* the
              UI navigates to the playing view.
@@ -995,10 +1063,9 @@ class MediaServer(PlayerBase):
              to the player.
         """
         logger.info("Playback started (was: %s)", self._current_playback_state)
-        external = self.seconds_since_command() > 3.0
+        external = self.seconds_since_command() > USER_ACTION_HORIZON
 
-        self._suppress_until_track = None
-        self._last_play_was_radio = False
+        self._suppress = None
 
         # Order is critical:
         #   1. Clear the active source FIRST (if external), with
@@ -1006,16 +1073,17 @@ class MediaServer(PlayerBase):
         #      media_update that would wipe the eager broadcast below.
         #      This also advances the router's action_ts watermark so the
         #      subsequent broadcast isn't rejected as stale.
-        #   2. Fetch + broadcast fresh media — now router._state holds
-        #      real metadata and every WS client (current + future via
-        #      client_connect replay) sees the new track.
-        #   3. Trigger wake — navigates the UI to the playing view. By
-        #      this point the data is already cached and live-pushed,
-        #      so the view mounts onto the correct mediaInfo.
+        #   2. Trigger wake — turns on the screen immediately so the user
+        #      gets visual feedback without waiting for artwork to load.
+        #   3. Fetch + broadcast fresh media — router._state is updated and
+        #      every WS client sees the new track. The UI will update as
+        #      soon as metadata arrives (typically < 1s after wake).
         if external:
             logger.info("External playback detected, clearing active source")
             await self.notify_router_playback_override(force=True,
                                                        push_idle=False)
+
+        await self.trigger_wake()
 
         try:
             media_data = await self.fetch_media_data()
@@ -1023,8 +1091,6 @@ class MediaServer(PlayerBase):
                 await self.broadcast_media_update(media_data, "track_change")
         except Exception as e:
             logger.warning("Eager media broadcast on play start failed: %s", e)
-
-        await self.trigger_wake()
 
     async def _on_external_track_change(self):
         """External track advance while already playing (Sonos-app skip,
@@ -1057,16 +1123,23 @@ class MediaServer(PlayerBase):
         while self.running:
             try:
                 loop = asyncio.get_running_loop()
-
-                # Get current track info (automatically uses coordinator)
-                track_info = await loop.run_in_executor(
-                    executor, self.sonos_viewer.get_current_track_info)
-
-                # Check playback state for wake trigger
                 coordinator = self.sonos_viewer.get_coordinator()
+                local = self.sonos_viewer.sonos
+
+                # Fetch track info, transport state, and volume in parallel.
+                track_info, transport_result, vol_result = await asyncio.gather(
+                    loop.run_in_executor(executor, self.sonos_viewer.get_current_track_info),
+                    loop.run_in_executor(executor, coordinator.get_current_transport_info)
+                        if coordinator else _resolved({}),
+                    loop.run_in_executor(executor, lambda: local.volume)
+                        if local else _resolved(None),
+                    return_exceptions=True,
+                )
+                transport_info = transport_result if not isinstance(transport_result, Exception) else {}
+                vol = vol_result if not isinstance(vol_result, Exception) else None
+
+                # Process transport state and detect play/stop transitions
                 try:
-                    transport_info = await loop.run_in_executor(
-                        executor, coordinator.get_current_transport_info) if coordinator else {}
                     playback_state = transport_info.get('current_transport_state', 'STOPPED').lower()
                     if playback_state in ('playing', 'transitioning'):
                         state = 'playing'
@@ -1076,10 +1149,11 @@ class MediaServer(PlayerBase):
                         state = 'stopped'
 
                     # Detect state transitions
-                    if state == 'playing' and self._current_playback_state in ('paused', 'stopped', None):
+                    prev_state = self._current_playback_state
+                    if state == 'playing' and prev_state in ('paused', 'stopped', None):
                         await self._on_playback_started()
-                    elif state == 'stopped' and self._current_playback_state == 'playing':
-                        if self.seconds_since_command() > 3.0:
+                    elif state == 'stopped' and prev_state == 'playing':
+                        if self.seconds_since_command() > USER_ACTION_HORIZON:
                             logger.info("External stop detected")
                             self._spawn(
                                 self.notify_router_playback_override(force=True),
@@ -1087,19 +1161,24 @@ class MediaServer(PlayerBase):
 
                     self._current_playback_state = state
 
-                    # Report volume changes to the router (base deduplicates)
-                    # Always read from the local speaker, never the coordinator
-                    try:
-                        local = self.sonos_viewer.sonos
-                        vol = await loop.run_in_executor(
-                            executor, lambda: local.volume) if local else None
-                        if vol is not None:
-                            await self.report_volume_to_router(vol)
-                    except Exception as e:
-                        logger.debug(f"Could not check Sonos volume: {e}")
-
+                    # Broadcast on pause/stop so the UI can stop canvas/video playback.
+                    # Only fires when state actually changes from playing — the track
+                    # didn't change so the normal track_change broadcast won't fire.
+                    if prev_state == 'playing' and state in ('paused', 'stopped'):
+                        cached = self._cached_media_data
+                        if cached:
+                            state_data = dict(cached)
+                            state_data['state'] = state
+                            await self.broadcast_media_update(state_data, 'state_change')
                 except Exception as e:
                     logger.debug(f"Could not get transport state: {e}")
+
+                # Report volume changes to the router (base deduplicates)
+                if vol is not None:
+                    try:
+                        await self.report_volume_to_router(vol)
+                    except Exception as e:
+                        logger.debug(f"Could not report volume: {e}")
 
                 if track_info:
                     track_id = track_info.get('uri', '')
@@ -1121,32 +1200,24 @@ class MediaServer(PlayerBase):
                         except (ValueError, TypeError):
                             pass
 
-                    # Check broadcast suppression (during track-switch queue rebuild).
-                    # Ordering matters: check for expected-track match FIRST, so a
-                    # track that arrives right at the 3s boundary still broadcasts.
+                    # Check broadcast suppression (track-switch queue rebuild or radio).
+                    # Check expected-track match FIRST so a track arriving right at the
+                    # deadline still broadcasts rather than being swallowed.
                     suppress = False
-                    if self._suppress_until_track:
-                        elapsed = time.monotonic() - self._suppress_set_time
-                        if self._suppress_until_track in track_id:
+                    if self._suppress:
+                        now = time.monotonic()
+                        if (self._suppress.expected_track
+                                and self._suppress.expected_track in track_id):
                             logger.info("Expected track appeared, clearing suppression")
-                            self._suppress_until_track = None
+                            self._suppress = None
                             # Don't suppress — the expected track is here, broadcast it
-                        elif elapsed > 3.0:
+                        elif now >= self._suppress.until:
+                            elapsed = now - (self._suppress.until - USER_ACTION_HORIZON)
                             logger.info("Broadcast suppression expired (%.1fs)", elapsed)
-                            self._suppress_until_track = None
-                            # Suppress this cycle too — let next poll pick up clean state
-                            suppress = True
+                            self._suppress = None
+                            suppress = True  # one more cycle — let next poll pick up clean state
                         else:
                             suppress = True
-
-                    # Suppress monitor broadcasts when a radio source just
-                    # commanded playback — it pre-broadcasts its own metadata
-                    # (e.g. SR artwork) and the monitor's Sonos-sourced data
-                    # would overwrite it.  Only for radio — other sources
-                    # (Spotify, Plex) rely on the monitor for their metadata.
-                    if (not suppress and self._last_play_was_radio
-                            and self.seconds_since_command() <= 3.0):
-                        suppress = True
 
                     # Only broadcast if there are actual changes. The previous
                     # `else` branch also contained an `if track_changed` check
@@ -1176,7 +1247,7 @@ class MediaServer(PlayerBase):
 
                     # External track change? Clear active source so transport
                     # commands route directly to the player.
-                    if track_changed and self.seconds_since_command() > 3.0:
+                    if track_changed and self.seconds_since_command() > USER_ACTION_HORIZON:
                         self._spawn(
                             self._on_external_track_change(),
                             name="playback_override")

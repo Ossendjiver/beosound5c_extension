@@ -69,6 +69,7 @@ class TidalService(DigitPlaylistMixin, SourceBase):
     """Main TIDAL source service."""
 
     id = "tidal"
+    DIGIT_PLAYLISTS_FILE = DIGIT_PLAYLISTS_FILE
     name = "TIDAL"
     port = 8777
     action_map = {

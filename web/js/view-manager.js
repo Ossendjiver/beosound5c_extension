@@ -18,7 +18,6 @@ class ViewManager {
         this.navigationTimeout = null;
         this.menuVisible = true;
         this._previousRoute = null;
-        this._navGuardUntil = 0;
 
         // Set by UIStore
         this.menuManager = null;
@@ -47,9 +46,6 @@ class ViewManager {
         this.currentRoute = path;
 
         document.dispatchEvent(new CustomEvent('bs5c:view-change', { detail: { from, to: path } }));
-
-        // Gate iframe click messages during navigation
-        this._navGuardUntil = Date.now() + 600;
 
         this.reportViewToRouter(path);
 
@@ -101,20 +97,23 @@ class ViewManager {
         }
         this._previousRoute = this.currentRoute;
 
+        // Tear down any iframe currently in the content area before it's
+        // removed (preload- iframes get rescued below; non-preloaded ones
+        // like system-iframe get GCed, but their timers/listeners keep
+        // running until GC actually happens — call destroy() synchronously).
+        contentArea.querySelectorAll('iframe').forEach(iframe => {
+            try {
+                const win = iframe.contentWindow;
+                const inst = win?.arcListInstance || win?.arcList;
+                if (inst?.destroy) inst.destroy();
+                if (win?.systemPanel?.destroy) win.systemPanel.destroy();
+            } catch (e) { /* cross-origin or unloaded iframe */ }
+        });
+
         // Rescue preloaded iframes before replacing content
         const preloadContainer = document.getElementById('iframe-preload-container');
         if (preloadContainer) {
             contentArea.querySelectorAll('iframe[id^="preload-"]').forEach(iframe => {
-                try {
-                    const win = iframe.contentWindow;
-                    const inst = win?.arcListInstance || win?.arcList;
-                    if (inst && typeof inst.destroy === 'function') {
-                        inst.destroy();
-                    }
-                    if (win?.systemPanel && typeof win.systemPanel.destroy === 'function') {
-                        win.systemPanel.destroy();
-                    }
-                } catch (e) { /* cross-origin or unloaded iframe */ }
                 iframe.style.cssText = 'width:1024px;height:768px;border:none;';
                 preloadContainer.appendChild(iframe);
             });
@@ -168,7 +167,6 @@ class ViewManager {
             this.mediaManager.updateAppleTVMediaView();
             this.mediaManager.fetchAppleTVMediaInfo();
         }
-
         // Fire onMount for dynamic menu presets
         if (window.SourcePresets) {
             for (const preset of Object.values(window.SourcePresets)) {
@@ -237,6 +235,7 @@ class ViewManager {
             contentArea.offsetHeight; // force reflow
         }
     }
+
 }
 
 window.ViewManager = ViewManager;

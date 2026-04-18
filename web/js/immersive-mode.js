@@ -101,6 +101,20 @@
         }
     }
 
+    // ── Canvas / music-video indicator dots ──
+
+    function syncOverlayDots() {
+        const overlay = ensureOverlay();
+        if (!overlay) return;
+        const mi = window.uiStore && window.uiStore.mediaInfo;
+        const hasCanvas = !!(mi && mi.canvas_url);
+        const hasVideo  = !!(mi && mi.music_video_url);
+        const titleEl  = overlay.querySelector('.immersive-info-title');
+        const artistEl = overlay.querySelector('.immersive-info-artist');
+        if (titleEl)  titleEl.classList.toggle('has-canvas', hasCanvas);
+        if (artistEl) artistEl.classList.toggle('has-video',  hasVideo);
+    }
+
     // ── Smooth text update with per-field fade ──
 
     function syncOverlayText(animate) {
@@ -139,6 +153,7 @@
         }
 
         lastOverlayText = { ...newText };
+        syncOverlayDots();
     }
 
     // ── Laser-driven progressive animation ──
@@ -359,6 +374,12 @@
         // 4. Media text updated: sync overlay text on track change
         document.addEventListener('bs5c:media-text-updated', () => {
             syncOverlayText(true);
+        });
+
+        // 5. Media update: sync dots when canvas/video URLs arrive (async injection,
+        //    may not change title/artist so bs5c:media-text-updated won't fire)
+        document.addEventListener('bs5c:media-update', () => {
+            syncOverlayDots();
         });
 
         // Initial setup

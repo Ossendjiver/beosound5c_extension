@@ -90,8 +90,6 @@ class UIStore {
 
     get menuVisible() { return this.view.menuVisible; }
 
-    get _navGuardUntil() { return this.view._navGuardUntil; }
-
     get views() { return this.menu.views; }
 
     get _menuLoaded() { return this.menu._menuLoaded; }
@@ -381,9 +379,16 @@ document.addEventListener('DOMContentLoaded', () => {
         if (event.data?.type === 'reload-playlists') {
             uiStore.menu.reloadAllSourceIframes();
         } else if (event.data?.type === 'click') {
-            if (!uiStore.view._navGuardUntil || Date.now() > uiStore.view._navGuardUntil) {
-                uiStore.sendClickCommand();
-            }
+            // Only honor clicks from an iframe currently attached to the
+            // active view. Preloaded / detached iframes in the offscreen
+            // preload container still have live message listeners and may
+            // emit clicks from stale input — ignore those to avoid racing
+            // through menu items during/after navigation.
+            const contentArea = document.getElementById('contentArea');
+            if (!contentArea) return;
+            const fromActive = Array.from(contentArea.querySelectorAll('iframe'))
+                .some(f => f.contentWindow === event.source);
+            if (fromActive) uiStore.sendClickCommand();
         }
     });
 });

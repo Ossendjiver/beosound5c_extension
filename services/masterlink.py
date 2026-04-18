@@ -11,9 +11,9 @@ import threading
 import sys
 import json
 import os
+import shlex
 import aiohttp
 import asyncio
-import logging
 from aiohttp import web
 from datetime import datetime
 from collections import defaultdict
@@ -23,16 +23,12 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from lib.background_tasks import BackgroundTaskSet
 from lib.config import cfg
+from lib.correlation import install_logging
 from lib.endpoints import INPUT_LED_PULSE, ROUTER_EVENT
 from lib.loop_monitor import LoopMonitor
 from lib.watchdog import watchdog_loop
 
-# Logging setup
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger('beo-masterlink')
+logger = install_logging('beo-masterlink')
 
 # Configuration variables
 BEOSOUND_DEVICE_NAME = cfg("device", default="BeoSound5c")
@@ -65,43 +61,35 @@ class MessageQueue:
     def add(self, message):
         """Add a message to the queue with timestamp."""
         with self.lock:
-            # Add timestamp to the message
             now = time.time()
             message['timestamp'] = now
 
-            # Check if this message should be deduplicated
             command = message.get('key_name')
             if command in DEDUP_COMMANDS:
-                # If we already have this command, update its count
                 if command in self.last_message_time:
-                    # Check if the existing command is still valid (not timed out)
                     if now - self.last_message_time[command] < self.timeout:
-                        # Increment count instead of adding a new message
                         self.command_counts[command] += 1
 
-                        # Check if we should send a webhook now based on time interval
+                        # Throttle: emit one webhook per WEBHOOK_INTERVAL while a
+                        # dedup'd command is being held down.
                         send_webhook_now = False
                         if command not in self.last_webhook_time or (now - self.last_webhook_time[command] >= WEBHOOK_INTERVAL):
                             send_webhook_now = True
                             self.last_webhook_time[command] = now
 
-                        # Find the existing message and update its count
                         for existing_msg in self.queue:
                             if existing_msg.get('key_name') == command:
                                 existing_msg['count'] = self.command_counts[command]
-                                # Update timestamp to prevent timeout
                                 existing_msg['timestamp'] = now
 
-                                # If we need to send a webhook now, duplicate the message with current count
                                 if send_webhook_now:
                                     webhook_msg = existing_msg.copy()
                                     webhook_msg['force_webhook'] = True
-                                    webhook_msg['priority'] = True  # Mark as priority
+                                    webhook_msg['priority'] = True
                                     self.queue.append(webhook_msg)
 
                                 return
 
-                # If we didn't find an existing message or it timed out, add a new one
                 self.last_message_time[command] = now
                 self.last_webhook_time[command] = now
                 self.command_counts[command] = 1
@@ -109,40 +97,32 @@ class MessageQueue:
 
             self.queue.append(message)
 
-            # Limit queue size to prevent memory issues
+            # Bound queue size, keeping priority messages and newest non-priority.
             if len(self.queue) > MAX_QUEUE_SIZE:
-                # Keep priority messages and remove oldest non-priority ones
                 priority_msgs = [msg for msg in self.queue if msg.get('priority', False)]
                 non_priority_msgs = [msg for msg in self.queue if not msg.get('priority', False)]
-
-                # Sort non-priority by timestamp and keep only newest ones
                 non_priority_msgs.sort(key=lambda x: x.get('timestamp', 0), reverse=True)
                 keep_count = max(0, MAX_QUEUE_SIZE - len(priority_msgs))
-
-                # Rebuild queue with all priority messages and newest non-priority ones
                 self.queue = priority_msgs + non_priority_msgs[:keep_count]
 
     def get(self):
         """Get the next valid message from the queue."""
         with self.lock:
-            # Discard messages older than timeout
             now = time.time()
             self.queue = [msg for msg in self.queue if now - msg['timestamp'] < self.timeout]
 
-            # Return None if queue is empty
             if not self.queue:
                 return None
 
-            # Return the oldest message
             message = self.queue.pop(0)
 
-            # If this was a deduped command, clear its counter when removed
+            # Reset dedup bookkeeping once the last instance of this command drains.
             command = message.get('key_name')
             if command in DEDUP_COMMANDS:
-                # Only clear if this was the last instance of this command
                 if all(msg.get('key_name') != command for msg in self.queue):
                     self.command_counts[command] = 0
                     self.last_message_time.pop(command, None)
+                    self.last_webhook_time.pop(command, None)
 
             return message
 
@@ -184,7 +164,16 @@ class PC2Device:
             'from_ml': False,
             'volume': 0,           # tracked volume
             'volume_confirmed': 0, # last volume read from device feedback
+            # Tone state is *what we asked for*, not read from the PC2.
+            # Kept here so /mixer/tone GET can report the last applied
+            # values.  Bass/treble/balance are signed ints, loudness bool.
+            'bass': 0,
+            'treble': 0,
+            'balance': 0,
+            'loudness': False,
         }
+        # Enabled via --ml-sniff; logs every USB packet in full hex.
+        self.sniff_mode = False
         self._mixer_runner = None  # aiohttp AppRunner for cleanup
         self._vol_lock = threading.Lock()  # serialize step-based volume changes
 
@@ -199,7 +188,6 @@ class PC2Device:
         if self.dev.is_kernel_driver_active(0):
             self.dev.detach_kernel_driver(0)
 
-        # Set configuration
         self.dev.set_configuration()
 
         # Claim interface
@@ -266,16 +254,12 @@ class PC2Device:
     def start_sniffing(self):
         """Start sniffing USB messages and sending them via webhook"""
         self.running = True
-
-        # Create an event loop for the sender thread
         self.loop = asyncio.new_event_loop()
 
-        # Start the sniffer thread (reads USB and adds to queue)
         self.sniffer_thread = threading.Thread(target=self._sniff_loop)
         self.sniffer_thread.daemon = True
         self.sniffer_thread.start()
 
-        # Start the sender thread (processes queue and sends messages)
         self.sender_thread = threading.Thread(target=self._sender_loop_wrapper)
         self.sender_thread.daemon = True
         self.sender_thread.start()
@@ -298,19 +282,37 @@ class PC2Device:
                 if data and len(data) > 0:
                     message = list(data)
                     timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+                    msg_type = message[2] if len(message) > 2 else None
+
+                    if self.sniff_mode:
+                        hex_str = " ".join(f"{b:02X}" for b in message)
+                        logger.info("USB RX [type=0x%02X, len=%d]: %s",
+                                    msg_type or 0, len(message), hex_str)
 
                     # Mixer state feedback (0x03 / 0x1D) — update confirmed volume
-                    if len(message) >= 5 and message[2] in (0x03, 0x1D):
+                    if len(message) >= 5 and msg_type in (0x03, 0x1D):
                         vol = message[3] & 0x7F
                         self.mixer_state['volume_confirmed'] = vol
                         self.mixer_state['volume'] = vol
                         logger.debug("Mixer feedback: volume=%d", vol)
 
-                    # Beo4 keycodes
-                    if len(message) > 2 and message[2] == 0x02:
+                    # Beo4 keycode (local IR or link-room IR forwarded by PC2)
+                    elif msg_type == 0x02:
                         msg_data = self.process_beo4_keycode(timestamp, message)
                         if msg_data:
                             self.message_queue.add(msg_data)
+
+                    # Raw MasterLink telegram forwarded by PC2 — source status,
+                    # track info, goto-source, master-present, etc.  Decoded
+                    # and logged only; no routing yet.
+                    elif msg_type == 0x00:
+                        self._log_ml_telegram(message)
+
+                    elif msg_type is not None:
+                        hex_str = " ".join(f"{b:02X}" for b in message[:32])
+                        logger.info("Unknown USB message [type=0x%02X]: %s%s",
+                                    msg_type, hex_str,
+                                    "…" if len(message) > 32 else "")
 
             except usb.core.USBTimeoutError:
                 pass  # Normal — no data within timeout window
@@ -380,7 +382,6 @@ class PC2Device:
         # Tracked so exceptions land in the journal instead of vanishing.
         self._background_tasks.spawn(self._pulse_led(), name="pulse_led")
 
-        # Prepare payload
         webhook_data = {
             'device_name': BEOSOUND_DEVICE_NAME,
             'source': 'ir',
@@ -555,6 +556,190 @@ class PC2Device:
             'raw_data': hex_data
         }
 
+    # --- MasterLink telegram decoding / transmission ---
+    #
+    # MasterLink is B&O's multiroom bus.  Two data domains matter here:
+    #
+    # 1. The *raw ML bus* — differential serial at 19200 baud on pins 1-2
+    #    of the 16-pin connector.  The PC2 sniffs this bus and forwards
+    #    whole telegrams to the host over USB.  Bus-level semantics
+    #    (telegram types 0x0A/0x0B/0x14/0x2C/0x5E, payload types such as
+    #    MASTER_PRESENT=0x04 / BEO4_KEY=0x0D / STATUS_INFO=0x87, and the
+    #    device-ID addressing at 0xC0/0xC1/0xC2/0x80-0x83/0xF0) are NOT
+    #    documented in any B&O publication.  The tables below for these
+    #    are compiled from community reverse engineering — principally
+    #    the decoder dicts in giachello/mlgw's HA integration and
+    #    longstanding BeoWorld forum write-ups.  Treat as "observed from
+    #    field captures, not guaranteed complete".
+    #
+    # 2. The *MLGW integration protocol* (B&O doc "MLGW Protocol
+    #    specification, MLGW02, rev 3, 12-Nov-2014") — a completely
+    #    different, higher-level protocol spoken between a 3rd-party
+    #    controller and the MLGW product over TCP or RS232.  It is NOT
+    #    what the PC2 emits.  However, a handful of value tables inside
+    #    MLGW02 happen to match what we see in *raw bus* payload bytes
+    #    (because the MLGW forwards them through unchanged): source IDs
+    #    (§7.2), source activity (§7.5), picture format (§7.6), and the
+    #    Beo4 key-code table (§4.5).  Those are treated as authoritative
+    #    below and labelled "MLGW02 §x".
+    #
+    # PC2-specific USB framing — the outer 0x60 LEN … 0x61 and the class
+    # byte at [2] — is specific to B&O's USB bridges and not covered by
+    # MLGW02.  The BM5 PC2 card (PCB51) shares VID/PID 0CD4/0101 with the
+    # standalone Beolink PC2 box but is a different PCB and firmware, so
+    # framing specifics are "hypothesis confirmed for keys+volume,
+    # unverified elsewhere" until sniffer captures say otherwise.
+    #
+    # Suspected incoming ML telegram layout (USB frame, message[2] == 0x00):
+    #   [0]=0x60  [1]=len  [2]=0x00 (class=ML tgram)
+    #   [3]=dest_node  [4]=src_node  [5]=0x01 (SOT)  [6]=telegram_type
+    #   [7]=dest_src   [8]=src_src   [9]=0x00 (spare) [10]=payload_type
+    #   [11]=payload_size  [12]=payload_version  [13..13+size]=payload
+    #   [..]=checksum  [..]=0x00 (EOT)  [last]=0x61
+
+    # --- Raw-bus decode tables (community reverse engineering) ---
+
+    _ML_TELEGRAM_TYPES = {
+        0x0A: "COMMAND", 0x0B: "REQUEST", 0x14: "RESPONSE",
+        0x2C: "INFO", 0x5E: "CONFIG",
+    }
+
+    _ML_PAYLOAD_TYPES = {
+        0x04: "MASTER_PRESENT",
+        0x06: "DISPLAY_SOURCE",
+        0x07: "START_VIDEO_DISTRIBUTION",
+        0x08: "REQUEST_DISTRIBUTED_SOURCE",
+        0x0B: "EXTENDED_SOURCE_INFORMATION",
+        0x0D: "BEO4_KEY",
+        0x10: "STANDBY",
+        0x11: "RELEASE",
+        0x20: "MLGW_REMOTE_BEO4",
+        0x30: "REQUEST_LOCAL_SOURCE",
+        0x3C: "TIMER",
+        0x40: "CLOCK",
+        0x44: "TRACK_INFO",
+        0x45: "GOTO_SOURCE",
+        0x5C: "LOCK_MANAGER_COMMAND",
+        0x6C: "DISTRIBUTION_REQUEST",
+        0x82: "TRACK_INFO_LONG",
+        0x87: "STATUS_INFO",
+        0x94: "VIDEO_TRACK_INFO",
+        0x96: "PC_PRESENT",
+        0x98: "PICT_SOUND_STATUS",
+    }
+
+    _ML_NODES = {
+        0x80: "ALL",
+        0x81: "ALL_AUDIO_LINK_DEVICES",
+        0x82: "ALL_VIDEO_LINK_DEVICES",
+        0x83: "ALL_LINK_DEVICES",
+        0xC0: "VIDEO_MASTER",
+        0xC1: "AUDIO_MASTER",
+        0xC2: "SOURCE_CENTER",
+        0xF0: "MLGW",
+    }
+
+    # --- Authoritative tables from MLGW02 spec ---
+    # Source IDs that appear in STATUS_INFO (0x87) and GOTO_SOURCE (0x45)
+    # payloads.  From MLGW02 §7.2 (Source status telegram payload).
+    _ML_SOURCES = {
+        0x0B: "TV",
+        0x15: "V_MEM",       # aka V_TAPE
+        0x16: "DVD_2",       # aka V_TAPE2
+        0x1F: "SAT",         # aka DTV
+        0x29: "DVD",
+        0x33: "DTV_2",       # aka V_AUX
+        0x3E: "V_AUX2",      # aka DOORCAM
+        0x47: "PC",
+        0x6F: "RADIO",
+        0x79: "A_MEM",
+        0x7A: "A_MEM2",
+        0x8D: "CD",
+        0x97: "A_AUX",
+        0xA1: "N_RADIO",
+    }
+
+    # Source activity byte — byte 21 (0-indexed) of a STATUS_INFO payload.
+    # From MLGW02 §7.5.
+    _ML_SOURCE_ACTIVITY = {
+        0x00: "Unknown",
+        0x01: "Stop",
+        0x02: "Playing",
+        0x03: "Wind",
+        0x04: "Rewind",
+        0x05: "Record lock",
+        0x06: "Standby",
+        0x07: "No medium",
+        0x08: "Still picture",
+        0x14: "Scan-play forward",
+        0x15: "Scan-play reverse",
+        0xFF: "Blank status",
+    }
+
+    # Picture format — for video products.  From MLGW02 §7.6.
+    _ML_PICTURE_FORMAT = {
+        0x00: "Not known",
+        0x01: "Known by decoder",
+        0x02: "4:3",
+        0x03: "16:9",
+        0x04: "4:3 Letterbox middle",
+        0x05: "4:3 Letterbox top",
+        0x06: "4:3 Letterbox bottom",
+        0xFF: "Blank picture",
+    }
+
+    def _log_ml_telegram(self, msg):
+        """Parse and log an incoming ML telegram (message[2] == 0x00).
+        Read-only for now; full handling lives in the router."""
+        if len(msg) < 14:
+            logger.warning("Short ML telegram: %s", " ".join(f"{b:02X}" for b in msg))
+            return
+        dest_node = msg[3]
+        src_node = msg[4]
+        ttype = msg[6]
+        dest_src = msg[7]
+        src_src = msg[8]
+        ptype = msg[10]
+        psize = msg[11]
+        pver = msg[12]
+        payload = msg[13:13 + psize]
+
+        src_name = self._ML_NODES.get(src_node, f"0x{src_node:02X}")
+        dst_name = self._ML_NODES.get(dest_node, f"0x{dest_node:02X}")
+        tname = self._ML_TELEGRAM_TYPES.get(ttype, f"0x{ttype:02X}")
+        pname = self._ML_PAYLOAD_TYPES.get(ptype, f"0x{ptype:02X}")
+
+        logger.info("ML %s->%s %s/%s v%d [%d]: %s",
+                    src_name, dst_name, tname, pname, pver, psize,
+                    " ".join(f"{b:02X}" for b in payload))
+
+    def send_ml_telegram(self, dest_node, src_node, telegram_type, payload_type,
+                         payload_version, payload, dest_src=0x00, src_src=0x00):
+        """Serialize and send a MasterLink telegram on the bus.
+
+        Outer USB frame: 0x60 LEN <data> 0x61 (supplied by send_message).
+        <data> begins with 0xE0, which on USB B&O bridges is understood as
+        the 'transmit ML telegram' opcode.  The BM5 PC2 card (PCB51) is a
+        different board than the standalone Beolink PC2 box, so although
+        it shares VID/PID the opcode acceptance set is not guaranteed to
+        match 1:1 — call this via /ml/send and confirm with a sniffer."""
+        frame = [
+            dest_node, src_node, 0x01,         # SOT
+            telegram_type & 0xFF,
+            dest_src & 0xFF, src_src & 0xFF,
+            0x00,                              # spare
+            payload_type & 0xFF,
+            len(payload) & 0xFF,
+            payload_version & 0xFF,
+        ]
+        frame.extend(payload)
+        checksum = sum(frame) & 0xFF
+        frame.append(checksum)
+        frame.append(0x00)                     # EOT
+        self.send_message([0xE0] + frame)
+        logger.info("ML TX -> node=0x%02X type=0x%02X pt=0x%02X len=%d",
+                    dest_node, telegram_type, payload_type, len(payload))
+
     # --- Mixer control (PC2 commands) ---
     # Protocol details derived from libpc2 (GPL-3.0) by Tore Sinding Bekkedal;
     # no source code was copied. See https://github.com/toresbe/libpc2
@@ -716,6 +901,157 @@ class PC2Device:
         state['connected'] = self.connected
         return web.json_response(state)
 
+    async def _handle_mixer_distribute(self, request):
+        """POST /mixer/distribute  {"on": true/false}
+        Flips the PC2's routing to send local audio onto the MasterLink bus
+        (or stop). Does NOT transmit source-announcement telegrams — link
+        rooms won't auto-tune unless something else on ML advertises us."""
+        data = await request.json()
+        on = bool(data.get('on', False))
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(
+            None, self.set_routing,
+            self.mixer_state['local'], on, self.mixer_state['from_ml'])
+        return web.json_response({'ok': True, 'distribute': on})
+
+    async def _handle_mixer_tone(self, request):
+        """GET /mixer/tone               – read current tone state
+        POST /mixer/tone  body: {bass?, treble?, balance?, loudness?}
+
+        Runtime tone is applied via an ALSA/PipeWire command template from
+        config (volume.tone.alsa_card + volume.tone.{bass,treble,...}_control)
+        so the change is heard even though the PC2's TDA7409 only accepts
+        0xE3 at power-on.  The PC2 is *also* nudged via 0xE3 on a best-effort
+        basis — if your PC2 firmware honours it mid-session, it takes effect;
+        if not, the ALSA path carries the change."""
+        if request.method == 'GET':
+            return web.json_response({
+                'bass': self.mixer_state['bass'],
+                'treble': self.mixer_state['treble'],
+                'balance': self.mixer_state['balance'],
+                'loudness': self.mixer_state['loudness'],
+            })
+
+        data = await request.json()
+        applied = {}
+        for key in ('bass', 'treble', 'balance'):
+            if key in data:
+                val = int(data[key])
+                self.mixer_state[key] = val
+                applied[key] = val
+                await self._apply_alsa_tone(key, val)
+        if 'loudness' in data:
+            val = bool(data['loudness'])
+            self.mixer_state['loudness'] = val
+            applied['loudness'] = val
+            await self._apply_alsa_tone('loudness', val)
+
+        # Best-effort: also push to PC2 via 0xE3 with the current volume.
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, self._push_e3)
+
+        return web.json_response({'ok': True, 'applied': applied,
+                                  'state': {
+                                      'bass': self.mixer_state['bass'],
+                                      'treble': self.mixer_state['treble'],
+                                      'balance': self.mixer_state['balance'],
+                                      'loudness': self.mixer_state['loudness'],
+                                  }})
+
+    def _push_e3(self):
+        """Re-send 0xE3 with current cached mixer values.  Best-effort;
+        the PC2 is suspected to ignore 0xE3 after power-on."""
+        try:
+            self.set_parameters(
+                self.mixer_state['volume_confirmed'] or self.mixer_state['volume'],
+                bass=self.mixer_state['bass'],
+                treble=self.mixer_state['treble'],
+                balance=self.mixer_state['balance'],
+                loudness=self.mixer_state['loudness'],
+            )
+        except Exception as e:
+            logger.debug("0xE3 push failed (expected if PC2 ignores runtime): %s", e)
+
+    async def _apply_alsa_tone(self, kind, value):
+        """Apply bass/treble/balance/loudness via an amixer shell command.
+
+        Config (config.json):
+            volume.tone.alsa_card:    ALSA card index/name (default "0")
+            volume.tone.bass_control:    "Bass"     (name of amixer control)
+            volume.tone.treble_control:  "Treble"
+            volume.tone.balance_control: "Balance"
+            volume.tone.loudness_control:"Loudness"   (switch control)
+
+        If the matching *_control key is absent, the call is a no-op — the
+        operator hasn't wired up that tone axis for this device.  Failures
+        are logged at warning level and never raised.
+        """
+        tone_cfg = cfg("volume", "tone", default={}) or {}
+        control = tone_cfg.get(f"{kind}_control")
+        if not control:
+            logger.debug("ALSA tone %s: no control configured, skipping", kind)
+            return
+        card = str(tone_cfg.get("alsa_card", "0"))
+
+        if kind == 'loudness':
+            arg = "on" if value else "off"
+        else:
+            arg = str(int(value))
+
+        cmd = ["amixer", "-c", card, "sset", control, arg]
+        logger.info("ALSA tone %s=%s -> %s", kind, arg, " ".join(shlex.quote(c) for c in cmd))
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            _, stderr = await asyncio.wait_for(proc.communicate(), timeout=2.0)
+            if proc.returncode != 0:
+                logger.warning("amixer %s=%s failed (rc=%d): %s",
+                               control, arg, proc.returncode,
+                               stderr.decode(errors='replace').strip())
+        except asyncio.TimeoutError:
+            logger.warning("amixer timed out (%s=%s)", control, arg)
+            try: proc.kill()
+            except Exception: pass
+        except FileNotFoundError:
+            logger.warning("amixer not installed — ALSA tone controls unavailable")
+        except Exception as e:
+            logger.warning("ALSA tone %s=%s failed: %s", kind, arg, e)
+
+    async def _handle_ml_send(self, request):
+        """POST /ml/send — raw ML telegram TX for experimentation.
+
+        Body: {
+          "dest_node": 0x80, "src_node": 0xC2,
+          "telegram_type": 0x0A,   (0x0A=COMMAND 0x0B=REQUEST 0x14=STATUS
+                                    0x2C=INFO 0x5E=CONFIG)
+          "payload_type": 0x04,    (0x04=MASTER_PRESENT 0x44=TRACK_INFO
+                                    0x87=STATUS_INFO 0x45=GOTO_SOURCE ...)
+          "payload_version": 1,
+          "payload": [0x01, 0x01, 0x01],
+          "dest_src": 0x00, "src_src": 0x00
+        }
+        """
+        data = await request.json()
+        try:
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(
+                None, self.send_ml_telegram,
+                int(data['dest_node']),
+                int(data['src_node']),
+                int(data['telegram_type']),
+                int(data['payload_type']),
+                int(data.get('payload_version', 1)),
+                [int(b) for b in data.get('payload', [])],
+                int(data.get('dest_src', 0)),
+                int(data.get('src_src', 0)),
+            )
+            return web.json_response({'ok': True})
+        except (KeyError, ValueError) as e:
+            return web.json_response({'ok': False, 'error': str(e)}, status=400)
+
     async def _start_mixer_http(self):
         """Start the mixer HTTP API server (non-blocking)."""
         @web.middleware
@@ -731,6 +1067,10 @@ class PC2Device:
         app.router.add_post('/mixer/power', self._handle_mixer_power)
         app.router.add_post('/mixer/mute', self._handle_mixer_mute)
         app.router.add_get('/mixer/status', self._handle_mixer_status)
+        app.router.add_post('/mixer/distribute', self._handle_mixer_distribute)
+        app.router.add_get('/mixer/tone', self._handle_mixer_tone)
+        app.router.add_post('/mixer/tone', self._handle_mixer_tone)
+        app.router.add_post('/ml/send', self._handle_ml_send)
         runner = web.AppRunner(app)
         await runner.setup()
         site = web.TCPSite(runner, '0.0.0.0', MIXER_PORT)
@@ -753,7 +1093,6 @@ class PC2Device:
             asyncio.run_coroutine_threadsafe(
                 self._background_tasks.cancel_all(), self.loop)
 
-        # Close aiohttp session
         if self.loop and self.session:
             asyncio.run_coroutine_threadsafe(self.session.close(), self.loop)
 
@@ -778,6 +1117,7 @@ class PC2Device:
 
 if __name__ == "__main__":
     audio_test = '--audio-test' in sys.argv
+    ml_sniff = '--ml-sniff' in sys.argv
 
     # Notify systemd early so Type=notify doesn't fail if USB device is missing
     from lib.watchdog import sd_notify
@@ -785,6 +1125,7 @@ if __name__ == "__main__":
 
     try:
         pc2 = PC2Device()
+        pc2.sniff_mode = ml_sniff
         pc2.open()
         pc2.start_sniffing()
 
@@ -793,6 +1134,8 @@ if __name__ == "__main__":
 
         logger.info("Setting address filter")
         pc2.set_address_filter()
+        if ml_sniff:
+            logger.info("ML sniffer ON — every USB packet will be logged in full hex.")
 
         if audio_test:
             logger.info("Audio test mode. Commands: on [vol], off, vol <n>, vol+ [n], vol- [n], mute, unmute, status, quit")

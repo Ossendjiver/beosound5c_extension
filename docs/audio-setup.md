@@ -1,6 +1,6 @@
 # Audio Setup Options
 
-Each BeoSound 5c is configured with a **player** (how audio is played) and a **volume adapter** (how volume is controlled). The installer asks you to choose during setup, or you can change it later in `config.json`.
+Each BeoSound 5c is configured with a **player** (how audio is played) and a **volume adapter** (how volume is controlled). Both are set in the web UI or directly in `config.json`.
 
 ## Which setup is right for me?
 
@@ -20,6 +20,7 @@ The player service handles network-based playback. Sources send play commands to
 |---|---|---|
 | Sonos | `spotify`, `url_stream` | ShareLink (Spotify, Apple Music, TIDAL) or `play_uri` (URLs) |
 | BlueSound | `url_stream` | BluOS HTTP API with stream URLs |
+| Local | `spotify`, `url_stream` | mpv via PipeWire/PulseAudio; Spotify via go-librespot |
 
 Only one player is active — determined by `player.type` in config.json. The type guard in PlayerBase ensures only the matching player service starts.
 
@@ -168,3 +169,36 @@ The `volume` section in `config.json`:
   "output_name": "Sonos"    // Name shown in the UI
 }
 ```
+
+## Spotify Setup
+
+1. **Create a Spotify Developer App** (free) at [developer.spotify.com/dashboard](https://developer.spotify.com/dashboard):
+   - Click "Create App" — name it anything (e.g. "BeoSound 5c")
+   - Add this Redirect URI: `https://<device-ip>:8771/callback` (the setup page on the device shows the exact URI)
+   - Select "Web API"
+   - Copy the Client ID
+
+2. **Configure**: Enter the Client ID in the web UI under Sources → Spotify, or add it to `config.json`:
+   ```json
+   { "spotify": { "client_id": "your-client-id-here" } }
+   ```
+
+3. **Authenticate**: Navigate to SPOTIFY on the BS5 display and scan the QR code with your phone.
+
+**Notes:**
+- Spotify apps in "Development" mode allow up to 25 users. Add your Spotify account email under **User Management** in the developer dashboard.
+- A self-signed SSL certificate is generated during install (required for Spotify OAuth). Your phone must accept the certificate warning when scanning the QR code.
+
+### Spotify Canvas (Optional)
+
+Canvas shows looping video backgrounds behind tracks in immersive mode — the same videos you see in the Spotify mobile app. Not all tracks have a Canvas.
+
+To enable Canvas, add your `sp_dc` cookie to `/etc/beosound5c/secrets.env`:
+
+1. Log into [open.spotify.com](https://open.spotify.com) in a browser
+2. Open DevTools → **Application** → **Cookies** → `open.spotify.com`
+3. Copy the value of `sp_dc`
+4. On the device: add `SPOTIFY_SP_DC="<your-cookie>"` to `/etc/beosound5c/secrets.env`
+5. Restart: `sudo systemctl restart beo-source-spotify`
+
+The cookie is valid for ~1 year.

@@ -14,6 +14,9 @@ sonos_env/
 # macOS
 .DS_Store
 
+# Cloudflare Wrangler cache
+.wrangler/
+
 # Credentials and tokens (NEVER commit these)
 .spotify_token_cache
 *.token

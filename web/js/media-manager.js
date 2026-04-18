@@ -124,6 +124,7 @@ class MediaManager {
         // (new track = new canvas). On update, keep existing if not in payload
         // (canvas arrives async for the same track).
         const keepCanvas = reason !== 'track_change' && !('canvas_url' in data);
+        const keepMusicVideo = reason !== 'track_change' && !('music_video_url' in data);
         // track_id: stamped by the router from the player's _track_uri
         // hint — used by canvas-panel.js to verify the canvas it's
         // about to show actually belongs to the currently playing
@@ -138,6 +139,7 @@ class MediaManager {
             artwork: data.artwork || '',
             back_artwork: data.back_artwork || '',
             canvas_url: keepCanvas ? (this.mediaInfo.canvas_url || '') : (data.canvas_url || ''),
+            music_video_url: keepMusicVideo ? (this.mediaInfo.music_video_url || '') : (data.music_video_url || ''),
             track_id: keepTrackId ? (this.mediaInfo.track_id || '') : (data.track_id || ''),
             state: data.state || 'unknown',
             position: data.position || '0:00',

@@ -23,7 +23,14 @@ function shouldLogWebSocket() {
 let mainWebSocketConnecting = false;
 let hwReconnectTimer = null;
 let mediaReconnectTimer = null;
-const HW_RECONNECT_INTERVAL = 3000;
+
+// Reconnect backoff: start at 3s, grow ×1.6 up to 60s (see ws-backoff.js).
+// Resets to base on a successful open. Prevents the Pi + backend from
+// spinning on 3s reconnects forever during sustained network outages.
+const WS_RECONNECT_BASE_MS = window.WsBackoff.WS_RECONNECT_BASE_MS;
+const _nextBackoff = window.WsBackoff.wsNextBackoff;
+let _hwBackoffMs = WS_RECONNECT_BASE_MS;
+let _mediaBackoffMs = WS_RECONNECT_BASE_MS;
 
 // ── Resource health monitoring ──
 // Logs Chromium resource stats every 10 minutes to help diagnose
@@ -145,6 +152,13 @@ function processWebSocketEvent(message) {
 
         case 'volume_update':
             handleVolumeUpdate(data);
+            break;
+
+        case 'skip_hint':
+            // Router detected a track-skip action (next/prev from any source:
+            // physical button, BeoRemote, MQTT, Sonos app). Stop video panels
+            // immediately rather than waiting for the track_change round-trip.
+            document.dispatchEvent(new CustomEvent('bs5c:skip'));
             break;
 
         default:
@@ -346,6 +360,7 @@ function connectHardwareWebSocket() {
             clearTimeout(connectionTimeout);
             wasConnected = true;
             window.hardwareWebSocket = ws;
+            _hwBackoffMs = WS_RECONNECT_BASE_MS;
             console.log('[WS] Real hardware connected - switching from emulation mode');
 
             if (window.dummyHardwareManager) {
@@ -380,12 +395,14 @@ function connectHardwareWebSocket() {
             }
 
             _hwReconnectCount++;
-            hwReconnectTimer = setTimeout(connectHardwareWebSocket, HW_RECONNECT_INTERVAL);
+            hwReconnectTimer = setTimeout(connectHardwareWebSocket, _hwBackoffMs);
+            _hwBackoffMs = _nextBackoff(_hwBackoffMs);
         };
 
     } catch (error) {
         _hwReconnectCount++;
-        hwReconnectTimer = setTimeout(connectHardwareWebSocket, HW_RECONNECT_INTERVAL);
+        hwReconnectTimer = setTimeout(connectHardwareWebSocket, _hwBackoffMs);
+        _hwBackoffMs = _nextBackoff(_hwBackoffMs);
     }
 }
 
@@ -472,10 +489,20 @@ function initMediaWebSocket() {
         };
 
         mediaWs.onopen = () => {
+            const isReconnect = wasConnected;
             wasConnected = true;
+            _mediaBackoffMs = WS_RECONNECT_BASE_MS;
             console.log('[MEDIA] Router media WS connected');
             if (window.uiStore && window.uiStore.logWebsocketMessage) {
                 window.uiStore.logWebsocketMessage('Media server connected');
+            }
+            // On reconnect, rebuild the menu from the router's current config.
+            // This handles config changes (e.g. TIDAL removed) that would
+            // otherwise linger in the DOM indefinitely — fetchMenu() replaces
+            // menuItems entirely, so removed sources vanish without triggering
+            // individual removeMenuItem() side-effects (view deletion, nav).
+            if (isReconnect && window.uiStore) {
+                window.uiStore.menu?.fetchMenu();
             }
         };
 
@@ -485,7 +512,8 @@ function initMediaWebSocket() {
                 console.log('[MEDIA] Router media WS disconnected - will reconnect');
             }
             _mediaReconnectCount++;
-            mediaReconnectTimer = setTimeout(initMediaWebSocket, HW_RECONNECT_INTERVAL);
+            mediaReconnectTimer = setTimeout(initMediaWebSocket, _mediaBackoffMs);
+            _mediaBackoffMs = _nextBackoff(_mediaBackoffMs);
         };
 
         mediaWs.onmessage = (event) => {
@@ -499,7 +527,8 @@ function initMediaWebSocket() {
         };
     } catch (error) {
         _mediaReconnectCount++;
-        mediaReconnectTimer = setTimeout(initMediaWebSocket, HW_RECONNECT_INTERVAL);
+        mediaReconnectTimer = setTimeout(initMediaWebSocket, _mediaBackoffMs);
+        _mediaBackoffMs = _nextBackoff(_mediaBackoffMs);
     }
 }
 

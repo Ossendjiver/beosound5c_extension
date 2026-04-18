@@ -47,7 +47,7 @@ class MenuManager {
                 title: 'System',
                 content: `
                     <div id="system-container" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center;">
-                        <iframe id="system-iframe" src="softarc/system.html" style="width: 100%; height: 100%; border: none; border-radius: 8px; box-shadow: 0 5px 15px rgba(0,0,0,0.3);" allowfullscreen></iframe>
+                        <iframe id="system-iframe" src="softarc/system.html" style="width: 100%; height: 100%; border: none;" allowfullscreen></iframe>
                     </div>
                 `
             },
@@ -128,12 +128,12 @@ class MenuManager {
                     }
                     const preset = window.SourcePresets?.[item.preset];
                     if (preset) {
-                        newItems.push({ title: item.title, path: preset.item.path });
+                        newItems.push({ title: item.title, path: preset.item.path, dynamic: true });
                         if (preset.view) {
                             this.views[preset.item.path] = preset.view;
                         }
                     } else {
-                        newItems.push({ title: item.title, path });
+                        newItems.push({ title: item.title, path, dynamic: true });
                     }
                 } else {
                     const existing = this.menuItems.find(m => m.path === path);
@@ -306,6 +306,14 @@ class MenuManager {
             container.appendChild(iframe);
             console.log(`[PRELOAD] Created fresh iframe for ${containerId}`);
         }
+
+        // Resume any ArcList that was destroyed on the last nav-away. revive()
+        // is idempotent (guards against double-start), so calling it on a
+        // freshly-loaded iframe is safe — it's a no-op until destroy() runs.
+        try {
+            const inst = iframe?.contentWindow?.arcListInstance || iframe?.contentWindow?.arcList;
+            if (inst?.revive) inst.revive();
+        } catch (e) { /* iframe not ready / cross-origin */ }
     }
 
     // ── Rendering ──
@@ -316,9 +324,27 @@ class MenuManager {
         return 180 - totalSpan / 2;
     }
 
+    _ensureHoverDelegation(menuContainer) {
+        if (this._hoverDelegated) return;
+        this._hoverDelegated = true;
+        // Delegated mouseenter-equivalent: fires once when the pointer crosses
+        // from outside a list-item (or from a different one) into this one.
+        // Keeps a single listener on the container, so re-rendering items does
+        // not leak per-item listeners on the detached nodes.
+        menuContainer.addEventListener('mouseover', (e) => {
+            const item = e.target.closest?.('.list-item');
+            if (!item || !menuContainer.contains(item)) return;
+            const from = e.relatedTarget?.closest?.('.list-item');
+            if (item === from) return;
+            const angle = parseFloat(item.dataset.angle);
+            if (!Number.isNaN(angle) && this.onItemHover) this.onItemHover(angle);
+        });
+    }
+
     renderMenuItems() {
         const menuContainer = document.getElementById('menuItems');
         if (!menuContainer) return;
+        this._ensureHoverDelegation(menuContainer);
         menuContainer.innerHTML = '';
 
         const visibleItems = this.menuItems;
@@ -330,6 +356,7 @@ class MenuManager {
 
             const itemAngle = this.getStartItemAngle() + (visibleItems.length - 1 - index) * this.angleStep;
             const position = arcs.getArcPoint(this.radius, 20, itemAngle);
+            itemElement.dataset.angle = String(itemAngle);
 
             Object.assign(itemElement.style, {
                 position: 'absolute',
@@ -338,10 +365,6 @@ class MenuManager {
                 width: '100px',
                 height: '50px',
                 cursor: 'pointer'
-            });
-
-            itemElement.addEventListener('mouseenter', () => {
-                if (this.onItemHover) this.onItemHover(itemAngle);
             });
 
             if (item.path === this._lastSelectedPath) {
@@ -384,7 +407,7 @@ class MenuManager {
 
         const afterIndex = this.menuItems.findIndex(m => m.path === afterPath);
         const insertAt = afterIndex !== -1 ? afterIndex + 1 : this.menuItems.length;
-        this.menuItems.splice(insertAt, 0, { title: item.title, path: item.path });
+        this.menuItems.splice(insertAt, 0, { title: item.title, path: item.path, dynamic: true });
 
         if (viewDef) {
             this.views[item.path] = viewDef;
@@ -429,6 +452,7 @@ class MenuManager {
     renderMenuItemsAnimated() {
         const menuContainer = document.getElementById('menuItems');
         if (!menuContainer) return;
+        this._ensureHoverDelegation(menuContainer);
 
         // --- FIRST: record old positions keyed by data-path ---
         const oldPositions = {};
@@ -448,6 +472,7 @@ class MenuManager {
 
             const itemAngle = this.getStartItemAngle() + (visibleItems.length - 1 - index) * this.angleStep;
             const position = arcs.getArcPoint(this.radius, 20, itemAngle);
+            itemElement.dataset.angle = String(itemAngle);
 
             Object.assign(itemElement.style, {
                 position: 'absolute',
@@ -456,10 +481,6 @@ class MenuManager {
                 width: '100px',
                 height: '50px',
                 cursor: 'pointer'
-            });
-
-            itemElement.addEventListener('mouseenter', () => {
-                if (this.onItemHover) this.onItemHover(itemAngle);
             });
 
             if (item.path === this._lastSelectedPath) {

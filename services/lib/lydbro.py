@@ -33,6 +33,7 @@ class LydbroHandler:
         self._playlists: dict = {}
         self._pre_mute_vol: float = 30.0
         self._volume_step: int = 1
+        self._last_music_mode_ts: float = 0.0  # timestamp of last bare "Music" button press
 
     def setup(self):
         """Subscribe to Lydbro MQTT topic if configured."""
@@ -56,15 +57,27 @@ class LydbroHandler:
         # Mode buttons (no source field)
         if event == "Music" and not source:
             logger.info("Lydbro: Music mode — waking screen")
+            self._last_music_mode_ts = time.monotonic()
             r._spawn(r._wake_screen(), name="lydbro_wake")
             return
 
         if event == "TV" and not source:
-            logger.info("Lydbro: TV mode — standby")
-            r._spawn(r._player_stop(), name="lydbro_stop")
-            if r._volume:
-                r._spawn(r._volume.power_off(), name="lydbro_power_off")
-            r._spawn(r._screen_off(), name="lydbro_screen_off")
+            # Only trigger standby if the player is not active AND the Music button
+            # was pressed recently (≤5s ago) — the "MUSIC then TV" gesture signals
+            # intentional hand-off from BS5c to TV.  Any other TV press (e.g. while
+            # music is playing, or as a standalone TV control action) is ignored so
+            # the BS5c keeps playing.
+            is_playing = (r.media.state or {}).get("state") == "playing"
+            music_recently = (time.monotonic() - self._last_music_mode_ts) <= 5.0
+            if not is_playing and music_recently:
+                logger.info("Lydbro: TV mode after Music — standby")
+                r._spawn(r._player_stop(), name="lydbro_stop")
+                if r._volume:
+                    r._spawn(r._volume.power_off(), name="lydbro_power_off")
+                r._spawn(r._screen_off(), name="lydbro_screen_off")
+            else:
+                logger.info("Lydbro: TV press ignored (playing=%s, music_recent=%s)",
+                            is_playing, music_recently)
             return
 
         # Only MUSIC mode (scenes/TV stay in HA)

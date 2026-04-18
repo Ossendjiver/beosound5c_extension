@@ -11,17 +11,18 @@ configure_user_groups() {
 
     log_success "User added to groups: video, input, bluetooth, dialout, tty"
 
-    # Ensure passwordless sudo for kiosk commands (ui.sh needs pkill, fbi, plymouth, reboot)
+    # Passwordless sudo for kiosk commands and config management
     local SUDOERS_FILE="/etc/sudoers.d/beosound5c"
-    if [ ! -f "$SUDOERS_FILE" ]; then
-        log_info "Configuring passwordless sudo for kiosk commands..."
-        cat > "$SUDOERS_FILE" << SUDOEOF
-# BeoSound 5c — UI kiosk needs these without a password prompt
+    log_info "Configuring passwordless sudo..."
+    cat > "$SUDOERS_FILE" << SUDOEOF
+# BeoSound 5c — UI kiosk and config management
 $INSTALL_USER ALL=(ALL) NOPASSWD: /usr/bin/pkill, /usr/bin/fbi, /usr/bin/plymouth, /sbin/reboot, /usr/sbin/reboot
+$INSTALL_USER ALL=(ALL) NOPASSWD: /usr/bin/tee /etc/beosound5c/config.json
+$INSTALL_USER ALL=(ALL) NOPASSWD: /bin/systemctl restart beo-*
+$INSTALL_USER ALL=(ALL) NOPASSWD: /bin/systemctl stop beo-*
+$INSTALL_USER ALL=(ALL) NOPASSWD: /bin/systemctl start beo-*
+$INSTALL_USER ALL=(ALL) NOPASSWD: $INSTALL_HOME/beosound5c/install/post-update.sh
 SUDOEOF
-        chmod 440 "$SUDOERS_FILE"
-        log_success "Sudoers configured for kiosk commands"
-    else
-        log_info "Sudoers file already exists: $SUDOERS_FILE"
-    fi
+    chmod 440 "$SUDOERS_FILE"
+    log_success "Sudoers configured"
 }

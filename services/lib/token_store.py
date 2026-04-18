@@ -139,7 +139,7 @@ class TokenStore:
             # itself, which may still be writable.
             if e.errno not in (errno.EACCES, errno.EROFS, errno.EPERM):
                 raise
-            log.warning("Atomic write to %s failed (%s); trying direct write", d, e)
+            log.debug("Atomic write to %s failed (%s); trying direct write", d, e)
 
         with open(path, "w") as f:
             f.write(content)

@@ -89,12 +89,30 @@ class TestModeSwitch:
             name == "lydbro_wake" for name, _ in handler.router._spawned
         )
 
-    def test_tv_mode_goes_standby(self, handler):
+    def test_tv_mode_goes_standby_after_music(self, handler):
+        """TV triggers standby only when Music was pressed recently and nothing is playing."""
+        _run(handler.handle_event({"event": "Music"}))
+        handler.router._spawned.clear()
         _run(handler.handle_event({"event": "TV"}))
         names = {name for name, _ in handler.router._spawned}
         assert "lydbro_stop" in names
         assert "lydbro_power_off" in names
         assert "lydbro_screen_off" in names
+
+    def test_tv_mode_ignored_without_music(self, handler):
+        """TV without a recent Music press must not trigger standby."""
+        _run(handler.handle_event({"event": "TV"}))
+        names = {name for name, _ in handler.router._spawned}
+        assert "lydbro_stop" not in names
+
+    def test_tv_mode_ignored_while_playing(self, handler):
+        """TV must not trigger standby when the player is active."""
+        handler.router.media.state = {"state": "playing"}
+        _run(handler.handle_event({"event": "Music"}))
+        handler.router._spawned.clear()
+        _run(handler.handle_event({"event": "TV"}))
+        names = {name for name, _ in handler.router._spawned}
+        assert "lydbro_stop" not in names
 
     def test_non_music_mode_ignored(self, handler):
         """Events with mode != 'MUSIC' and source != 'scene' must be ignored."""

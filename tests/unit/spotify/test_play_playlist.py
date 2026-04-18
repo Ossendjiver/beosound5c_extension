@@ -98,7 +98,7 @@ class TestPlayPlaylistURI:
     so librespot queues all tracks, preventing Spotify autoplay."""
 
     def test_real_playlist_sends_playlist_uri(self, svc):
-        asyncio.get_event_loop().run_until_complete(
+        asyncio.run(
             _play_playlist(svc, "7BtiUiOcjrnjYO6ej7uYRz", track_index=0))
 
         svc.player_play.assert_called_once()
@@ -106,21 +106,21 @@ class TestPlayPlaylistURI:
         assert kwargs['uri'] == "https://open.spotify.com/playlist/7BtiUiOcjrnjYO6ej7uYRz"
 
     def test_real_playlist_sends_skip_to_track(self, svc):
-        asyncio.get_event_loop().run_until_complete(
+        asyncio.run(
             _play_playlist(svc, "7BtiUiOcjrnjYO6ej7uYRz", track_index=1))
 
         kwargs = svc.player_play.call_args.kwargs
         assert kwargs['track_uri'] == "spotify:track:5xsHQu1SXYS6DYOJwIWhSC"
 
     def test_liked_songs_sends_track_uri(self, svc):
-        asyncio.get_event_loop().run_until_complete(
+        asyncio.run(
             _play_playlist(svc, "liked-songs", track_index=0))
 
         kwargs = svc.player_play.call_args.kwargs
         assert kwargs['uri'] == "https://open.spotify.com/track/3QnOeUwRd1v1eniL3VaQTg"
 
     def test_real_playlist_passes_all_track_uris(self, svc):
-        asyncio.get_event_loop().run_until_complete(
+        asyncio.run(
             _play_playlist(svc, "7BtiUiOcjrnjYO6ej7uYRz", track_index=0))
 
         kwargs = svc.player_play.call_args.kwargs
@@ -128,31 +128,31 @@ class TestPlayPlaylistURI:
         assert kwargs['track_uris'][0] == "spotify:track:01RdEXps15f3VmQMV6OuTM"
 
     def test_default_track_index_is_zero(self, svc):
-        asyncio.get_event_loop().run_until_complete(
+        asyncio.run(
             _play_playlist(svc, "7BtiUiOcjrnjYO6ej7uYRz"))
 
         kwargs = svc.player_play.call_args.kwargs
         assert kwargs['track_uri'] == "spotify:track:01RdEXps15f3VmQMV6OuTM"
 
     def test_debounce_blocks_duplicate(self, svc):
-        asyncio.get_event_loop().run_until_complete(
+        asyncio.run(
             _play_playlist(svc, "7BtiUiOcjrnjYO6ej7uYRz", track_index=0))
-        asyncio.get_event_loop().run_until_complete(
+        asyncio.run(
             _play_playlist(svc, "7BtiUiOcjrnjYO6ej7uYRz", track_index=0))
 
         assert svc.player_play.call_count == 1
 
     def test_different_playlist_not_debounced(self, svc):
-        asyncio.get_event_loop().run_until_complete(
+        asyncio.run(
             _play_playlist(svc, "7BtiUiOcjrnjYO6ej7uYRz", track_index=0))
-        asyncio.get_event_loop().run_until_complete(
+        asyncio.run(
             _play_playlist(svc, "liked-songs", track_index=0))
 
         assert svc.player_play.call_count == 2
 
     def test_missing_playlist_no_crash(self, svc):
         """Playing a playlist ID not in the list should not crash."""
-        asyncio.get_event_loop().run_until_complete(
+        asyncio.run(
             _play_playlist(svc, "nonexistent-id", track_index=0))
 
         kwargs = svc.player_play.call_args.kwargs

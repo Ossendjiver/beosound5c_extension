@@ -86,6 +86,17 @@ install_system_packages() {
         cdparanoia \
         libdiscid-dev
 
+    log_info "Installing yt-dlp (music video feature)..."
+    if ! command -v yt-dlp &>/dev/null; then
+        curl -fsSL https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp \
+            -o /usr/local/bin/yt-dlp && \
+            chmod +x /usr/local/bin/yt-dlp && \
+            log_success "yt-dlp installed: $(/usr/local/bin/yt-dlp --version 2>/dev/null)" || \
+            log_warn "yt-dlp download failed — music video feature will be unavailable"
+    else
+        log_info "yt-dlp already installed: $(yt-dlp --version 2>/dev/null)"
+    fi
+
     # --- PipeWire from backports (better Bluetooth + AirPlay support) ---
     local CODENAME
     CODENAME=$(grep VERSION_CODENAME /etc/os-release 2>/dev/null | cut -d= -f2)

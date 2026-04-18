@@ -231,9 +231,31 @@ html, body {
 .immersive-info-artist { font-size: 18px; margin-bottom: 8px; }
 .immersive-info-album  { font-size: 15px; opacity: 0.8; }
 
+/* Canvas / music-video availability dots.
+   ● before title  = Spotify Canvas found for this track.
+   ● before artist = YouTube music video found for this track.
+   Both animate in via the same opacity transition as the parent overlay.
+   Absolute positioning keeps text at a fixed position — dot floats left. */
+.immersive-info-title.has-canvas::before,
+.immersive-info-artist.has-video::before {
+  content: '●';
+  font-size: 10px;
+  position: absolute;
+  left: -18px;
+  top: 50%;
+  transform: translateY(-50%);
+}
+
+/* Allow the dot to render outside the element box without clipping text */
+.immersive-info-title.has-canvas,
+.immersive-info-artist.has-video {
+  overflow: visible;
+}
+
 .immersive-info-title,
 .immersive-info-artist,
 .immersive-info-album {
+  position: relative;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -984,18 +1006,17 @@ html, body {
   pointer-events: none;
   transition: none;
   background: #000;
+  overflow: hidden;
 }
 
 .canvas-video {
   position: absolute;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
-  min-width: 100%;
-  min-height: 100%;
-  width: auto;
-  height: auto;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
   object-fit: cover;
+  transform-origin: center center;
 }
 
 /* Thin progress bar at bottom edge */

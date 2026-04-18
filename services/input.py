@@ -17,6 +17,7 @@ from lib.endpoints import (
 )
 from lib.loop_monitor import LoopMonitor
 from lib.watchdog import watchdog_loop
+from lib.beacon import send_beacon
 
 logger = install_logging('beo-input')
 
@@ -45,6 +46,7 @@ _UPDATE_CACHE_TTL = 3600  # seconds
 _update_in_progress = False
 _update_step = 'idle'  # 'downloading' | 'extracting' | 'installing' | 'restarting'
 _UPDATE_EXCLUDES = [
+    'device_id',
     'web/json/config.json',
     'web/json/spotify_playlists.json',
     'web/json/digit_playlists.json',
@@ -275,7 +277,6 @@ def get_network_status() -> dict:
     """Ping default gateway and internet (8.8.8.8) to check connectivity."""
     net = {}
     try:
-        # Get default gateway
         result = subprocess.run(
             ['ip', 'route', 'show', 'default'],
             capture_output=True, text=True, timeout=2
@@ -430,6 +431,28 @@ async def _run_update():
             f.write(latest_tag + '\n')
         _update_cache['data'] = None
         _update_cache['fetched_at'] = 0.0
+
+        # Run post-update script as root (sudoers, daemon-reload, pip packages).
+        # Non-fatal — log and continue if it fails (e.g. missing sudoers entry
+        # on a device that hasn't run install.sh since v0.8).
+        _update_step = 'post-update'
+        post_update = os.path.join(BS5C_BASE_PATH, 'install', 'post-update.sh')
+        if os.path.isfile(post_update):
+            logger.info('[update] Running post-update script')
+            try:
+                result = await asyncio.get_running_loop().run_in_executor(
+                    None,
+                    lambda: subprocess.run(
+                        ['sudo', post_update],
+                        capture_output=True, text=True, timeout=120,
+                    ),
+                )
+                if result.returncode == 0:
+                    logger.info('[update] Post-update done')
+                else:
+                    logger.warning('[update] Post-update failed (non-fatal): %s', result.stderr.strip())
+            except Exception as e:
+                logger.warning('[update] Post-update error (non-fatal): %s', e)
 
         logger.info('[update] Scheduling service restart')
         _update_step = 'restarting'
@@ -777,7 +800,6 @@ def get_bt_remotes() -> list:
     """Get paired Bluetooth devices with connection info."""
     remotes = []
     try:
-        # Get paired devices
         result = subprocess.run(
             ['bluetoothctl', 'paired-devices'],
             capture_output=True, text=True, timeout=5
@@ -1739,6 +1761,9 @@ async def main():
 
     # Turn screen on at startup so the display is always visible after boot
     set_backlight(True)
+
+    # Startup beacon (fire-and-forget, opt-out via NO_TELEMETRY file)
+    asyncio.create_task(send_beacon(BS5C_BASE_PATH))
 
     # Start systemd watchdog heartbeat
     asyncio.create_task(watchdog_loop())

@@ -6,42 +6,11 @@ A modern recreation of the Bang & Olufsen BeoSound 5 experience using web techno
 
 This project replaces the original BeoSound 5 software with a circular arc-based touch UI that integrates with Sonos players, music services (Spotify, Apple Music, TIDAL, Plex), and Home Assistant. It works with the original BS5 hardware (rotary encoder, laser pointer, display) and supports BeoRemote One for wireless control.
 
-I built this for my own setup, but it runs daily on multiple BeoSound 5 units. Your setup may require some configuration — particularly for Home Assistant integration.
-
 ## Quick Start
 
-### Try Without Hardware (Emulator Mode)
-
-The web interface includes built-in hardware emulation using keyboard and mouse/trackpad:
-
-```bash
-# Start web server
-cd web && python3 -m http.server 8000
-
-# Open http://localhost:8000
-```
-
-The UI works fully without any backend services. Hardware input is simulated with keyboard and mouse.
-
-**Controls:**
-- Laser pointer: Mouse wheel / trackpad scroll
-- Navigation wheel: Arrow Up/Down
-- Volume: PageUp/PageDown or +/-
-- Buttons: Arrow Left/Right, Enter
-
-**Optional — Sonos artwork and metadata (in a second terminal):**
-
-```bash
-python3 -m venv .venv && source .venv/bin/activate
-pip install soco pillow websockets aiohttp
-cd services && python3 players/sonos.py
-```
-
-Set your Sonos speaker IP in `config/default.json` under `player.ip` before starting the service.
-
-### Install on Raspberry Pi 5
-
 Tested on [Raspberry Pi 5 8GB](https://www.raspberrypi.com/products/raspberry-pi-5/), but lower RAM versions should work fine.
+
+### Fresh Install
 
 1. Flash **Raspberry Pi OS Bookworm Lite (64-bit)** using [Raspberry Pi Imager](https://www.raspberrypi.com/software/). Click the settings icon (gear) to enable SSH and set your username/password before writing.
 2. Clone and run the installer:
@@ -52,7 +21,21 @@ cd ~/beosound5c
 sudo ./install/install.sh
 ```
 
-The installer handles everything: packages, USB permissions, display config, service installation, configuration prompts, and optional BeoRemote One pairing. It will ask if you want to reboot when complete.
+The installer handles everything: packages, display config, service installation. It will prompt for a reboot when complete.
+
+3. After rebooting, open the config UI to set up your player, Home Assistant, and sources:
+
+```
+http://<device-ip>/config
+```
+
+### Updating
+
+```bash
+git pull && sudo ./install/install.sh update
+```
+
+Updates service files, sudoers, and Python packages. No reboot needed unless system packages changed.
 
 ## Remote Support
 
@@ -64,363 +47,47 @@ bs5c-support stop     # End session and disconnect
 bs5c-support status   # Check if a session is active
 ```
 
-Ask the developer for an access key, paste it when prompted, and share the displayed Tailscale IP. The developer can then SSH in to diagnose the issue. When you're done, `bs5c-support stop` disconnects and stops the Tailscale daemon.
+Ask the developer for an access key, paste it when prompted, and share the displayed Tailscale IP. When you're done, `bs5c-support stop` disconnects and stops the Tailscale daemon.
 
 ## Configuration
 
+After install, open `http://<device-ip>/config` in a browser. The configuration UI lets you set the device name, player, volume adapter, Home Assistant connection, transport, and all sources. Changes are saved and services restart automatically.
+
 Configuration lives in two files on the device:
 
-- **`/etc/beosound5c/config.json`** — all settings (device name, Sonos IP, menu, scenes, volume, transport)
+- **`/etc/beosound5c/config.json`** — all settings (device name, player IP, menu, scenes, volume, transport)
 - **`/etc/beosound5c/secrets.env`** — credentials only (HA token, MQTT password)
 
-The installer creates both during setup. To reconfigure: edit `/etc/beosound5c/config.json`, then `sudo systemctl restart beo-*`.
+For the full list of fields and options, see the **[config schema](docs/config.schema.json)**.
 
-### config.json
+To edit scenes (names, icons, HA scripts), edit `/etc/beosound5c/config.json` directly — the `"scenes"` array.
 
-The installer creates this interactively during setup. Here's a minimal example:
+## Telemetry
 
-```json
-{
-  "device": "Living Room",
+Honestly, I just find it delightful to see where BeoSound 5cs are showing up in the world. There are already installations in the US, across Europe, here in Stockholm, in Asia, and in Australia — and every time a new one appears on the map it makes my day.
 
-  "menu": {
-    "PLAYING": "playing",
-    "SPOTIFY": "spotify",
-    "APPLE MUSIC": "apple_music",
-    "TIDAL": "tidal",
-    "PLEX": "plex",
-    "SCENES": "scenes",
-    "SYSTEM": "system"
-  },
+To make that possible, each BS5c sends a small anonymous ping to `beosound5c.com` on startup. Your public IP is used to infer a country (via Cloudflare — never stored beyond the country name). No hostname, device name, MAC address, or credentials are ever sent. Feel free to read exactly what gets posted in [`services/lib/beacon.py`](services/lib/beacon.py).
 
-  "scenes": [
-    { "id": "dinner", "name": "Dinner", "icon": "fork-knife", "color": "#fa0" },
-    { "id": "all_off", "name": "All off", "icon": "power", "color": "#c55" }
-  ],
+| Field | Value |
+|---|---|
+| `device_id` | Random UUID generated at install time — not linked to any personal identifier |
+| `version` | Software version string |
+| `sources` | Names of enabled sources (e.g. `spotify`, `cd`) — no credentials or config values |
+| `player_type` | Player backend: `sonos`, `bluesound`, or `local` |
+| `volume_type` | Volume adapter type: `sonos`, `beolab5`, `powerlink`, etc. |
 
-  "player": { "type": "sonos", "ip": "192.168.1.100" },
-  "bluetooth": { "remote_mac": "" },
-  "home_assistant": {
-    "url": "http://homeassistant.local:8123",
-    "webhook_url": "http://homeassistant.local:8123/api/webhook/beosound5c"
-  },
-  "transport": { "mode": "mqtt", "mqtt_broker": "homeassistant.local" },
-  "volume": {
-    "type": "sonos",
-    "host": "192.168.1.100",
-    "max": 70,
-    "step": 3,
-    "output_name": "Sonos"
-  },
-  "spotify": { "client_id": "" }
-}
-```
-
-For the full list of fields, volume adapter types, menu item options, and scene configuration, see the **[config schema](docs/config.schema.json)**.
-
-### secrets.env
-
-Credentials live separately in `/etc/beosound5c/secrets.env` (created by the installer). See [`config/secrets.env.example`](config/secrets.env.example) for the template.
-
-## Services
-
-| Service | File | Description |
-|---------|------|-------------|
-| `beo-input` | [`services/input.py`](services/input.py) | USB HID driver for BS5 rotary encoder, buttons, and laser pointer |
-| `beo-router` | [`services/router.py`](services/router.py) | Event router: dispatches remote events to HA or the active source, controls volume |
-| `beo-player-sonos` | [`services/players/sonos.py`](services/players/sonos.py) | Sonos player: artwork, metadata, playback commands, volume reporting |
-| `beo-player-bluesound` | [`services/players/bluesound.py`](services/players/bluesound.py) | BluOS player: long-poll monitoring, HTTP/XML transport controls |
-| `beo-player-local` | [`services/players/local.py`](services/players/local.py) | Local player: Spotify via go-librespot, URL streams via mpv |
-| `beo-source-spotify` | [`services/sources/spotify/service.py`](services/sources/spotify/service.py) | Spotify: PKCE OAuth, playlist browsing, playback via player or Web API |
-| `beo-source-apple-music` | [`services/sources/apple_music/service.py`](services/sources/apple_music/service.py) | Apple Music: MusicKit API browsing and playback |
-| `beo-source-tidal` | [`services/sources/tidal/service.py`](services/sources/tidal/service.py) | TIDAL: tidalapi OAuth, playlist browsing and playback |
-| `beo-source-plex` | [`services/sources/plex/service.py`](services/sources/plex/service.py) | Plex: PIN-based OAuth, playlist/album browsing, source-managed playback |
-| `beo-source-cd` | [`services/sources/cd.py`](services/sources/cd.py) | CD player: disc detection, MusicBrainz metadata, mpv playback |
-| `beo-source-usb` | [`services/sources/usb/service.py`](services/sources/usb/service.py) | USB file playback from mounted drives |
-| `beo-source-news` | [`services/sources/news.py`](services/sources/news.py) | News: The Guardian API, article browsing and reading |
-| `beo-source-radio` | [`services/sources/radio/service.py`](services/sources/radio/service.py) | Internet radio: Radio Browser API, browsing and playback |
-| `beo-beo6` | [`services/beo6/service.py`](services/beo6/service.py) | XMPP BeoNet emulator for Beo6 remote control |
-| `beo-masterlink` | [`services/masterlink.py`](services/masterlink.py) | USB sniffer for B&O IR and MasterLink bus commands |
-| `beo-bluetooth` | [`services/bluetooth.py`](services/bluetooth.py) | HID service for BeoRemote One wireless control |
-| `beo-http` | — | Simple HTTP server for static files |
-| `beo-ui` | [`services/ui.sh`](services/ui.sh) | Chromium in kiosk mode (1024×768) |
-
-Service definitions: [`services/system/`](services/system/)
-
-## Remote Source Buttons
-
-If a BeoRemote One or Beo4 IR remote is connected, its source buttons (RADIO, CD, TV, etc.) can be mapped to BS5c sources. When pressed, the mapped source activates and starts playback immediately.
-
-Add a `"source"` field to any source in `config.json`:
-
-```json
-{
-  "spotify": { "client_id": "...", "source": "radio" },
-  "usb": { "source": "amem" },
-  "cd": { "source": "cd" },
-  "plex": { "source": "tv" }
-}
-```
-
-If no source mappings are configured, the BS5c still handles volume, off, and power for audio commands — sources are just selected from the on-screen menu instead of the remote.
-
-### Available Sources
-
-In B&O systems, each source is classified as either Audio or Video. A device that handles a source type is called the **audio master** or **video master** for that room. The BS5c auto-detects which roles it fills based on your source mappings:
-
-- Only audio sources mapped → BS5c is the **audio master**. Video commands (volume, off) pass through to Home Assistant for an external video master (e.g., a BeoVision TV).
-- Any video source mapped → BS5c is also the **video master**. Volume, off, and transport work for all source buttons.
-
-| Audio sources | Video sources | Passthrough |
-|---|---|---|
-| `radio`, `amem`, `cd`, `n.radio`, `n.music`, `spotify` | `tv`, `dvd`, `dtv`, `v.aux`, `a.aux`, `vmem`, `pc`, `youtube`, `doorcam`, `photo`, `usb2` | `light` (always forwarded to HA) |
-
-### Example Setups
-
-**Audio master only** (video handled by a BeoVision):
-```json
-{ "spotify": { "source": "radio" }, "cd": { "source": "cd" } }
-```
-Volume/off on audio buttons controls BS5c. TV/DVD commands go to HA for the video master.
-
-**Audio + video master** (BS5c controls everything):
-```json
-{ "spotify": { "source": "radio" }, "plex": { "source": "tv" } }
-```
-Volume/off works for all source buttons regardless of type.
-
-## Beo6 Remote Control
-
-The BS5c can be controlled by a [Beo6](https://support.bang-olufsen.com/hc/en-us/articles/360041401952-Beo6) remote. Basic control (volume, source selection, etc.) works out of the box. For two-way artwork display and playlist browsing on the Beo6 screen, the `beo-beo6` service emulates a BeoMaster 5's XMPP-based BeoNet interface.
-
-### Setup
-
-1. **Add `"beo6": {}` to your device's config.json** and deploy. This enables the `beo-beo6` service.
-2. **Configure a BeoSound 5 in the Beo6 Configuration Tool** — add a BeoSound 5 device and sync the configuration to your Beo6.
-3. **Enable wireless on the Beo6** — hold the power button and press the middle GO button to enter settings. Turn on wireless networking.
-4. **Set the BS5c IP address** — in the Beo6 network settings, configure the IP address of your BeoSound 5c.
-
-The Beo6 connects to the BS5c over XMPP (port 5222). Cover art is served via HTTP on port 8080.
-
-## Audio
-
-Each BS5c is configured with one **player** (Sonos, BlueSound, or Local) and one **volume adapter** (which controls the physical volume). The installer asks you to choose during setup.
-
-### Player Types
-
-| Player | Capabilities | Requirements |
-|---|---|---|
-| Sonos | `spotify`, `url_stream` | Any Sonos speaker (S1 or S2, any generation) |
-| BlueSound | `url_stream` | Any BluOS player (e.g. Node, PowerNode, Vault) |
-| Local | `spotify`, `url_stream` | S/PDIF HAT, HDMI, or other audio output |
-
-### Source Compatibility
-
-Sources check the player's capabilities at startup to determine how to play content. Sources that play locally (CD, USB) work with any player type.
-
-| Source | Sonos | BlueSound | Local (mpv) |
-|---|---|---|---|
-| Spotify | **Working** | No | **Working** |
-| Apple Music | **Working** | No | No (DRM restrictions) |
-| TIDAL | **Working** | Untested (Stream URL) | Untested (Stream URL) |
-| Plex | **Working** (Stream URL) | Untested (Stream URL) | **Working** (Stream URL) |
-| Radio | **Working** (Stream URL) | **Working** (Stream URL) | **Working** (Stream URL) |
-| CD | **Working** (AirPlay) | **Working** (AirPlay) | **Working** |
-| USB | **Working** (Stream URL) | Untested (Stream URL) | **Working** (Stream URL) |
-
-### Spotify Setup
-
-1. **Create a Spotify Developer App** (free) at [developer.spotify.com/dashboard](https://developer.spotify.com/dashboard):
-   - Click "Create App" — name it anything (e.g. "BeoSound 5c")
-   - Redirect URI: `https://<device-ip>:8772/callback` (the setup page will show the exact URI)
-   - Select "Web API"
-   - Copy the Client ID
-
-2. **Configure**: Add the client ID to your device `config.json`:
-   ```json
-   { "spotify": { "client_id": "your-client-id-here" } }
-   ```
-   Then restart the service: `sudo systemctl restart beo-source-spotify`
-
-3. **Connect**: Navigate to SPOTIFY on the BS5 display, follow the on-screen setup, and scan the QR code with your phone.
-
-**Notes:**
-- Spotify apps in "Development" mode allow up to 25 test users. You must add your Spotify account email under **User Management** in the developer dashboard.
-- A self-signed SSL certificate is generated during install (required for Spotify OAuth on non-localhost). Your phone must accept the certificate warning when scanning the QR code.
-
-#### Spotify Canvas (Optional)
-
-Canvas shows looping video backgrounds behind tracks in immersive mode — the same videos you see in the Spotify mobile app. Not all tracks have a Canvas; those that don't stay on the standard artwork view.
-
-To enable Canvas, add your `sp_dc` cookie to `secrets.env`:
-
-1. Log into [open.spotify.com](https://open.spotify.com) in a browser
-2. Open DevTools (F12) → **Application** → **Cookies** → `open.spotify.com`
-3. Copy the value of `sp_dc`
-4. On the device: add `SPOTIFY_SP_DC="<your-cookie>"` to `/etc/beosound5c/secrets.env`
-5. Restart: `sudo systemctl restart beo-source-spotify`
-
-The cookie is valid for ~1 year. When immersive mode is active and a Canvas video is available, the UI auto-cycles between artwork and video views.
-
-You can test a track's Canvas availability with the CLI tool:
-```bash
-SP_DC="..." python3 tools/spotify-canvas.py https://open.spotify.com/track/7eGuPhpdS8sBjPJNuAShUX
-```
-
-Spotify sends share links via `uri=` which Sonos handles natively via ShareLink; the local player handles them via go-librespot. Apple Music uses MusicKit URLs which only Sonos supports. TIDAL and Plex send direct Stream URLs via `url=` which all players support. On Sonos, TIDAL uses ShareLink for native queue management; on BlueSound, TIDAL resolves Stream URLs and manages the queue itself (like Plex). Radio streams URLs directly, working across all player types. CD plays locally via mpv and streams to Sonos/BlueSound over AirPlay (RAOP). The local player uses mpv to play URL streams through PipeWire/PulseAudio — sources manage their own track lists and advance tracks by issuing new play commands.
-
-### Volume Adapters
-
-| Adapter | Controls | Required Hardware |
-|---|---|---|
-| Sonos | Sonos speaker volume | Sonos device (all supported) |
-| BlueSound | BluOS player volume | BlueSound device (all supported) |
-| BeoLab 5 | BeoLab 5 volume and power | BeoLab 5 Controller |
-| PowerLink | B&O PowerLink speakers | S/PDIF HAT with COAX output, or any Sonos device¹ |
-| HDMI | ALSA software volume on HDMI1 | Amplifier with HDMI audio input |
-| S/PDIF | ALSA software volume | S/PDIF HAT (e.g. HiFiBerry Digi) |
-| RCA | ALSA software volume | DAC HAT with RCA out |
-| C4 Amp | Control4 amplifier zone volume | Control4 amplifier (UDP) |
-
-¹ You can use a standalone Sonos player and still output audio through PowerLink by connecting the Sonos digital out via an adapter to the PCB51 S/PDIF in. This means your player is Sonos instead of Local, which unlocks additional source support (see Source Compatibility table).
-
-Sources register with the router and appear in the menu. The remote's media keys are forwarded to whichever source is currently active. When no source is active, transport keys (play/pause/next/prev) are forwarded directly to the player.
-
-For details on each output, playback modes, and volume adapter configuration, see **[Audio Setup Options](docs/audio-setup.md)**.
-
-## Directory Structure
-
-```
-config/                     # Per-device configuration
-├── default.json            #   Dev fallback
-├── secrets.env.example     #   Credentials template
-└── <device>.json           #   One per device (deployed to /etc/beosound5c/)
-services/                   # Backend services
-├── beo6/                   # Beo6 remote control (XMPP BeoNet emulation)
-├── sources/                # Music sources (register with router)
-│   ├── spotify/            #   Spotify (PKCE OAuth, Web API)
-│   ├── apple_music/        #   Apple Music (MusicKit API)
-│   ├── tidal/              #   TIDAL (tidalapi OAuth)
-│   ├── plex/               #   Plex (PIN-based OAuth, direct stream URLs)
-│   ├── cd.py               #   CD player (disc detect, MusicBrainz, mpv)
-│   ├── usb/                #   USB file playback (BM5 library, file browser)
-│   ├── news.py             #   News (The Guardian API, article browsing)
-│   └── radio/              #   Internet radio (Radio Browser API)
-├── players/                # External playback backends
-│   ├── sonos.py            #   Sonos (SoCo, ShareLink, artwork)
-│   ├── bluesound.py        #   BluOS (HTTP/XML, long-poll)
-│   └── local.py            #   Local (URL streams via mpv)
-├── lib/
-│   ├── player_base.py      # Abstract player base class
-│   ├── source_base.py      # Abstract source base class
-│   ├── volume_adapters/    # Pluggable volume output control
-│   │   ├── beolab5.py      #   BeoLab 5 via controller REST API
-│   │   ├── sonos.py        #   Sonos via SoCo
-│   │   ├── hdmi.py         #   HDMI (ALSA software volume)
-│   │   ├── spdif.py        #   S/PDIF / Optical (ALSA software volume)
-│   │   ├── rca.py          #   RCA DAC (ALSA software volume)
-│   │   ├── powerlink.py    #   B&O PowerLink via masterlink.py
-│   │   ├── bluesound.py    #   BluOS player volume
-│   │   └── c4amp.py        #   Control4 amplifier (UDP)
-│   ├── librespot.py        # go-librespot client for Spotify playback
-│   ├── transport.py        # HA communication (webhook/MQTT)
-│   ├── config.py           # Shared JSON config loader
-│   └── audio_outputs.py    # PipeWire sink discovery
-├── router.py               # Event router (beo-router)
-├── input.py                # USB HID input (beo-input)
-├── bluetooth.py            # BeoRemote BLE (beo-bluetooth)
-├── masterlink.py           # MasterLink IR (beo-masterlink)
-└── system/                 # Systemd service files
-web/                        # Web UI (HTML, CSS, JavaScript)
-├── js/                     # UI logic, hardware emulation
-├── json/                   # Scenes, settings, playlists
-├── softarc/                # Arc-based navigation subpages
-└── sources/                # Source view presets
-tools/                      # Spotify OAuth, USB debugging, BLE testing
-```
-
-## Home Assistant Integration
-
-BeoSound 5c communicates with Home Assistant via **MQTT** (recommended) or **HTTP webhooks**. The transport is configured via `transport.mode` in `config.json`. The installer will prompt you to choose.
-
-### MQTT Setup (recommended)
-
-Requires an MQTT broker — the [Mosquitto add-on](https://github.com/home-assistant/addons/tree/master/mosquitto) works well. Create a user for the BS5c in the add-on config, then set `transport.mode` to `"mqtt"` in `config.json` with your broker hostname. MQTT credentials go in `secrets.env`.
-
-MQTT topics use the pattern `beosound5c/{device}/out|in|status`:
-
-```
-beosound5c/living_room/out      → BS5c sends button events to HA
-beosound5c/living_room/in       → HA sends commands to BS5c
-beosound5c/living_room/status   → Online/offline (retained)
-```
-
-Example HA automation trigger:
-```yaml
-trigger:
-  - platform: mqtt
-    topic: "beosound5c/living_room/out"
-```
-
-Example HA command to BS5c:
-```yaml
-action:
-  - action: mqtt.publish
-    data:
-      topic: "beosound5c/living_room/in"
-      payload: '{"command": "wake", "params": {"page": "now_playing"}}'
-```
-
-### HA Configuration
-
-Add to `configuration.yaml` (needed for the embedded Security page):
-
-```yaml
-http:
-  cors_allowed_origins:
-    - "http://<BEOSOUND5C_IP>:8000"
-  use_x_frame_options: false
-
-homeassistant:
-  auth_providers:
-    - type: trusted_networks
-      trusted_networks:
-        - <BEOSOUND5C_IP>
-      allow_bypass_login: true
-    - type: homeassistant
-```
-
-**Security note**: These settings allow the BeoSound 5c to embed Home Assistant pages without authentication. Only add IPs you trust to `trusted_networks` and `cors_allowed_origins`. This is intended for devices on your local network.
-
-See [`config/homeassistant/example-automation.yaml`](config/homeassistant/example-automation.yaml) for complete automation examples covering both MQTT and webhook transports.
-
-See [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) for contribution guidelines.
-
-## Development
-
-### Repo Layout
-
-```
-config/
-├── default.json          # Fallback for local development
-├── <device>.json         # Per-device config (gitignored)
-└── secrets.env.example   # Credentials template
-```
-
-For multi-device setups, create a JSON file per device in `config/` (e.g. `config/living-room.json`). The deploy script copies the matching config to `/etc/beosound5c/config.json` on the target.
-
-### Deploying Updates
+If you'd rather opt out, just create a `NO_TELEMETRY` file in the repo root:
 
 ```bash
-# Sync files and restart services
-./deploy.sh                    # default: beo-http + beo-ui
-./deploy.sh beo-player-sonos   # restart a specific service
-./deploy.sh beo-*              # restart all beo services
-./deploy.sh --no-restart       # sync files only
-
-# Target a specific device
-BEOSOUND5C_HOSTS="my-device.local" ./deploy.sh
+touch ~/beosound5c/NO_TELEMETRY
 ```
+
+## Documentation
+
+- [Audio, players & sources](docs/audio-setup.md) — player types, source compatibility, Spotify setup, volume adapters
+- [Home Assistant integration](docs/home-assistant.md) — MQTT, webhooks, automation examples
+- [Remotes & IR](docs/remotes.md) — BeoRemote One pairing, IR source buttons, Beo6
+- [Development & contributing](docs/CONTRIBUTING.md) — local dev setup, repo layout, deploy script
 
 ## Acknowledgments
 

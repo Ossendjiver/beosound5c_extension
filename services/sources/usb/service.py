@@ -385,7 +385,6 @@ class USBService(SourceBase):
         if not bm5:
             return False
 
-        # Get album tracks
         aid = album_id or self._album_id_for_track(bm5, track_id)
         if not aid:
             return False

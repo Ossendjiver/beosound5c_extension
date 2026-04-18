@@ -589,7 +589,7 @@ class PlayerBase:
 
     async def _handle_media(self, request: web.Request) -> web.Response:
         """GET /player/media — return cached media data (for router recovery)."""
-        if self._cached_media_data and self._current_playback_state == "playing":
+        if self._cached_media_data and self._current_playback_state in ("playing", "paused"):
             return web.json_response(self._cached_media_data,
                                      headers=self._cors_headers())
         return web.json_response({}, headers=self._cors_headers())
@@ -760,7 +760,7 @@ class PlayerBase:
         ``SonosPlayer._on_playback_started``).
         """
         action_ts = time.monotonic()
-        self._latest_action_ts = action_ts
+        self._latest_action_ts = max(self._latest_action_ts, action_ts)
         if not self._session_ready():
             return
         try:

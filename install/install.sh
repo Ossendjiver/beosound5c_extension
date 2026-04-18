@@ -49,7 +49,7 @@ while [[ $# -gt 0 ]]; do
             SUBCOMMAND="help"
             shift
             ;;
-        system|configure|services|verify|status)
+        system|configure|services|update|verify|status)
             SUBCOMMAND="$1"
             shift
             # Grab optional sub-step for configure
@@ -114,37 +114,27 @@ source "$SCRIPT_ROOT/install/configure/wizard.sh"
 # Helper: show usage
 # =============================================================================
 show_help() {
-    echo "Usage: sudo $0 [--user USERNAME] [COMMAND [STEP]]"
+    echo "Usage: sudo $0 [--user USERNAME] [COMMAND]"
     echo ""
     echo "Commands:"
-    echo "  (none)             Full install (all steps below in sequence)"
+    echo "  (none)             Full install — system packages, services, start everything"
+    echo "  update             Apply updates after git pull (services + sudoers + pip)"
     echo "  system             System packages, boot config, SD hardening, X11, Plymouth"
-    echo "  configure          Full interactive configuration wizard"
-    echo "  configure STEP     Reconfigure a single section (see steps below)"
-    echo "  services           Install/restart systemd services"
     echo "  verify             Run verification checks"
     echo "  status             Show current config + service status (no sudo needed)"
     echo "  help               Show this help"
-    echo ""
-    echo "Configure steps:"
-    echo "  device             Device name"
-    echo "  player             Player type and IP (Sonos/BlueSound/Local)"
-    echo "  ha                 Home Assistant URL, webhook, dashboard, token"
-    echo "  bluetooth          Pair/re-pair BeoRemote One"
-    echo "  spotify            Spotify integration"
-    echo "  transport          Webhook/MQTT transport"
-    echo "  audio              Volume output and adapter"
-    echo "  menu               Choose which menu items to show"
     echo ""
     echo "Options:"
     echo "  --user USERNAME    Install for specified user (default: \$SUDO_USER)"
     echo ""
     echo "Examples:"
-    echo "  sudo ./install.sh                      # Full install"
-    echo "  sudo ./install.sh configure player      # Change player only"
-    echo "  sudo ./install.sh configure bluetooth   # Re-pair BT remote"
-    echo "  sudo ./install.sh services              # Reinstall/restart services"
-    echo "  ./install.sh status                     # View current config"
+    echo "  sudo ./install/install.sh               # Fresh install"
+    echo "  git pull && sudo ./install/install.sh update  # After updating"
+    echo "  ./install/install.sh status             # View current config"
+    echo ""
+    echo "Configure via the web UI at http://<device-ip>/ after install."
+    echo ""
+    echo "Advanced: sudo $0 configure [bluetooth|player|ha|audio|spotify|transport|menu]"
 }
 
 # =============================================================================
@@ -233,18 +223,31 @@ show_summary() {
 }
 
 # =============================================================================
+# Helper: bootstrap default config if none exists yet
+# =============================================================================
+ensure_default_config() {
+    if [ -f "$CONFIG_FILE" ]; then
+        return
+    fi
+    local DEFAULT="$INSTALL_DIR/config/default.json"
+    if [ ! -f "$DEFAULT" ]; then
+        log_warn "No default config found at $DEFAULT — skipping"
+        return
+    fi
+    mkdir -p "$CONFIG_DIR"
+    cp "$DEFAULT" "$CONFIG_FILE"
+    # Symlink into web/json so the UI can serve it immediately
+    ln -sf "$CONFIG_FILE" "$INSTALL_DIR/web/json/config.json" 2>/dev/null || true
+    log_success "Default config installed — open http://<device-ip>/ to configure"
+}
+
+# =============================================================================
 # Helper: install services
 # =============================================================================
 install_services() {
     log_section "Installing System Services"
 
     local SERVICE_SCRIPT="$INSTALL_DIR/services/system/install-services.sh"
-
-    if [ ! -f "$CONFIG_FILE" ]; then
-        log_error "No configuration found at $CONFIG_FILE"
-        log_error "Run: sudo $0 configure"
-        exit 1
-    fi
 
     if [ -f "$SERVICE_SCRIPT" ]; then
         log_info "Running service installation script..."
@@ -257,6 +260,16 @@ install_services() {
         log_warn "Service installation script not found: $SERVICE_SCRIPT"
         log_warn "You may need to install services manually"
     fi
+
+    # Always re-apply sudoers when services change — new service entries (e.g.
+    # post-update.sh, tee /etc/beosound5c/config.json) must be in sync with
+    # service files. Safe to call on every 'services' run — configure_user_groups
+    # is idempotent (overwrites sudoers, group membership uses -aG).
+    configure_user_groups
+
+    # Sync Python packages — new dependencies added in requirements.txt must be
+    # installed before services restart, just as post-update.sh does after OTA.
+    install_python_packages
 }
 
 # =============================================================================
@@ -290,7 +303,7 @@ case "$SUBCOMMAND" in
         show_banner
         if [ ! -f "$CONFIG_FILE" ]; then
             log_warn "No configuration found at $CONFIG_FILE"
-            log_info "Run: sudo $0 configure"
+            log_info "Run: sudo $0 (full install) to get started"
             exit 0
         fi
         show_summary
@@ -321,7 +334,7 @@ case "$SUBCOMMAND" in
         show_summary
         ;;
 
-    services)
+    services|update)
         show_banner
         if [ "$EUID" -ne 0 ]; then
             log_error "Service installation requires root (use sudo)"
@@ -351,7 +364,7 @@ case "$SUBCOMMAND" in
         show_banner
         run_preflight_checks
         run_system_setup
-        run_wizard
+        ensure_default_config
         install_services
         run_verification || true
         show_summary
@@ -363,7 +376,9 @@ case "$SUBCOMMAND" in
             echo -e "  ${YELLOW}⚠ ${FAILED_CHECKS} verification check(s) need attention${NC}"
         fi
 
-        # Next steps
+        # Determine device IP for the web UI hint
+        DEVICE_IP=$(hostname -I 2>/dev/null | awk '{print $1}')
+
         echo ""
         echo -e "${CYAN}╔══════════════════════════════════════════════════════════╗${NC}"
         echo -e "${CYAN}║${NC}  ${YELLOW}Next Steps${NC}                                                ${CYAN}║${NC}"
@@ -371,19 +386,16 @@ case "$SUBCOMMAND" in
         echo -e "${CYAN}║${NC}  1. Reboot to apply all changes:                          ${CYAN}║${NC}"
         echo -e "${CYAN}║${NC}     ${GREEN}sudo reboot${NC}                                             ${CYAN}║${NC}"
         echo -e "${CYAN}║${NC}                                                          ${CYAN}║${NC}"
-        echo -e "${CYAN}║${NC}  2. After reboot, verify services are running:            ${CYAN}║${NC}"
-        echo -e "${CYAN}║${NC}     ${GREEN}systemctl status beo-*${NC}                                  ${CYAN}║${NC}"
+        echo -e "${CYAN}║${NC}  2. Open the config UI to set up player, HA, audio:       ${CYAN}║${NC}"
+        echo -e "${CYAN}║${NC}     ${GREEN}http://${DEVICE_IP:-<device-ip>}/config${NC}                            ${CYAN}║${NC}"
         echo -e "${CYAN}║${NC}                                                          ${CYAN}║${NC}"
-        echo -e "${CYAN}║${NC}  3. View live logs:                                       ${CYAN}║${NC}"
-        echo -e "${CYAN}║${NC}     ${GREEN}journalctl -u beo-ui -f${NC}                                 ${CYAN}║${NC}"
+        echo -e "${CYAN}║${NC}  3. After reboot, verify services are running:            ${CYAN}║${NC}"
+        echo -e "${CYAN}║${NC}     ${GREEN}systemctl status beo-*${NC}                                  ${CYAN}║${NC}"
         echo -e "${CYAN}║${NC}                                                          ${CYAN}║${NC}"
         echo -e "${CYAN}╠══════════════════════════════════════════════════════════╣${NC}"
         echo -e "${CYAN}║${NC}                                                          ${CYAN}║${NC}"
-        echo -e "${CYAN}║${NC}  ${YELLOW}To modify settings later:${NC}                                ${CYAN}║${NC}"
-        echo -e "${CYAN}║${NC}     ${GREEN}sudo ./install.sh configure player${NC}   (player)          ${CYAN}║${NC}"
-        echo -e "${CYAN}║${NC}     ${GREEN}sudo ./install.sh configure ha${NC}       (HA)              ${CYAN}║${NC}"
-        echo -e "${CYAN}║${NC}     ${GREEN}sudo ./install.sh configure audio${NC}    (volume)          ${CYAN}║${NC}"
-        echo -e "${CYAN}║${NC}     ${GREEN}sudo ./install.sh status${NC}             (overview)        ${CYAN}║${NC}"
+        echo -e "${CYAN}║${NC}  ${YELLOW}After a git pull:${NC}                                         ${CYAN}║${NC}"
+        echo -e "${CYAN}║${NC}     ${GREEN}sudo ./install/install.sh update${NC}                        ${CYAN}║${NC}"
         echo -e "${CYAN}║${NC}                                                          ${CYAN}║${NC}"
         echo -e "${CYAN}║${NC}  ${YELLOW}Remote support:${NC}                                           ${CYAN}║${NC}"
         echo -e "${CYAN}║${NC}     ${GREEN}bs5c-support${NC}                          (enable)          ${CYAN}║${NC}"

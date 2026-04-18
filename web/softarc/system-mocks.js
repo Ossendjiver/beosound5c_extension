@@ -44,6 +44,29 @@
         { friendly_name: 'Family', state: 'home', entity_picture: null },
     ];
 
+    const fullConfig = {
+        device: 'Church',
+        menu: {
+            'PLAYING': 'playing', 'JOIN': 'join', 'SPOTIFY': 'spotify',
+            'RADIO': 'radio', 'TIDAL': 'tidal', 'SCENES': 'scenes',
+            'SECURITY': { url: 'http://homeassistant.local:8123/cameras' },
+            'SYSTEM': 'system', 'SHOWING': 'showing',
+        },
+        player: { type: 'sonos', ip: '192.168.0.190' },
+        bluetooth: { remote_mac: 'AA:BB:CC:DD:EE:FF' },
+        remote: { default_source: 'spotify' },
+        home_assistant: {
+            url: 'http://homeassistant.local:8123',
+            webhook_url: 'http://homeassistant.local:8123/api/webhook/beosound5c',
+        },
+        transport: { mode: 'mqtt', mqtt_broker: 'homeassistant.local' },
+        volume: { type: 'beolab5', host: 'beolab5-controller.local', max: 80, step: 3, output_name: 'BeoLab 5' },
+        join: { default_player: 'Kitchen and Dining' },
+        spotify: { client_id: '6420bddd82d046adb24b3009960c5d81', source: 'radio' },
+        tidal: { source: 'amem' },
+        showing: { entity_id: 'media_player.cinema_appletv' },
+    };
+
     const btRemotes = [
         { mac: 'AA:BB:CC:DD:EE:01', name: 'BEORC', connected: true, rssi: -52, battery: 85 },
         { mac: 'AA:BB:CC:DD:EE:02', name: 'BEORC', connected: false, rssi: null, battery: 60 },
@@ -99,6 +122,7 @@
 
     function mockResponse(url) {
         if (url.includes(':8767/webhook'))       return statusResponse();
+        if (url.includes(':8767/info'))          return { ip_address: '192.168.0.163', hostname: 'beosound5c-dev' };
         if (url.includes(':8770/router/status'))  return router;
         if (url.includes(':8766/player/status'))  return player;
         if (url.includes(':8767/bt/remotes'))     return btRemotes;
@@ -107,6 +131,13 @@
         if (url.includes(':8777/status'))          return tidal;
         if (url.includes(':8769/status'))          return cd;
         if (url.includes(':8767/people'))          return people;
+        if (url.includes('json/config.json'))      return fullConfig;
+        if (url.includes(':8767/config'))          return { ok: true };
+        if (url.includes('/discover/sonos'))    return [
+            { ip: '192.168.0.190', name: 'Church Living' },
+            { ip: '192.168.1.118', name: 'Kitchen' },
+            { ip: '192.168.1.200', name: 'Office' },
+        ];
         return null;
     }
 
@@ -114,7 +145,21 @@
 
     const _realFetch = window.fetch;
     window.fetch = function (url, options) {
-        const data = mockResponse(typeof url === 'string' ? url : url.url);
+        const urlStr = typeof url === 'string' ? url : url.url;
+
+        // QR code: return a placeholder SVG as PNG-like response
+        if (urlStr.includes('/qrcode')) {
+            const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="160" height="160">
+                <rect width="160" height="160" fill="#000"/>
+                <rect x="10" y="10" width="140" height="140" fill="#000" stroke="#fff" stroke-width="1"/>
+                <text x="80" y="72" font-family="monospace" font-size="10" fill="#888" text-anchor="middle">QR code</text>
+                <text x="80" y="88" font-family="monospace" font-size="10" fill="#555" text-anchor="middle">(mock mode)</text>
+            </svg>`;
+            const blob = new Blob([svg], { type: 'image/svg+xml' });
+            return Promise.resolve(new Response(blob, { status: 200, headers: { 'Content-Type': 'image/svg+xml' } }));
+        }
+
+        const data = mockResponse(urlStr);
         if (data !== null) {
             return Promise.resolve(new Response(JSON.stringify(data), {
                 status: 200,

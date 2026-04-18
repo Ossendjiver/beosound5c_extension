@@ -11,8 +11,8 @@ SourceBase — shared plumbing for BeoSound 5c source services.
 Subclass contract:
 
     class MySource(SourceBase):
-        id   = "demo"        # router source ID
-        name = "Demo"        # menu display name
+        id   = "mysource"    # router source ID
+        name = "My Source"   # menu display name
         port = 8771          # HTTP port
         action_map = {       # remote action → command name
             "play": "toggle",

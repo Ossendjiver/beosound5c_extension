@@ -29,6 +29,7 @@ class VolumeAdapter(ABC):
         self._max_volume = max_volume
         self._pending_volume: float | None = None
         self._debounce_handle: asyncio.TimerHandle | None = None
+        self._flush_task: asyncio.Task | None = None
         self._debounce_ms = debounce_ms
 
     # -- Volume (debounced) --
@@ -44,7 +45,8 @@ class VolumeAdapter(ABC):
         loop = asyncio.get_running_loop()
         self._debounce_handle = loop.call_later(
             self._debounce_ms / 1000,
-            lambda: asyncio.ensure_future(self._do_flush_with_logging()),
+            lambda: setattr(self, '_flush_task',
+                            loop.create_task(self._do_flush_with_logging())),
         )
 
     async def _do_flush_with_logging(self):

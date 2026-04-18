@@ -100,8 +100,8 @@ run_verification() {
     done
 
     # Test HTTP server
-    if curl -s -o /dev/null -w "%{http_code}" http://localhost:8000/ 2>/dev/null | grep -q "200"; then
-        log_success "HTTP server responding on port 8000"
+    if curl -s -o /dev/null -w "%{http_code}" http://localhost/ 2>/dev/null | grep -q "200"; then
+        log_success "HTTP server responding on port 80"
     else
         log_warn "HTTP server not responding (may need reboot)"
     fi

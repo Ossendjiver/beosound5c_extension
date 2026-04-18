@@ -778,7 +778,7 @@ startBtn.addEventListener('click', async () => {
         async with self._login_lock:
             if self._pending_login:
                 pinlogin, oauth_url, created_time = self._pending_login
-                if time.monotonic() - created_time < 10:
+                if time.monotonic() - created_time < 600:
                     log.info("Reusing existing Plex OAuth PIN (%.1fs old)",
                              time.monotonic() - created_time)
                     return web.json_response({

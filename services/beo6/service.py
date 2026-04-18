@@ -1126,7 +1126,6 @@ class Beo6Service:
                       seed_key=None, seed_value=None):
         tracks = list(self._all_tracks)
 
-        # Apply filters
         for attr, filt in filters.items():
             val = filt['value']
             opr = filt['opr']
@@ -1166,7 +1165,6 @@ class Beo6Service:
             last += seed_offset
         page = tracks[first:last + 1] if last >= first else []
 
-        # Build response
         items_xml = ""
         for t in page:
             art_path = self._artwork_path(t.get('image', ''))

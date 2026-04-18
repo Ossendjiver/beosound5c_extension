@@ -12,5 +12,4 @@ Current sources:
   usb.py      — USB file browsing and playback via mpv
   plex.py     — Plex music browsing and playback
   news.py     — RSS/TTS news playback via local mpv
-  demo.py     — Demo mode with bundled media
 """

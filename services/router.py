@@ -84,6 +84,7 @@ class EventRouter:
         self.output_device = cfg("volume", "output_name", default="BeoLab 5")
         self._volume_step = int(cfg("volume", "step", default=3))
         self._balance_step = 1
+        self._pre_mute_vol: float = 30.0
         self._session: aiohttp.ClientSession | None = None
         self._volume = None
         self._accept_player_volume = False
@@ -98,6 +99,9 @@ class EventRouter:
         self._background_tasks = BackgroundTaskSet(logger, label="router")
         self._latest_action_ts: float = 0.0
         self._canvas_generation: int = 0
+        self._music_video_generation: int = 0
+        self._music_video_client = None
+        self._music_video_pending_key: str = ""  # "artist||title" currently being looked up
         self._player_type: str = ""
         self._last_local_volume_set: float = 0.0
 
@@ -200,6 +204,10 @@ class EventRouter:
             logger.info("Volume reports from player: ignored (adapter=%s, player=%s)",
                          adapter_type, player_type)
 
+        from lib.music_video import MusicVideoClient
+        self._music_video_client = MusicVideoClient()
+        logger.info("Music video lookup: enabled (Invidious, no API key required)")
+
         logger.info("Router started (transport: %s, output: %s, volume: %.0f%%)",
                      self.transport.mode, self.output_device, self.volume)
 
@@ -233,7 +241,7 @@ class EventRouter:
             ) as resp:
                 if resp.status == 200:
                     data = await resp.json()
-                    return data.get("state") in ("playing", "paused")
+                    return data.get("state") == "playing"
         except Exception:
             pass
         return False
@@ -306,9 +314,6 @@ class EventRouter:
 
     async def _startup_recovery(self):
         await self._probe_running_sources(startup=True)
-        if self.media.state:
-            logger.info("Media state already set by source resync, skipping player recovery")
-            return
         try:
             async with self._session.get(
                 PLAYER_MEDIA,
@@ -372,10 +377,17 @@ class EventRouter:
         is_local = (device_type == "Audio" and self._handle_audio) or \
                    (device_type == "Video" and self._handle_video)
 
+        # Actions that cause a track change — broadcast a skip hint so the UI
+        # can immediately stop video panels without waiting for the full
+        # track_change round-trip (covers all origins: button, BeoRemote, MQTT).
+        _SKIP_ACTIONS = frozenset({"next", "prev", "left", "right"})
+
         # 1. Active source handles this action
         if is_local and active and active.state in ("playing", "paused") and action in active.handles:
             action_ts = self._latest_action_ts or 0
             logger.info("-> %s: %s (active source)", active.id, action)
+            if action in _SKIP_ACTIONS:
+                await self.media.broadcast("skip_hint", {})
             await self._forward_to_source(active, {**payload, "action_ts": action_ts})
             return
 
@@ -418,6 +430,8 @@ class EventRouter:
         if is_local and not active and action in _TRANSPORT_ACTIONS:
             player_action = _TRANSPORT_ACTIONS[action]
             logger.info("-> player direct: %s (no active source)", player_action)
+            if player_action in ("next", "prev"):
+                await self.media.broadcast("skip_hint", {})
             try:
                 async with self._session.post(
                     player_url(f"/player/{player_action}"),
@@ -449,12 +463,31 @@ class EventRouter:
 
         # 4. Volume
         if action in ("volup", "voldown") and is_local:
-            delta = self._volume_step if action == "volup" else -self._volume_step
-            new_vol = max(0, min(100, self.volume + delta))
-            logger.info("-> volume: %.0f%% -> %.0f%% (%s)", self.volume, new_vol, action)
-            if action == "volup" and self._volume and self._volume.is_on_cached() is False:
-                self._spawn(self._volume.power_on(), name="vol_power_on")
-            self._spawn(self.set_volume(new_vol), name="set_volume")
+            if action == "volup" and self.volume == 0 and self._pre_mute_vol > 0:
+                logger.info("-> unmute via volup: restoring %.0f%%", self._pre_mute_vol)
+                if self._volume and self._volume.is_on_cached() is False:
+                    self._spawn(self._volume.power_on(), name="vol_power_on")
+                self._spawn(self.set_volume(self._pre_mute_vol), name="unmute")
+            else:
+                delta = self._volume_step if action == "volup" else -self._volume_step
+                new_vol = max(0, min(100, self.volume + delta))
+                logger.info("-> volume: %.0f%% -> %.0f%% (%s)", self.volume, new_vol, action)
+                if action == "volup" and self._volume and self._volume.is_on_cached() is False:
+                    self._spawn(self._volume.power_on(), name="vol_power_on")
+                self._spawn(self.set_volume(new_vol), name="set_volume")
+            return
+
+        # 4a. Mute toggle — zero volume saves pre-mute level, restore on second press
+        if action in ("mute", "p.mute") and is_local:
+            if self.volume > 0:
+                self._pre_mute_vol = self.volume
+                logger.info("-> mute: saving %.0f%%, setting volume to 0", self._pre_mute_vol)
+                self._spawn(self.set_volume(0), name="mute")
+            else:
+                logger.info("-> unmute: restoring volume to %.0f%%", self._pre_mute_vol)
+                if self._volume and self._volume.is_on_cached() is False:
+                    self._spawn(self._volume.power_on(), name="unmute_power_on")
+                self._spawn(self.set_volume(self._pre_mute_vol), name="unmute")
             return
 
         # 4b. Balance
@@ -467,7 +500,8 @@ class EventRouter:
                 self._spawn(self._volume.set_balance(new_bal), name="set_balance")
             return
 
-        # 4c. Off / standby
+        # 4c. Off / standby — intentional fallthrough to HA (§6) so HA also
+        # receives the off event (e.g. to trigger a scene or power-off routine).
         if action == "off" and is_local:
             logger.info("-> standby (off)")
             self._spawn(self._player_stop(), name="off_stop")
@@ -475,7 +509,8 @@ class EventRouter:
                 self._spawn(self._volume.power_off(), name="off_power")
             self._spawn(self._screen_off(), name="off_screen")
 
-        # 4d. BLUE → JOIN
+        # 4d. BLUE → JOIN — returns only if JOIN is configured locally; otherwise
+        # intentional fallthrough to HA so HA can handle the BLUE button.
         if action == "blue" and is_local:
             join_cfg = cfg("join")
             default_player = join_cfg.get("default_player") if join_cfg else None
@@ -703,6 +738,36 @@ class EventRouter:
         logger.info("Canvas injected: %s", canvas_url[:60])
         await self.media.push_media(current, "canvas_inject")
 
+    # ── Music video injection ──
+
+    async def _inject_music_video(self, payload: dict, generation: int,
+                                   artist: str, title: str):
+        try:
+            url = await self._music_video_client.lookup(artist, title, self._session)
+        except Exception as e:
+            logger.warning("Music video lookup error for %s – %s: %s", artist, title, e)
+            self._music_video_pending_key = ""
+            return
+        if not url:
+            self._music_video_pending_key = ""
+            return
+        if self._music_video_generation != generation:
+            logger.info("Music video injection stale (gen %d != %d), dropping",
+                        generation, self._music_video_generation)
+            return
+        current = self.media.state
+        if not current:
+            return
+        # Verify the same track is still playing
+        if (current.get("artist", "").strip() != artist
+                or current.get("title", "").strip() != title):
+            logger.info("Music video arrived for different track, dropping")
+            return
+        current["music_video_url"] = url
+        self._music_video_pending_key = ""
+        logger.info("Music video injected for %s – %s", artist, title)
+        await self.media.push_media(current, "music_video_inject")
+
     # ── Media POST handler ──
 
     async def _handle_media_post(self, request: web.Request) -> web.Response:
@@ -750,6 +815,40 @@ class EventRouter:
                 self._inject_canvas(dict(payload), self._canvas_generation,
                                     hinted_uri=hinted_uri),
                 name="canvas_inject")
+
+        # Music video injection — works for all sources except radio
+        # (radio metadata is station/programme names, not artist+title)
+        mv_artist = payload.get("artist", "").strip()
+        mv_title = payload.get("title", "").strip()
+        mv_source = payload.get("_source_id", "")
+        # Allow lookup on track_change/external_control regardless of state —
+        # Sonos briefly reports "stopped" during track transitions even when
+        # a new track is about to play. Also trigger on resync (router restart)
+        # so the video is recovered for the current track without waiting for
+        # the next skip. Gate on state only for plain "update" reason.
+        mv_state_ok = (reason in ("track_change", "external_control", "resync")
+                       or payload.get("state") == "playing")
+        if (self._music_video_client
+                and mv_artist and mv_title
+                and mv_source != "radio"
+                and mv_state_ok
+                and not payload.get("music_video_url")):
+            cached = self._music_video_client.get_cached(mv_artist, mv_title)
+            if cached:
+                # Instant cache hit — include in this push
+                payload["music_video_url"] = cached
+                logger.info("Music video cache hit for %s – %s", mv_artist, mv_title)
+            elif cached is None:
+                # Not yet looked up — spawn background lookup (once per track)
+                pending_key = f"{mv_artist}||{mv_title}"
+                if pending_key != self._music_video_pending_key:
+                    self._music_video_pending_key = pending_key
+                    self._music_video_generation += 1
+                    self._spawn(
+                        self._inject_music_video(dict(payload), self._music_video_generation,
+                                                 mv_artist, mv_title),
+                        name="music_video_inject")
+            # cached == "" → no video found for this track; skip silently
 
         # Pre-cache TTS
         title = payload.get("title", "")

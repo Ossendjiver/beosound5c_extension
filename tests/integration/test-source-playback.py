@@ -132,7 +132,7 @@ async def discover():
         pass
 
     # Source details
-    source_ports = {"cd": 8769, "spotify": 8771, "usb": 8773, "demo": 8775, "plex": 8778}
+    source_ports = {"cd": 8769, "spotify": 8771, "usb": 8773, "plex": 8778}
     for sid, port in source_ports.items():
         try:
             r = json.loads(await http_get(port, "/status"))
@@ -157,20 +157,14 @@ async def discover():
 # ── Find a playable source ──
 
 def pick_playable_source(info):
-    """Pick the best source for playback testing. Prefers USB > demo > plex > spotify."""
-    for sid in ["usb", "demo", "plex", "spotify"]:
+    """Pick the best source for playback testing. Prefers USB > plex > spotify."""
+    for sid in ["usb", "plex", "spotify"]:
         sdata = info["sources"].get(sid, {})
         status = sdata.get("status", {})
-        # Skip sources that need reauth
         if status.get("needs_reauth"):
             continue
-        # USB: check it has content
         if sid == "usb" and status.get("available"):
             return sid, sdata.get("port", 8773)
-        # Demo: always playable
-        if sid == "demo" and sdata.get("port"):
-            return sid, sdata["port"]
-        # Plex: needs credentials
         if sid == "plex" and status.get("has_credentials") and not status.get("needs_reauth"):
             return sid, sdata.get("port", 8778)
         # Spotify: needs working auth

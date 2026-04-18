@@ -41,3 +41,6 @@ pyudev>=0.24.0
 
 # Spotify Canvas (protobuf for gRPC decoding)
 protobuf>=4.0.0
+
+# QR code generation (config page on-device)
+qrcode>=7.0.0

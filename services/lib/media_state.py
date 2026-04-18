@@ -19,7 +19,7 @@ _WS_SEND_TIMEOUT = 2.0
 
 _IDLE_MEDIA = {
     "state": "idle", "title": "", "artist": "", "album": "",
-    "artwork_url": "", "canvas_url": "",
+    "artwork_url": "", "canvas_url": "", "music_video_url": "",
 }
 
 
@@ -173,8 +173,9 @@ class MediaState:
             title=title,
         )
 
-        # Ensure canvas_url always present to clear stale canvas
+        # Ensure canvas_url and music_video_url always present to clear stale values
         payload.setdefault("canvas_url", "")
+        payload.setdefault("music_video_url", "")
 
         # Preserve context for caller (canvas injection, TTS)
         payload["_validated_source_id"] = source_id
@@ -183,9 +184,15 @@ class MediaState:
         return None  # accepted
 
     async def accept_and_push(self, payload: dict, reason: str = "update"):
-        """Store validated media and push to clients."""
+        """Store validated media and push to clients.
+
+        The push is spawned as a background task so the caller (player HTTP
+        handler) can return without waiting for every WS client to drain.
+        State is cached before the task fires, so late-joining clients get the
+        correct value immediately on reconnect.
+        """
         self._state = payload
-        await self.push_media(payload, reason)
+        asyncio.ensure_future(self.push_media(payload, reason))
 
     # ── WebSocket endpoint ──
 

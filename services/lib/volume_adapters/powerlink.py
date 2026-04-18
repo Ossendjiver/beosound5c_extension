@@ -9,6 +9,10 @@ Chain: router.py -> PowerLinkVolume -> HTTP -> masterlink.py -> PC2 USB -> speak
 Volume is an absolute value (0-max).  masterlink.py uses 0xE3 to set initial
 volume at power-on and 0xEB steps for live changes.  The device echoes back
 confirmed volume via USB feedback messages.
+
+Tone (bass/treble/balance/loudness) goes through masterlink.py's /mixer/tone
+endpoint, which applies it via ALSA (amixer) and also pokes the PC2 via 0xE3
+as a best-effort (PC2 firmware may ignore 0xE3 after power-on).
 """
 
 import logging
@@ -103,3 +107,36 @@ class PowerLinkVolume(VolumeAdapter):
         except Exception as e:
             logger.warning("Could not check PowerLink state: %s", e)
             return False
+
+    # --- Tone (bass / treble / balance / loudness) ---
+
+    async def get_tone(self) -> dict | None:
+        try:
+            async with self._session.get(
+                f"{self._base}/mixer/tone",
+                timeout=aiohttp.ClientTimeout(total=2.0),
+            ) as resp:
+                return await resp.json()
+        except Exception as e:
+            logger.warning("Could not read PowerLink tone: %s", e)
+            return None
+
+    async def set_tone(self, **kwargs) -> dict | None:
+        """Set one or more of: bass, treble, balance (ints), loudness (bool).
+        Anything omitted is left untouched."""
+        body = {k: v for k, v in kwargs.items()
+                if k in ("bass", "treble", "balance", "loudness") and v is not None}
+        if not body:
+            return None
+        try:
+            async with self._session.post(
+                f"{self._base}/mixer/tone",
+                json=body,
+                timeout=aiohttp.ClientTimeout(total=3.0),
+            ) as resp:
+                data = await resp.json()
+                logger.info("-> PowerLink tone: %s (HTTP %d)", body, resp.status)
+                return data
+        except Exception as e:
+            logger.warning("PowerLink tone set failed: %s", e)
+            return None

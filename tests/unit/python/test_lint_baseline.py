@@ -41,7 +41,7 @@ def _rel(p: Path) -> str:
 # update *up* only with a code review comment explaining why.
 
 CREATE_TASK_BASELINE: dict[str, int] = {
-    "input.py": 2,
+    "input.py": 3,  # +1 for startup beacon (send_beacon task)
     "bluetooth.py": 5,
     "router.py": 1,
     "beo6/service.py": 1,
@@ -52,7 +52,6 @@ CREATE_TASK_BASELINE: dict[str, int] = {
     "lib/transport.py": 1,
     "lib/librespot.py": 1,
     "lib/source_base.py": 1,
-    "sources/demo.py": 1,
     "sources/news.py": 1,
     "sources/cd.py": 3,
     "sources/apple_music/service.py": 5,
@@ -76,7 +75,6 @@ SYS_PATH_INSERT_BASELINE: dict[str, int] = {
     "players/sonos.py": 1,
     "players/bluesound.py": 1,
     "lib/spotify_canvas.py": 1,
-    "sources/demo.py": 1,
     "sources/news.py": 2,
     "sources/cd.py": 1,
     "sources/apple_music/fetch.py": 1,

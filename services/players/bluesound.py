@@ -27,6 +27,7 @@ import aiohttp
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from lib.config import cfg
 from lib.player_base import PlayerBase
+from lib.timings import USER_ACTION_HORIZON
 
 # Configuration
 BLUESOUND_IP = cfg("player", "ip", default="")
@@ -205,7 +206,6 @@ class BluesoundPlayer(PlayerBase):
                 # Update etag for next long-poll
                 self._etag = root.get("etag", self._etag)
 
-                # Parse state
                 raw_state = self._xml_text(root, "state", "stop")
                 if raw_state in ("play", "stream"):
                     state = "playing"
@@ -221,13 +221,13 @@ class BluesoundPlayer(PlayerBase):
                     logger.info("Playback started (was: %s), triggering wake",
                                 self._current_playback_state)
                     self._spawn(self.trigger_wake(), name="trigger_wake")
-                    if self.seconds_since_command() > 3.0:
+                    if self.seconds_since_command() > USER_ACTION_HORIZON:
                         logger.info("External playback detected, clearing active source")
                         self._spawn(
                             self.notify_router_playback_override(force=True),
                             name="playback_override")
                 elif state == "stopped" and self._current_playback_state == "playing":
-                    if self.seconds_since_command() > 3.0:
+                    if self.seconds_since_command() > USER_ACTION_HORIZON:
                         logger.info("External stop detected")
                         self._spawn(
                             self.notify_router_playback_override(force=True),
@@ -262,7 +262,6 @@ class BluesoundPlayer(PlayerBase):
                 if track_changed:
                     self._current_track_id = track_id
 
-                    # Fetch artwork
                     artwork_base64 = None
                     artwork_size = None
                     if image_url:
@@ -304,7 +303,7 @@ class BluesoundPlayer(PlayerBase):
                     self._spawn(self._prefetch_queue_artwork(), name="prefetch_artwork")
 
                     # External track change? Clear active source
-                    if self.seconds_since_command() > 3.0:
+                    if self.seconds_since_command() > USER_ACTION_HORIZON:
                         self._spawn(
                             self.notify_router_playback_override(force=True),
                             name="playback_override")

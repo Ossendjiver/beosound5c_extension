@@ -12,10 +12,6 @@
       "after": "music",
       "handles": ["play", "pause", "next", "prev", "stop", "go", "left", "right", "digits", "info"]
     },
-    "demo": {
-      "after": "music",
-      "handles": ["play", "go", "left", "right", "stop", "pause"]
-    },
     "usb": {
       "after": "music",
       "handles": ["play", "pause", "next", "prev", "stop", "go", "left", "right"]

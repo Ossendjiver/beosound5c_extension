@@ -697,7 +697,6 @@ authBtn.addEventListener('click', async () => {{
             if not user_token:
                 return web.Response(text='No user token received', status=400)
 
-            # Save tokens
             try:
                 loop = asyncio.get_running_loop()
                 await loop.run_in_executor(None, save_tokens, user_token, storefront)
@@ -705,7 +704,6 @@ authBtn.addEventListener('click', async () => {{
             except Exception as e:
                 log.warning("Could not save tokens to disk (%s) — using in-memory", e)
 
-            # Set auth state
             self.auth.set_credentials(user_token, storefront)
             self._detect_player()
 

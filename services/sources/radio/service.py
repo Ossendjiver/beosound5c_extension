@@ -853,7 +853,6 @@ class RadioService(SourceBase):
 
         program_image = sr_data.get("image", "")
 
-        # Fetch program artwork
         if program_image:
             try:
                 async with self._api_session.get(program_image, timeout=10) as resp:

@@ -24,7 +24,6 @@ DEFAULT_SOURCE_HANDLES = {
                 "up", "down"} | _DIGITS,
     "usb": {"play", "pause", "next", "prev", "stop", "go", "left", "right",
             "up", "down"},
-    "demo": {"play", "pause", "next", "prev", "stop", "go"},
     "news": {"go", "left", "right", "up", "down"},
     "radio": {"play", "pause", "next", "prev", "stop", "go", "left", "right",
               "up", "down", "red", "blue"} | _DIGITS,
@@ -36,7 +35,6 @@ DEFAULT_SOURCE_PORTS = {
     "spotify": 8771,
     "usb": 8773,
     "apple_music": 8774,
-    "demo": 8775,
     "news": 8776,
     "tidal": 8777,
     "plex": 8778,
@@ -194,7 +192,6 @@ class SourceRegistry:
             source = Source(id, handles)
             self._sources[id] = source
 
-        # Update fields
         for key in ("name", "command_url", "menu_preset", "player"):
             if key in fields:
                 setattr(source, key, fields[key])
@@ -265,7 +262,13 @@ class SourceRegistry:
                     "active_source": id, "source_name": source.name,
                     "player": source.player,
                 })
-                await router.media.push_idle("source_change")
+                # Player-backed sources own their metadata — the player service
+                # will push the correct track within milliseconds, so a
+                # push_idle here would only flash empty metadata unnecessarily.
+                # Non-player sources (e.g. web views) still need the idle push
+                # to clear stale metadata from a previous source.
+                if not source.player:
+                    await router.media.push_idle("source_change")
                 actions.append("source_change")
                 logger.info("Source activated: %s (player=%s)", id, source.player)
 

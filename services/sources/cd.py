@@ -117,7 +117,6 @@ class CDDrive:
         monitor = pyudev.Monitor.from_netlink(context)
         monitor.filter_by(subsystem='block', device_type='disk')
 
-        # Check initial state
         await self._update_state()
 
         # Use a threading event pipe to bridge udev callbacks to asyncio
@@ -478,7 +477,14 @@ class CDPlayer:
         new_track = pos + 1  # 0-based → 1-based
 
         if new_track == self.current_track:
-            return  # duplicate or initial observation
+            # Seek landed on the pre-set track — clear pending so gapless
+            # advances aren't suppressed afterward.
+            if self._pending_track is not None:
+                self._pending_track = None
+                log.info(f"Seek confirmed → track {new_track}")
+                if self._on_track_change:
+                    await self._on_track_change()
+            return
 
         # If a seek is pending, only accept the matching track
         if self._pending_track is not None:
@@ -512,10 +518,16 @@ class CDPlayer:
             await self._on_track_change()
 
     async def _seek_track(self, track_num):
-        """Seek to a track (1-based) in the running mpv via chapter seeking."""
+        """Seek to a track (1-based) in the running mpv."""
         self._pending_track = track_num
         self.current_track = track_num
-        await self._send_ipc({'command': ['set_property', 'chapter', track_num - 1]})
+        # Use absolute-time seek with the raw TOC offset — more direct path to
+        # the CDDA demuxer than set_property chapter, ensuring the read head
+        # actually repositions even with --gapless-audio buffering.
+        if self.track_offsets and track_num <= len(self.track_offsets):
+            await self._send_ipc({'command': ['seek', self.track_offsets[track_num - 1], 'absolute']})
+        else:
+            await self._send_ipc({'command': ['set_property', 'chapter', track_num - 1]})
 
     def _next_shuffle_track(self):
         if not self._play_order:
@@ -1102,7 +1114,6 @@ class CDService(SourceBase):
         if self.cdplayer.state == 'playing':
             return {'message': 'already playing'}
 
-        # Start playback
         await self.cdplayer.play()
         await self.register('playing', navigate=True, auto_power=True)
         await self._broadcast_cd_update()
