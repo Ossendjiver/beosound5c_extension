@@ -70,8 +70,13 @@ if ! ls /dev/dri/card* &>/dev/null; then
   exit 1
 fi
 
-# Start X with a wrapper that includes crash recovery
+# Outer loop — restart the entire X session if it crashes.
+# xinit exits when its client (bash) exits, so any clean exit from the inner
+# script (Chromium crash loop) lands here. We sleep briefly and try again.
+# The VT-failure reboot and SIGTERM shutdown are handled inside the loop.
+while true; do
 xinit /bin/bash -c '
+
   # Kill fbi if running (Plymouth already quit with retain-splash)
   sudo pkill -9 fbi 2>/dev/null || true
 
@@ -112,7 +117,7 @@ xinit /bin/bash -c '
 
   # Detect which port the HTTP server is on.
   # Port 80 is standard (v0.7.2+). Port 8000 is the legacy default — a device
-  # upgrading from <0.7.2 via OTA won't have had its service file updated yet,
+  # upgrading from <0.7.2 via OTA will not have had its service file updated yet,
   # so it falls back gracefully without showing a black screen.
   HTTP_PORT=80
   log "Waiting for HTTP server..."
@@ -146,6 +151,12 @@ xinit /bin/bash -c '
   CRASH_RESET_TIME=300  # Reset crash count after 5 minutes of stability
 
   while true; do
+    # Bail out if X died — outer loop will restart the full X session
+    if ! xset q &>/dev/null; then
+      log "X server is gone. Exiting inner loop to restart X..."
+      exit 1
+    fi
+
     START_TIME=$(date +%s)
     log "Starting Chromium (crash count: $CRASH_COUNT)"
 
@@ -262,4 +273,18 @@ xinit /bin/bash -c '
 
     log "Restarting Chromium..."
   done
-' -- :0
+' -- :0 vt7
+
+  # ── Post-xinit check (inside outer restart loop) ──
+  # Reboot if Xorg failed to claim the VT — that state can only be cleared by reboot.
+  XORG_LOG="$HOME/.local/share/xorg/Xorg.0.log"
+  if grep -q "Switching VT failed" "$XORG_LOG" 2>/dev/null; then
+    log "ERROR: Xorg could not claim a VT (previous session was hard-killed)."
+    log "Rebooting in 5 seconds to recover..."
+    sleep 5
+    sudo reboot
+  fi
+
+  log "X session ended. Restarting in 5 seconds..."
+  sleep 5
+done
