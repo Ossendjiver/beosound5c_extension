@@ -1,0 +1,1035 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MASS - Beosound 5c</title>
+    <link rel="stylesheet" href="styles.css">
+    <link rel="stylesheet" href="splash.css">
+    <link rel="stylesheet" href="../assets/phosphor/phosphor.css">
+    
+    <style>
+        .list-item .item-text {
+            max-width: 340px !important;
+        }
+
+        .list-item .item-image-container {
+            max-width: 104px !important;
+        }
+
+        .mass-breadcrumb .item-name {
+            max-width: 220px;
+            white-space: normal;
+            line-height: 1.1;
+        }
+
+        .mass-breadcrumb .item-image-container {
+            max-width: 96px !important;
+        }
+
+        .fast-letter-overlay {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            width: 116px;
+            height: 116px;
+            margin-left: -58px;
+            margin-top: -58px;
+            border-radius: 26px;
+            background: rgba(9, 14, 24, 0.22);
+            border: 1px solid rgba(141, 175, 228, 0.18);
+            box-shadow: 0 14px 30px rgba(0, 0, 0, 0.18);
+            backdrop-filter: blur(8px);
+            color: #ffffff;
+            font: 300 58px/116px Arial, sans-serif;
+            text-align: center;
+            opacity: 0;
+            transform: scale(0.92);
+            transition: opacity 90ms linear, transform 90ms ease;
+            pointer-events: none;
+            z-index: 3600;
+        }
+
+        .fast-letter-overlay.visible {
+            opacity: 1;
+            transform: scale(1);
+        }
+
+        .action-toast-overlay {
+            position: absolute;
+            top: 18px;
+            left: 50%;
+            transform: translateX(-50%) translateY(-10px);
+            min-width: 220px;
+            max-width: 460px;
+            padding: 10px 20px;
+            border-radius: 999px;
+            background: rgba(8, 12, 20, 0.72);
+            border: 1px solid rgba(148, 199, 255, 0.22);
+            box-shadow: 0 16px 34px rgba(0, 0, 0, 0.22);
+            backdrop-filter: blur(8px);
+            color: #f2f7ff;
+            font: 500 14px/1.25 Arial, sans-serif;
+            letter-spacing: 0.3px;
+            text-align: center;
+            opacity: 0;
+            transition: opacity 140ms ease, transform 140ms ease;
+            pointer-events: none;
+            z-index: 3800;
+        }
+
+        .action-toast-overlay.visible {
+            opacity: 1;
+            transform: translateX(-50%) translateY(0);
+        }
+    </style>
+</head>
+<body>
+    <div id="app">
+        <div id="sync-indicator" style="position: absolute; top: 15px; right: 20px; display: none; align-items: center; gap: 8px; z-index: 1000; background: rgba(10,10,10,0.85); padding: 6px 12px; border-radius: 20px; color: #aaa; font-family: sans-serif; font-size: 11px; letter-spacing: 1px; border: 1px solid #333;">
+            <div class="loading-spinner" style="width: 12px; height: 12px; border-width: 2px;"></div>
+            SYNCING
+        </div>
+
+        <div class="counter">
+            <span id="current-item">1</span> / <span id="total-items">100</span>
+        </div>
+        <div class="hierarchy-depth-1" id="hierarchy-background"></div>
+        <div class="arc-container" id="arc-container"></div>
+    </div>
+
+    <script src="../js/config.js"></script>
+    <script src="../js/arc-utils.js"></script>
+    <script src="../js/emulator-bridge.js"></script>
+    <script src="../assets/qrcode.min.js"></script>
+    <script src="script.js"></script>
+    <script>
+        // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        // Sync monitor â€” watches item count growth between polls
+        // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        let lastItemCount = 0;
+
+        function countTotalItems(data) {
+            if (!Array.isArray(data)) return 0;
+            let count = 0;
+            data.forEach(category => {
+                if (category.tracks) count += category.tracks.length;
+            });
+            return count;
+        }
+
+        function startSyncMonitor(MASS_URL) {
+            setInterval(async () => {
+                try {
+                    const resp = await fetch(`${MASS_URL}/playlists`);
+                    if (!resp.ok) return;
+                    const data = await resp.json();
+                    const payload = Array.isArray(data) ? data : (data.data || data);
+                    const currentCount = countTotalItems(payload);
+                    const indicator = document.getElementById('sync-indicator');
+                    if (indicator) {
+                        if (currentCount > lastItemCount && lastItemCount > 0) {
+                            indicator.style.display = 'flex';
+                        } else if (currentCount === lastItemCount) {
+                            indicator.style.display = 'none';
+                        }
+                    }
+                    lastItemCount = currentCount;
+                } catch (e) {}
+            }, 4000);
+        }
+
+        function showRuntimeError(source, error) {
+            const app = document.getElementById('app');
+            if (!app) return;
+            const message = (error && error.message) ? error.message : String(error || 'Unknown error');
+            let panel = document.getElementById('runtime-error-panel');
+            if (!panel) {
+                panel = document.createElement('div');
+                panel.id = 'runtime-error-panel';
+                panel.style.cssText = 'position:absolute;right:16px;bottom:16px;max-width:420px;padding:12px 14px;background:rgba(20,0,0,0.92);border:1px solid #a33;color:#f5dcdc;font:12px/1.4 monospace;z-index:4000;white-space:pre-wrap;';
+                app.appendChild(panel);
+            }
+            panel.textContent = `[MASS ${source}] ${message}`;
+            console.error('[MASS UI ERROR]', source, error);
+        }
+
+        const SHOW_RUNTIME_ERRORS = /(?:\?|&)debugErrors=1(?:&|$)/.test(window.location.search);
+        if (SHOW_RUNTIME_ERRORS) {
+            window.addEventListener('error', (event) => {
+                showRuntimeError('error', event.error || event.message);
+            });
+
+            window.addEventListener('unhandledrejection', (event) => {
+                showRuntimeError('promise', event.reason);
+            });
+        }
+
+        const STATIC_CACHE_URL = '../json/mass_playlists.json';
+        const SERVICE_BOOT_TIMEOUT_MS = 900;
+        const ACTION_TOAST_MIN_MS = 2000;
+        const ACTION_TOAST_MAX_MS = 4000;
+        const FAST_LETTER_MIN_SPEED = 3;
+        const FAST_LETTER_ARTICLES = new Set(['A', 'AN', 'THE']);
+
+        async function fetchJson(url, options = {}) {
+            const timeoutMs = Number(options.timeoutMs || 0);
+            const controller = timeoutMs > 0 ? new AbortController() : null;
+            let timeoutId = null;
+            try {
+                if (controller) {
+                    timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+                }
+                const resp = await fetch(url, {
+                    cache: options.cacheMode || 'no-store',
+                    signal: controller ? controller.signal : undefined,
+                });
+                if (!resp.ok) return null;
+                return await resp.json();
+            } catch (error) {
+                return null;
+            } finally {
+                if (timeoutId) clearTimeout(timeoutId);
+            }
+        }
+
+        function normalizeLibraryPayload(raw) {
+            return Array.isArray(raw) ? raw : (raw?.data || raw);
+        }
+
+        let actionToastState = null;
+        const ensureActionToast = () => {
+            let overlay = document.getElementById('action-toast-overlay');
+            if (!overlay) {
+                overlay = document.createElement('div');
+                overlay.id = 'action-toast-overlay';
+                overlay.className = 'action-toast-overlay';
+                document.getElementById('app')?.appendChild(overlay);
+            }
+            return overlay;
+        };
+
+        const clearActionToastTimers = () => {
+            if (!actionToastState) return;
+            if (actionToastState.hideTimer) clearTimeout(actionToastState.hideTimer);
+            if (actionToastState.maxTimer) clearTimeout(actionToastState.maxTimer);
+            actionToastState.hideTimer = null;
+            actionToastState.maxTimer = null;
+        };
+
+        const hideActionToast = () => {
+            const overlay = document.getElementById('action-toast-overlay');
+            if (overlay) overlay.classList.remove('visible');
+            clearActionToastTimers();
+            actionToastState = null;
+        };
+
+        const showActionToast = (message, options = {}) => {
+            const overlay = ensureActionToast();
+            const preserveTiming = Boolean(options.preserveTiming && actionToastState);
+            if (!preserveTiming) {
+                clearActionToastTimers();
+                actionToastState = {
+                    shownAt: Date.now(),
+                    hideTimer: null,
+                    maxTimer: setTimeout(hideActionToast, ACTION_TOAST_MAX_MS),
+                };
+            }
+            overlay.textContent = message;
+            overlay.classList.add('visible');
+        };
+
+        const settleActionToast = () => {
+            if (!actionToastState) return;
+            const elapsed = Date.now() - actionToastState.shownAt;
+            const waitMs = Math.max(0, ACTION_TOAST_MIN_MS - elapsed);
+            if (actionToastState.hideTimer) clearTimeout(actionToastState.hideTimer);
+            actionToastState.hideTimer = setTimeout(hideActionToast, waitMs);
+        };
+
+        async function loadStaticLibrary() {
+            const raw = await fetchJson(STATIC_CACHE_URL, {
+                timeoutMs: 2500,
+                cacheMode: 'no-cache',
+            });
+            const data = normalizeLibraryPayload(raw);
+            return Array.isArray(data) && countTotalItems(data) > 0 ? data : null;
+        }
+
+        async function readServiceBootState(serviceUrl) {
+            const raw = await fetchJson(`${serviceUrl}/playlists`, {
+                timeoutMs: SERVICE_BOOT_TIMEOUT_MS,
+                cacheMode: 'no-store',
+            });
+            if (!raw) return { status: 'unreachable', data: null };
+            const data = normalizeLibraryPayload(raw);
+            if (raw.setup_needed) return { status: 'setup_needed', data: null };
+            if (raw.needs_reauth) return { status: 'needs_reauth', data: null };
+            if (raw.loading) return { status: 'loading', data: null };
+            if (Array.isArray(data) && data.length > 0) {
+                const itemCount = countTotalItems(data);
+                if (itemCount === 0) {
+                    return { status: 'loading', data: null };
+                }
+                return { status: 'ready', data };
+            }
+            return { status: 'empty', data: Array.isArray(data) ? data : [] };
+        }
+
+        // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        // Boot sequence
+        // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        document.addEventListener('DOMContentLoaded', async () => {
+            const MASS_URL = getServiceUrl('massServiceUrl', 8783);
+            const cachedLibrary = await loadStaticLibrary();
+
+            if (Array.isArray(cachedLibrary) && cachedLibrary.length > 0) {
+                lastItemCount = countTotalItems(cachedLibrary);
+                initArcList(cachedLibrary, MASS_URL);
+                startSyncMonitor(MASS_URL);
+                void readServiceBootState(MASS_URL);
+                return;
+            }
+
+            const serviceState = await readServiceBootState(MASS_URL);
+
+            if (serviceState.status === 'setup_needed') {
+                showSetupScreen(MASS_URL);
+                return;
+            }
+            if (serviceState.status === 'needs_reauth') {
+                showSetupScreen(MASS_URL, true);
+                return;
+            }
+
+            if (Array.isArray(serviceState.data) && serviceState.data.length > 0) {
+                lastItemCount = countTotalItems(serviceState.data);
+                initArcList(serviceState.data, MASS_URL);
+                startSyncMonitor(MASS_URL);
+                return;
+            }
+
+            if (serviceState.status === 'empty') {
+                showEmptyScreen();
+                return;
+            }
+
+            showLoadingScreen();
+        });
+
+        // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        // Setup / login screen
+        // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        let loginStarted = false;
+
+        function showSetupScreen(serviceUrl, isReconnect) {
+            const title = isReconnect ? 'RECONNECT MASS' : 'CONNECT MASS';
+            const msg = isReconnect
+                ? 'Your session has expired.<br>Press GO to start a new login'
+                : 'Press GO to start the MASS login process';
+
+            document.getElementById('app').innerHTML = `
+                <div class="splash-screen">
+                    <div class="splash-card">
+                        <h2>${title}</h2>
+                        <p>${msg}</p>
+                        <div id="setup-qr" class="setup-qr" style="display:none"></div>
+                        <div id="setup-url" class="setup-url"></div>
+                        <div id="setup-status" style="color:#666;font-size:13px;margin-top:12px"></div>
+                    </div>
+                </div>`;
+
+            window.addEventListener('message', async (e) => {
+                if (e.data && e.data.type === 'button' && e.data.button === 'go' && !loginStarted) {
+                    loginStarted = true;
+                    await startLogin(serviceUrl);
+                }
+            });
+
+            loginStarted = true;
+            startLogin(serviceUrl);
+        }
+
+        async function startLogin(serviceUrl) {
+            const statusEl = document.getElementById('setup-status');
+            const urlEl    = document.getElementById('setup-url');
+            const qrEl     = document.getElementById('setup-qr');
+
+            statusEl.textContent = 'Starting login...';
+
+            try {
+                const resp = await fetch(`${serviceUrl}/start-login`, { method: 'POST' });
+                const data = await resp.json();
+                if (data.error) {
+                    statusEl.textContent = 'Error: ' + data.error;
+                    return;
+                }
+
+                const url = data.url;
+                urlEl.textContent = url;
+
+                if (typeof QRCode !== 'undefined') {
+                    qrEl.style.display = 'inline-block';
+                    qrEl.innerHTML = '';
+                    new QRCode(qrEl, {
+                        text: url, width: 180, height: 180,
+                        colorDark: '#000000', colorLight: '#ffffff',
+                        correctLevel: QRCode.CorrectLevel.M
+                    });
+                }
+
+                statusEl.textContent = 'Scan QR code or open URL on your phone';
+
+                const pollInterval = setInterval(async () => {
+                    try {
+                        const check  = await fetch(`${serviceUrl}/check-login`, { method: 'POST' });
+                        const result = await check.json();
+                        if (result.status === 'ok') {
+                            clearInterval(pollInterval);
+                            statusEl.textContent = 'Connected! Loading library...';
+                            pollForPlaylists();
+                        } else if (result.status === 'expired' || result.status === 'error') {
+                            clearInterval(pollInterval);
+                            statusEl.textContent = result.status === 'expired'
+                                ? 'Login expired. Press GO.'
+                                : (result.error || 'Login failed.');
+                            if (qrEl) qrEl.style.display = 'none';
+                            urlEl.textContent = '';
+                            loginStarted = false;
+                        }
+                    } catch (e) {}
+                }, 3000);
+            } catch (e) {
+                if (statusEl) statusEl.textContent = 'Error: ' + e.message;
+                loginStarted = false;
+            }
+        }
+
+        // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        // Splash screens
+        // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        function showEmptyScreen() {
+            document.getElementById('app').innerHTML = `
+                <div class="splash-screen">
+                    <div class="splash-card">
+                        <h2>NO MUSIC FOUND</h2>
+                        <p>Your MASS library appears empty.<br>
+                        Add content via the Music Assistant interface.</p>
+                    </div>
+                </div>`;
+            pollForPlaylists();
+        }
+
+        function showLoadingScreen() {
+            document.getElementById('app').innerHTML = `
+                <div class="splash-screen">
+                    <div class="splash-card">
+                        <div class="loading-spinner"></div>
+                        <h2 style="letter-spacing: 2px;">BUILDING LIBRARY</h2>
+                        <p style="color: #888;">Music Assistant is syncing your library.<br>
+                        This will take a moment...</p>
+                    </div>
+                </div>`;
+            pollForPlaylists();
+        }
+
+        function pollForPlaylists() {
+            const MASS_URL = getServiceUrl('massServiceUrl', 8783);
+            const poll = setInterval(async () => {
+                try {
+                    const resp = await fetch(`${MASS_URL}/playlists`);
+                    if (resp.ok) {
+                        const raw  = await resp.json();
+                        const data = Array.isArray(raw) ? raw : (raw.data || raw);
+                        if (Array.isArray(data) && countTotalItems(data) > 0) {
+                            clearInterval(poll);
+                            location.reload();
+                        }
+                    }
+                } catch (e) {}
+            }, 3000);
+        }
+
+        // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        // ArcList initialisation
+        // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        function initArcList(preloadedData, massUrl) {
+            const serviceBaseUrl = massUrl || getServiceUrl('massServiceUrl', 8783);
+            const sourceCommandUrl = serviceBaseUrl + '/command';
+            const queueUrl = serviceBaseUrl + '/queue';
+            const FALLBACK_CARD_IMAGE = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNjQiIGhlaWdodD0iNjQiIHZpZXdCb3g9IjAgMCA2NCA2NCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPHJlY3Qgd2lkdGg9IjY0IiBoZWlnaHQ9IjY0IiBmaWxsPSIjMzMzMzMzIi8+Cjx0ZXh0IHg9IjMyIiB5PSI0MCIgZm9udC1mYW1pbHk9IkFyaWFsLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjI0IiBmaWxsPSIjZmZmZmZmIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIj7imqo8L3RleHQ+Cjwvc3ZnPgo=';
+            const cleanTitle = (value) => String(value || '').split('\n')[0].trim();
+            const normalizeServiceImageUrl = (value) => {
+                const raw = String(value || '').trim();
+                if (!raw) return '';
+                return raw.startsWith('/art/') ? `${serviceBaseUrl}${raw}` : raw;
+            };
+            const trackMetaByKey = new Map();
+            let queueRootNode = null;
+
+            const mergeMeta = (existing = {}, incoming = {}) => ({
+                artist: existing.artist || incoming.artist || '',
+                album: existing.album || incoming.album || '',
+                artwork: existing.artwork || incoming.artwork || '',
+            });
+
+            const rememberTrackMeta = (node, metadata = {}) => {
+                if (!node || typeof node !== 'object') return;
+                const normalizedMeta = {
+                    artist: String(metadata.artist || '').trim(),
+                    album: String(metadata.album || '').trim(),
+                    artwork: normalizeServiceImageUrl(metadata.artwork || ''),
+                };
+
+                [node.id, node.url, node.play_url].forEach((rawKey) => {
+                    const key = String(rawKey || '').trim();
+                    if (!key) return;
+                    trackMetaByKey.set(key, mergeMeta(trackMetaByKey.get(key), normalizedMeta));
+                });
+            };
+
+            const collectTrackMeta = (node, context = {}) => {
+                if (!node || typeof node !== 'object') return;
+
+                const children = Array.isArray(node.tracks) ? node.tracks : null;
+                const nodeName = cleanTitle(node.name);
+                const nodeArtist = String(node.artist || context.artist || '').trim();
+                const nodeArtwork = normalizeServiceImageUrl(node.image || context.artwork || '');
+                const containsLeaves = !!children?.some((child) => !Array.isArray(child?.tracks) || child.tracks.length === 0);
+                const isRootCategory = ['queue', 'artists', 'albums', 'songs', 'playlists', 'mixes'].includes(String(node.id || ''));
+
+                rememberTrackMeta(node, {
+                    artist: nodeArtist,
+                    album: containsLeaves && !isRootCategory ? nodeName : String(context.album || '').trim(),
+                    artwork: nodeArtwork,
+                });
+
+                if (!children?.length) return;
+
+                const nextContext = {
+                    artist: context.artist || '',
+                    album: context.album || '',
+                    artwork: context.artwork || '',
+                };
+
+                if (containsLeaves && !isRootCategory) {
+                    nextContext.album = nodeName || nextContext.album;
+                    nextContext.artist = nodeArtist || nextContext.artist;
+                    nextContext.artwork = nodeArtwork || nextContext.artwork;
+                } else if (!isRootCategory) {
+                    nextContext.artist = nodeArtist || nodeName || nextContext.artist;
+                    nextContext.artwork = nodeArtwork || nextContext.artwork;
+                } else if (nodeArtwork) {
+                    nextContext.artwork = nodeArtwork;
+                }
+
+                children.forEach((child) => collectTrackMeta(child, nextContext));
+            };
+
+            (Array.isArray(preloadedData) ? preloadedData : []).forEach((item) => collectTrackMeta(item));
+
+            const getItemMeta = (item) => {
+                if (!item || typeof item !== 'object') {
+                    return { artist: '', album: '', artwork: '' };
+                }
+
+                let metadata = { artist: '', album: '', artwork: '' };
+                [item.id, item.url, item.play_url].forEach((rawKey) => {
+                    const key = String(rawKey || '').trim();
+                    if (!key) return;
+                    metadata = mergeMeta(metadata, trackMetaByKey.get(key));
+                });
+
+                return mergeMeta(metadata, {
+                    artist: item.artist || '',
+                    album: item.album || '',
+                    artwork: normalizeServiceImageUrl(item.image || ''),
+                });
+            };
+
+            // â”€â”€ childNameMapper â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            // Normalises items at every depth for ArcList display.
+            //
+            // RULES:
+            //   â€¢ Folder nodes (have non-empty `tracks`): KEEP `play_url`, DELETE `url`.
+            //     `play_url` is the MA URI used to play the whole folder.
+            //     ArcList uses absence of `url` to know not to auto-play.
+            //   â€¢ Leaf nodes: KEEP `url`, no `tracks`.
+            //   â€¢ `play_url` must never be deleted â€” both branches need it to survive.
+            const childNameMapper = (item, index, allItems) => {
+                let displayName = item.name || '';
+                const isFolder  = Array.isArray(item.tracks) && item.tracks.length > 0;
+                const metadata = getItemMeta(item);
+                const resolvedArtist = item.artist || metadata.artist || '';
+                const hasArtist = resolvedArtist
+                    && resolvedArtist !== 'Artist'
+                    && resolvedArtist !== 'Playlist'
+                    && resolvedArtist !== 'Mix'
+                    && resolvedArtist !== 'Various';
+
+                if (!isFolder && hasArtist && Array.isArray(allItems) && allItems.length > 0) {
+                    const firstArtist = allItems[0].artist || getItemMeta(allItems[0]).artist || '';
+                    const allSameArtist = allItems.every((entry) => {
+                        const artist = entry.artist || getItemMeta(entry).artist || '';
+                        return artist === firstArtist;
+                    });
+                    if (!allSameArtist) {
+                        displayName = `${item.name}\n(${resolvedArtist})`;
+                    }
+                }
+
+                const mapped = Object.assign({}, item, { name: displayName });
+                if (!mapped.artist && metadata.artist) mapped.artist = metadata.artist;
+                if (!mapped.album && metadata.album) mapped.album = metadata.album;
+
+                if (!mapped.image) {
+                    mapped.image = metadata.artwork || FALLBACK_CARD_IMAGE;
+                } else {
+                    mapped.image = normalizeServiceImageUrl(mapped.image);
+                }
+
+                if (isFolder) {
+                    // Folders: remove `url` (signals playability to ArcList),
+                    // keep `play_url` for GO-to-play support.
+                    delete mapped.url;
+                } else {
+                    // Leaves: remove empty tracks arrays that look like folders.
+                    if (Array.isArray(mapped.tracks) && mapped.tracks.length === 0) {
+                        delete mapped.tracks;
+                    }
+                    if (!mapped.url) {
+                        console.warn('[MASS] Leaf item has no url:', mapped.name);
+                    }
+                }
+
+                return mapped;
+            };
+
+            const withQueueRoot = (items) => {
+                const baseItems = Array.isArray(items) ? items.slice() : [];
+                if (queueRootNode && Array.isArray(queueRootNode.tracks) && queueRootNode.tracks.length) {
+                    return [queueRootNode].concat(baseItems);
+                }
+                return baseItems;
+            };
+
+            // â”€â”€ Create ArcList with preloaded data via blob URL â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            // We convert the preloaded data to a blob URL so ArcList's normal
+            // fetch path is used, but resolution is instant (no network round-trip).
+            const blob    = new Blob([JSON.stringify(preloadedData)], { type: 'application/json' });
+            const blobUrl = URL.createObjectURL(blob);
+
+            const massConfig = {
+                dataSource:      blobUrl,
+                dataType:        'parent_child',
+                viewMode:        'hierarchical',
+                parentKey:       'tracks',
+                parentNameKey:   'name',
+                storagePrefix:   'mass_arclist',
+                title:           'MUSIC',
+                context:         'mass',
+                sourceCommandUrl,
+                childNameMapper,
+            };
+
+            const arcList = new ArcList(massConfig);
+
+            // â”€â”€ Stash original methods before override â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            const folderStack = [];
+            const originalHandleButtonFromParent = arcList.handleButtonFromParent?.bind(arcList);
+            const originalHandleNavFromParent    = arcList.handleNavFromParent?.bind(arcList);
+            const originalHandleKeyPress         = arcList.handleKeyPress?.bind(arcList);
+            const originalRender                 = arcList.render?.bind(arcList);
+
+            // Clear old-format localStorage keys that conflict with our nav layer
+            [
+                `${massConfig.storagePrefix}_parent_position`,
+                `${massConfig.storagePrefix}_child_position`,
+                `${massConfig.storagePrefix}_view_mode`,
+                `${massConfig.storagePrefix}_selected_parent`,
+                `${massConfig.storagePrefix}_nested_state_v1`,
+            ].forEach(key => localStorage.removeItem(key));
+
+            // â”€â”€ Navigation helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            const getCurrentItem = () => {
+                const index = Math.max(0, Math.min(arcList.items.length - 1,
+                    Math.round(arcList.currentIndex || 0)));
+                return arcList.items[index] || null;
+            };
+
+            const clampIndex = (items, index) => {
+                if (!items || !items.length) return 0;
+                return Math.max(0, Math.min(items.length - 1, Math.round(index || 0)));
+            };
+
+
+            const rootItems = () => {
+                const src = withQueueRoot(arcList.parentData || preloadedData || []);
+                return src.map((item, idx, arr) => childNameMapper(item, idx, arr));
+            };
+
+            const mapChildrenForParent = (parent) => {
+                const parentImage = normalizeServiceImageUrl(parent?.image || '');
+                const children = Array.isArray(parent?.tracks) ? parent.tracks : [];
+                return children.map((child, idx, arr) => {
+                    const mapped = childNameMapper(child, idx, arr);
+                    if (!mapped.image && parentImage) {
+                        mapped.image = parentImage;
+                    }
+                    return mapped;
+                });
+            };
+
+            const buildNowPlayingPayload = (item) => {
+                const ancestors = folderStack
+                    .map(entry => entry.item?.name || '')
+                    .filter(Boolean);
+                const immediateParent = ancestors[ancestors.length - 1] || '';
+                const secondParent = ancestors[ancestors.length - 2] || '';
+                const metadata = getItemMeta(item);
+                const isFolder = Array.isArray(item?.tracks) && item.tracks.length > 0;
+                const derivedArtist = metadata.artist
+                    || item?.artist
+                    || (isFolder ? cleanTitle(item?.name) : secondParent || '');
+                const derivedAlbum = metadata.album
+                    || item?.album
+                    || (!isFolder ? immediateParent || '' : '');
+                const artwork = metadata.artwork || normalizeServiceImageUrl(item?.image || '');
+
+                return {
+                    title: cleanTitle(item?.name),
+                    artist: derivedArtist,
+                    album: derivedAlbum,
+                    artwork,
+                    state: 'playing',
+                };
+            };
+
+            const pushNowPlayingPayload = (item) => {
+                try {
+                    const parentStore = window.parent?.uiStore;
+                    if (!item) return;
+                    const payload = buildNowPlayingPayload(item);
+                    try {
+                        window.sessionStorage?.setItem('bs5c_mass_now_playing', JSON.stringify(payload));
+                    } catch (storageError) {}
+                    if (!parentStore) return;
+                    parentStore.activeSource = 'mass';
+                    if (typeof parentStore.setActivePlayingPreset === 'function') {
+                        parentStore.setActivePlayingPreset('mass');
+                    }
+                    if (typeof parentStore.handleMediaUpdate === 'function') {
+                        parentStore.handleMediaUpdate(payload, 'mass-selection');
+                    }
+                } catch (err) {
+                    console.warn('[MASS] Unable to update PLAYING panel:', err);
+                }
+            };
+
+            const getFastLetter = (value) => {
+                const base = cleanTitle(String(value || '')).replace(/^[^A-Za-z0-9]+/, '').trim();
+                if (!base) return '';
+                const tokens = base.split(/\s+/).filter(Boolean);
+                const token = tokens.length > 1 && FAST_LETTER_ARTICLES.has(tokens[0].toUpperCase())
+                    ? tokens[1]
+                    : tokens[0];
+                const match = token.match(/[A-Za-z0-9]/);
+                return match ? match[0].toUpperCase() : '';
+            };
+
+            const createBreadcrumbImage = (item) => {
+                if (typeof arcList.createImageElement === 'function') {
+                    return arcList.createImageElement(item);
+                }
+                const img = document.createElement('img');
+                img.src    = item.image || '';
+                img.alt    = item.name  || '';
+                img.style.cssText = 'width:100%;height:100%;object-fit:cover;border-radius:18px;';
+                return img;
+            };
+
+            // â”€â”€ Breadcrumbs â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            const renderBreadcrumbs = () => {
+                if (!arcList.container) return;
+                arcList.container.querySelectorAll('.mass-breadcrumb').forEach(n => n.remove());
+                if (!folderStack.length) return;
+
+                const visibleAncestors = folderStack.slice(-3);
+                visibleAncestors.forEach((entry, idx) => {
+                    const depthFromCurrent  = visibleAncestors.length - 1 - idx;
+                    const isImmediateParent = depthFromCurrent === 0;
+                    const scale = isImmediateParent
+                        ? 0.82
+                        : Math.max(0.42, 0.58 - depthFromCurrent * 0.08);
+                    const x = -250 - depthFromCurrent * 120;
+                    const y = isImmediateParent
+                        ? 0
+                        : (idx - (visibleAncestors.length - 1) / 2) * 56;
+
+                    const crumb = document.createElement('div');
+                    crumb.className = `arc-item mass-breadcrumb${isImmediateParent ? ' breadcrumb selected' : ''}`;
+                    crumb.dataset.animatedParent = 'true';
+                    Object.assign(crumb.style, {
+                        position:    'absolute',
+                        top:         '50%',
+                        left:        '50%',
+                        marginLeft:  '-140px',
+                        marginTop:   '-64px',
+                        transform:   `translate(${x}px, ${y}px) scale(${scale})`,
+                        opacity:     `${isImmediateParent ? 1 : Math.max(0.45, 0.82 - depthFromCurrent * 0.18)}`,
+                        zIndex:      `${5 + idx}`,
+                        pointerEvents: 'none',
+                        filter:      isImmediateParent ? 'none' : 'brightness(0.78)',
+                    });
+
+                    const nameEl = document.createElement('div');
+                    nameEl.className = 'item-name';
+                    nameEl.textContent = entry.item.name || '';
+                    if (isImmediateParent) nameEl.classList.add('selected');
+
+                    const imageWrap = document.createElement('div');
+                    imageWrap.className = 'item-image-container';
+                    imageWrap.appendChild(createBreadcrumbImage(entry.item));
+
+                    crumb.appendChild(nameEl);
+                    crumb.appendChild(imageWrap);
+                    arcList.container.appendChild(crumb);
+                });
+            };
+
+            let pendingGoPress = null;
+            const clearPendingGoPress = () => {
+                if (pendingGoPress) {
+                    clearTimeout(pendingGoPress);
+                    pendingGoPress = null;
+                }
+            };
+
+            const refreshQueueRoot = async (preserveSelection = true) => {
+                const raw = await fetchJson(queueUrl, {
+                    timeoutMs: 900,
+                    cacheMode: 'no-store',
+                });
+                if (!raw || raw.state === 'empty' || !Array.isArray(raw.tracks) || !raw.tracks.length) {
+                    queueRootNode = null;
+                } else {
+                    queueRootNode = Object.assign({}, raw);
+                    collectTrackMeta(queueRootNode);
+                }
+
+                if (!folderStack.length) {
+                    const previousId = preserveSelection ? getCurrentItem()?.id : '';
+                    arcList.items = rootItems();
+                    const nextIndex = previousId
+                        ? Math.max(0, arcList.items.findIndex((entry) => entry.id === previousId))
+                        : 0;
+                    arcList.currentIndex = clampIndex(arcList.items, nextIndex);
+                    arcList.targetIndex = arcList.currentIndex;
+                    refreshList();
+                }
+            };
+
+            const refreshList = () => {
+                arcList.viewMode      = 'single';
+                arcList.selectedParent = null;
+                arcList.currentIndex  = clampIndex(arcList.items, arcList.currentIndex);
+                arcList.targetIndex   = arcList.currentIndex;
+                if (arcList.totalItemsDisplay)
+                    arcList.totalItemsDisplay.textContent = arcList.items.length;
+                if (typeof arcList.updateCounter === 'function') arcList.updateCounter();
+                if (typeof originalRender === 'function') originalRender();
+                renderBreadcrumbs();
+            };
+
+            let fastLetterTimer = null;
+            const showFastLetter = () => {
+                const current = getCurrentItem();
+                const letter = getFastLetter(current?.name);
+                if (!letter) return;
+                let overlay = document.getElementById('fast-letter-overlay');
+                if (!overlay) {
+                    overlay = document.createElement('div');
+                    overlay.id = 'fast-letter-overlay';
+                    overlay.className = 'fast-letter-overlay';
+                    document.getElementById('app')?.appendChild(overlay);
+                }
+                overlay.textContent = letter;
+                overlay.classList.add('visible');
+                if (fastLetterTimer) clearTimeout(fastLetterTimer);
+                fastLetterTimer = setTimeout(() => overlay.classList.remove('visible'), 280);
+            };
+
+            // â”€â”€ Folder navigation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            const enterFolder = () => {
+                const current = getCurrentItem();
+                if (!current || !Array.isArray(current.tracks) || current.tracks.length === 0)
+                    return false;
+
+                folderStack.push({
+                    item:         current,
+                    items:        arcList.items.slice(),
+                    currentIndex: clampIndex(arcList.items, arcList.currentIndex),
+                    targetIndex:  clampIndex(arcList.items, arcList.targetIndex),
+                });
+
+                arcList.items        = mapChildrenForParent(current);
+                arcList.currentIndex = 0;
+                arcList.targetIndex  = 0;
+                refreshList();
+                console.log('[MASS] Entered folder:', current.name);
+                return true;
+            };
+
+            const exitFolder = () => {
+                const previous = folderStack.pop();
+                if (!previous) return false;
+
+                arcList.items        = previous.items;
+                arcList.currentIndex = previous.currentIndex;
+                arcList.targetIndex  = previous.targetIndex;
+                refreshList();
+                console.log('[MASS] Exited folder');
+                return true;
+            };
+
+
+            // â”€â”€ Override ArcList methods â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+            arcList.render = function () {
+                if (typeof originalRender === 'function') originalRender();
+                renderBreadcrumbs();
+            };
+
+            // GO = PLAY (leaf via `url`, folder via `play_url`)
+            // LEFT = navigate INTO folder
+            // RIGHT = navigate OUT of folder
+            arcList.sendGoWebhook = async function (command = 'play_item') {
+                const current = getCurrentItem();
+                if (!current) return;
+
+                // Resolve playback URI: leaf has `url`, folder has `play_url`
+                const playUri = current.url || current.play_url;
+
+                if (!playUri) {
+                    console.warn('[MASS] No playback URI for item:', current.name);
+                    return;
+                }
+
+                if (typeof arcList.snapToNearest === 'function') arcList.snapToNearest();
+
+                const pendingMessage = command === 'play_now' ? 'Starting playback' : 'Adding to queue…';
+                const errorMessage = command === 'play_now' ? 'Error starting playback' : 'Error adding to queue';
+                showActionToast(pendingMessage);
+
+                try {
+                    const response = await fetch(sourceCommandUrl, {
+                        method:  'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body:    JSON.stringify({
+                            command,
+                            id: current.id || '',
+                            url: current.url || '',
+                            play_url: current.play_url || '',
+                        }),
+                    });
+                    let result = null;
+                    try {
+                        result = await response.json();
+                    } catch (e) {}
+                    if (!response.ok) {
+                        showActionToast(errorMessage, { preserveTiming: true });
+                        settleActionToast();
+                        console.warn('[MASS] Play command failed:', response.status);
+                    } else if (result?.state === 'error') {
+                        showActionToast(errorMessage, { preserveTiming: true });
+                        settleActionToast();
+                        console.warn('[MASS] Service rejected play:', result);
+                    } else if (command === 'play_now') {
+                        showActionToast('Starting playback', { preserveTiming: true });
+                        pushNowPlayingPayload(current);
+                        await refreshQueueRoot(false);
+                        settleActionToast();
+                        if (result?.state === 'queued') {
+                            console.log('[MASS] Queued for immediate playback:', current.name, '→', playUri, result);
+                        } else {
+                            console.log('[MASS] Starting now:', current.name, '→', playUri, result);
+                        }
+                    } else if (result?.state === 'queued') {
+                        showActionToast('Added to queue', { preserveTiming: true });
+                        await refreshQueueRoot(false);
+                        settleActionToast();
+                        console.log('[MASS] Queued:', current.name, '→', playUri, result);
+                    } else {
+                        showActionToast('Starting playback', { preserveTiming: true });
+                        await refreshQueueRoot(false);
+                        settleActionToast();
+                        pushNowPlayingPayload(current);
+                        console.log('[MASS] Playing:', current.name, '→', playUri, command);
+                    }
+                } catch (err) {
+                    showActionToast(errorMessage, { preserveTiming: true });
+                    settleActionToast();
+                    console.warn('[MASS] Play command error:', err);
+                }
+            };
+
+            const schedulePlayCommand = () => {
+                clearPendingGoPress();
+                return arcList.sendGoWebhook('play_item');
+            };
+
+            arcList.handleButtonFromParent = function (button) {
+                const normalized = String(button || '').toLowerCase();
+                // LEFT = enter folder (drill down)
+                if (normalized === 'left')  { clearPendingGoPress(); if (enterFolder()) return; }
+                // RIGHT = exit folder (go back)
+                if (normalized === 'right') { clearPendingGoPress(); if (exitFolder())  return; }
+                if (normalized === 'go_long' || normalized === 'go_hold') {
+                    clearPendingGoPress();
+                    return arcList.sendGoWebhook('play_now');
+                }
+                // GO = start playback when idle, otherwise add to queue.
+                if (normalized === 'go')    { return schedulePlayCommand(); }
+                clearPendingGoPress();
+                if (originalHandleButtonFromParent) originalHandleButtonFromParent(button);
+            };
+
+            arcList.handleKeyPress = function (e) {
+                clearPendingGoPress();
+                if (e.key === 'ArrowLeft')  { if (enterFolder()) return; }
+                if (e.key === 'ArrowRight') { if (exitFolder())  return; }
+                if (e.key === 'Enter')      { return arcList.sendGoWebhook('play_item'); }
+                if (originalHandleKeyPress) originalHandleKeyPress(e);
+            };
+
+            arcList.handleNavFromParent = function (data) {
+                if (originalHandleNavFromParent) {
+                    originalHandleNavFromParent(data);
+                }
+                if (Number(data?.speed || 1) >= FAST_LETTER_MIN_SPEED) {
+                    showFastLetter();
+                }
+            };
+
+            const initNavigation = () => {
+                arcList.parentData    = Array.isArray(preloadedData) ? preloadedData : [];
+                arcList.items         = rootItems();
+                arcList.currentIndex  = 0;
+                arcList.targetIndex   = 0;
+                refreshList();
+                requestAnimationFrame(() => refreshList());
+                setTimeout(() => refreshList(), 120);
+                setTimeout(() => refreshList(), 420);
+                arcList._massFolderStack = folderStack;
+                window.arcListInstance = arcList;
+                console.log('[MASS] Navigation layer initialized from preloaded cache');
+            };
+            setTimeout(initNavigation, 0);
+            void refreshQueueRoot(true);
+            setInterval(() => {
+                void refreshQueueRoot(true);
+            }, 5000);
+        }
+    </script>
+</body>
+</html>

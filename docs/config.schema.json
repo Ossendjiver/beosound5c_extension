@@ -45,17 +45,16 @@
     "player": {
       "type": "object",
       "description": "External player service configuration. The player handles audio playback, monitoring, and artwork.",
-      "required": ["type", "ip"],
+      "required": ["type"],
       "properties": {
         "type": {
           "type": "string",
-          "enum": ["sonos", "bluesound"],
-          "description": "Player type. Determines which player service handles playback. Both beo-player-sonos and beo-player-bluesound are installed; the type guard ensures only the matching one runs."
+          "enum": ["sonos", "bluesound", "mass", "local", "none"],
+          "description": "Player type. Determines which player service handles playback. Networked players use a companion player service; 'local' uses the on-device local player and 'none' disables external player services."
         },
         "ip": {
           "type": "string",
-          "format": "ipv4",
-          "description": "IP address of the player device (Sonos speaker or BluOS player)."
+          "description": "Host or IP address of the player device for networked players (Sonos speaker, BluOS player, or Music Assistant host)."
         }
       },
       "additionalProperties": false
@@ -127,7 +126,7 @@
       "properties": {
         "type": {
           "type": "string",
-          "enum": ["beolab5", "sonos", "bluesound", "powerlink", "c4amp", "hdmi", "spdif", "rca"],
+          "enum": ["beolab5", "sonos", "bluesound", "powerlink", "hass", "c4amp", "hdmi", "spdif", "rca"],
           "description": "Volume adapter type. If omitted, inferred from player.type for sonos/bluesound, otherwise defaults to 'beolab5'.",
           "default": "beolab5"
         },

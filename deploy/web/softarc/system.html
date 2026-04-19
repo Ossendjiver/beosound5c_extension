@@ -1,0 +1,2046 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>System - Beosound 5c</title>
+
+    <!-- Favicons -->
+    <link rel="icon" type="image/x-icon" href="../assets/favicons/favicon.ico">
+    <link rel="icon" type="image/png" sizes="16x16" href="../assets/favicons/favicon-16x16.png">
+    <link rel="icon" type="image/png" sizes="32x32" href="../assets/favicons/favicon-32x32.png">
+    <link rel="apple-touch-icon" sizes="180x180" href="../assets/favicons/apple-touch-icon.png">
+    <link rel="icon" type="image/png" sizes="192x192" href="../assets/favicons/android-chrome-192x192.png">
+    <link rel="icon" type="image/png" sizes="512x512" href="../assets/favicons/android-chrome-512x512.png">
+    <link rel="manifest" href="../assets/favicons/site.webmanifest">
+    <meta name="theme-color" content="#000000">
+    <link rel="stylesheet" href="splash.css">
+    <script src="../assets/qrcode.min.js"></script>
+
+    <script>
+        if (/Mac/.test(navigator.userAgent) && /^(localhost|127\.0\.0\.1)$/.test(location.hostname))
+            document.write('<script src="system-mocks.js"><\/script>');
+    </script>
+
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background: #000;
+            color: #fff;
+            font-family: 'Helvetica Neue', Arial, sans-serif;
+            height: 100vh;
+            overflow: hidden;
+            cursor: none;
+        }
+
+        #app {
+            display: flex;
+            flex-direction: column;
+            height: 100%;
+            padding: 40px 60px;
+        }
+
+        .section-nav {
+            display: flex;
+            gap: 40px;
+            margin-bottom: 30px;
+            border-bottom: 1px solid #333;
+            padding-bottom: 15px;
+        }
+
+        .section-tab {
+            font-size: 18px;
+            color: #666;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            transition: color 0.3s;
+            cursor: pointer;
+        }
+
+        .section-tab.active {
+            color: #fff;
+        }
+
+        .section-content {
+            flex: 1;
+            overflow-y: auto;
+            display: none;
+        }
+
+        .section-content.active {
+            display: block;
+        }
+        .section-content.active.config-section {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        /* Info section */
+        .info-section h1 {
+            font-size: 32px;
+            font-weight: 300;
+            margin-bottom: 10px;
+        }
+
+        .info-section .version {
+            font-size: 13px;
+            color: #666;
+            margin-bottom: 5px;
+            font-family: 'Monaco', 'Consolas', monospace;
+        }
+
+        .info-section .repo-link {
+            font-size: 12px;
+            color: #0af;
+            margin-bottom: 25px;
+            font-family: 'Monaco', 'Consolas', monospace;
+        }
+
+        .info-section .description {
+            font-size: 15px;
+            line-height: 1.6;
+            color: #aaa;
+            max-width: 650px;
+            margin-bottom: 20px;
+        }
+
+        .info-section .features {
+            font-size: 13px;
+            color: #888;
+            margin-bottom: 25px;
+        }
+
+        .info-section .features li {
+            margin-bottom: 6px;
+            list-style: none;
+        }
+
+        .info-section .features li::before {
+            content: "- ";
+            color: #555;
+        }
+
+        .info-section .creator {
+            font-size: 14px;
+            color: #555;
+        }
+
+        .info-section .creator span {
+            color: #888;
+        }
+
+        /* ── Services subcards ── */
+        .services-section {
+            position: relative;
+        }
+
+        .subcard-header {
+            display: flex;
+            align-items: center;
+            gap: 14px;
+            margin-bottom: 18px;
+        }
+
+        .subcard-title {
+            font-size: 16px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 1.5px;
+        }
+
+        .subcard-status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #555;
+            flex-shrink: 0;
+        }
+
+        .subcard-status-dot.online { background: #4a4; }
+        .subcard-status-dot.offline { background: #a44; }
+        .subcard-status-dot.warning { background: #fa0; }
+
+        .subcard-counter {
+            margin-left: auto;
+            font-size: 12px;
+            color: #555;
+            letter-spacing: 1px;
+        }
+
+        .subcard-body {
+            display: grid;
+            grid-template-columns: 130px 1fr;
+            gap: 4px 16px;
+            font-size: 13px;
+            max-width: 650px;
+        }
+
+        .subcard-body .label {
+            color: #666;
+            padding: 4px 0;
+        }
+
+        .subcard-body .value {
+            color: #fff;
+            font-family: 'Monaco', 'Consolas', monospace;
+            font-size: 12px;
+            padding: 4px 0;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .subcard-body .value.ok { color: #4a4; }
+        .subcard-body .value.warn { color: #fa0; }
+        .subcard-body .value.err { color: #a44; }
+
+        .subcard-body .value.dim { color: #555; }
+
+        /* Spotify digit grid */
+        .digit-grid {
+            display: grid;
+            grid-template-columns: repeat(5, 1fr);
+            gap: 4px;
+            margin-top: 6px;
+            max-width: 500px;
+        }
+
+        .digit-item {
+            background: #111;
+            border: 1px solid #222;
+            border-radius: 3px;
+            padding: 4px 6px;
+            font-size: 11px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .digit-item .digit-num {
+            color: #555;
+            margin-right: 4px;
+        }
+
+        .digit-item .digit-name {
+            color: #999;
+        }
+
+        /* CD artwork */
+        .cd-artwork {
+            width: 80px;
+            height: 80px;
+            border-radius: 4px;
+            background: #111;
+            border: 1px solid #333;
+            object-fit: cover;
+            margin-top: 4px;
+        }
+
+        /* Service list in SYSTEM subcard */
+        .svc-list {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 3px 20px;
+            margin-top: 4px;
+        }
+
+        .svc-item {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 12px;
+            padding: 2px 0;
+        }
+
+        .svc-dot {
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: #555;
+            flex-shrink: 0;
+        }
+
+        .svc-dot.running { background: #4a4; }
+        .svc-dot.stopped { background: #a44; }
+        .svc-dot.warning { background: #fa0; }
+
+        .svc-name {
+            color: #888;
+        }
+
+        /* People section */
+        .people-section .people-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+            gap: 25px;
+            max-width: 700px;
+        }
+
+        .person-card {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 15px;
+            background: #111;
+            border: 1px solid #333;
+            border-radius: 8px;
+            transition: all 0.2s;
+        }
+
+        .person-avatar {
+            width: 80px;
+            height: 80px;
+            border-radius: 50%;
+            border: 3px solid #555;
+            background: #222;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 28px;
+            font-weight: 300;
+            color: #666;
+            overflow: hidden;
+            transition: border-color 0.3s;
+        }
+
+        .person-avatar img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+
+        .person-avatar.home {
+            border-color: #4a4;
+            box-shadow: 0 0 12px rgba(68, 170, 68, 0.3);
+        }
+
+        .person-avatar.away {
+            border-color: #555;
+        }
+
+        .person-name {
+            margin-top: 10px;
+            font-size: 14px;
+            color: #fff;
+            text-align: center;
+        }
+
+        .person-status {
+            margin-top: 4px;
+            font-size: 11px;
+            color: #666;
+            text-transform: capitalize;
+        }
+
+        .person-status.home {
+            color: #4a4;
+        }
+
+        .people-loading {
+            color: #666;
+            font-style: italic;
+            font-size: 13px;
+        }
+
+        .people-error {
+            color: #a44;
+            font-size: 13px;
+        }
+
+        /* Remotes section */
+        .remotes-section .remotes-content {
+            max-width: 500px;
+        }
+
+        .remotes-section h3 {
+            font-size: 13px;
+            color: #888;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 12px;
+        }
+
+        .supported-list {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 4px 30px;
+            margin-bottom: 25px;
+            font-size: 13px;
+            color: #666;
+        }
+
+        .supported-list li {
+            list-style: none;
+            padding: 3px 0;
+        }
+
+        .supported-list li::before {
+            content: "- ";
+            color: #444;
+        }
+
+        .service-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 10px 14px;
+            background: #111;
+            border: 1px solid #333;
+            border-radius: 4px;
+            transition: all 0.15s;
+        }
+
+        .service-item.selected {
+            background: #1a1a2a;
+            border-color: #446;
+        }
+
+        .service-item.separator {
+            margin-top: 10px;
+            border-top: 1px solid #333;
+            padding-top: 16px;
+        }
+
+        .service-item .name {
+            color: #fff;
+            font-size: 13px;
+        }
+
+        .service-item .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #555;
+        }
+
+        .service-item .status-dot.running { background: #4a4; }
+        .service-item .status-dot.warning { background: #fa0; }
+        .service-item .status-dot.stopped { background: #a44; }
+
+        .remote-item .mac {
+            font-size: 11px;
+            color: #555;
+            font-family: 'Monaco', 'Consolas', monospace;
+        }
+
+        .remote-item .remote-meta {
+            display: flex;
+            gap: 12px;
+            font-size: 11px;
+            color: #555;
+        }
+
+        .pairing-status {
+            margin-top: 10px;
+            font-size: 12px;
+            color: #0af;
+            min-height: 18px;
+        }
+
+        /* Section hint */
+        .section-hint {
+            margin-top: 15px;
+            font-size: 11px;
+            color: #444;
+        }
+
+        .section-hint .key {
+            background: #1a1a1a;
+            padding: 2px 6px;
+            border-radius: 3px;
+            color: #666;
+            margin-right: 3px;
+        }
+
+        /* Navigation hint at bottom */
+        .nav-hint {
+            position: fixed;
+            bottom: 20px;
+            left: 60px;
+            right: 60px;
+            display: flex;
+            justify-content: center;
+            gap: 40px;
+            font-size: 11px;
+            color: #333;
+        }
+
+        .nav-hint span {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .nav-hint .key {
+            background: #1a1a1a;
+            padding: 3px 7px;
+            border-radius: 3px;
+            color: #555;
+        }
+
+        /* Meter bars (used in SYSTEM subcard) */
+        .meter {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 2px 0;
+            max-width: 300px;
+        }
+
+        .meter-bar {
+            flex: 1;
+            height: 5px;
+            background: #1a1a1a;
+            border-radius: 3px;
+            overflow: hidden;
+        }
+
+        .meter-fill {
+            height: 100%;
+            border-radius: 3px;
+            transition: width 0.5s ease;
+        }
+
+        .meter-label {
+            font-size: 11px;
+            color: #888;
+            min-width: 40px;
+            text-align: right;
+            font-family: 'Monaco', 'Consolas', monospace;
+        }
+
+        /* ── Update UI ── */
+
+        .update-badge {
+            display: inline-block;
+            font-size: 11px;
+            color: #0af;
+            background: rgba(0, 170, 255, 0.08);
+            border: 1px solid rgba(0, 170, 255, 0.25);
+            border-radius: 3px;
+            padding: 1px 7px;
+            margin-left: 10px;
+            font-family: 'Monaco', 'Consolas', monospace;
+            vertical-align: middle;
+        }
+
+        .update-callout {
+            display: none;
+            align-items: center;
+            gap: 14px;
+            padding: 14px 18px;
+            border: 1px solid rgba(0, 170, 255, 0.25);
+            border-left: 3px solid #0af;
+            background: rgba(0, 170, 255, 0.04);
+            border-radius: 4px;
+            margin-top: 16px;
+            margin-bottom: 22px;
+            max-width: 420px;
+        }
+
+        .update-callout.visible { display: flex; }
+
+        .up-to-date-callout {
+            display: none;
+            align-items: center;
+            gap: 10px;
+            padding: 8px 14px;
+            border-left: 3px solid #4a4;
+            background: rgba(68, 170, 68, 0.04);
+            border-radius: 4px;
+            margin-top: 16px;
+            margin-bottom: 22px;
+            max-width: 220px;
+            font-size: 12px;
+            color: #4a4;
+            letter-spacing: 0.5px;
+        }
+
+        .up-to-date-callout.visible { display: flex; }
+
+        .up-to-date-check {
+            font-size: 14px;
+            line-height: 1;
+        }
+
+        .update-callout-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            flex-shrink: 0;
+            background: #0af;
+            box-shadow: 0 0 6px #0af;
+            animation: callout-pulse 2s ease-in-out infinite;
+        }
+
+        @keyframes callout-pulse {
+            0%, 100% { opacity: 1; box-shadow: 0 0 6px #0af; }
+            50% { opacity: 0.4; box-shadow: 0 0 2px #0af; }
+        }
+
+        .update-callout-label {
+            font-size: 10px;
+            color: #0af;
+            text-transform: uppercase;
+            letter-spacing: 1.5px;
+            margin-bottom: 4px;
+        }
+
+        .update-callout-version {
+            font-size: 20px;
+            font-weight: 300;
+            color: #fff;
+            font-family: 'Monaco', 'Consolas', monospace;
+        }
+
+        .update-notes {
+            margin-bottom: 22px;
+            max-width: 650px;
+        }
+
+        .update-notes-label {
+            font-size: 11px;
+            color: #555;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 8px;
+        }
+
+        .update-notes-body {
+            font-size: 13px;
+            color: #888;
+            line-height: 1.6;
+            white-space: pre-wrap;
+            max-height: 150px;
+            overflow-y: auto;
+        }
+
+        .update-release-link {
+            display: inline-block;
+            margin-top: 10px;
+            font-size: 12px;
+            color: #0af;
+            font-family: 'Monaco', 'Consolas', monospace;
+            text-decoration: none;
+        }
+
+        /* Update overlay — full-screen, shown during update */
+        #update-overlay {
+            display: none;
+            position: fixed;
+            inset: 0;
+            background: #000;
+            z-index: 1000;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 16px;
+        }
+
+        #update-overlay.active { display: flex; }
+
+        .update-overlay-label {
+            font-size: 11px;
+            color: #444;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+        }
+
+        .update-overlay-version {
+            font-size: 28px;
+            font-weight: 300;
+            color: #fff;
+            font-family: 'Monaco', 'Consolas', monospace;
+        }
+
+        .update-overlay-status {
+            font-size: 13px;
+            color: #0af;
+            min-height: 20px;
+        }
+
+        .update-dots {
+            display: flex;
+            gap: 8px;
+            margin-top: 4px;
+        }
+
+        .update-dot {
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: #222;
+            animation: dot-pulse 1.4s ease-in-out infinite;
+        }
+
+        .update-dot:nth-child(2) { animation-delay: 0.23s; }
+        .update-dot:nth-child(3) { animation-delay: 0.46s; }
+
+        @keyframes dot-pulse {
+            0%, 100% { background: #222; }
+            50% { background: #0af; }
+        }
+
+        /* ── Release notes screen ── */
+
+        #release-notes-screen {
+            display: none;
+            position: fixed;
+            inset: 0;
+            background: #000;
+            z-index: 999;
+            flex-direction: column;
+            padding: 40px 60px;
+        }
+
+        #release-notes-screen.active { display: flex; }
+
+        .rn-app-name {
+            font-size: 11px;
+            color: #444;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            margin-bottom: 8px;
+        }
+
+        .rn-version {
+            font-size: 28px;
+            font-weight: 300;
+            color: #fff;
+            font-family: 'Monaco', 'Consolas', monospace;
+            margin-bottom: 24px;
+        }
+
+        .rn-label {
+            font-size: 11px;
+            color: #555;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 10px;
+        }
+
+        .rn-body {
+            flex: 1;
+            overflow-y: auto;
+            font-size: 14px;
+            color: #999;
+            line-height: 1.75;
+            white-space: pre-wrap;
+            scroll-behavior: smooth;
+        }
+
+        .rn-body::-webkit-scrollbar { width: 4px; }
+        .rn-body::-webkit-scrollbar-track { background: #000; }
+        .rn-body::-webkit-scrollbar-thumb { background: #333; border-radius: 2px; }
+
+        .rn-hint-bar {
+            display: flex;
+            gap: 30px;
+            margin-top: 20px;
+            font-size: 11px;
+            color: #444;
+            padding-top: 14px;
+            border-top: 1px solid #1a1a1a;
+        }
+
+        .rn-hint-bar .key {
+            background: #1a1a1a;
+            padding: 2px 6px;
+            border-radius: 3px;
+            color: #666;
+            margin-right: 4px;
+        }
+
+        /* Scrollbar styling */
+        .section-content::-webkit-scrollbar {
+            width: 6px;
+        }
+
+        .section-content::-webkit-scrollbar-track {
+            background: #111;
+        }
+
+        .section-content::-webkit-scrollbar-thumb {
+            background: #333;
+            border-radius: 3px;
+        }
+
+        /* ── Config section — lydbro design ── */
+
+        .config-section {
+            cursor: auto;
+        }
+        .config-section * { cursor: auto; }
+        .config-section input, .config-section select, .config-section button { cursor: pointer; }
+        .config-section input[type=text], .config-section input[type=number], .config-section input[type=password] { cursor: text; }
+    </style>
+</head>
+<body>
+    <div id="app">
+        <nav class="section-nav">
+            <div class="section-tab active" data-section="info">Info</div>
+            <div class="section-tab" data-section="services">Services</div>
+            <div class="section-tab" data-section="remotes">Remotes</div>
+            <div class="section-tab" data-section="people">People</div>
+            <div class="section-tab" data-section="config">Config</div>
+        </nav>
+
+        <!-- Info Section -->
+        <div class="section-content info-section active" id="info">
+            <h1>BeoSound 5c</h1>
+            <div class="version">Build: <span id="git-tag">--</span></div>
+            <div id="update-callout" class="update-callout">
+                <div class="update-callout-dot"></div>
+                <div>
+                    <div class="update-callout-label">Update available</div>
+                    <div class="update-callout-version" id="callout-version">--</div>
+                </div>
+            </div>
+            <div id="up-to-date-callout" class="up-to-date-callout">
+                <span class="up-to-date-check">✓</span>
+                Up to date
+            </div>
+            <div id="update-notes" class="update-notes" style="display:none">
+                <div class="update-notes-label">What's new</div>
+                <div class="update-notes-body" id="update-notes-body"></div>
+                <a id="update-release-link" class="update-release-link" href="#" target="_blank">View release page →</a>
+            </div>
+
+            <div class="repo-link">github.com/mkirsten/beosound5c</div>
+            <p class="description">
+                A modern software recreation of the iconic Bang & Olufsen BeoSound 5,
+                bringing the classic circular arc interface back to life. Integrates with
+                Sonos, Spotify, and Home Assistant for complete home entertainment control.
+            </p>
+            <ul class="features">
+                <li>Original B&O laser pointer and navigation wheel hardware support</li>
+                <li>Reverse-engineered MasterLink protocol for B&O IR remote integration</li>
+                <li>BeoRemote One Bluetooth connectivity</li>
+                <li>Real-time Sonos player control with artwork display</li>
+                <li>Home Assistant webhook integration for smart home control</li>
+            </ul>
+            <div class="creator">Created by <span>Markus Kirsten</span></div>
+
+            <div class="section-hint" id="info-hint" style="display:none">
+                <span class="key">GO</span> What's new in <span id="info-hint-version"></span>
+            </div>
+        </div>
+
+        <!-- Services Section (subcards) -->
+        <div class="section-content services-section" id="services">
+            <div id="subcard-container">
+                <!-- Rendered by JS -->
+            </div>
+            <div class="section-hint">
+                <span class="key">UP/DOWN</span> Navigate &nbsp;
+                <span class="key">GO</span> Restart service
+            </div>
+        </div>
+
+        <!-- Remotes Section -->
+        <div class="section-content remotes-section" id="remotes">
+            <div class="remotes-content">
+                <h3>Supported IR Remotes</h3>
+                <ul class="supported-list">
+                    <li>Beo4 (all versions)</li>
+                    <li>BeoLink 1000</li>
+                    <li>BeoLink 5000</li>
+                    <li>BeoLink 7000</li>
+                    <li>BeoTime</li>
+                    <li>Beo1</li>
+                    <li>BeoSound 8 remote</li>
+                    <li>AV Terminal</li>
+                    <li>B&O KeyChain</li>
+                    <li>BeoWatch</li>
+                </ul>
+                <div class="separator" style="border-top: 1px solid #333; margin-bottom: 20px;"></div>
+                <h3>BeoRemote One (Bluetooth)</h3>
+                <div class="services-list" id="remotes-list">
+                    <span class="people-loading">Loading remotes...</span>
+                </div>
+                <div class="pairing-status" id="pairing-status"></div>
+            </div>
+            <div class="section-hint"><span class="key">GO</span> Pair new remote</div>
+        </div>
+
+        <!-- People Section -->
+        <div class="section-content people-section" id="people">
+            <div class="people-grid" id="people-grid">
+                <span class="people-loading">Loading people...</span>
+            </div>
+        </div>
+
+        <!-- Config Section -->
+        <div class="section-content config-section" id="config">
+            <div class="splash-card" style="text-align:center;">
+                <h2 style="color:#fff;font-size:22px;font-weight:300;letter-spacing:3px;margin-bottom:12px;">CONFIGURE</h2>
+                <p style="font-size:13px;color:#666;margin-bottom:20px;">Scan with your phone<br>to configure this device</p>
+                <div class="setup-qr" id="cfg-qr-container"></div>
+                <div class="setup-url" id="cfg-qr-url" style="margin-top:12px;font-size:12px;color:#555;word-break:break-all;max-width:280px;"></div>
+            </div>
+        </div>
+
+        <div class="nav-hint">
+            <span><span class="key">LEFT/RIGHT</span> Sections</span>
+            <span><span class="key">WHEEL</span> Scroll / Select</span>
+        </div>
+    </div>
+
+    <!-- Release notes screen -->
+    <div id="release-notes-screen">
+        <div class="rn-app-name">BeoSound 5c</div>
+        <div class="rn-version" id="rn-version">--</div>
+        <div class="rn-label">What's new</div>
+        <div class="rn-body" id="rn-body"></div>
+        <div class="rn-hint-bar">
+            <span><span class="key">LEFT</span> Back</span>
+            <span><span class="key">UP / DOWN</span> Scroll</span>
+            <span><span class="key">GO</span> Install update</span>
+        </div>
+    </div>
+
+
+
+    <!-- Update overlay -->
+    <div id="update-overlay">
+        <div class="update-overlay-label">Updating</div>
+        <div class="update-overlay-version" id="overlay-version">--</div>
+        <div class="update-overlay-status" id="overlay-status">Downloading...</div>
+        <div class="update-dots">
+            <div class="update-dot"></div>
+            <div class="update-dot"></div>
+            <div class="update-dot"></div>
+        </div>
+    </div>
+
+    <script>
+        // API base — works from both the device's own Chromium (localhost)
+        // and external browsers (uses actual device hostname)
+        const API = 'http://' + location.hostname + ':8767';
+
+        // ── History buffer for sparkline charts ──
+        const HISTORY = { cpu_temp: [], memory: [] };
+        const HISTORY_MAX = 30;  // ~2.5 min at 5s refresh
+
+        // ── Subcard definitions ──
+        const SUBCARDS = [
+            {
+                id: 'system',
+                title: 'SYSTEM',
+                service: null,
+                fetch: async () => {
+                    const results = {};
+                    await Promise.all([
+                        fetch('http://localhost:8767/webhook', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ command: 'status' }),
+                        }).then(r => r.json()).then(d => results.input = d).catch(() => {}),
+                        fetch('http://localhost:8770/router/status')
+                            .then(r => r.json()).then(d => results.router = d).catch(() => {}),
+                        fetch('http://localhost:8766/player/status')
+                            .then(r => r.json()).then(d => results.player = d).catch(() => {}),
+                    ]);
+
+                    // Accumulate history for charts
+                    const inp = results.input || {};
+                    const temp = parseFloat(inp.cpu_temp);
+                    if (!isNaN(temp)) {
+                        HISTORY.cpu_temp.push(temp);
+                        if (HISTORY.cpu_temp.length > HISTORY_MAX) HISTORY.cpu_temp.shift();
+                    }
+                    const memPct = parseMemPct(inp.memory);
+                    if (memPct != null) {
+                        HISTORY.memory.push(memPct);
+                        if (HISTORY.memory.length > HISTORY_MAX) HISTORY.memory.shift();
+                    }
+                    results.history = { cpu_temp: [...HISTORY.cpu_temp], memory: [...HISTORY.memory] };
+                    return results;
+                },
+                render: (data) => {
+                    const inp = data?.input || {};
+                    const rtr = data?.router || {};
+                    const plr = data?.player || {};
+                    const cfg = inp.config || {};
+                    const svcs = inp.services || {};
+                    const hist = data?.history || {};
+
+                    // Device overview
+                    let html = '<div class="subcard-body">';
+                    html += row('Device', cfg.device || inp.hostname);
+                    html += row('IP', inp.ip_address);
+                    html += row('Version', inp.git_tag);
+                    html += row('Uptime', inp.uptime);
+
+                    // Sources configured
+                    if (rtr.sources && Object.keys(rtr.sources).length > 0) {
+                        const names = Object.values(rtr.sources).map(s => s.name);
+                        html += row('Sources', names.join(', '));
+                    }
+
+                    // Audio output
+                    if (inp.audio_hat) html += row('Audio HAT', inp.audio_hat);
+                    html += row('Output', rtr.output_device || '—');
+
+                    // Player
+                    if (plr.player) {
+                        const info = plr.player === 'sonos'
+                            ? `Sonos — ${plr.speaker_name || '?'} (${plr.speaker_ip || '?'})`
+                            : plr.player;
+                        html += row('Player', info);
+                    } else if (rtr.active_player) {
+                        html += row('Player', rtr.active_player);
+                    }
+                    html += '</div>';
+
+                    // Performance
+                    html += sectionLabel('Performance');
+                    html += '<div class="subcard-body">';
+                    const temp = parseFloat(inp.cpu_temp);
+                    html += row('CPU Temp', inp.cpu_temp, tempClass(inp.cpu_temp));
+                    html += '</div>';
+                    if (!isNaN(temp)) {
+                        html += meterBar(temp, 85, tempColor(temp));
+                        html += sparkline(hist.cpu_temp, 250, 24, tempColor(temp));
+                    }
+
+                    const memPct = parseMemPct(inp.memory);
+                    html += '<div class="subcard-body">';
+                    html += row('Memory', inp.memory);
+                    html += '</div>';
+                    if (memPct != null) {
+                        const memCol = memPct > 85 ? '#a44' : memPct > 70 ? '#fa0' : '#4a4';
+                        html += meterBar(memPct, 100, memCol);
+                    }
+
+                    // Network interfaces
+                    if (inp.interfaces && Object.keys(inp.interfaces).length > 0) {
+                        html += sectionLabel('Network');
+                        html += '<div class="subcard-body">';
+                        for (const [iface, info] of Object.entries(inp.interfaces)) {
+                            html += row(iface, typeof info === 'string' ? info : JSON.stringify(info));
+                        }
+                        html += '</div>';
+                    }
+
+                    // All services
+                    const total = Object.keys(svcs).length;
+                    if (total > 0) {
+                        const issues = Object.entries(svcs).filter(([_, s]) => s !== 'Running');
+                        const running = total - issues.length;
+                        html += sectionLabel(`Services — ${running}/${total} running`);
+                        html += '<div class="svc-list">';
+                        for (const [name, status] of Object.entries(svcs)) {
+                            const cls = status === 'Running' ? 'running' : (status === 'Inactive' || status === 'Failed') ? 'stopped' : 'warning';
+                            html += `<div class="svc-item"><span class="svc-dot ${cls}"></span><span class="svc-name">${name.replace('beo-', '')}</span></div>`;
+                        }
+                        html += '</div>';
+                    }
+                    return html;
+                },
+            },
+            {
+                id: 'bluetooth',
+                title: 'BLUETOOTH',
+                service: 'beo-bluetooth',
+                fetch: async () => {
+                    const resp = await fetch('http://localhost:8767/bt/remotes');
+                    if (!resp.ok) throw new Error('offline');
+                    return resp.json();
+                },
+                render: (data) => {
+                    if (!data || !Array.isArray(data)) return '<div class="subcard-body">' + row('Status', 'No data', 'dim') + '</div>';
+                    let html = '';
+                    for (const r of data) {
+                        const name = r.name === 'BEORC' ? 'BeoRemote One' : r.name;
+                        html += '<div class="subcard-body" style="margin-bottom:12px">';
+                        html += row('Remote', name);
+                        html += row('MAC', r.mac);
+                        html += row('Connected', r.connected ? 'Yes' : 'No', r.connected ? 'ok' : 'err');
+                        html += row('RSSI', r.rssi != null ? r.rssi + ' dBm' : '—');
+                        html += row('Battery', r.battery != null ? r.battery + '%' : '—');
+                        html += '</div>';
+                    }
+                    if (data.length === 0) {
+                        html = '<div class="subcard-body">' + row('Remotes', 'None paired', 'dim') + '</div>';
+                    }
+                    return html;
+                },
+            },
+            {
+                id: 'masterlink',
+                title: 'MASTERLINK',
+                service: 'beo-masterlink',
+                fetch: async () => {
+                    const resp = await fetch('http://localhost:8768/mixer/status');
+                    if (!resp.ok) throw new Error('offline');
+                    return resp.json();
+                },
+                render: (data) => {
+                    if (!data) return '<div class="subcard-body">' + row('Status', 'No data', 'dim') + '</div>';
+                    let html = '<div class="subcard-body">';
+                    html += row('USB', data.connected ? 'Connected' : 'Not found', data.connected ? 'ok' : 'err');
+                    if (data.volume !== undefined) html += row('Volume', data.volume);
+                    if (data.mute !== undefined) html += row('Mute', data.mute ? 'Yes' : 'No');
+                    if (data.speakers_on !== undefined) html += row('Speakers', data.speakers_on ? 'On' : 'Off');
+                    html += '</div>';
+                    return html;
+                },
+            },
+            {
+                id: 'sonos',
+                title: 'SONOS',
+                service: 'beo-player-sonos',
+                fetch: async () => {
+                    const resp = await fetch('http://localhost:8766/player/status');
+                    if (!resp.ok) throw new Error('offline');
+                    return resp.json();
+                },
+                render: (data) => {
+                    if (!data) return '<div class="subcard-body">' + row('Status', 'No data', 'dim') + '</div>';
+                    let html = '<div class="subcard-body">';
+                    html += row('Speaker', data.speaker_name);
+                    html += row('IP', data.speaker_ip);
+                    html += row('State', data.state, data.state === 'playing' ? 'ok' : '');
+                    if (data.volume !== undefined && data.volume !== null) html += row('Volume', data.volume + '%');
+                    if (data.current_track) {
+                        html += row('Track', trunc(data.current_track.title, 40));
+                        html += row('Artist', trunc(data.current_track.artist, 40));
+                        html += row('Album', trunc(data.current_track.album, 40));
+                    }
+                    html += row('Grouped', data.is_grouped ? data.coordinator_name : 'No');
+                    html += row('Art Cache', data.artwork_cache_size + ' items');
+                    html += row('WS Clients', data.ws_clients);
+                    html += '</div>';
+                    return html;
+                },
+            },
+            {
+                id: 'spotify',
+                title: 'SPOTIFY',
+                service: 'beo-source-spotify',
+                fetch: async () => {
+                    const resp = await fetch('http://localhost:8771/status');
+                    if (!resp.ok) throw new Error('offline');
+                    return resp.json();
+                },
+                render: (data) => {
+                    if (!data) return '<div class="subcard-body">' + row('Status', 'No data', 'dim') + '</div>';
+                    let html = '<div class="subcard-body">';
+                    html += row('Account', data.display_name || '—');
+                    html += row('Auth', data.has_credentials ? (data.needs_reauth ? 'Expired' : 'OK') : 'Not connected',
+                        data.has_credentials ? (data.needs_reauth ? 'warn' : 'ok') : 'err');
+                    html += row('State', data.state);
+                    html += row('Playlists', data.playlist_count);
+                    html += row('Fetching', data.fetching ? 'Yes' : 'No', data.fetching ? 'warn' : '');
+                    if (data.last_refresh) {
+                        const d = new Date(data.last_refresh);
+                        html += row('Last Refresh', d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
+                    }
+                    if (data.last_refresh_duration != null) {
+                        html += row('Refresh Time', data.last_refresh_duration + 's');
+                    }
+                    html += '</div>';
+
+                    // Digit playlists grid
+                    if (data.digit_playlists && Object.keys(data.digit_playlists).length > 0) {
+                        html += '<div style="margin-top:12px; font-size:11px; color:#555; text-transform:uppercase; letter-spacing:1px; margin-bottom:6px">Digit Playlists</div>';
+                        html += '<div class="digit-grid">';
+                        for (let i = 0; i <= 9; i++) {
+                            const name = data.digit_playlists[String(i)] || '—';
+                            html += `<div class="digit-item"><span class="digit-num">${i}</span><span class="digit-name">${trunc(name, 14)}</span></div>`;
+                        }
+                        html += '</div>';
+                    }
+                    return html;
+                },
+            },
+            {
+                id: 'tidal',
+                title: 'TIDAL',
+                service: 'beo-source-tidal',
+                fetch: async () => {
+                    const resp = await fetch('http://localhost:8777/status');
+                    if (!resp.ok) throw new Error('offline');
+                    return resp.json();
+                },
+                render: (data) => {
+                    if (!data) return '<div class="subcard-body">' + row('Status', 'No data', 'dim') + '</div>';
+                    let html = '<div class="subcard-body">';
+                    html += row('Account', data.user_name || '—');
+                    html += row('Auth', data.has_credentials ? (data.needs_reauth ? 'Expired' : 'OK') : 'Not connected',
+                        data.has_credentials ? (data.needs_reauth ? 'warn' : 'ok') : 'err');
+                    html += row('State', data.state);
+                    html += row('Playlists', data.playlist_count);
+                    html += row('Fetching', data.fetching ? 'Yes' : 'No', data.fetching ? 'warn' : '');
+                    if (data.last_refresh) {
+                        const d = new Date(data.last_refresh);
+                        html += row('Last Refresh', d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
+                    }
+                    if (data.last_refresh_duration != null) {
+                        html += row('Refresh Time', data.last_refresh_duration + 's');
+                    }
+                    html += '</div>';
+
+                    // Digit playlists grid
+                    if (data.digit_playlists && Object.keys(data.digit_playlists).length > 0) {
+                        html += '<div style="margin-top:12px; font-size:11px; color:#555; text-transform:uppercase; letter-spacing:1px; margin-bottom:6px">Digit Playlists</div>';
+                        html += '<div class="digit-grid">';
+                        for (let i = 0; i <= 9; i++) {
+                            const name = data.digit_playlists[String(i)] || '—';
+                            html += `<div class="digit-item"><span class="digit-num">${i}</span><span class="digit-name">${trunc(name, 14)}</span></div>`;
+                        }
+                        html += '</div>';
+                    }
+                    return html;
+                },
+            },
+            {
+                id: 'cd',
+                title: 'CD',
+                service: 'beo-source-cd',
+                fetch: async () => {
+                    const resp = await fetch('http://localhost:8769/status');
+                    if (!resp.ok) throw new Error('offline');
+                    return resp.json();
+                },
+                render: (data) => {
+                    if (!data) return '<div class="subcard-body">' + row('Status', 'No data', 'dim') + '</div>';
+                    let html = '<div class="subcard-body">';
+                    html += row('Drive', data.drive_connected ? 'Connected' : 'Not found', data.drive_connected ? 'ok' : 'err');
+                    html += row('Disc', data.disc_inserted ? 'Inserted' : 'Empty', data.disc_inserted ? 'ok' : '');
+                    if (data.metadata) {
+                        html += row('Artist', trunc(data.metadata.artist, 35));
+                        html += row('Album', trunc(data.metadata.title, 35));
+                        if (data.metadata.musicbrainz) html += row('MusicBrainz', 'Yes', 'ok');
+                    }
+                    if (data.playback) {
+                        html += row('State', data.playback.state, data.playback.state === 'playing' ? 'ok' : '');
+                        if (data.playback.current_track) {
+                            html += row('Track', data.playback.current_track + ' / ' + data.playback.total_tracks);
+                        }
+                    }
+                    if (data.current_sink) {
+                        const active = data.audio_outputs?.find(o => o.name === data.current_sink);
+                        html += row('Output', active?.label || data.current_sink);
+                    }
+                    html += '</div>';
+
+                    // Artwork
+                    if (data.metadata?.artwork) {
+                        html += `<img class="cd-artwork" src="${data.metadata.artwork}" alt="Album art">`;
+                    }
+                    return html;
+                },
+            },
+        ];
+
+        // ── Helper functions ──
+
+        function row(label, value, cls) {
+            const v = value != null ? value : '—';
+            const c = cls ? ` ${cls}` : '';
+            return `<span class="label">${label}</span><span class="value${c}">${v}</span>`;
+        }
+
+        function trunc(str, max) {
+            if (!str) return '—';
+            return str.length > max ? str.substring(0, max) + '...' : str;
+        }
+
+        function tempClass(temp) {
+            if (!temp) return '';
+            const n = parseFloat(temp);
+            if (isNaN(n)) return '';
+            return n > 70 ? 'err' : n > 55 ? 'warn' : 'ok';
+        }
+
+        function tempColor(temp) {
+            if (temp < 50) return '#4a4';
+            if (temp < 65) return '#fa0';
+            return '#a44';
+        }
+
+        function sectionLabel(text) {
+            return `<div style="margin-top:14px;font-size:11px;color:#555;text-transform:uppercase;letter-spacing:1px;margin-bottom:6px">${text}</div>`;
+        }
+
+        function meterBar(value, max, color) {
+            const pct = Math.min(100, Math.max(0, (value / max) * 100));
+            return `<div class="meter"><div class="meter-bar"><div class="meter-fill" style="width:${pct.toFixed(0)}%;background:${color}"></div></div><span class="meter-label">${pct.toFixed(0)}%</span></div>`;
+        }
+
+        function sparkline(values, width, height, color) {
+            if (!values || values.length < 2) return '';
+            const min = Math.min(...values);
+            const max = Math.max(...values);
+            const range = max - min || 1;
+            const step = width / (values.length - 1);
+            const c = color || '#4a4';
+            const points = values.map((v, i) =>
+                `${(i * step).toFixed(1)},${(height - 1 - ((v - min) / range) * (height - 2)).toFixed(1)}`
+            ).join(' ');
+            return `<svg width="${width}" height="${height}" style="display:block;margin:4px 0"><polyline points="${points}" fill="none" stroke="${c}" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+        }
+
+        function parseMemPct(memStr) {
+            if (!memStr) return null;
+            let m = memStr.match(/(\d+(?:\.\d+)?)\s*%/);
+            if (m) return parseFloat(m[1]);
+            m = memStr.match(/(\d+(?:\.\d+)?)\s*[GMK]?\s*\/\s*(\d+(?:\.\d+)?)/);
+            if (m) return (parseFloat(m[1]) / parseFloat(m[2])) * 100;
+            return null;
+        }
+
+
+        // ── Config helpers ──
+
+        function esc(s) {
+            return String(s ?? '').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+        }
+
+        function cfgGet(obj, path) {
+            return path.reduce((o, k) => (o != null ? o[k] : undefined), obj);
+        }
+
+        const BEO4_SOURCES = [
+            { value: 'radio',   label: 'Radio' },
+            { value: 'cd',      label: 'CD' },
+            { value: 'amem',    label: 'A.MEM' },
+            { value: 'n.radio', label: 'N.Radio' },
+            { value: 'n.music', label: 'N.Music' },
+            { value: 'server',  label: 'Server' },
+            { value: 'spotify', label: 'Spotify' },
+            { value: 'dvd',     label: 'DVD' },
+            { value: 'dtv',     label: 'DTV' },
+            { value: 'v.aux',   label: 'V.Aux' },
+            { value: 'a.aux',   label: 'A.Aux' },
+            { value: 'tv',      label: 'TV' },
+            { value: 'media',   label: 'Media' },
+            { value: 'vmem',    label: 'V.Mem' },
+            { value: 'pc',      label: 'PC' },
+            { value: 'youtube', label: 'YouTube' },
+            { value: 'usb2',    label: 'USB' },
+        ];
+
+        const CFG_SOURCE_DEFS = [
+            { key: 'PLAYING', label: 'Playing', fixed: true },
+            { key: 'JOIN', label: 'Join (multi-room)', fields: [
+                { fid: 'ir_source', label: 'IR trigger', path: ['join','source'], isIr: true, optional: true },
+                { fid: 'default_player', label: 'Default Sonos group', path: ['join','default_player'], placeholder: 'e.g. Kitchen and Dining', optional: true },
+            ]},
+            { key: 'SPOTIFY', label: 'Spotify', authPort: 8771, fields: [
+                { fid: 'ir_source', label: 'IR trigger', path: ['spotify','source'], isIr: true, optional: true },
+                { fid: 'client_id', label: 'Client ID', path: ['spotify','client_id'], placeholder: 'From developer.spotify.com' },
+                { fid: 'token_master', label: 'Token master URL', path: ['spotify','token_master'], placeholder: 'http://other-device:8771', optional: true, hint: 'Share token across multiple devices' },
+            ]},
+            { key: 'TIDAL', label: 'Tidal', authPort: 8777, fields: [
+                { fid: 'ir_source', label: 'IR trigger', path: ['tidal','source'], isIr: true, optional: true },
+            ]},
+            { key: 'APPLE MUSIC', label: 'Apple Music', authPort: 8778, fields: [
+                { fid: 'ir_source', label: 'IR trigger', path: ['apple_music','source'], isIr: true, optional: true },
+            ]},
+            { key: 'PLEX', label: 'Plex', authPort: 8772, fields: [
+                { fid: 'ir_source', label: 'IR trigger', path: ['plex','source'], isIr: true, optional: true },
+                { fid: 'url', label: 'Server URL', path: ['plex','url'], placeholder: 'https://plex.server:32400', optional: true, hint: 'Leave blank for local server' },
+            ]},
+            { key: 'RADIO', label: 'Radio', fields: [
+                { fid: 'ir_source', label: 'IR trigger', path: ['radio','source'], isIr: true, optional: true },
+            ]},
+            { key: 'CD', label: 'CD', fields: [
+                { fid: 'ir_source', label: 'IR trigger', path: ['cd','source'], isIr: true, optional: true },
+                { fid: 'device', label: 'Device path', path: ['cd','device'], placeholder: '/dev/sr0' },
+            ]},
+            { key: 'USB', label: 'USB', fields: [
+                { fid: 'ir_source', label: 'IR trigger', path: ['usb','source'], isIr: true, optional: true },
+            ]},
+            { key: 'NEWS', label: 'News', fields: [
+                { fid: 'guardian_api_key', label: 'Guardian API key', path: ['news','guardian_api_key'], placeholder: 'From theguardian.com/developer' },
+            ]},
+            { key: 'SCENES', label: 'Scenes' },
+            { key: 'SECURITY', label: 'Security Camera', isUrl: true, fields: [
+                { fid: 'url', label: 'Camera URL', path: ['_security_url'], placeholder: 'http://homeassistant.local:8123/cameras' },
+            ]},
+            { key: 'SYSTEM', label: 'System', fixed: true },
+            { key: 'SHOWING', label: 'Now Playing on TV', fields: [
+                { fid: 'entity_id', label: 'HA entity', path: ['showing','entity_id'], placeholder: 'media_player.apple_tv' },
+            ]},
+        ];
+
+        const CFG_SOURCE_VIEWS = {
+            'PLAYING':'playing','JOIN':'join','SPOTIFY':'spotify','TIDAL':'tidal',
+            'APPLE MUSIC':'apple_music','PLEX':'plex','RADIO':'radio','CD':'cd',
+            'USB':'usb','NEWS':'news','SCENES':'scenes','SYSTEM':'system','SHOWING':'showing',
+        };
+
+        class SystemPanel {
+            constructor() {
+                this.sections = ['info', 'services', 'remotes', 'people', 'config'];
+                this.currentSection = 0;
+                this.inputWs = null;
+                this.serviceStatus = {};
+                this.remoteItems = [];
+                this.currentRemoteItem = 0;
+                this.btRemotes = [];
+                this.remotesRefreshInterval = null;
+
+                // Service subcards
+                this.currentSubcard = 0;
+                this.subcardData = {};    // id -> last fetched data
+                this.subcardOnline = {};  // id -> bool
+                this.subcardRefreshTimer = null;
+
+                // Debouncing
+                this.lastButtonTime = 0;
+                this.buttonDebounceMs = 200;
+                this.lastNavTime = 0;
+                this.navDebounceMs = 80;
+
+                // Update state
+                this.updateAvailable = false;
+                this.latestVersion = null;
+                this.relNotesVisible = false;
+
+                this.init();
+            }
+
+            init() {
+                this._messageHandler = (event) => {
+                    this.handleMessage(event.data);
+                };
+                window.addEventListener('message', this._messageHandler);
+
+                document.addEventListener('keydown', (e) => {
+                    // Don't steal keys when a form element has focus
+                    const tag = document.activeElement?.tagName;
+                    if (['INPUT','SELECT','TEXTAREA','BUTTON'].includes(tag)) return;
+
+                    if (e.key === 'ArrowLeft') this.handleButton('left');
+                    else if (e.key === 'ArrowRight') this.handleButton('right');
+                    else if (e.key === 'ArrowUp') this.handleNav('counter', 1);
+                    else if (e.key === 'ArrowDown') this.handleNav('clock', 1);
+                    else if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        this.handleButton('go');
+                    }
+                });
+
+                // Tab click handlers
+                document.querySelectorAll('.section-tab').forEach((tab, index) => {
+                    tab.addEventListener('click', () => {
+                        this.currentSection = index;
+                        this.updateSection();
+                    });
+                });
+
+                this.connectInputWebSocket();
+                this.fetchPeople();
+                this.fetchBTRemotes();
+                this.checkUpdate();
+
+                this._intervals = [
+                    setInterval(() => this.fetchPeople(), 30000),
+                ];
+            }
+
+            // ── Subcards ──
+
+            async fetchSubcard(index) {
+                const card = SUBCARDS[index];
+                try {
+                    const data = await card.fetch();
+                    this.subcardData[card.id] = data;
+                    this.subcardOnline[card.id] = !!data;
+                } catch (e) {
+                    this.subcardOnline[card.id] = false;
+                }
+                if (this.currentSubcard === index && this.sections[this.currentSection] === 'services') {
+                    this.renderCurrentSubcard();
+                }
+            }
+
+            renderCurrentSubcard() {
+                const card = SUBCARDS[this.currentSubcard];
+                const data = this.subcardData[card.id];
+                const online = this.subcardOnline[card.id] !== false;
+
+                const container = document.getElementById('subcard-container');
+                let html = '<div class="subcard-header">';
+                html += `<span class="subcard-status-dot ${online ? 'online' : 'offline'}"></span>`;
+                html += `<span class="subcard-title">${card.title}</span>`;
+                html += `<span class="subcard-counter">${this.currentSubcard + 1} / ${SUBCARDS.length}</span>`;
+                html += '</div>';
+
+                if (!online) {
+                    html += '<div class="subcard-body">';
+                    html += row('Status', 'Offline', 'err');
+                    html += '</div>';
+                } else {
+                    try {
+                        html += card.render(data);
+                    } catch (e) {
+                        html += '<div class="subcard-body">' + row('Error', e.message, 'err') + '</div>';
+                    }
+                }
+
+                container.innerHTML = html;
+
+                // Update git tag from system data (overview and system both fetch it)
+                const tag = data?.input?.git_tag;
+                if ((card.id === 'overview' || card.id === 'system') && tag) {
+                    document.getElementById('git-tag').textContent = tag;
+                }
+            }
+
+            startSubcardRefresh() {
+                this.stopSubcardRefresh();
+                this.fetchSubcard(this.currentSubcard);
+                this.subcardRefreshTimer = setInterval(() => {
+                    this.fetchSubcard(this.currentSubcard);
+                }, 5000);
+            }
+
+            stopSubcardRefresh() {
+                if (this.subcardRefreshTimer) {
+                    clearInterval(this.subcardRefreshTimer);
+                    this.subcardRefreshTimer = null;
+                }
+            }
+
+            // ── WebSocket ──
+
+            connectInputWebSocket() {
+                try {
+                    this.inputWs = new WebSocket('ws://localhost:8765');
+
+                    this.inputWs.onopen = () => {
+                        console.log('[SYSTEM] Input WS connected');
+                        // Fetch system info for git tag
+                        this.inputWs.send(JSON.stringify({
+                            type: 'command', command: 'get_system_info'
+                        }));
+                    };
+
+                    this.inputWs.onmessage = (event) => {
+                        try {
+                            const data = JSON.parse(event.data);
+                            if (data.type === 'system_info') {
+                                if (data.git_tag) {
+                                    document.getElementById('git-tag').textContent = data.git_tag;
+                                }
+                            } else if (data.type === 'bt_remotes') {
+                                this.btRemotes = data.remotes || [];
+                                this.renderRemotesList(this.btRemotes);
+                            } else if (data.type === 'bt_pairing') {
+                                const statusEl = document.getElementById('pairing-status');
+                                if (data.status === 'started') {
+                                    statusEl.textContent = data.message || 'Scanning...';
+                                } else if (data.status === 'completed') {
+                                    statusEl.textContent = data.message || 'Pairing complete';
+                                    this.fetchBTRemotes();
+                                    setTimeout(() => { statusEl.textContent = ''; }, 5000);
+                                } else if (data.status === 'error') {
+                                    statusEl.textContent = data.message || 'Pairing failed';
+                                    setTimeout(() => { statusEl.textContent = ''; }, 5000);
+                                }
+                            }
+                        } catch (e) {}
+                    };
+
+                    this.inputWs.onerror = () => {};
+
+                    this.inputWs.onclose = () => {
+                        setTimeout(() => this.connectInputWebSocket(), 5000);
+                    };
+                } catch (e) {
+                    console.error('[SYSTEM] WebSocket error:', e);
+                }
+            }
+
+            // ── Navigation ──
+
+            handleMessage(msg) {
+                if (msg.type === 'button') this.handleButton(msg.button);
+                else if (msg.type === 'nav') {
+                    const data = msg.data || msg;
+                    this.handleNav(data.direction, data.speed || 1);
+                }
+            }
+
+            handleButton(button) {
+                const now = Date.now();
+                if (now - this.lastButtonTime < this.buttonDebounceMs) return;
+                this.lastButtonTime = now;
+
+                const section = this.sections[this.currentSection];
+
+                if (this.relNotesVisible) {
+                    if (button === 'go') this.startUpdate();
+                    else if (button === 'left') this.hideReleaseNotes();
+                    return;
+                }
+
+                if (button === 'left') {
+                    this.currentSection = (this.currentSection - 1 + this.sections.length) % this.sections.length;
+                    this.updateSection();
+                } else if (button === 'right') {
+                    this.currentSection = (this.currentSection + 1) % this.sections.length;
+                    this.updateSection();
+                } else if (button === 'go') {
+                    if (section === 'info' && this.updateAvailable) {
+                        this.showReleaseNotes();
+                    } else if (section === 'services') {
+                        this.restartSubcardService();
+                    } else if (section === 'remotes') {
+                        const selected = this.remoteItems[this.currentRemoteItem];
+                        if (selected && selected.dataset.action === 'pair') {
+                            this.startBTPairing();
+                        }
+                    }
+                }
+            }
+
+            handleNav(direction, speed) {
+                const now = Date.now();
+                if (now - this.lastNavTime < this.navDebounceMs) return;
+                this.lastNavTime = now;
+
+                if (this.relNotesVisible) {
+                    const body = document.getElementById('rn-body');
+                    body.scrollTop += (direction === 'clock' ? 1 : -1) * speed * 30;
+                    return;
+                }
+
+                const section = this.sections[this.currentSection];
+
+                if (section === 'services') {
+                    if (direction === 'counter') {
+                        this.currentSubcard = (this.currentSubcard - 1 + SUBCARDS.length) % SUBCARDS.length;
+                    } else if (direction === 'clock') {
+                        this.currentSubcard = (this.currentSubcard + 1) % SUBCARDS.length;
+                    }
+                    this.startSubcardRefresh();
+                } else if (section === 'remotes') {
+                    if (this.remoteItems.length > 0) {
+                        if (direction === 'counter') {
+                            this.currentRemoteItem = Math.max(0, this.currentRemoteItem - 1);
+                        } else if (direction === 'clock') {
+                            this.currentRemoteItem = Math.min(this.remoteItems.length - 1, this.currentRemoteItem + 1);
+                        }
+                        this.updateRemoteSelection();
+                    }
+                } else if (section === 'config') {
+                    document.getElementById('config').scrollTop +=
+                        (direction === 'clock' ? 1 : -1) * speed * 50;
+                }
+            }
+
+            updateSection() {
+                document.querySelectorAll('.section-tab').forEach((tab, index) => {
+                    tab.classList.toggle('active', index === this.currentSection);
+                });
+
+                document.querySelectorAll('.section-content').forEach((content) => {
+                    content.classList.toggle('active', this.sections.indexOf(content.id) === this.currentSection);
+                });
+
+                const section = this.sections[this.currentSection];
+
+                // Start/stop subcard refresh
+                if (section === 'services') {
+                    this.startSubcardRefresh();
+                } else {
+                    this.stopSubcardRefresh();
+                }
+
+                // Fetch remotes when entering remotes section
+                if (section === 'remotes') {
+                    this.fetchBTRemotes();
+                    this.remotesRefreshInterval = setInterval(() => this.fetchBTRemotes(), 10000);
+                } else {
+                    if (this.remotesRefreshInterval) {
+                        clearInterval(this.remotesRefreshInterval);
+                        this.remotesRefreshInterval = null;
+                    }
+                }
+
+                if (section === 'people') {
+                    this.fetchPeople();
+                }
+
+                if (section === 'config') {
+                    this.loadConfig();
+                }
+            }
+
+            // ── Update ──
+
+            async checkUpdate() {
+                try {
+                    const resp = await fetch(API + '/update/check');
+                    if (!resp.ok) return;
+                    const data = await resp.json();
+                    if (data.update_in_progress) {
+                        this.showUpdateOverlay(data.latest || '...');
+                        this.pollReconnect();
+                    } else if (data.update_available && data.latest) {
+                        this.updateAvailable = true;
+                        this.latestVersion = data.latest;
+                        this.showUpdateInfo(data);
+                    } else if (data.current) {
+                        this.showUpToDate();
+                    }
+                } catch (e) { /* offline or service not running */ }
+            }
+
+            showUpdateInfo(data) {
+                document.getElementById('callout-version').textContent = data.latest;
+                document.getElementById('update-callout').className = 'update-callout visible';
+
+                if (data.release_notes) {
+                    document.getElementById('update-notes-body').textContent = data.release_notes;
+                    document.getElementById('update-release-link').href = data.release_url || '#';
+                    document.getElementById('update-notes').style.display = 'block';
+                }
+
+                document.getElementById('info-hint-version').textContent = data.latest;
+                document.getElementById('info-hint').style.display = '';
+            }
+
+            showUpToDate() {
+                document.getElementById('up-to-date-callout').className = 'up-to-date-callout visible';
+            }
+
+            showReleaseNotes() {
+                document.getElementById('rn-version').textContent = this.latestVersion || '--';
+                document.getElementById('rn-body').textContent =
+                    document.getElementById('update-notes-body').textContent || 'No release notes available.';
+                document.getElementById('rn-body').scrollTop = 0;
+                document.getElementById('release-notes-screen').className = 'active';
+                this.relNotesVisible = true;
+            }
+
+            hideReleaseNotes() {
+                document.getElementById('release-notes-screen').className = '';
+                this.relNotesVisible = false;
+            }
+
+            async startUpdate() {
+                if (!this.updateAvailable || !this.latestVersion) return;
+                this.hideReleaseNotes();
+                this.showUpdateOverlay(this.latestVersion);
+                try {
+                    const resp = await fetch(API + '/update/run', { method: 'POST' });
+                    if (resp.status === 202) {
+                        this.pollReconnect();
+                    } else if (resp.ok) {
+                        this.hideUpdateOverlay(); // up_to_date
+                    } else {
+                        const d = await resp.json().catch(() => ({}));
+                        this._overlayError(d.message || 'Update failed');
+                    }
+                } catch (e) {
+                    this._overlayError('Could not reach service');
+                }
+            }
+
+            showUpdateOverlay(version) {
+                document.getElementById('overlay-version').textContent = version;
+                document.getElementById('overlay-status').textContent = 'Downloading...';
+                document.getElementById('overlay-status').style.color = '';
+                document.querySelectorAll('.update-dot').forEach(d => {
+                    d.style.animation = '';
+                    d.style.background = '';
+                });
+                document.getElementById('update-overlay').className = 'active';
+            }
+
+            hideUpdateOverlay() {
+                document.getElementById('update-overlay').className = '';
+            }
+
+            _overlayError(msg) {
+                document.getElementById('overlay-status').textContent = msg;
+                document.getElementById('overlay-status').style.color = '#a44';
+                document.querySelectorAll('.update-dot').forEach(d => {
+                    d.style.animation = 'none';
+                    d.style.background = '#333';
+                });
+            }
+
+            pollReconnect() {
+                const statusEl = document.getElementById('overlay-status');
+                const stepLabels = {
+                    downloading: 'Downloading...',
+                    extracting: 'Extracting...',
+                    installing: 'Installing files...',
+                    'post-update': 'Applying system changes...',
+                    restarting: 'Restarting...',
+                };
+                let attempts = 0;
+
+                const poll = async () => {
+                    try {
+                        const resp = await fetch(API + '/update/check');
+                        if (resp.ok) {
+                            const data = await resp.json();
+                            if (data.update_in_progress) {
+                                statusEl.style.color = '';
+                                statusEl.textContent = stepLabels[data.update_step] || 'Updating...';
+                            } else {
+                                // Done — services have restarted
+                                statusEl.style.color = '#4a4';
+                                statusEl.textContent = 'Updated to ' + (data.current || this.latestVersion);
+                                document.querySelectorAll('.update-dot').forEach(d => {
+                                    d.style.animation = 'none';
+                                    d.style.background = '#4a4';
+                                });
+                                setTimeout(() => location.reload(), 2500);
+                                return;
+                            }
+                        }
+                    } catch (e) {
+                        // Backend restarting
+                        statusEl.style.color = '#555';
+                        statusEl.textContent = 'Waiting to reconnect...';
+                    }
+                    attempts++;
+                    if (attempts < 60) {
+                        setTimeout(poll, 2000);
+                    } else {
+                        this._overlayError('Restart taking longer than expected — try reloading');
+                    }
+                };
+                setTimeout(poll, 2000);
+            }
+
+            // ── Service restart ──
+
+            restartSubcardService() {
+                const card = SUBCARDS[this.currentSubcard];
+                if (!card.service) {
+                    // SYSTEM card — restart all
+                    if (this.inputWs && this.inputWs.readyState === WebSocket.OPEN) {
+                        this.inputWs.send(JSON.stringify({
+                            type: 'command', command: 'restart_service',
+                            params: { action: 'restart-all' }
+                        }));
+                    }
+                    return;
+                }
+
+                // Flash feedback
+                const container = document.getElementById('subcard-container');
+                container.style.opacity = '0.5';
+                setTimeout(() => { container.style.opacity = '1'; }, 400);
+
+                if (this.inputWs && this.inputWs.readyState === WebSocket.OPEN) {
+                    const action = 'restart-' + card.service.replace('beo-', '');
+                    this.inputWs.send(JSON.stringify({
+                        type: 'command', command: 'restart_service',
+                        params: { action: action }
+                    }));
+                }
+
+                // Refresh after a short delay
+                setTimeout(() => this.fetchSubcard(this.currentSubcard), 3000);
+            }
+
+            // ── BT Remotes ──
+
+            async fetchBTRemotes() {
+                try {
+                    const resp = await fetch('http://localhost:8767/bt/remotes');
+                    if (resp.ok) {
+                        const remotes = await resp.json();
+                        this.btRemotes = remotes;
+                        this.renderRemotesList(remotes);
+                        return;
+                    }
+                } catch (e) {}
+
+                if (this.inputWs && this.inputWs.readyState === WebSocket.OPEN) {
+                    this.inputWs.send(JSON.stringify({ type: 'command', command: 'get_bt_remotes' }));
+                }
+            }
+
+            renderRemotesList(remotes) {
+                const list = document.getElementById('remotes-list');
+                if (!remotes || remotes.length === 0) {
+                    list.innerHTML = '<span class="people-loading">No paired BeoRemote devices</span>';
+                    this.remoteItems = [];
+                    this.currentRemoteItem = 0;
+                    return;
+                }
+
+                let html = remotes.map((r, i) => {
+                    const statusClass = r.connected ? 'running' : 'stopped';
+                    const rssiText = r.rssi != null ? `${r.rssi} dBm` : '—';
+                    const batteryText = r.battery != null ? `${r.battery}%` : '—';
+                    const selected = i === this.currentRemoteItem ? ' selected' : '';
+                    const displayName = r.name === 'BEORC' ? 'BeoRemote One Bluetooth' : r.name;
+                    return `
+                        <div class="service-item remote-item${selected}" data-mac="${r.mac}">
+                            <div>
+                                <span class="name">${displayName}</span>
+                                <div class="mac">${r.mac}</div>
+                                <div class="remote-meta">
+                                    <span>RSSI: ${rssiText}</span>
+                                    <span>Battery: ${batteryText}</span>
+                                </div>
+                            </div>
+                            <span class="status-dot ${statusClass}"></span>
+                        </div>
+                    `;
+                }).join('');
+
+                const pairSelected = remotes.length === this.currentRemoteItem ? ' selected' : '';
+                html += `
+                    <div class="service-item separator${pairSelected}" data-action="pair">
+                        <span class="name">Pair New Remote</span>
+                        <span class="status-dot"></span>
+                    </div>
+                `;
+
+                list.innerHTML = html;
+                this.remoteItems = list.querySelectorAll('.service-item');
+            }
+
+            updateRemoteSelection() {
+                this.remoteItems.forEach((item, index) => {
+                    item.classList.toggle('selected', index === this.currentRemoteItem);
+                });
+            }
+
+            startBTPairing() {
+                const statusEl = document.getElementById('pairing-status');
+                statusEl.textContent = 'Scanning for remotes... (60s)';
+
+                if (this.inputWs && this.inputWs.readyState === WebSocket.OPEN) {
+                    this.inputWs.send(JSON.stringify({ type: 'command', command: 'start_bt_pairing' }));
+                } else {
+                    fetch('http://localhost:8767/bt/remotes', { method: 'POST' }).catch(() => {});
+                }
+
+                setTimeout(() => {
+                    statusEl.textContent = '';
+                    this.fetchBTRemotes();
+                }, 60000);
+            }
+
+            // ── People ──
+
+            async fetchPeople() {
+                const grid = document.getElementById('people-grid');
+                try {
+                    const resp = await fetch('http://localhost:8767/people');
+                    if (!resp.ok) throw new Error('Failed to fetch');
+                    const people = await resp.json();
+
+                    if (people.error) {
+                        grid.innerHTML = `<span class="people-error">Error: ${people.error}</span>`;
+                        return;
+                    }
+
+                    if (people.length === 0) {
+                        grid.innerHTML = '<span class="people-loading">No people found</span>';
+                        return;
+                    }
+
+                    grid.innerHTML = people.map(person => {
+                        const isHome = person.state === 'home';
+                        const initials = this.getInitials(person.friendly_name);
+                        const avatarContent = person.entity_picture
+                            ? `<img src="${person.entity_picture}" alt="${person.friendly_name}" onerror="this.parentElement.innerHTML='${initials}'">`
+                            : initials;
+                        return `
+                            <div class="person-card">
+                                <div class="person-avatar ${isHome ? 'home' : 'away'}">${avatarContent}</div>
+                                <div class="person-name">${person.friendly_name}</div>
+                                <div class="person-status ${isHome ? 'home' : ''}">${person.state.replace('_', ' ')}</div>
+                            </div>
+                        `;
+                    }).join('');
+                } catch (e) {
+                    if (grid.querySelector('.people-loading')) {
+                        grid.innerHTML = '<span class="people-error">Unable to connect to Home Assistant</span>';
+                    }
+                }
+            }
+
+            getInitials(name) {
+                return name.split(' ')
+                    .map(part => part.charAt(0).toUpperCase())
+                    .slice(0, 2)
+                    .join('');
+            }
+
+            // ── Config ──
+
+            async loadConfig() {
+                if (this._cfgQrDone) return;
+                this._cfgQrDone = true;
+                const container = document.getElementById('cfg-qr-container');
+                const urlEl = document.getElementById('cfg-qr-url');
+                if (!container) return;
+                try {
+                    const resp = await fetch('http://localhost:8767/info');
+                    const data = await resp.json();
+                    const ip = data.ip_address || location.hostname;
+                    const hostname = data.hostname;
+                    const url = `http://${ip}/config`;
+                    const displayUrl = hostname
+                        ? `http://${hostname}.local/config`
+                        : url;
+                    if (typeof QRCode !== 'undefined') {
+                        new QRCode(container, {
+                            text: url,
+                            width: 180,
+                            height: 180,
+                            colorDark: '#000000',
+                            colorLight: '#ffffff',
+                            correctLevel: QRCode.CorrectLevel.M,
+                        });
+                    } else {
+                        container.innerHTML = `<img src="http://localhost:8767/qrcode" style="width:180px;height:180px;">`;
+                    }
+                    if (urlEl) urlEl.textContent = displayUrl;
+                } catch (e) {
+                    if (container) container.innerHTML = `<img src="http://localhost:8767/qrcode" style="width:180px;height:180px;">`;
+                    if (urlEl) urlEl.textContent = 'Scan to configure';
+                }
+            }
+
+            destroy() {
+                if (this._intervals) {
+                    this._intervals.forEach(id => clearInterval(id));
+                    this._intervals = null;
+                }
+                if (this.remotesRefreshInterval) {
+                    clearInterval(this.remotesRefreshInterval);
+                    this.remotesRefreshInterval = null;
+                }
+                this.stopSubcardRefresh();
+                if (this._messageHandler) {
+                    window.removeEventListener('message', this._messageHandler);
+                    this._messageHandler = null;
+                }
+                if (this.inputWs) {
+                    this.inputWs.close();
+                    this.inputWs = null;
+                }
+            }
+        }
+
+        document.addEventListener('DOMContentLoaded', () => {
+            window.systemPanel = new SystemPanel();
+        });
+    </script>
+</body>
+</html>

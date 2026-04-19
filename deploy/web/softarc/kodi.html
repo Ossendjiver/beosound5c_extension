@@ -1,0 +1,1042 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Kodi - Beosound 5c</title>
+    <link rel="stylesheet" href="styles.css">
+    <link rel="stylesheet" href="splash.css">
+    <link rel="stylesheet" href="../assets/phosphor/phosphor.css">
+    <style>
+        .page-view {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            display: flex;
+            align-items: center;
+            opacity: 0;
+            transition: opacity 300ms ease;
+            z-index: 5;
+        }
+
+        .page-view-scroll {
+            margin-left: 350px;
+            margin-right: 180px;
+            max-height: 80vh;
+            overflow-y: auto;
+            padding: 40px 0;
+            scrollbar-width: none;
+        }
+
+        .page-view-scroll::-webkit-scrollbar {
+            display: none;
+        }
+
+        .page-view-title {
+            font-size: 1.5rem;
+            font-weight: 300;
+            letter-spacing: 1px;
+            color: #fff;
+            margin-bottom: 1.5rem;
+            line-height: 1.3;
+        }
+
+        .page-view-body {
+            font-size: 0.95rem;
+            line-height: 1.7;
+            color: rgba(255, 255, 255, 0.82);
+        }
+
+        .page-view-body a {
+            color: rgba(80, 140, 255, 0.9);
+            text-decoration: none;
+        }
+
+        .page-view-body blockquote {
+            border-left: 2px solid rgba(255, 255, 255, 0.2);
+            padding-left: 1rem;
+            color: rgba(255, 255, 255, 0.65);
+            font-style: italic;
+        }
+
+        .page-view.page-view-kodi {
+            align-items: flex-start;
+            padding-top: 6vh;
+        }
+
+        .page-view.page-view-kodi .page-view-scroll {
+            width: min(460px, calc(100vw - 560px));
+        }
+
+        .page-view.page-view-kodi .page-view-body img {
+            width: 100%;
+            display: block;
+            margin-bottom: 1.25rem;
+            border-radius: 0.85rem;
+            box-shadow: 0 22px 44px rgba(0, 0, 0, 0.35);
+        }
+
+        .page-view.page-view-kodi .page-view-body strong {
+            color: #ffffff;
+            font-weight: 600;
+        }
+
+        .page-view.page-view-kodi .page-view-body p {
+            margin-bottom: 0.95rem;
+        }
+
+        .page-view.page-view-kodi .page-view-body blockquote {
+            margin: 0 0 1.35rem;
+        }
+
+        .fast-letter-overlay {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            width: 116px;
+            height: 116px;
+            margin-left: -58px;
+            margin-top: -58px;
+            border-radius: 26px;
+            background: rgba(9, 14, 24, 0.22);
+            border: 1px solid rgba(141, 175, 228, 0.18);
+            box-shadow: 0 14px 30px rgba(0, 0, 0, 0.18);
+            backdrop-filter: blur(8px);
+            color: #ffffff;
+            font: 300 58px/116px Arial, sans-serif;
+            text-align: center;
+            opacity: 0;
+            transform: scale(0.92);
+            transition: opacity 90ms linear, transform 90ms ease;
+            pointer-events: none;
+            z-index: 3600;
+        }
+
+        .fast-letter-overlay.visible {
+            opacity: 1;
+            transform: scale(1);
+        }
+
+        .action-toast-overlay {
+            position: absolute;
+            top: 18px;
+            left: 50%;
+            transform: translateX(-50%) translateY(-10px);
+            min-width: 220px;
+            max-width: 460px;
+            padding: 10px 20px;
+            border-radius: 999px;
+            background: rgba(8, 12, 20, 0.72);
+            border: 1px solid rgba(148, 199, 255, 0.22);
+            box-shadow: 0 16px 34px rgba(0, 0, 0, 0.22);
+            backdrop-filter: blur(8px);
+            color: #f2f7ff;
+            font: 500 14px/1.25 Arial, sans-serif;
+            letter-spacing: 0.3px;
+            text-align: center;
+            opacity: 0;
+            transition: opacity 140ms ease, transform 140ms ease;
+            pointer-events: none;
+            z-index: 3800;
+        }
+
+        .action-toast-overlay.visible {
+            opacity: 1;
+            transform: translateX(-50%) translateY(0);
+        }
+    </style>
+</head>
+<body>
+    <div id="app">
+        <div id="sync-indicator" style="position: absolute; top: 15px; right: 20px; display: none; align-items: center; gap: 8px; z-index: 1000; background: rgba(10,10,10,0.85); padding: 6px 12px; border-radius: 20px; color: #aaa; font-family: sans-serif; font-size: 11px; letter-spacing: 1px; border: 1px solid #333;">
+            <div class="loading-spinner" style="width: 12px; height: 12px; border-width: 2px;"></div>
+            SYNCING
+        </div>
+
+        <div class="counter">
+            <span id="current-item">1</span> / <span id="total-items">0</span>
+        </div>
+        <div class="hierarchy-depth-1" id="hierarchy-background"></div>
+        <div class="arc-container" id="arc-container"></div>
+    </div>
+
+    <script src="../js/config.js"></script>
+    <script src="../js/arc-utils.js"></script>
+    <script src="../js/emulator-bridge.js"></script>
+    <script src="script.js"></script>
+    <script>
+        // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        // Sync monitor
+        // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        let lastItemCount = 0;
+
+        function countTotalItems(data) {
+            if (!Array.isArray(data)) return 0;
+            let count = 0;
+            data.forEach(cat => { if (cat.tracks) count += cat.tracks.length; });
+            return count;
+        }
+
+        function startSyncMonitor(KODI_URL) {
+            setInterval(async () => {
+                try {
+                    const resp = await fetch(`${KODI_URL}/playlists`);
+                    if (!resp.ok) return;
+                    const raw  = await resp.json();
+                    const data = Array.isArray(raw) ? raw : (raw.data || raw);
+                    const current = countTotalItems(data);
+                    const el = document.getElementById('sync-indicator');
+                    if (el) {
+                        el.style.display = current > lastItemCount && lastItemCount > 0
+                            ? 'flex' : (current === lastItemCount ? 'none' : el.style.display);
+                    }
+                    lastItemCount = current;
+                } catch (e) {}
+            }, 5000);
+        }
+
+        function showRuntimeError(source, error) {
+            const app = document.getElementById('app');
+            if (!app) return;
+            const message = (error && error.message) ? error.message : String(error || 'Unknown error');
+            let panel = document.getElementById('runtime-error-panel');
+            if (!panel) {
+                panel = document.createElement('div');
+                panel.id = 'runtime-error-panel';
+                panel.style.cssText = 'position:absolute;right:16px;bottom:16px;max-width:420px;padding:12px 14px;background:rgba(20,0,0,0.92);border:1px solid #a33;color:#f5dcdc;font:12px/1.4 monospace;z-index:4000;white-space:pre-wrap;';
+                app.appendChild(panel);
+            }
+            panel.textContent = `[KODI ${source}] ${message}`;
+            console.error('[KODI UI ERROR]', source, error);
+        }
+
+        const SHOW_RUNTIME_ERRORS = /(?:\?|&)debugErrors=1(?:&|$)/.test(window.location.search);
+        if (SHOW_RUNTIME_ERRORS) {
+            window.addEventListener('error', (event) => {
+                showRuntimeError('error', event.error || event.message);
+            });
+
+            window.addEventListener('unhandledrejection', (event) => {
+                showRuntimeError('promise', event.reason);
+            });
+        }
+
+        const STATIC_CACHE_URL = '../json/kodi_library.json';
+        const SERVICE_BOOT_TIMEOUT_MS = 900;
+        const ACTION_TOAST_MIN_MS = 2000;
+        const ACTION_TOAST_MAX_MS = 4000;
+        const FAST_LETTER_MIN_SPEED = 3;
+        const FAST_LETTER_ARTICLES = new Set(['A', 'AN', 'THE']);
+
+        async function fetchJson(url, options = {}) {
+            const timeoutMs = Number(options.timeoutMs || 0);
+            const controller = timeoutMs > 0 ? new AbortController() : null;
+            let timeoutId = null;
+            try {
+                if (controller) {
+                    timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+                }
+                const resp = await fetch(url, {
+                    cache: options.cacheMode || 'no-store',
+                    signal: controller ? controller.signal : undefined,
+                });
+                if (!resp.ok) return null;
+                return await resp.json();
+            } catch (error) {
+                return null;
+            } finally {
+                if (timeoutId) clearTimeout(timeoutId);
+            }
+        }
+
+        function normalizeLibraryPayload(raw) {
+            return Array.isArray(raw) ? raw : (raw?.data || raw);
+        }
+
+        let actionToastState = null;
+        const ensureActionToast = () => {
+            let overlay = document.getElementById('action-toast-overlay');
+            if (!overlay) {
+                overlay = document.createElement('div');
+                overlay.id = 'action-toast-overlay';
+                overlay.className = 'action-toast-overlay';
+                document.getElementById('app')?.appendChild(overlay);
+            }
+            return overlay;
+        };
+
+        const clearActionToastTimers = () => {
+            if (!actionToastState) return;
+            if (actionToastState.hideTimer) clearTimeout(actionToastState.hideTimer);
+            if (actionToastState.maxTimer) clearTimeout(actionToastState.maxTimer);
+            actionToastState.hideTimer = null;
+            actionToastState.maxTimer = null;
+        };
+
+        const hideActionToast = () => {
+            const overlay = document.getElementById('action-toast-overlay');
+            if (overlay) overlay.classList.remove('visible');
+            clearActionToastTimers();
+            actionToastState = null;
+        };
+
+        const showActionToast = (message, options = {}) => {
+            const overlay = ensureActionToast();
+            const preserveTiming = Boolean(options.preserveTiming && actionToastState);
+            if (!preserveTiming) {
+                clearActionToastTimers();
+                actionToastState = {
+                    shownAt: Date.now(),
+                    hideTimer: null,
+                    maxTimer: setTimeout(hideActionToast, ACTION_TOAST_MAX_MS),
+                };
+            }
+            overlay.textContent = message;
+            overlay.classList.add('visible');
+        };
+
+        const settleActionToast = () => {
+            if (!actionToastState) return;
+            const elapsed = Date.now() - actionToastState.shownAt;
+            const waitMs = Math.max(0, ACTION_TOAST_MIN_MS - elapsed);
+            if (actionToastState.hideTimer) clearTimeout(actionToastState.hideTimer);
+            actionToastState.hideTimer = setTimeout(hideActionToast, waitMs);
+        };
+
+        async function loadStaticLibrary() {
+            const raw = await fetchJson(STATIC_CACHE_URL, {
+                timeoutMs: 2500,
+                cacheMode: 'no-cache',
+            });
+            const data = normalizeLibraryPayload(raw);
+            return Array.isArray(data) && countTotalItems(data) > 0 ? data : null;
+        }
+
+        async function readServiceBootState(serviceUrl) {
+            const raw = await fetchJson(`${serviceUrl}/playlists`, {
+                timeoutMs: SERVICE_BOOT_TIMEOUT_MS,
+                cacheMode: 'no-store',
+            });
+            if (!raw) return { status: 'unreachable', data: null };
+            if (raw.loading) return { status: 'loading', data: null };
+            const data = normalizeLibraryPayload(raw);
+            if (Array.isArray(data) && countTotalItems(data) > 0) {
+                return { status: 'ready', data };
+            }
+            return { status: 'empty', data: Array.isArray(data) ? data : [] };
+        }
+
+        // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        // Boot sequence
+        // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        document.addEventListener('DOMContentLoaded', async () => {
+            const KODI_URL = getServiceUrl('kodiServiceUrl', 8782);
+            const serviceState = await readServiceBootState(KODI_URL);
+
+            if (Array.isArray(serviceState.data) && serviceState.data.length > 0) {
+                lastItemCount = countTotalItems(serviceState.data);
+                initArcList(serviceState.data, KODI_URL);
+                startSyncMonitor(KODI_URL);
+                return;
+            }
+
+            const cachedLibrary = await loadStaticLibrary();
+            if (Array.isArray(cachedLibrary) && cachedLibrary.length > 0) {
+                lastItemCount = countTotalItems(cachedLibrary);
+                initArcList(cachedLibrary, KODI_URL);
+                startSyncMonitor(KODI_URL);
+                return;
+            }
+
+            if (serviceState.status === 'empty') {
+                showEmptyScreen(KODI_URL);
+                return;
+            }
+
+            showLoadingScreen(KODI_URL);
+        });
+
+        // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        // Splash screens
+        // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        function showLoadingScreen(serviceUrl) {
+            document.getElementById('app').innerHTML = `
+                <div class="splash-screen">
+                    <div class="splash-card">
+                        <div class="loading-spinner"></div>
+                        <h2 style="letter-spacing: 2px;">SCANNING LIBRARY</h2>
+                        <p style="color: #888;">Kodi is indexing your media.<br>
+                        This may take a few minutes...</p>
+                    </div>
+                </div>`;
+            pollForLibrary(serviceUrl);
+        }
+
+        function showEmptyScreen(serviceUrl) {
+            document.getElementById('app').innerHTML = `
+                <div class="splash-screen">
+                    <div class="splash-card">
+                        <h2>NO MEDIA FOUND</h2>
+                        <p>Your Kodi library appears empty.<br>
+                        Add media via the Kodi interface, then press GO to refresh.</p>
+                        <div id="setup-status" style="color:#666;font-size:13px;margin-top:12px"></div>
+                    </div>
+                </div>`;
+
+            window.addEventListener('message', async (e) => {
+                if (e.data?.type === 'button' && e.data.button === 'go') {
+                    const status = document.getElementById('setup-status');
+                    if (status) status.textContent = 'Triggering library scan...';
+                    try {
+                        await fetch(`${serviceUrl}/sync`, { method: 'POST' });
+                        if (status) status.textContent = 'Scanning... please wait.';
+                    } catch (err) {}
+                    pollForLibrary(serviceUrl);
+                }
+            });
+        }
+
+        function showErrorScreen() {
+            document.getElementById('app').innerHTML = `
+                <div class="splash-screen">
+                    <div class="splash-card">
+                        <h2>KODI UNREACHABLE</h2>
+                        <p>Check that Kodi is running and the HTTP interface<br>
+                        is enabled in Settings â†’ Services â†’ Web Server.</p>
+                    </div>
+                </div>`;
+        }
+
+        function pollForLibrary(serviceUrl) {
+            const poll = setInterval(async () => {
+                try {
+                    const resp = await fetch(`${serviceUrl}/playlists`);
+                    if (resp.ok) {
+                        const raw  = await resp.json();
+                        const data = Array.isArray(raw) ? raw : (raw.data || raw);
+                        if (Array.isArray(data) && countTotalItems(data) > 0) {
+                            clearInterval(poll);
+                            location.reload();
+                        }
+                    }
+                } catch (e) {}
+            }, 4000);
+        }
+
+        // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        // ArcList initialisation
+        // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        function initArcList(preloadedData, kodiUrl) {
+            const kodiServiceBaseUrl = kodiUrl || getServiceUrl('kodiServiceUrl', 8782);
+            const sourceCommandUrl = kodiServiceBaseUrl + '/command';
+            const FALLBACK_CARD_IMAGE = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNjQiIGhlaWdodD0iNjQiIHZpZXdCb3g9IjAgMCA2NCA2NCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPHJlY3Qgd2lkdGg9IjY0IiBoZWlnaHQ9IjY0IiBmaWxsPSIjMjIyMjIyIi8+Cjx0ZXh0IHg9IjMyIiB5PSI0MCIgZm9udC1mYW1pbHk9IkFyaWFsLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjI0IiBmaWxsPSIjNDQ0NDQ0IiB0ZXh0LWFuY2hvcj0ibWlkZGxlIj7imqk8L3RleHQ+Cjwvc3ZnPgo=';
+            const ROOT_ICON_STYLE = {
+                movies:  { icon: 'film-strip', color: '#77adff' },
+                tvshows: { icon: 'television', color: '#6de2d3' },
+                livetv:  { icon: 'broadcast', color: '#ffb36b' },
+            };
+            const normalizeKodiImageUrl = (value) => {
+                const raw = String(value || '').trim();
+                if (!raw) return '';
+                return raw.startsWith('/art/') ? `${kodiServiceBaseUrl}${raw}` : raw;
+            };
+
+            const firstDescendantImage = (node) => {
+                if (!node || typeof node !== 'object') return '';
+                const directImage = normalizeKodiImageUrl(node.image || '');
+                if (directImage) return directImage;
+                const children = Array.isArray(node.tracks) ? node.tracks : [];
+                for (const child of children) {
+                    const childImage = firstDescendantImage(child);
+                    if (childImage) return childImage;
+                }
+                return '';
+            };
+
+            const applyRootPresentation = (item) => {
+                const visual = ROOT_ICON_STYLE[String(item?.id || '')];
+                if (!visual) return item;
+                return Object.assign({}, item, {
+                    icon: visual.icon,
+                    color: visual.color,
+                });
+            };
+
+            // â”€â”€ childNameMapper â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            // Same contract as mass.html:
+            //   FOLDER: keep `play_url`, delete `url` (ArcList uses url for auto-play)
+            //   LEAF:   keep `url`, no empty `tracks`
+            const childNameMapper = (item, index, allItems) => {
+                let displayName = item.name || '';
+                const isFolder  = Array.isArray(item.tracks);
+                const hasArtist = item.artist
+                    && item.artist !== 'Various'
+                    && item.artist !== '';
+
+                // Append artist for mixed-artist leaf lists
+                if (!isFolder && hasArtist && Array.isArray(allItems) && allItems.length > 0) {
+                    const allSame = allItems.every(t => t.artist === allItems[0].artist);
+                    if (!allSame) displayName = `${item.name}\n(${item.artist})`;
+                }
+
+                const mapped = Object.assign({}, item, { name: displayName });
+
+                if (!mapped.image) {
+                    mapped.image = firstDescendantImage(mapped) || FALLBACK_CARD_IMAGE;
+                } else {
+                    mapped.image = normalizeKodiImageUrl(mapped.image);
+                }
+
+                if (isFolder) {
+                    delete mapped.url;   // prevent ArcList treating folder as playable leaf
+                    // play_url survives â€” it's the folder playback handle
+                }
+
+                return mapped;
+            };
+
+            // Convert preloaded data to blob URL for ArcList's fetch path
+            const blob    = new Blob([JSON.stringify(preloadedData)], { type: 'application/json' });
+            const blobUrl = URL.createObjectURL(blob);
+
+            const kodiConfig = {
+                dataSource:      blobUrl,
+                dataType:        'parent_child',
+                viewMode:        'hierarchical',
+                parentKey:       'tracks',
+                parentNameKey:   'name',
+                storagePrefix:   'kodi_arclist',
+                title:           'KODI',
+                context:         'kodi',
+                sourceCommandUrl,
+                childNameMapper,
+            };
+
+            const arcList = new ArcList(kodiConfig);
+
+            // Stash originals before override
+            const folderStack = [];
+            const origButton   = arcList.handleButtonFromParent?.bind(arcList);
+            const origKeyPress = arcList.handleKeyPress?.bind(arcList);
+            const origNav      = arcList.handleNavFromParent?.bind(arcList);
+            const origRender   = arcList.render?.bind(arcList);
+            const origCreateImageElement = arcList.createImageElement?.bind(arcList);
+
+            arcList.createImageElement = function (item) {
+                if (item?.icon) {
+                    const iconBox = document.createElement('div');
+                    iconBox.className = 'item-image item-icon';
+                    iconBox.style.color = item.color || '#ffffff';
+                    const icon = document.createElement('i');
+                    icon.className = `ph ph-${item.icon}`;
+                    iconBox.appendChild(icon);
+                    return iconBox;
+                }
+                if (typeof origCreateImageElement === 'function') {
+                    return origCreateImageElement(item);
+                }
+                const img = document.createElement('img');
+                img.className = 'item-image';
+                img.src = item?.image || FALLBACK_CARD_IMAGE;
+                img.alt = item?.name || '';
+                return img;
+            };
+
+            // Clear stale hierarchy localStorage
+            [
+                `${kodiConfig.storagePrefix}_parent_position`,
+                `${kodiConfig.storagePrefix}_child_position`,
+                `${kodiConfig.storagePrefix}_view_mode`,
+                `${kodiConfig.storagePrefix}_selected_parent`,
+                `${kodiConfig.storagePrefix}_nested_state_v1`,
+            ].forEach(k => localStorage.removeItem(k));
+            const getCurrent = () => {
+                const idx = Math.max(0, Math.min(arcList.items.length - 1,
+                    Math.round(arcList.currentIndex || 0)));
+                return arcList.items[idx] || null;
+            };
+
+            const clamp = (items, idx) =>
+                (!items?.length) ? 0 : Math.max(0, Math.min(items.length - 1, Math.round(idx || 0)));
+
+
+            const rootItems = () => {
+                const src = arcList.parentData || preloadedData || [];
+                return src.map((item, i, a) => applyRootPresentation(childNameMapper(item, i, a)));
+            };
+
+            const mapChildrenForParent = (parent) => {
+                const parentImage = normalizeKodiImageUrl(parent?.image || '');
+                const children = Array.isArray(parent?.tracks) ? parent.tracks : [];
+                return children.map((child, idx, arr) => {
+                    const mapped = childNameMapper(child, idx, arr);
+                    if (!mapped.image && parentImage) {
+                        mapped.image = parentImage;
+                    }
+                    return mapped;
+                });
+            };
+
+            const cleanTitle = (value) => String(value || '').split('\n')[0].trim();
+            const getFastLetter = (value) => {
+                const base = cleanTitle(String(value || '')).replace(/^[^A-Za-z0-9]+/, '').trim();
+                if (!base) return '';
+                const tokens = base.split(/\s+/).filter(Boolean);
+                const token = tokens.length > 1 && FAST_LETTER_ARTICLES.has(tokens[0].toUpperCase())
+                    ? tokens[1]
+                    : tokens[0];
+                const match = token.match(/[A-Za-z0-9]/);
+                return match ? match[0].toUpperCase() : '';
+            };
+            const buildNowPlayingPayload = (item, pageData = null) => {
+                const ancestors = folderStack
+                    .map(entry => entry.item?.name || '')
+                    .filter(Boolean);
+                const immediateParent = ancestors[ancestors.length - 1] || '';
+                const secondParent = ancestors[ancestors.length - 2] || '';
+
+                return {
+                    title: cleanTitle(pageData?.title || item?.name),
+                    artist: item?.artist || secondParent || '',
+                    album: immediateParent || '',
+                    artwork: normalizeKodiImageUrl(pageData?.image || item?.image || ''),
+                    state: 'playing',
+                };
+            };
+
+            const pushNowPlayingPayload = (item, pageData = null) => {
+                try {
+                    const parentStore = window.parent?.uiStore;
+                    if (!parentStore || !item) return;
+                    parentStore.activeSource = 'kodi';
+                    if (typeof parentStore.setActivePlayingPreset === 'function') {
+                        parentStore.setActivePlayingPreset('kodi');
+                    }
+                    if (typeof parentStore.handleMediaUpdate === 'function') {
+                        parentStore.handleMediaUpdate(
+                            buildNowPlayingPayload(item, pageData),
+                            'kodi-selection'
+                        );
+                    }
+                } catch (err) {
+                    console.warn('[KODI] Unable to update PLAYING panel:', err);
+                }
+            };
+
+            let detailState = null;
+            let detailRequestId = 0;
+
+            const getDetailSpec = (item) => {
+                const uri = String(item?.url || '');
+                const rawId = String(item?.id || '');
+                const configs = [
+                    {
+                        kind: 'movie',
+                        pattern: /^kodi:\/\/movie\/(.+)$/,
+                        idPattern: /^movie_(\d+)$/,
+                        endpoint: 'movie-details',
+                        loadingLabel: 'film',
+                        emptyLabel: 'film',
+                    },
+                    {
+                        kind: 'episode',
+                        pattern: /^kodi:\/\/episode\/(.+)$/,
+                        idPattern: /^episode_(\d+)$/,
+                        endpoint: 'episode-details',
+                        loadingLabel: 'episode',
+                        emptyLabel: 'episode',
+                    },
+                    {
+                        kind: 'channel',
+                        pattern: /^kodi:\/\/channel\/(.+)$/,
+                        idPattern: /^channel_(\d+)$/,
+                        endpoint: 'channel-details',
+                        loadingLabel: 'channel',
+                        emptyLabel: 'channel',
+                    },
+                ];
+
+                for (const config of configs) {
+                    const idMatch = rawId.match(config.idPattern);
+                    if (idMatch) {
+                        return Object.assign({ id: idMatch[1] }, config);
+                    }
+                    const uriMatch = uri.match(config.pattern);
+                    if (uriMatch) {
+                        return Object.assign({ id: uriMatch[1] }, config);
+                    }
+                }
+                return null;
+            };
+
+            const clearPageView = () => {
+                arcList.container?.querySelectorAll('.page-view').forEach(node => node.remove());
+            };
+
+            const setDetailCounter = () => {
+                if (arcList.currentItemDisplay) arcList.currentItemDisplay.textContent = '';
+                if (arcList.totalItemsDisplay) arcList.totalItemsDisplay.textContent = '';
+            };
+
+            const mkBreadcrumbImg = (item) => {
+                if (typeof arcList.createImageElement === 'function')
+                    return arcList.createImageElement(item);
+                const img = document.createElement('img');
+                img.src = item.image || '';
+                img.alt = item.name  || '';
+                img.style.cssText = 'width:100%;height:100%;object-fit:cover;border-radius:18px;';
+                return img;
+            };
+
+            // â”€â”€ Breadcrumbs â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            const renderBreadcrumbs = () => {
+                if (!arcList.container) return;
+                arcList.container.querySelectorAll('.kodi-breadcrumb').forEach(n => n.remove());
+                const crumbEntries = folderStack.map(entry => ({ item: entry.item }));
+                if (detailState?.item) crumbEntries.push({ item: detailState.item });
+                if (!crumbEntries.length) return;
+
+                crumbEntries.slice(-3).forEach((entry, idx, vis) => {
+                    const fromCurrent  = vis.length - 1 - idx;
+                    const isImmediate  = fromCurrent === 0;
+                    const scale        = isImmediate ? 0.82 : Math.max(0.42, 0.58 - fromCurrent * 0.08);
+                    const x            = -250 - fromCurrent * 120;
+                    const y            = isImmediate ? 0 : (idx - (vis.length - 1) / 2) * 56;
+
+                    const crumb = document.createElement('div');
+                    crumb.className = `arc-item kodi-breadcrumb${isImmediate ? ' breadcrumb selected' : ''}`;
+                    crumb.dataset.animatedParent = 'true';
+                    Object.assign(crumb.style, {
+                        position:    'absolute',
+                        top:         '50%',
+                        left:        '50%',
+                        marginLeft:  '-140px',
+                        marginTop:   '-64px',
+                        transform:   `translate(${x}px, ${y}px) scale(${scale})`,
+                        opacity:     `${isImmediate ? 1 : Math.max(0.45, 0.82 - fromCurrent * 0.18)}`,
+                        zIndex:      `${5 + idx}`,
+                        pointerEvents: 'none',
+                        filter:      isImmediate ? 'none' : 'brightness(0.78)',
+                    });
+
+                    const nameEl = document.createElement('div');
+                    nameEl.className = 'item-name' + (isImmediate ? ' selected' : '');
+                    nameEl.textContent = entry.item.name || '';
+
+                    const imgWrap = document.createElement('div');
+                    imgWrap.className = 'item-image-container';
+                    imgWrap.appendChild(mkBreadcrumbImg(entry.item));
+
+                    crumb.appendChild(nameEl);
+                    crumb.appendChild(imgWrap);
+                    arcList.container.appendChild(crumb);
+                });
+            };
+
+            let fastLetterTimer = null;
+            const showFastLetter = () => {
+                const letter = getFastLetter(getCurrent()?.name);
+                if (!letter) return;
+                let overlay = document.getElementById('fast-letter-overlay');
+                if (!overlay) {
+                    overlay = document.createElement('div');
+                    overlay.id = 'fast-letter-overlay';
+                    overlay.className = 'fast-letter-overlay';
+                    document.getElementById('app')?.appendChild(overlay);
+                }
+                overlay.textContent = letter;
+                overlay.classList.add('visible');
+                if (fastLetterTimer) clearTimeout(fastLetterTimer);
+                fastLetterTimer = setTimeout(() => overlay.classList.remove('visible'), 280);
+            };
+
+            const renderDetailPage = () => {
+                if (!detailState || !arcList.container) return;
+                clearPageView();
+                arcList.container.querySelectorAll('.arc-item:not(.kodi-breadcrumb)').forEach(node => node.remove());
+                renderBreadcrumbs();
+
+                const page = document.createElement('div');
+                page.className = 'page-view page-view-kodi';
+                page.style.opacity = '1';
+
+                const scroll = document.createElement('div');
+                scroll.className = 'page-view-scroll';
+
+                const title = document.createElement('h2');
+                title.className = 'page-view-title';
+                title.textContent = detailState.page?.title || cleanTitle(detailState.item?.name) || 'Info';
+
+                const body = document.createElement('div');
+                body.className = 'page-view-body';
+                if (detailState.loading) {
+                    body.innerHTML = `<p>Loading ${detailState.spec?.loadingLabel || 'item'} information from Kodi...</p>`;
+                } else if (detailState.error) {
+                    body.innerHTML = `<p>Unable to load ${detailState.spec?.emptyLabel || 'item'} information right now.</p>`;
+                } else {
+                    body.innerHTML = detailState.page?.body || `<p>No ${detailState.spec?.emptyLabel || 'item'} information available.</p>`;
+                }
+
+                scroll.appendChild(title);
+                scroll.appendChild(body);
+                page.appendChild(scroll);
+                arcList.container.appendChild(page);
+                detailState.scrollEl = scroll;
+                detailState.pageEl = page;
+                setDetailCounter();
+            };
+
+            const closeDetailPage = () => {
+                if (!detailState) return false;
+                detailRequestId += 1;
+                detailState = null;
+                clearPageView();
+                refreshList();
+                return true;
+            };
+
+            const openDetailPage = async (item) => {
+                const spec = getDetailSpec(item);
+                if (!item || !spec) return false;
+                if (detailState?.item?.id === item.id && !detailState.loading) return true;
+
+                detailRequestId += 1;
+                const requestId = detailRequestId;
+                detailState = {
+                    item,
+                    spec,
+                    loading: true,
+                    error: null,
+                    page: null,
+                    scrollEl: null,
+                    pageEl: null,
+                };
+                renderDetailPage();
+
+                if (!spec.id) {
+                    detailState.loading = false;
+                    detailState.error = `invalid_${spec.kind}_id`;
+                    renderDetailPage();
+                    return false;
+                }
+
+                try {
+                    const resp = await fetch(`${kodiUrl}/${spec.endpoint}/${encodeURIComponent(spec.id)}`);
+                    let payload = null;
+                    try {
+                        payload = await resp.json();
+                    } catch (parseError) {}
+                    if (!resp.ok || !payload) {
+                        throw new Error(payload?.reason || `${spec.kind}_details_${resp.status}`);
+                    }
+                    if (requestId !== detailRequestId || !detailState) return true;
+                    if (payload.image) {
+                        payload.image = normalizeKodiImageUrl(payload.image);
+                    }
+                    if (payload.body) {
+                        payload.body = String(payload.body)
+                            .split('src="/art/')
+                            .join(`src="${kodiServiceBaseUrl}/art/`);
+                    }
+                    detailState.loading = false;
+                    detailState.error = null;
+                    detailState.page = payload;
+                } catch (error) {
+                    if (requestId !== detailRequestId || !detailState) return false;
+                    detailState.loading = false;
+                    detailState.error = String(error?.message || error || `${spec.kind}_details_failed`);
+                    console.warn('[KODI] Detail request failed:', spec.kind, error);
+                }
+
+                renderDetailPage();
+                return true;
+            };
+
+            const refreshList = () => {
+                clearPageView();
+                arcList.viewMode       = 'single';
+                arcList.selectedParent = null;
+                arcList.currentIndex   = clamp(arcList.items, arcList.currentIndex);
+                arcList.targetIndex    = arcList.currentIndex;
+                if (arcList.totalItemsDisplay)
+                    arcList.totalItemsDisplay.textContent = arcList.items.length;
+                if (typeof arcList.updateCounter === 'function') arcList.updateCounter();
+                if (typeof origRender === 'function') origRender();
+                renderBreadcrumbs();
+            };
+
+            // â”€â”€ Folder navigation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            const enterFolder = () => {
+                const cur = getCurrent();
+                if (!cur || !Array.isArray(cur.tracks) || !cur.tracks.length) return false;
+
+                folderStack.push({
+                    item:         cur,
+                    items:        arcList.items.slice(),
+                    currentIndex: clamp(arcList.items, arcList.currentIndex),
+                    targetIndex:  clamp(arcList.items, arcList.targetIndex),
+                });
+
+                arcList.items        = mapChildrenForParent(cur);
+                arcList.currentIndex = 0;
+                arcList.targetIndex  = 0;
+                refreshList();
+                console.log('[KODI] Entered:', cur.name);
+                return true;
+            };
+
+            const exitFolder = () => {
+                const prev = folderStack.pop();
+                if (!prev) return false;
+
+                arcList.items        = prev.items;
+                arcList.currentIndex = prev.currentIndex;
+                arcList.targetIndex  = prev.targetIndex;
+                refreshList();
+                console.log('[KODI] Exited folder');
+                return true;
+            };
+
+
+            // â”€â”€ Override ArcList methods â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+            arcList.render = function () {
+                if (detailState) {
+                    renderDetailPage();
+                    return;
+                }
+                clearPageView();
+                if (typeof origRender === 'function') origRender();
+                renderBreadcrumbs();
+            };
+
+            // GO = open item info first for movies, episodes, and channels, otherwise play.
+            arcList.sendGoWebhook = async function () {
+                const cur = detailState?.item || getCurrent();
+                if (!cur) return;
+
+                if (detailState?.loading) return;
+                if (!detailState && getDetailSpec(cur)) {
+                    await openDetailPage(cur);
+                    return;
+                }
+
+                const playUri = detailState?.page?.play_uri || cur.url || cur.play_url;
+                if (!playUri) {
+                    console.warn('[KODI] No playback URI for:', cur.name);
+                    return;
+                }
+
+                if (typeof arcList.snapToNearest === 'function') arcList.snapToNearest();
+
+                try {
+                    showActionToast('Starting playback');
+                    const resp = await fetch(sourceCommandUrl, {
+                        method:  'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body:    JSON.stringify({
+                            command: 'play_item',
+                            id: cur.id || '',
+                            url: playUri || '',
+                            play_url: detailState ? '' : (cur.play_url || ''),
+                        }),
+                    });
+                    let result = null;
+                    try {
+                        result = await resp.json();
+                    } catch (e) {}
+                    if (!resp.ok) {
+                        showActionToast('Error starting playback', { preserveTiming: true });
+                        settleActionToast();
+                        console.warn('[KODI] Play failed:', resp.status);
+                    } else if (result?.state === 'error') {
+                        showActionToast('Error starting playback', { preserveTiming: true });
+                        settleActionToast();
+                        console.warn('[KODI] Service rejected play:', result);
+                    } else {
+                        showActionToast('Starting playback', { preserveTiming: true });
+                        pushNowPlayingPayload(cur, detailState?.page || null);
+                        settleActionToast();
+                        console.log('[KODI] Playing:', cur.name, '→', playUri);
+                    }
+                } catch (e) {
+                    showActionToast('Error starting playback', { preserveTiming: true });
+                    settleActionToast();
+                    console.warn('[KODI] Play error:', e);
+                }
+            };
+
+            arcList.handleButtonFromParent = function (button) {
+                if (detailState) {
+                    if (button === 'right') { if (closeDetailPage()) return; }
+                    if (button === 'go')    { return arcList.sendGoWebhook(); }
+                    if (button === 'go_very_long' || button === 'go_very_hold') return;
+                    return;
+                }
+                if (button === 'left')  {
+                    const cur = getCurrent();
+                    if (cur && getDetailSpec(cur)) { openDetailPage(cur); return; }
+                    if (enterFolder()) return;
+                }
+                if (button === 'right') { if (exitFolder())  return; }
+                if (button === 'go_very_long' || button === 'go_very_hold') return;
+                if (button === 'go')    { return arcList.sendGoWebhook(); }
+                if (origButton) origButton(button);
+            };
+
+            arcList.handleKeyPress = function (e) {
+                if (detailState) {
+                    if (e.key === 'ArrowUp')    { if (detailState.scrollEl) detailState.scrollEl.scrollTop -= 42; return; }
+                    if (e.key === 'ArrowDown')  { if (detailState.scrollEl) detailState.scrollEl.scrollTop += 42; return; }
+                    if (e.key === 'ArrowRight') { if (closeDetailPage()) return; }
+                    if (e.key === 'Enter')      { return arcList.sendGoWebhook(); }
+                    return;
+                }
+                if (e.key === 'ArrowLeft')  {
+                    const cur = getCurrent();
+                    if (cur && getDetailSpec(cur)) { openDetailPage(cur); return; }
+                    if (enterFolder()) return;
+                }
+                if (e.key === 'ArrowRight') { if (exitFolder())  return; }
+                if (e.key === 'Enter')      { return arcList.sendGoWebhook(); }
+                if (origKeyPress) origKeyPress(e);
+            };
+
+            arcList.handleNavFromParent = function (data) {
+                if (detailState?.scrollEl) {
+                    const direction = data?.direction;
+                    const speed = Math.max(1, Number(data?.speed || 1));
+                    const delta = Math.max(24, speed * 10);
+                    if (direction === 'clock') {
+                        detailState.scrollEl.scrollTop += delta;
+                    } else if (direction === 'counter') {
+                        detailState.scrollEl.scrollTop -= delta;
+                    }
+                    return;
+                }
+                if (origNav) origNav(data);
+                if (Number(data?.speed || 1) >= FAST_LETTER_MIN_SPEED) {
+                    showFastLetter();
+                }
+            };
+
+            const initNavigation = () => {
+                arcList.parentData = Array.isArray(preloadedData) ? preloadedData : [];
+                arcList.items        = rootItems();
+                arcList.currentIndex = 0;
+                arcList.targetIndex  = 0;
+                refreshList();
+                requestAnimationFrame(() => refreshList());
+                setTimeout(() => refreshList(), 120);
+                setTimeout(() => refreshList(), 420);
+                arcList._kodiFolderStack = folderStack;
+                window.arcListInstance   = arcList;
+                console.log('[KODI] Navigation ready from preloaded cache');
+            };
+            setTimeout(initNavigation, 0);
+        }
+    </script>
+</body>
+</html>
