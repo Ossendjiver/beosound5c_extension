@@ -174,7 +174,7 @@ The `volume` section in `config.json`:
 
 1. **Create a Spotify Developer App** (free) at [developer.spotify.com/dashboard](https://developer.spotify.com/dashboard):
    - Click "Create App" — name it anything (e.g. "BeoSound 5c")
-   - Add this Redirect URI: `https://<device-ip>:8771/callback` (the setup page on the device shows the exact URI)
+   - Add this Redirect URI: `https://<device-ip>:8772/callback` (the setup page on the device shows the exact URI)
    - Select "Web API"
    - Copy the Client ID
 

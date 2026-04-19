@@ -34,7 +34,7 @@ configure_spotify() {
             echo ""
             log_info "Spotify setup is done via the web interface."
             log_info "After installation, the beo-source-spotify service will start and serve"
-            log_info "a setup page at http://<device-ip>:8771/setup"
+            log_info "a setup page at https://<device-ip>:8772/setup"
             echo ""
             # Check if tokens already exist from a previous setup
             local SPOTIFY_TOKENS="/etc/beosound5c/spotify_tokens.json"
@@ -50,14 +50,14 @@ configure_spotify() {
                 fi
             fi
             if [ -z "$refresh_token" ]; then
-                log_info "Open http://<device-ip>:8771/setup after starting services"
+                log_info "Open https://<device-ip>:8772/setup after starting services"
             fi
         else
             log_info "Skipping Spotify setup"
         fi
     else
         log_info "Skipping Spotify integration"
-        log_info "You can set it up later at http://<device-ip>:8771/setup"
+        log_info "You can set it up later at https://<device-ip>:8772/setup"
     fi
 
     # Spotify Canvas (optional looping video backgrounds)
