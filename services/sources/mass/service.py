@@ -26,6 +26,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import sys
 import urllib.parse
 import websockets
@@ -118,6 +119,9 @@ class MassSource(SourceBase):
             if os.path.exists(cache_path):
                 with open(cache_path, 'r') as f:
                     self._library_data = json.load(f)
+                self._normalize_library_tree(self._library_data)
+                self._write_json_file(CACHE_FILE, self._library_data)
+                self._write_json_file(LEGACY_CACHE_FILE, self._library_data)
                 logger.info("Local library cache loaded from %s.", cache_path)
                 return True
             logger.info("No local cache found — initial sync needed.")
@@ -291,6 +295,44 @@ class MassSource(SourceBase):
         if not album_artist or album_artist == "Various" or track_artist != album_artist:
             return track_artist
         return ""
+
+    @staticmethod
+    def _sort_name_key(value):
+        text = " ".join(str(value or "").split()).strip()
+        if not text:
+            return ("", "")
+        folded = re.sub(r"^[^0-9a-z]+", "", text.casefold())
+        folded = re.sub(r"^(the|an|a)\s+", "", folded)
+        return (folded or text.casefold(), text.casefold())
+
+    def _sorted_nodes(self, nodes):
+        items = list(nodes or [])
+        return sorted(
+            items,
+            key=lambda node: self._sort_name_key(node.get("name") if isinstance(node, dict) else ""),
+        )
+
+    def _normalize_library_tree(self, tree):
+        if not isinstance(tree, list):
+            return
+
+        roots = {
+            str(node.get("id") or ""): node
+            for node in tree
+            if isinstance(node, dict)
+        }
+
+        artists_root = roots.get("artists")
+        if isinstance(artists_root, dict):
+            for artist_node in artists_root.get("tracks") or []:
+                if isinstance(artist_node, dict):
+                    artist_node["tracks"] = self._sorted_nodes(artist_node.get("tracks"))
+            artists_root["tracks"] = self._sorted_nodes(artists_root.get("tracks"))
+
+        for root_id in ("albums", "songs", "playlists", "mixes"):
+            root_node = roots.get(root_id)
+            if isinstance(root_node, dict):
+                root_node["tracks"] = self._sorted_nodes(root_node.get("tracks"))
 
     @staticmethod
     def _art_cache_basename(image_url):
@@ -629,6 +671,7 @@ class MassSource(SourceBase):
                 logger.error(f"Error parsing mixes: {e}")
 
             # Finalize + save before exposing to endpoint
+            self._normalize_library_tree(tree)
             await self._incremental_save(tree)
             self._library_data = tree
             logger.info("Hierarchy Sync Complete.")

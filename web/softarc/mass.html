@@ -458,6 +458,13 @@
             const sourceCommandUrl = serviceBaseUrl + '/command';
             const queueUrl = serviceBaseUrl + '/queue';
             const FALLBACK_CARD_IMAGE = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNjQiIGhlaWdodD0iNjQiIHZpZXdCb3g9IjAgMCA2NCA2NCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPHJlY3Qgd2lkdGg9IjY0IiBoZWlnaHQ9IjY0IiBmaWxsPSIjMzMzMzMzIi8+Cjx0ZXh0IHg9IjMyIiB5PSI0MCIgZm9udC1mYW1pbHk9IkFyaWFsLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjI0IiBmaWxsPSIjZmZmZmZmIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIj7imqo8L3RleHQ+Cjwvc3ZnPgo=';
+            const ROOT_ICON_STYLE = {
+                artists:   { icon: 'users-three', color: '#e05618' },
+                albums:    { icon: 'vinyl-record', color: '#1c7ed6' },
+                songs:     { icon: 'music-notes-simple', color: '#2b8a3e' },
+                playlists: { icon: 'list-bullets', color: '#862e9c' },
+                mixes:     { icon: 'radio', color: '#e6ca19' },
+            };
             const cleanTitle = (value) => String(value || '').split('\n')[0].trim();
             const normalizeServiceImageUrl = (value) => {
                 const raw = String(value || '').trim();
@@ -613,6 +620,15 @@
                 return baseItems;
             };
 
+            const applyRootPresentation = (item) => {
+                const visual = ROOT_ICON_STYLE[String(item?.id || '')];
+                if (!visual) return item;
+                return Object.assign({}, item, {
+                    icon: visual.icon,
+                    color: visual.color,
+                });
+            };
+
             // â”€â”€ Create ArcList with preloaded data via blob URL â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
             // We convert the preloaded data to a blob URL so ArcList's normal
             // fetch path is used, but resolution is instant (no network round-trip).
@@ -640,6 +656,27 @@
             const originalHandleNavFromParent    = arcList.handleNavFromParent?.bind(arcList);
             const originalHandleKeyPress         = arcList.handleKeyPress?.bind(arcList);
             const originalRender                 = arcList.render?.bind(arcList);
+            const originalCreateImageElement     = arcList.createImageElement?.bind(arcList);
+
+            arcList.createImageElement = function (item) {
+                if (item?.icon) {
+                    const iconBox = document.createElement('div');
+                    iconBox.className = 'item-image item-icon';
+                    iconBox.style.color = item.color || '#ffffff';
+                    const icon = document.createElement('i');
+                    icon.className = `ph ph-${item.icon}`;
+                    iconBox.appendChild(icon);
+                    return iconBox;
+                }
+                if (typeof originalCreateImageElement === 'function') {
+                    return originalCreateImageElement(item);
+                }
+                const img = document.createElement('img');
+                img.className = 'item-image';
+                img.src = item?.image || FALLBACK_CARD_IMAGE;
+                img.alt = item?.name || '';
+                return img;
+            };
 
             // Clear old-format localStorage keys that conflict with our nav layer
             [
@@ -665,7 +702,7 @@
 
             const rootItems = () => {
                 const src = withQueueRoot(arcList.parentData || preloadedData || []);
-                return src.map((item, idx, arr) => childNameMapper(item, idx, arr));
+                return src.map((item, idx, arr) => applyRootPresentation(childNameMapper(item, idx, arr)));
             };
 
             const mapChildrenForParent = (parent) => {

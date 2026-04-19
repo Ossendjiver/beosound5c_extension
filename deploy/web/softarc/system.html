@@ -1613,7 +1613,7 @@
 
                 if (this.relNotesVisible) {
                     const body = document.getElementById('rn-body');
-                    body.scrollTop += (direction === 'clock' ? 1 : -1) * speed * 30;
+                    body.scrollTop += (direction === 'clock' ? 1 : -1) * speed * 8;
                     return;
                 }
 
@@ -1637,7 +1637,7 @@
                     }
                 } else if (section === 'config') {
                     document.getElementById('config').scrollTop +=
-                        (direction === 'clock' ? 1 : -1) * speed * 50;
+                        (direction === 'clock' ? 1 : -1) * speed * 8;
                 }
             }
 

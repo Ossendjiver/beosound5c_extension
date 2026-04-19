@@ -27,6 +27,7 @@ import html
 import json
 import logging
 import os
+import re
 import sys
 import urllib.parse
 from aiohttp import web, BasicAuth, ClientSession, ClientTimeout
@@ -78,6 +79,7 @@ class KodiSource(SourceBase):
         super().__init__()
         self._library_data = []
         self._is_syncing   = False
+        self._cache_requires_resync = False
         self._session: ClientSession | None = None
         self.has_cache     = self._load_local_cache()
 
@@ -89,6 +91,10 @@ class KodiSource(SourceBase):
             if os.path.exists(cache_path):
                 with open(cache_path, 'r') as f:
                     self._library_data = json.load(f)
+                self._cache_requires_resync = not self._normalize_library_tree(self._library_data)
+                self._save_cache(self._library_data)
+                if self._cache_requires_resync:
+                    logger.info("Kodi cache missing playlist root; scheduling an immediate refresh.")
                 logger.info("Kodi local library cache loaded from %s.", cache_path)
                 return True
             logger.info("No Kodi cache â€” initial sync needed.")
@@ -129,13 +135,14 @@ class KodiSource(SourceBase):
             await self._session.close()
 
     async def _schedule_sync_loop(self):
-        if not self.has_cache:
+        if not self.has_cache or self._cache_requires_resync:
             # Wait for Kodi to be reachable
             for _ in range(30):
                 if await self._ping():
                     break
                 await asyncio.sleep(5)
-            logger.info("Running initial Kodi library sync.")
+            reason = "initial" if not self.has_cache else "refresh"
+            logger.info("Running %s Kodi library sync.", reason)
             await self.update_library_cache()
 
         while True:
@@ -615,6 +622,123 @@ class KodiSource(SourceBase):
         """Build a kodi:// URI for use as playback handle."""
         return f"kodi://{item_type}/{item_id}"
 
+    @staticmethod
+    def _sort_name_key(value):
+        text = " ".join(str(value or "").split()).strip()
+        if not text:
+            return ("", "")
+        folded = re.sub(r"^[^0-9a-z]+", "", text.casefold())
+        folded = re.sub(r"^(the|an|a)\s+", "", folded)
+        return (folded or text.casefold(), text.casefold())
+
+    def _sorted_nodes(self, nodes):
+        items = list(nodes or [])
+        return sorted(
+            items,
+            key=lambda node: self._sort_name_key(node.get("name") if isinstance(node, dict) else ""),
+        )
+
+    def _sort_playlist_children(self, node):
+        children = node.get("tracks")
+        if not isinstance(children, list):
+            return
+        for child in children:
+            if isinstance(child, dict) and isinstance(child.get("tracks"), list):
+                self._sort_playlist_children(child)
+        node["tracks"] = self._sorted_nodes(children)
+
+    def _normalize_library_tree(self, tree):
+        if not isinstance(tree, list):
+            return False
+
+        roots = {
+            str(node.get("id") or ""): node
+            for node in tree
+            if isinstance(node, dict)
+        }
+
+        movies_root = roots.get("movies")
+        if isinstance(movies_root, dict):
+            movies_root["tracks"] = self._sorted_nodes(movies_root.get("tracks"))
+
+        shows_root = roots.get("tvshows")
+        if isinstance(shows_root, dict):
+            shows_root["tracks"] = self._sorted_nodes(shows_root.get("tracks"))
+
+        live_root = roots.get("livetv")
+        if isinstance(live_root, dict):
+            for group in live_root.get("tracks") or []:
+                if isinstance(group, dict):
+                    group["tracks"] = self._sorted_nodes(group.get("tracks"))
+            live_root["tracks"] = self._sorted_nodes(live_root.get("tracks"))
+
+        playlists_root = roots.get("playlists")
+        if not isinstance(playlists_root, dict):
+            tree.append(self._folder("playlists", "Playlists"))
+            return False
+
+        self._sort_playlist_children(playlists_root)
+        return True
+
+    @staticmethod
+    def _playlist_display_name(file_path, label, is_directory=False):
+        name = str(label or "").strip()
+        if not name:
+            name = os.path.basename(str(file_path or "").rstrip("/\\"))
+        if not is_directory:
+            name = os.path.splitext(name)[0]
+        return name or ("Playlists" if is_directory else "Playlist")
+
+    async def _load_playlist_nodes(self, directory, media_label):
+        result = await self._rpc(
+            "Files.GetDirectory",
+            {
+                "directory": directory,
+                "media": "files",
+                "sort": {"method": "label", "order": "ascending"},
+                "properties": ["thumbnail", "mimetype"],
+            },
+        ) or {}
+        entries = result.get("files", []) if isinstance(result, dict) else []
+        nodes = []
+
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+
+            file_path = str(entry.get("file") or "").strip()
+            if not file_path:
+                continue
+
+            file_type = str(entry.get("filetype") or "").strip().lower()
+            is_directory = file_type == "directory"
+            name = self._playlist_display_name(file_path, entry.get("label"), is_directory=is_directory)
+
+            if is_directory:
+                child_nodes = await self._load_playlist_nodes(file_path, media_label)
+                if not child_nodes:
+                    continue
+                folder_node = self._folder(
+                    id_=f"playlist_dir_{hashlib.sha1(file_path.encode('utf-8')).hexdigest()[:12]}",
+                    name=name,
+                )
+                folder_node["tracks"] = child_nodes
+                nodes.append(folder_node)
+                continue
+
+            image = self._placeholder_art(name, media_label)
+            nodes.append(
+                self._leaf(
+                    id_=f"playlist_{hashlib.sha1(file_path.encode('utf-8')).hexdigest()[:12]}",
+                    name=name,
+                    url=self._kodi_uri("playlist", urllib.parse.quote(file_path, safe="")),
+                    artist=media_label,
+                    image=image,
+                )
+            )
+
+        return self._sorted_nodes(nodes)
+
     # â”€â”€ Library sync â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     async def update_library_cache(self):
@@ -623,11 +747,11 @@ class KodiSource(SourceBase):
         self._is_syncing = True
         logger.info("--- Starting Kodi Library Sync ---")
 
-        tree = [
-            self._folder("movies", "Movies"),
-            self._folder("tvshows", "TV Shows"),
-            self._folder("livetv", "Live TV"),
-        ]
+        movies_root = self._folder("movies", "Movies")
+        shows_root = self._folder("tvshows", "TV Shows")
+        live_root = self._folder("livetv", "Live TV")
+        playlists_root = self._folder("playlists", "Playlists")
+        tree = [movies_root, shows_root, live_root, playlists_root]
 
         try:
             # â”€â”€ 1. MOVIES (flat) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -650,7 +774,7 @@ class KodiSource(SourceBase):
                     "clearart",
                     "keyart",
                 )
-                tree[0]["tracks"].append(
+                movies_root["tracks"].append(
                     self._leaf(
                         id_=f"movie_{m['movieid']}",
                         name=m.get("title", "Unknown Movie"),
@@ -659,7 +783,7 @@ class KodiSource(SourceBase):
                         image=image,
                     )
                 )
-            logger.info(f"  Movies: {len(tree[0]['tracks'])}")
+            logger.info(f"  Movies: {len(movies_root['tracks'])}")
 
             # TV shows: Show -> Season -> Episode (or direct episodes)
             logger.info("Syncing TV shows...")
@@ -795,8 +919,8 @@ class KodiSource(SourceBase):
                     show_node["image"] = show_node["tracks"][0].get("image", "")
 
                 if show_node["tracks"]:
-                    tree[1]["tracks"].append(show_node)
-            logger.info(f"  TV Shows: {len(tree[1]['tracks'])}")
+                    shows_root["tracks"].append(show_node)
+            logger.info(f"  TV Shows: {len(shows_root['tracks'])}")
 
             # Live TV: Group -> Channel
             logger.info("Syncing Live TV...")
@@ -852,13 +976,24 @@ class KodiSource(SourceBase):
                     )
 
                 if group_node["tracks"]:
-                    tree[2]["tracks"].append(group_node)
+                    live_root["tracks"].append(group_node)
 
-            logger.info(f"  Live TV groups: {len(tree[2]['tracks'])}")
+            logger.info(f"  Live TV groups: {len(live_root['tracks'])}")
 
+            logger.info("Syncing playlists...")
+            playlists_root["tracks"].extend(
+                await self._load_playlist_nodes("special://videoplaylists", "Video Playlist")
+            )
+            playlists_root["tracks"].extend(
+                await self._load_playlist_nodes("special://musicplaylists", "Music Playlist")
+            )
+            logger.info(f"  Playlists: {len(playlists_root['tracks'])}")
+
+            self._normalize_library_tree(tree)
             await self._localize_tree_images(tree)
             self._library_data = tree
             self._save_cache(tree)
+            self._cache_requires_resync = False
             logger.info("Kodi Library Sync Complete.")
 
         except Exception as e:
@@ -1096,7 +1231,7 @@ class KodiSource(SourceBase):
         item_type = parts[0]
         item_id_raw = parts[1] if len(parts) > 1 else "0"
         try:
-            item_id = item_id_raw if item_type == "season" else int(item_id_raw)
+            item_id = item_id_raw if item_type in {"season", "playlist"} else int(item_id_raw)
         except ValueError:
             logger.warning(f"Invalid kodi:// URI: {uri}")
             return False
@@ -1164,6 +1299,12 @@ class KodiSource(SourceBase):
                 if not added:
                     return False
                 started = await self._rpc("Player.Open", {"item": {"playlistid": PLAYLIST_VIDEO}}) is not None
+
+            elif item_type == "playlist":
+                playlist_file = urllib.parse.unquote(str(item_id or "")).strip()
+                if not playlist_file:
+                    return False
+                started = await self._rpc("Player.Open", {"item": {"file": playlist_file}}) is not None
 
             else:
                 logger.warning(f"Unknown kodi:// type: {item_type}")

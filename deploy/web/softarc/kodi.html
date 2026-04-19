@@ -436,6 +436,7 @@
                 movies:  { icon: 'film-strip', color: '#77adff' },
                 tvshows: { icon: 'television', color: '#6de2d3' },
                 livetv:  { icon: 'broadcast', color: '#ffb36b' },
+                playlists: { icon: 'list-bullets', color: '#d6a3ff' },
             };
             const normalizeKodiImageUrl = (value) => {
                 const raw = String(value || '').trim();
@@ -912,16 +913,12 @@
                 renderBreadcrumbs();
             };
 
-            // GO = open item info first for movies, episodes, and channels, otherwise play.
+            // GO = play the current item directly. LEFT opens detail pages where available.
             arcList.sendGoWebhook = async function () {
                 const cur = detailState?.item || getCurrent();
                 if (!cur) return;
 
                 if (detailState?.loading) return;
-                if (!detailState && getDetailSpec(cur)) {
-                    await openDetailPage(cur);
-                    return;
-                }
 
                 const playUri = detailState?.page?.play_uri || cur.url || cur.play_url;
                 if (!playUri) {
