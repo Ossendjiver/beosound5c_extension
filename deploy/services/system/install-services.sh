@@ -72,7 +72,7 @@ if [ ! -f "$SECRETS_FILE" ]; then
         echo ""
         echo "  ⚠️  IMPORTANT: Edit $SECRETS_FILE with credentials for this device!"
         echo "     - HA_TOKEN: Home Assistant long-lived access token"
-        echo "     For Spotify: open the /setup page on port 8771 after starting beo-source-spotify"
+        echo "     For Spotify: open the /setup page on port 8772 (HTTPS) after starting beo-source-spotify"
         echo ""
     else
         echo "  ⚠️  Warning: secrets.env.example not found at $SECRETS_EXAMPLE"

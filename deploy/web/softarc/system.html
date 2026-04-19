@@ -1335,7 +1335,7 @@
                 { fid: 'ir_source', label: 'IR trigger', path: ['join','source'], isIr: true, optional: true },
                 { fid: 'default_player', label: 'Default Sonos group', path: ['join','default_player'], placeholder: 'e.g. Kitchen and Dining', optional: true },
             ]},
-            { key: 'SPOTIFY', label: 'Spotify', authPort: 8771, fields: [
+            { key: 'SPOTIFY', label: 'Spotify', authPort: 8772, authScheme: 'https', fields: [
                 { fid: 'ir_source', label: 'IR trigger', path: ['spotify','source'], isIr: true, optional: true },
                 { fid: 'client_id', label: 'Client ID', path: ['spotify','client_id'], placeholder: 'From developer.spotify.com' },
                 { fid: 'token_master', label: 'Token master URL', path: ['spotify','token_master'], placeholder: 'http://other-device:8771', optional: true, hint: 'Share token across multiple devices' },
@@ -1343,10 +1343,10 @@
             { key: 'TIDAL', label: 'Tidal', authPort: 8777, fields: [
                 { fid: 'ir_source', label: 'IR trigger', path: ['tidal','source'], isIr: true, optional: true },
             ]},
-            { key: 'APPLE MUSIC', label: 'Apple Music', authPort: 8778, fields: [
+            { key: 'APPLE MUSIC', label: 'Apple Music', authPort: 8775, authScheme: 'https', fields: [
                 { fid: 'ir_source', label: 'IR trigger', path: ['apple_music','source'], isIr: true, optional: true },
             ]},
-            { key: 'PLEX', label: 'Plex', authPort: 8772, fields: [
+            { key: 'PLEX', label: 'Plex', authPort: 8778, fields: [
                 { fid: 'ir_source', label: 'IR trigger', path: ['plex','source'], isIr: true, optional: true },
                 { fid: 'url', label: 'Server URL', path: ['plex','url'], placeholder: 'https://plex.server:32400', optional: true, hint: 'Leave blank for local server' },
             ]},
