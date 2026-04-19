@@ -746,6 +746,61 @@ class MassSource(SourceBase):
         app.router.add_get('/now_playing', _handle_now_playing)
         app.router.add_get('/art/{filename}', _handle_art)
 
+    def _library_root(self, root_id):
+        for node in self._library_data or []:
+            if isinstance(node, dict) and str(node.get("id") or "").strip() == str(root_id):
+                return node
+        return {}
+
+    def _build_library_status(self):
+        return {
+            "artists": len(self._library_root("artists").get("tracks") or []),
+            "albums": len(self._library_root("albums").get("tracks") or []),
+            "songs": len(self._library_root("songs").get("tracks") or []),
+            "playlists": len(self._library_root("playlists").get("tracks") or []),
+            "mixes": len(self._library_root("mixes").get("tracks") or []),
+        }
+
+    async def _build_queue_status(self):
+        for queue_id in await self._resolve_queue_candidates():
+            snapshot = await self._get_queue_snapshot(queue_id)
+            if not isinstance(snapshot, dict):
+                continue
+            current_item = self._extract_current_queue_item(snapshot)
+            return {
+                "queue_id": str(snapshot.get("resolved_queue_id") or queue_id).strip(),
+                "state": self._extract_playback_state(snapshot) or "idle",
+                "items": max(self._extract_queue_size(snapshot), len(self._extract_queue_items(snapshot))),
+                "current_title": self._extract_queue_name(current_item, ""),
+                "current_artist": self._extract_queue_artist(current_item),
+                "current_album": self._extract_queue_album(current_item),
+            }
+        return {
+            "queue_id": "",
+            "state": "idle",
+            "items": 0,
+            "current_title": "",
+            "current_artist": "",
+            "current_album": "",
+        }
+
+    async def handle_status(self):
+        status = await super().handle_status()
+        status.update(
+            {
+                "connected": self._connected,
+                "syncing": self._is_syncing,
+                "has_cache": bool(self._library_data),
+                "cache_file": CACHE_FILE,
+                "art_cache_dir": ART_CACHE_DIR,
+                "player_id": str(TARGET_PLAYER_ID or "").strip(),
+                "queue_id": str(TARGET_QUEUE_ID or "").strip(),
+                "library": self._build_library_status(),
+                "queue": await self._build_queue_status(),
+            }
+        )
+        return status
+
     # ── Playback ──────────────────────────────────────────────────────────────
 
     def _find_node_by_id(self, node_id):

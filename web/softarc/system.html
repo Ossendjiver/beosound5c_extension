@@ -1122,6 +1122,62 @@
                 },
             },
             {
+                id: 'mass',
+                title: 'MASS',
+                service: 'beo-source-mass',
+                fetch: async () => {
+                    const resp = await fetch('http://localhost:8783/status');
+                    if (!resp.ok) throw new Error('offline');
+                    return resp.json();
+                },
+                render: (data) => {
+                    if (!data) return '<div class="subcard-body">' + row('Status', 'No data', 'dim') + '</div>';
+                    const lib = data.library || {};
+                    const queue = data.queue || {};
+                    let html = '<div class="subcard-body">';
+                    html += row('Service', data.connected ? 'Connected' : 'Disconnected', data.connected ? 'ok' : 'err');
+                    html += row('Sync', data.syncing ? 'Syncing' : (data.has_cache ? 'Ready' : 'No cache'),
+                        data.syncing ? 'warn' : (data.has_cache ? 'ok' : 'warn'));
+                    html += row('Queue', `${queue.items || 0} items`);
+                    html += row('State', queue.state || 'idle',
+                        ['playing', 'paused', 'buffering'].includes(String(queue.state || '').toLowerCase()) ? 'ok' : '');
+                    if (queue.current_title) html += row('Now', trunc(queue.current_title, 35));
+                    if (queue.current_artist) html += row('Artist', trunc(queue.current_artist, 35));
+                    html += row('Artists', lib.artists || 0);
+                    html += row('Albums', lib.albums || 0);
+                    html += row('Tracks', lib.songs || 0);
+                    html += row('Playlists', lib.playlists || 0);
+                    html += row('Mixes', lib.mixes || 0);
+                    html += '</div>';
+                    return html;
+                },
+            },
+            {
+                id: 'kodi',
+                title: 'KODI',
+                service: 'beo-source-kodi',
+                fetch: async () => {
+                    const resp = await fetch('http://localhost:8782/status');
+                    if (!resp.ok) throw new Error('offline');
+                    return resp.json();
+                },
+                render: (data) => {
+                    if (!data) return '<div class="subcard-body">' + row('Status', 'No data', 'dim') + '</div>';
+                    const lib = data.library || {};
+                    const watched = data.watched || {};
+                    let html = '<div class="subcard-body">';
+                    html += row('Service', data.connected ? 'Connected' : 'Disconnected', data.connected ? 'ok' : 'err');
+                    html += row('Sync', data.syncing ? 'Syncing' : (data.has_cache ? 'Ready' : 'No cache'),
+                        data.syncing ? 'warn' : (data.has_cache ? 'ok' : 'warn'));
+                    html += row('Movies', formatCount(lib.movies, watched.movies));
+                    html += row('TV Shows', formatCount(lib.tvshows, watched.tvshows));
+                    html += row('Episodes', formatCount(lib.episodes, watched.episodes));
+                    html += row('Live TV', `${lib.channel_groups || 0} groups / ${lib.channels || 0} channels`);
+                    html += '</div>';
+                    return html;
+                },
+            },
+            {
                 id: 'spotify',
                 title: 'SPOTIFY',
                 service: 'beo-source-spotify',
@@ -1252,6 +1308,13 @@
         function trunc(str, max) {
             if (!str) return '—';
             return str.length > max ? str.substring(0, max) + '...' : str;
+        }
+
+        function formatCount(total, watched) {
+            const totalValue = Number.isFinite(Number(total)) ? Number(total) : 0;
+            if (watched == null || watched === '') return String(totalValue);
+            const watchedValue = Number.isFinite(Number(watched)) ? Number(watched) : 0;
+            return `${totalValue} (${watchedValue})`;
         }
 
         function tempClass(temp) {

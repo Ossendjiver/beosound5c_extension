@@ -29,6 +29,7 @@ import logging
 import os
 import re
 import sys
+import time
 import urllib.parse
 from aiohttp import web, BasicAuth, ClientSession, ClientTimeout
 
@@ -81,6 +82,7 @@ class KodiSource(SourceBase):
         self._is_syncing   = False
         self._cache_requires_resync = False
         self._session: ClientSession | None = None
+        self._watched_status_cache = {"ts": 0.0, "value": {"movies": None, "tvshows": None, "episodes": None}}
         self.has_cache     = self._load_local_cache()
 
     # â”€â”€ Cache â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -1215,6 +1217,102 @@ class KodiSource(SourceBase):
         app.router.add_get('/channel-details/{channel_id}', _handle_channel_details)
 
     # â”€â”€ Playback â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+    def _library_root(self, root_id):
+        for node in self._library_data or []:
+            if isinstance(node, dict) and str(node.get("id") or "").strip() == str(root_id):
+                return node
+        return {}
+
+    def _count_leaf_items(self, nodes):
+        total = 0
+        for node in nodes or []:
+            if not isinstance(node, dict):
+                continue
+            children = node.get("tracks")
+            if isinstance(children, list) and children:
+                total += self._count_leaf_items(children)
+            else:
+                total += 1
+        return total
+
+    def _build_library_status(self):
+        movies = self._library_root("movies").get("tracks") or []
+        shows = self._library_root("tvshows").get("tracks") or []
+        live_groups = self._library_root("livetv").get("tracks") or []
+        return {
+            "movies": len(movies),
+            "tvshows": len(shows),
+            "episodes": self._count_leaf_items(shows),
+            "channel_groups": len(live_groups),
+            "channels": self._count_leaf_items(live_groups),
+        }
+
+    async def _build_watched_status(self, connected=None):
+        watched = {"movies": None, "tvshows": None, "episodes": None}
+        if not self._session:
+            return watched
+        if connected is None:
+            connected = await self._ping()
+        if not connected:
+            return watched
+        now = time.monotonic()
+        cached = self._watched_status_cache or {}
+        if now - float(cached.get("ts") or 0.0) < 60:
+            return dict(cached.get("value") or watched)
+
+        try:
+            movies = await self._rpc_paginated(
+                "VideoLibrary.GetMovies",
+                "movies",
+                params={"properties": ["playcount"]},
+            )
+            watched["movies"] = sum(1 for item in movies if int(item.get("playcount") or 0) > 0)
+        except Exception:
+            pass
+
+        try:
+            shows = await self._rpc_paginated(
+                "VideoLibrary.GetTVShows",
+                "tvshows",
+                params={"properties": ["watchedepisodes", "playcount"]},
+            )
+            watched["tvshows"] = sum(
+                1
+                for item in shows
+                if int(item.get("watchedepisodes") or item.get("playcount") or 0) > 0
+            )
+        except Exception:
+            pass
+
+        try:
+            episodes = await self._rpc_paginated(
+                "VideoLibrary.GetEpisodes",
+                "episodes",
+                params={"properties": ["playcount"]},
+            )
+            watched["episodes"] = sum(1 for item in episodes if int(item.get("playcount") or 0) > 0)
+        except Exception:
+            pass
+
+        self._watched_status_cache = {"ts": now, "value": dict(watched)}
+        return watched
+
+    async def handle_status(self):
+        status = await super().handle_status()
+        connected = await self._ping() if self._session else False
+        status.update(
+            {
+                "connected": connected,
+                "syncing": self._is_syncing,
+                "has_cache": bool(self._library_data),
+                "cache_file": CACHE_FILE,
+                "art_cache_dir": ART_CACHE_DIR,
+                "library": self._build_library_status(),
+                "watched": await self._build_watched_status(connected),
+            }
+        )
+        return status
 
     async def _play_kodi_uri(self, uri):
         """
