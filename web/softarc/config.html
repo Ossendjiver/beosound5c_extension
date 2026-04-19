@@ -138,7 +138,7 @@
 </div>
 
 <script>
-const API = 'http://' + location.hostname + ':8767';
+const API = '';
 
 function esc(s) { return String(s ?? '').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 function cfgGet(obj, path) { return path.reduce((o, k) => (o != null ? o[k] : undefined), obj); }
@@ -169,8 +169,8 @@ const CFG_SOURCE_DEFS = [
         { fid: 'ir_source', label: 'IR trigger', path: ['join','source'], isIr: true, optional: true },
         { fid: 'default_player', label: 'Default Sonos group', path: ['join','default_player'], placeholder: 'e.g. Kitchen and Dining', optional: true },
     ]},
-    { key: 'SPOTIFY', label: 'Spotify', authPort: 8771,
-      infoHtml: `Go to <a href="https://developer.spotify.com/dashboard" target="_blank" rel="noreferrer">developer.spotify.com/dashboard</a> → Create app. Add this Redirect URI:<br><code>http://${location.hostname}:8771/callback</code><br>Paste your Client ID below, then click <em>Authenticate →</em> to log in.`,
+    { key: 'SPOTIFY', label: 'Spotify', authPort: 8772, authScheme: 'https',
+      infoHtml: `Go to <a href="https://developer.spotify.com/dashboard" target="_blank" rel="noreferrer">developer.spotify.com/dashboard</a> → Create app. Add this Redirect URI:<br><code>https://${location.hostname}:8772/callback</code><br>Paste your Client ID below, then click <em>Authenticate →</em> to log in.`,
       fields: [
         { fid: 'ir_source', label: 'IR trigger', path: ['spotify','source'], isIr: true, optional: true },
         { fid: 'client_id', label: 'Client ID', path: ['spotify','client_id'], placeholder: 'From Spotify Dashboard' },
@@ -179,10 +179,10 @@ const CFG_SOURCE_DEFS = [
     { key: 'TIDAL', label: 'Tidal', authPort: 8777, fields: [
         { fid: 'ir_source', label: 'IR trigger', path: ['tidal','source'], isIr: true, optional: true },
     ]},
-    { key: 'APPLE MUSIC', label: 'Apple Music', authPort: 8778, fields: [
+    { key: 'APPLE MUSIC', label: 'Apple Music', authPort: 8775, authScheme: 'https', fields: [
         { fid: 'ir_source', label: 'IR trigger', path: ['apple_music','source'], isIr: true, optional: true },
     ]},
-    { key: 'PLEX', label: 'Plex', authPort: 8772, fields: [
+    { key: 'PLEX', label: 'Plex', authPort: 8778, fields: [
         { fid: 'ir_source', label: 'IR trigger', path: ['plex','source'], isIr: true, optional: true },
         { fid: 'url', label: 'Server URL', path: ['plex','url'], placeholder: 'https://plex.server:32400', optional: true, hint: 'Leave blank for local server' },
     ]},
@@ -386,7 +386,7 @@ function renderSources(cfg) {
             : `<input type="checkbox" id="cfg-src-${kn}-toggle" class="cfg-src-toggle" data-key="${src.key}" ${enabled?'checked':''}>`;
 
         const authHtml = src.authPort
-            ? `<a class="cfg-auth-link" href="http://${location.hostname}:${src.authPort}/" target="_blank">Authenticate →</a>`
+            ? `<a class="cfg-auth-link" href="${src.authScheme||'http'}://${location.hostname}:${src.authPort}/setup" target="_blank">Authenticate →</a>`
             : '';
 
         const infoBlock = src.infoHtml ? `<div class="cfg-instructions">${src.infoHtml}</div>` : '';
