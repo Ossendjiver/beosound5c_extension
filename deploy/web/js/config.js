@@ -6,7 +6,7 @@ const AppConfig = {
     deviceName: 'development',
 
     // Legacy fallback for scenes (only used if config.json has no scenes array)
-    scenesFile: '../json/scenes.example.json',
+    scenesFile: '../json/scenes.json',
 
     // Home Assistant configuration
     homeAssistant: {

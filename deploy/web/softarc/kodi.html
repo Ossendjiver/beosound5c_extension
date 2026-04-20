@@ -322,7 +322,11 @@
             if (!raw) return { status: 'unreachable', data: null };
             if (raw.loading) return { status: 'loading', data: null };
             const data = normalizeLibraryPayload(raw);
-            if (Array.isArray(data) && countTotalItems(data) > 0) {
+            if (Array.isArray(data) && data.length > 0) {
+                const itemCount = countTotalItems(data);
+                if (itemCount === 0) {
+                    return { status: 'loading', data: null };
+                }
                 return { status: 'ready', data };
             }
             return { status: 'empty', data: Array.isArray(data) ? data : [] };
@@ -333,19 +337,20 @@
         // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         document.addEventListener('DOMContentLoaded', async () => {
             const KODI_URL = getServiceUrl('kodiServiceUrl', 8782);
+            const cachedLibrary = await loadStaticLibrary();
+            if (Array.isArray(cachedLibrary) && cachedLibrary.length > 0) {
+                lastItemCount = countTotalItems(cachedLibrary);
+                initArcList(cachedLibrary, KODI_URL);
+                startSyncMonitor(KODI_URL);
+                void readServiceBootState(KODI_URL);
+                return;
+            }
+
             const serviceState = await readServiceBootState(KODI_URL);
 
             if (Array.isArray(serviceState.data) && serviceState.data.length > 0) {
                 lastItemCount = countTotalItems(serviceState.data);
                 initArcList(serviceState.data, KODI_URL);
-                startSyncMonitor(KODI_URL);
-                return;
-            }
-
-            const cachedLibrary = await loadStaticLibrary();
-            if (Array.isArray(cachedLibrary) && cachedLibrary.length > 0) {
-                lastItemCount = countTotalItems(cachedLibrary);
-                initArcList(cachedLibrary, KODI_URL);
                 startSyncMonitor(KODI_URL);
                 return;
             }
@@ -471,7 +476,7 @@
             //   LEAF:   keep `url`, no empty `tracks`
             const childNameMapper = (item, index, allItems) => {
                 let displayName = item.name || '';
-                const isFolder  = Array.isArray(item.tracks);
+                const isFolder  = Array.isArray(item.tracks) && item.tracks.length > 0;
                 const hasArtist = item.artist
                     && item.artist !== 'Various'
                     && item.artist !== '';
@@ -493,6 +498,8 @@
                 if (isFolder) {
                     delete mapped.url;   // prevent ArcList treating folder as playable leaf
                     // play_url survives â€” it's the folder playback handle
+                } else if (Array.isArray(mapped.tracks) && mapped.tracks.length === 0) {
+                    delete mapped.tracks;
                 }
 
                 return mapped;
@@ -581,6 +588,12 @@
             };
 
             const cleanTitle = (value) => String(value || '').split('\n')[0].trim();
+            const escapeHtml = (value) => String(value || '')
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
             const getFastLetter = (value) => {
                 const base = cleanTitle(String(value || '')).replace(/^[^A-Za-z0-9]+/, '').trim();
                 if (!base) return '';
@@ -590,6 +603,25 @@
                     : tokens[0];
                 const match = token.match(/[A-Za-z0-9]/);
                 return match ? match[0].toUpperCase() : '';
+            };
+            const buildFallbackDetailPage = (item, spec) => {
+                const title = cleanTitle(item?.name) || 'Info';
+                const image = normalizeKodiImageUrl(item?.image || '');
+                const subtitle = String(item?.artist || '').trim();
+                const label = spec?.loadingLabel || 'item';
+                const body = [];
+                if (image) {
+                    body.push(`<img src="${escapeHtml(image)}" alt="${escapeHtml(title)}">`);
+                }
+                if (subtitle) {
+                    body.push(`<p><strong>${escapeHtml(subtitle)}</strong></p>`);
+                }
+                body.push(`<p>Live ${escapeHtml(label)} information is unavailable right now, but playback is still available from this item.</p>`);
+                return {
+                    title,
+                    play_uri: item?.url || item?.play_url || '',
+                    body: body.join(''),
+                };
             };
             const buildNowPlayingPayload = (item, pageData = null) => {
                 const ancestors = folderStack
@@ -818,9 +850,10 @@
 
                 if (!spec.id) {
                     detailState.loading = false;
-                    detailState.error = `invalid_${spec.kind}_id`;
+                    detailState.error = null;
+                    detailState.page = buildFallbackDetailPage(item, spec);
                     renderDetailPage();
-                    return false;
+                    return true;
                 }
 
                 try {
@@ -847,7 +880,8 @@
                 } catch (error) {
                     if (requestId !== detailRequestId || !detailState) return false;
                     detailState.loading = false;
-                    detailState.error = String(error?.message || error || `${spec.kind}_details_failed`);
+                    detailState.error = null;
+                    detailState.page = buildFallbackDetailPage(item, spec);
                     console.warn('[KODI] Detail request failed:', spec.kind, error);
                 }
 
