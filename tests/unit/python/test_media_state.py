@@ -34,6 +34,16 @@ class TestMediaValidation:
                                     latest_action_ts=200)
         assert result is None  # accepted
 
+    def test_accept_track_change_bootstrap_without_active_source(self):
+        ms = MediaState()
+        payload = {"title": "Song", "_reason": "track_change",
+                   "_source_id": "mass", "_action_ts": 100}
+        result = ms.validate_update(payload, active_source_id=None,
+                                    latest_action_ts=0)
+        assert result is None
+        assert payload["_validated_source_id"] == "mass"
+        assert payload["_validated_reason"] == "track_change"
+
     def test_reject_stale_timestamp(self):
         """Source with stale timestamp rejected (source must not be active)."""
         ms = MediaState()

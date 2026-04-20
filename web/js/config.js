@@ -147,8 +147,19 @@ const Debug = {
  * @returns {string}
  */
 function getServiceUrl(key, port) {
-    return (typeof AppConfig !== 'undefined' && AppConfig[key])
-        || `http://localhost:${port}`;
+    const configured = (typeof AppConfig !== 'undefined' && AppConfig[key]) || '';
+    const host = window.location.hostname || 'localhost';
+    const fallback = `http://${host}:${port}`;
+    if (!configured) return fallback;
+    try {
+        const parsed = new URL(configured, window.location.href);
+        if (parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1' || parsed.hostname === '[::1]') {
+            parsed.hostname = host;
+        }
+        return parsed.toString().replace(/\/$/, '');
+    } catch (_err) {
+        return configured;
+    }
 }
 
 // Make config available globally

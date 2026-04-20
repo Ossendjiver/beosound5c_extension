@@ -801,7 +801,26 @@ async def handle_config_save(request):
 
     # Extract secrets — they go to secrets.env, not config.json
     raw_secrets = body.pop('_secrets', None) or {}
-    _SECRET_KEY_MAP = {'ha_token': 'HA_TOKEN', 'mqtt_user': 'MQTT_USER', 'mqtt_password': 'MQTT_PASSWORD'}
+    _SECRET_KEY_MAP = {
+        'ha_token': 'HA_TOKEN',
+        'mqtt_user': 'MQTT_USER',
+        'mqtt_password': 'MQTT_PASSWORD',
+        'hass_fallback_entity': 'HASS_FALLBACK_ENTITY',
+        'hass_volume_priority': 'HASS_VOLUME_PRIORITY',
+        'mlgw_host': 'MLGW_HOST',
+        'mlgw_port': 'MLGW_PORT',
+        'mlgw_user': 'MLGW_USER',
+        'mlgw_password': 'MLGW_PASSWORD',
+        'mlgw_entity_to_mln': 'MLGW_ENTITY_TO_MLN',
+        'mass_ws_url': 'MASS_WS_URL',
+        'mass_token': 'MASS_TOKEN',
+        'mass_queue_id': 'MASS_QUEUE_ID',
+        'mass_player_id': 'MASS_PLAYER_ID',
+        'kodi_host': 'KODI_HOST',
+        'kodi_port': 'KODI_PORT',
+        'kodi_user': 'KODI_USER',
+        'kodi_password': 'KODI_PASSWORD',
+    }
     secrets_to_write = {
         _SECRET_KEY_MAP[k]: v
         for k, v in raw_secrets.items()

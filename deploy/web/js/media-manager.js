@@ -115,6 +115,36 @@ class MediaManager {
         this._appleTVRefreshInterval = null;
     }
 
+    resolveArtworkUrl(url, sourceId = '') {
+        const value = String(url || '').trim();
+        if (!value || !value.startsWith('/art/')) return value;
+
+        const source = String(
+            sourceId
+            || this.activeSource
+            || this.mediaInfo.source_id
+            || window.uiStore?.activeSource
+            || ''
+        ).toLowerCase();
+
+        let key = '';
+        let port = 0;
+        if (source === 'mass') {
+            key = 'massServiceUrl';
+            port = 8783;
+        } else if (source === 'kodi') {
+            key = 'kodiServiceUrl';
+            port = 8782;
+        } else {
+            return value;
+        }
+
+        const base = typeof window.getServiceUrl === 'function'
+            ? window.getServiceUrl(key, port)
+            : `http://${window.location.hostname || 'localhost'}:${port}`;
+        return `${String(base).replace(/\/$/, '')}${value}`;
+    }
+
     // ── Now-playing (router media WS) ──
 
     handleMediaUpdate(data, reason = 'update') {
@@ -134,15 +164,21 @@ class MediaManager {
         // existing if payload doesn't include one (e.g. canvas_inject
         // re-broadcasts mutate canvas_url but keep the same track_id).
         const keepTrackId = reason !== 'track_change' && !('track_id' in data);
+        const sourceId = data._source_id || data.source_id || this.mediaInfo.source_id || this.activeSource || '';
         this.mediaInfo = {
             title: data.title || '—',
             artist: data.artist || '—',
             album: data.album || '—',
-            artwork: keepArtwork ? (this.mediaInfo.artwork || '') : (data.artwork || ''),
-            back_artwork: keepBackArtwork ? (this.mediaInfo.back_artwork || '') : (data.back_artwork || ''),
+            artwork: keepArtwork
+                ? (this.mediaInfo.artwork || '')
+                : this.resolveArtworkUrl(data.artwork || '', sourceId),
+            back_artwork: keepBackArtwork
+                ? (this.mediaInfo.back_artwork || '')
+                : this.resolveArtworkUrl(data.back_artwork || '', sourceId),
             canvas_url: keepCanvas ? (this.mediaInfo.canvas_url || '') : (data.canvas_url || ''),
             music_video_url: keepMusicVideo ? (this.mediaInfo.music_video_url || '') : (data.music_video_url || ''),
             track_id: keepTrackId ? (this.mediaInfo.track_id || '') : (data.track_id || ''),
+            source_id: sourceId,
             state: data.state || 'unknown',
             position: data.position || '0:00',
             duration: data.duration || '0:00'

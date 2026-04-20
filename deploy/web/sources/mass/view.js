@@ -40,6 +40,12 @@ const _massPlayingPreset = (() => {
             : 'http://localhost:8783';
     }
 
+    function resolveArtworkUrl(value) {
+        const url = String(value || '').trim();
+        if (!url || !url.startsWith('/art/')) return url;
+        return `${String(getServiceUrlSafe()).replace(/\/$/, '')}${url}`;
+    }
+
     function isMeaningfulText(value) {
         const text = String(value || '').trim();
         return Boolean(text && text !== 'â€”' && text !== '-');
@@ -81,9 +87,15 @@ const _massPlayingPreset = (() => {
     }
 
     function applyMediaSnapshot(data, options = {}) {
-        if (!hasMeaningfulMedia(data)) return false;
+        const normalized = Object.assign({}, data || {});
+        if (normalized.artwork) normalized.artwork = resolveArtworkUrl(normalized.artwork);
+        if (normalized.back_artwork) normalized.back_artwork = resolveArtworkUrl(normalized.back_artwork);
+        const hasUpdate = hasMeaningfulMedia(normalized)
+            || Boolean(String(normalized.state || '').trim())
+            || Boolean(String(normalized.back_artwork || '').trim());
+        if (!hasUpdate) return false;
         const previousArtistKey = normalizeArtistKey(lastMedia.artist);
-        lastMedia = Object.assign({}, lastMedia, data || {});
+        lastMedia = Object.assign({}, lastMedia, normalized);
         const nextArtistKey = normalizeArtistKey(lastMedia.artist);
         if (nextArtistKey !== previousArtistKey) {
             resetArtistState(nextArtistKey);
@@ -117,7 +129,7 @@ const _massPlayingPreset = (() => {
         if (!track || typeof track !== 'object') return null;
         const rawArtist = String(track.artist || '').trim();
         const artist = rawArtist.replace(/^Now Playing\s*-\s*/i, '').trim();
-        const artwork = String(track.image || track.artwork || '').trim();
+        const artwork = resolveArtworkUrl(track.image || track.artwork || '');
         const media = {
             title: String(track.name || track.title || '').trim(),
             artist,
@@ -512,7 +524,7 @@ const _massPlayingPreset = (() => {
                 title: String(payload.title || '').trim(),
                 artist: String(payload.artist || '').trim(),
                 album: String(payload.album || '').trim(),
-                artwork: String(payload.artwork || '').trim(),
+                artwork: resolveArtworkUrl(payload.artwork || ''),
                 state: String(payload.state || '').trim() || lastMedia.state || 'unknown',
             };
 
@@ -636,8 +648,10 @@ const _massPlayingPreset = (() => {
         onUpdate(container, data) {
             mountedContainer = container;
             ensureOverlay(container);
-            updateBaseView(container, lastMedia);
-            renderOverlay(container);
+            if (!applyMediaSnapshot(data || {}, { syncSource: true }) && mountedContainer) {
+                updateBaseView(container, lastMedia);
+                renderOverlay(container);
+            }
             if (currentPageId() === 'artist') {
                 void refreshArtistInfo(false);
             }
