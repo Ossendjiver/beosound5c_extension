@@ -70,6 +70,20 @@ class TestMediaValidation:
                                     latest_action_ts=200)
         assert result is None  # player media always accepted
 
+    def test_reject_player_originated_when_source_owns_media(self):
+        ms = MediaState()
+        payload = {"title": "Old Song", "_reason": "track_change",
+                   "_source_id": None, "_action_ts": 0}
+        result = ms.validate_update(
+            payload,
+            active_source_id="kodi",
+            latest_action_ts=200,
+            active_source_owns_media=True,
+        )
+        assert result is not None
+        assert result["dropped"] is True
+        assert result["reason"] == "source_owns_media"
+
     def test_zero_timestamp_passes_for_active_source(self):
         """Active source with action_ts=0 (no opinion) should be accepted."""
         ms = MediaState()

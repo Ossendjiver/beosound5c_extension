@@ -65,6 +65,7 @@ class KodiSource(SourceBase):
     id   = "kodi"
     name = "Kodi"
     port = 8782
+    manages_queue = True
     action_map = {
         "play": "transport_toggle",
         "pause": "transport_toggle",

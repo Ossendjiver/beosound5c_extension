@@ -90,6 +90,7 @@ class MassSource(SourceBase):
     id   = "mass"
     name = "Music Assistant"
     port = 8783
+    manages_queue = True
     action_map = {
         "play": "transport_toggle",
         "pause": "transport_toggle",

@@ -121,7 +121,8 @@ class MediaState:
 
     def validate_update(self, payload: dict,
                         active_source_id: str | None,
-                        latest_action_ts: float) -> dict | None:
+                        latest_action_ts: float,
+                        active_source_owns_media: bool = False) -> dict | None:
         """Validate an incoming media update.
 
         Extracts and removes internal fields (_reason, _source_id, _action_ts)
@@ -149,8 +150,10 @@ class MediaState:
         #     track_change/resync updates as bootstrap media. This covers
         #     router-start and first-play races where the source posts
         #     metadata moments before the active-source handshake lands.
-        #   - Player-originated media (_source_id is None) is always accepted;
-        #     the player owns metadata once external playback is running.
+        #   - Player-originated media (_source_id is None) is accepted only
+        #     when no queue-owning source is active. Queue-owning sources
+        #     (Kodi, MASS, Plex, radio, etc.) own their metadata, so a late
+        #     player monitor update must not repaint PLAYING over them.
         #   - Stale-timestamp rejection is intentionally NOT applied here.
         #     A previous branch combined `source_id and action_ts < latest_ts
         #     and not is_active`, but that conjunction is unreachable — the
@@ -170,6 +173,19 @@ class MediaState:
                 title=title,
             )
             return {"status": "ok", "dropped": True, "reason": "inactive_source"}
+
+        if not source_id and active_source_owns_media:
+            self._trace(
+                decision="drop",
+                drop_reason="source_owns_media",
+                source_id=source_id,
+                active=active_source_id,
+                action_ts=action_ts,
+                latest_ts=latest_action_ts,
+                update_reason=reason,
+                title=title,
+            )
+            return {"status": "ok", "dropped": True, "reason": "source_owns_media"}
 
         self._trace(
             decision="accept",

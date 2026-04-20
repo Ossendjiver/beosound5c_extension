@@ -129,6 +129,16 @@ class TestPlexQueue:
         assert result["tracks"][0]["id"] == "q:0"
 
 
+class TestQueueOwningSources:
+    def test_mass_manages_queue_true(self):
+        from sources.mass.service import MassSource
+        assert MassSource.manages_queue is True
+
+    def test_kodi_manages_queue_true(self):
+        from sources.kodi.service import KodiSource
+        assert KodiSource.manages_queue is True
+
+
 # ── Spotify queue ──
 
 class TestSpotifyQueue:

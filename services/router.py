@@ -776,8 +776,13 @@ class EventRouter:
         except Exception:
             return web.json_response({"error": "invalid json"}, status=400)
 
+        active_source = self.registry.active_source
         rejection = self.media.validate_update(
-            payload, self.registry.active_id, self._latest_action_ts)
+            payload,
+            self.registry.active_id,
+            self._latest_action_ts,
+            active_source_owns_media=bool(active_source and active_source.manages_queue),
+        )
         if rejection:
             return web.json_response(rejection)
 
