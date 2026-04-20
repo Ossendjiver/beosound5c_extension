@@ -63,6 +63,10 @@ class MusicVideoClient:
         # video_id → (stream_url, fetched_at)
         self._stream_cache: dict[str, tuple[str, float]] = {}
         self._lock = asyncio.Lock()
+        
+        # State tracking for Sonos debounce
+        self._current_artist = None
+        self._current_title = None
 
     @property
     def configured(self) -> bool:
@@ -70,6 +74,23 @@ class MusicVideoClient:
 
     def _id_key(self, artist: str, title: str) -> str:
         return f"{artist.lower().strip()}||{title.lower().strip()}"
+
+    async def _on_track_change(self, artist: str, title: str, session: aiohttp.ClientSession) -> str | None:
+        """Debounce track changes to handle Sonos state flickers before looking up."""
+        # Immediately update the state to the new track
+        self._current_artist = artist
+        self._current_title = title
+
+        await asyncio.sleep(2.0)  # wait for Sonos state to settle
+
+        # then check if track is still the same before proceeding
+        # If another track change occurred during the sleep, these will no longer match
+        if self._current_artist != artist or self._current_title != title:
+            log.debug("Sonos state flicker detected. Aborting video lookup for %s - %s", artist, title)
+            return None  # it was a flicker, abort
+
+        # proceed with lookup...
+        return await self.lookup(artist, title, session)
 
     def get_cached(self, artist: str, title: str) -> str | None:
         """Return cached stream URL (may be ""), or None if not yet looked up.
