@@ -173,10 +173,14 @@
         let lastItemCount = 0;
 
         function countTotalItems(data) {
+            const walk = (node) => {
+                if (!node || typeof node !== 'object') return 0;
+                const children = Array.isArray(node.tracks) ? node.tracks : [];
+                if (!children.length) return 1;
+                return children.reduce((sum, child) => sum + walk(child), 0);
+            };
             if (!Array.isArray(data)) return 0;
-            let count = 0;
-            data.forEach(cat => { if (cat.tracks) count += cat.tracks.length; });
-            return count;
+            return data.reduce((sum, node) => sum + walk(node), 0);
         }
 
         function startSyncMonitor(KODI_URL) {
@@ -185,7 +189,7 @@
                     const resp = await fetch(`${KODI_URL}/playlists`);
                     if (!resp.ok) return;
                     const raw  = await resp.json();
-                    const data = Array.isArray(raw) ? raw : (raw.data || raw);
+                    const data = sanitizeKodiLibrary(normalizeLibraryPayload(raw));
                     const current = countTotalItems(data);
                     const el = document.getElementById('sync-indicator');
                     if (el) {
@@ -255,6 +259,42 @@
             return Array.isArray(raw) ? raw : (raw?.data || raw);
         }
 
+        function sanitizeKodiNode(node, lineage = []) {
+            if (!node || typeof node !== 'object') return null;
+            const clean = Object.assign({}, node);
+            clean.id = String(clean.id || `kodi_node_${lineage.join('_') || 'root'}`);
+            clean.name = String(clean.name || clean.title || clean.label || 'Untitled');
+            if (typeof clean.url === 'string') clean.url = clean.url.trim();
+            if (typeof clean.play_url === 'string') clean.play_url = clean.play_url.trim();
+            if (typeof clean.image === 'string') clean.image = clean.image.trim();
+            const children = Array.isArray(clean.tracks)
+                ? clean.tracks
+                    .map((child, index) => sanitizeKodiNode(child, lineage.concat(index)))
+                    .filter(Boolean)
+                : [];
+            if (children.length > 0) {
+                clean.tracks = children;
+            } else {
+                delete clean.tracks;
+            }
+            return clean;
+        }
+
+        function sanitizeKodiLibrary(raw) {
+            return Array.isArray(raw)
+                ? raw
+                    .map((node, index) => sanitizeKodiNode(node, [index]))
+                    .filter(Boolean)
+                : [];
+        }
+
+        function normalizeKodiViewItem(item, lineage = []) {
+            return sanitizeKodiNode(item, lineage) || {
+                id: `kodi_node_${lineage.join('_') || 'root'}`,
+                name: 'Untitled',
+            };
+        }
+
         let actionToastState = null;
         const ensureActionToast = () => {
             let overlay = document.getElementById('action-toast-overlay');
@@ -310,7 +350,7 @@
                 timeoutMs: 2500,
                 cacheMode: 'no-cache',
             });
-            const data = normalizeLibraryPayload(raw);
+            const data = sanitizeKodiLibrary(normalizeLibraryPayload(raw));
             return Array.isArray(data) && countTotalItems(data) > 0 ? data : null;
         }
 
@@ -321,7 +361,7 @@
             });
             if (!raw) return { status: 'unreachable', data: null };
             if (raw.loading) return { status: 'loading', data: null };
-            const data = normalizeLibraryPayload(raw);
+            const data = sanitizeKodiLibrary(normalizeLibraryPayload(raw));
             if (Array.isArray(data) && data.length > 0) {
                 const itemCount = countTotalItems(data);
                 if (itemCount === 0) {
@@ -420,7 +460,7 @@
                     const resp = await fetch(`${serviceUrl}/playlists`);
                     if (resp.ok) {
                         const raw  = await resp.json();
-                        const data = Array.isArray(raw) ? raw : (raw.data || raw);
+                        const data = sanitizeKodiLibrary(normalizeLibraryPayload(raw));
                         if (Array.isArray(data) && countTotalItems(data) > 0) {
                             clearInterval(poll);
                             location.reload();
@@ -475,19 +515,20 @@
             //   FOLDER: keep `play_url`, delete `url` (ArcList uses url for auto-play)
             //   LEAF:   keep `url`, no empty `tracks`
             const childNameMapper = (item, index, allItems) => {
-                let displayName = item.name || '';
-                const isFolder  = Array.isArray(item.tracks) && item.tracks.length > 0;
-                const hasArtist = item.artist
-                    && item.artist !== 'Various'
-                    && item.artist !== '';
+                const safeItem = normalizeKodiViewItem(item, [index]);
+                let displayName = safeItem.name || '';
+                const isFolder  = Array.isArray(safeItem.tracks) && safeItem.tracks.length > 0;
+                const hasArtist = safeItem.artist
+                    && safeItem.artist !== 'Various'
+                    && safeItem.artist !== '';
 
                 // Append artist for mixed-artist leaf lists
                 if (!isFolder && hasArtist && Array.isArray(allItems) && allItems.length > 0) {
                     const allSame = allItems.every(t => t.artist === allItems[0].artist);
-                    if (!allSame) displayName = `${item.name}\n(${item.artist})`;
+                    if (!allSame) displayName = `${safeItem.name}\n(${safeItem.artist})`;
                 }
 
-                const mapped = Object.assign({}, item, { name: displayName });
+                const mapped = Object.assign({}, safeItem, { name: displayName });
 
                 if (!mapped.image) {
                     mapped.image = firstDescendantImage(mapped) || FALLBACK_CARD_IMAGE;
@@ -576,8 +617,9 @@
             };
 
             const mapChildrenForParent = (parent) => {
-                const parentImage = normalizeKodiImageUrl(parent?.image || '');
-                const children = Array.isArray(parent?.tracks) ? parent.tracks : [];
+                const safeParent = normalizeKodiViewItem(parent, ['parent']);
+                const parentImage = normalizeKodiImageUrl(safeParent.image || '');
+                const children = Array.isArray(safeParent.tracks) ? safeParent.tracks : [];
                 return children.map((child, idx, arr) => {
                     const mapped = childNameMapper(child, idx, arr);
                     if (!mapped.image && parentImage) {
@@ -605,9 +647,10 @@
                 return match ? match[0].toUpperCase() : '';
             };
             const buildFallbackDetailPage = (item, spec) => {
-                const title = cleanTitle(item?.name) || 'Info';
-                const image = normalizeKodiImageUrl(item?.image || '');
-                const subtitle = String(item?.artist || '').trim();
+                const safeItem = normalizeKodiViewItem(item, ['detail']);
+                const title = cleanTitle(safeItem.name) || 'Info';
+                const image = normalizeKodiImageUrl(safeItem.image || '');
+                const subtitle = String(safeItem.artist || '').trim();
                 const label = spec?.loadingLabel || 'item';
                 const body = [];
                 if (image) {
@@ -619,11 +662,12 @@
                 body.push(`<p>Live ${escapeHtml(label)} information is unavailable right now, but playback is still available from this item.</p>`);
                 return {
                     title,
-                    play_uri: item?.url || item?.play_url || '',
+                    play_uri: safeItem.url || safeItem.play_url || '',
                     body: body.join(''),
                 };
             };
             const buildNowPlayingPayload = (item, pageData = null) => {
+                const safeItem = normalizeKodiViewItem(item, ['playing']);
                 const ancestors = folderStack
                     .map(entry => entry.item?.name || '')
                     .filter(Boolean);
@@ -631,10 +675,10 @@
                 const secondParent = ancestors[ancestors.length - 2] || '';
 
                 return {
-                    title: cleanTitle(pageData?.title || item?.name),
-                    artist: item?.artist || secondParent || '',
+                    title: cleanTitle(pageData?.title || safeItem.name),
+                    artist: safeItem.artist || secondParent || '',
                     album: immediateParent || '',
-                    artwork: normalizeKodiImageUrl(pageData?.image || item?.image || ''),
+                    artwork: normalizeKodiImageUrl(pageData?.image || safeItem.image || ''),
                     state: 'playing',
                 };
             };
@@ -831,62 +875,74 @@
             };
 
             const openDetailPage = async (item) => {
-                const spec = getDetailSpec(item);
-                if (!item || !spec) return false;
-                if (detailState?.item?.id === item.id && !detailState.loading) return true;
+                try {
+                    const safeItem = normalizeKodiViewItem(item, ['detail']);
+                    const spec = getDetailSpec(safeItem);
+                    if (!spec) return false;
+                    if (detailState?.item?.id === safeItem.id && !detailState.loading) return true;
 
-                detailRequestId += 1;
-                const requestId = detailRequestId;
-                detailState = {
-                    item,
-                    spec,
-                    loading: true,
-                    error: null,
-                    page: null,
-                    scrollEl: null,
-                    pageEl: null,
-                };
-                renderDetailPage();
+                    detailRequestId += 1;
+                    const requestId = detailRequestId;
+                    detailState = {
+                        item: safeItem,
+                        spec,
+                        loading: true,
+                        error: null,
+                        page: null,
+                        scrollEl: null,
+                        pageEl: null,
+                    };
+                    renderDetailPage();
 
-                if (!spec.id) {
-                    detailState.loading = false;
-                    detailState.error = null;
-                    detailState.page = buildFallbackDetailPage(item, spec);
+                    if (!spec.id) {
+                        detailState.loading = false;
+                        detailState.error = null;
+                        detailState.page = buildFallbackDetailPage(safeItem, spec);
+                        renderDetailPage();
+                        return true;
+                    }
+
+                    try {
+                        const resp = await fetch(`${kodiUrl}/${spec.endpoint}/${encodeURIComponent(spec.id)}`);
+                        let payload = null;
+                        try {
+                            payload = await resp.json();
+                        } catch (parseError) {}
+                        if (!resp.ok || !payload) {
+                            throw new Error(payload?.reason || `${spec.kind}_details_${resp.status}`);
+                        }
+                        if (requestId !== detailRequestId || !detailState) return true;
+                        if (payload.image) {
+                            payload.image = normalizeKodiImageUrl(payload.image);
+                        }
+                        if (payload.body) {
+                            payload.body = String(payload.body)
+                                .split('src="/art/')
+                                .join(`src="${kodiServiceBaseUrl}/art/`);
+                        }
+                        detailState.loading = false;
+                        detailState.error = null;
+                        detailState.page = payload;
+                    } catch (error) {
+                        if (requestId !== detailRequestId || !detailState) return false;
+                        detailState.loading = false;
+                        detailState.error = null;
+                        detailState.page = buildFallbackDetailPage(safeItem, spec);
+                        console.warn('[KODI] Detail request failed:', spec.kind, error);
+                    }
+
                     renderDetailPage();
                     return true;
-                }
-
-                try {
-                    const resp = await fetch(`${kodiUrl}/${spec.endpoint}/${encodeURIComponent(spec.id)}`);
-                    let payload = null;
-                    try {
-                        payload = await resp.json();
-                    } catch (parseError) {}
-                    if (!resp.ok || !payload) {
-                        throw new Error(payload?.reason || `${spec.kind}_details_${resp.status}`);
-                    }
-                    if (requestId !== detailRequestId || !detailState) return true;
-                    if (payload.image) {
-                        payload.image = normalizeKodiImageUrl(payload.image);
-                    }
-                    if (payload.body) {
-                        payload.body = String(payload.body)
-                            .split('src="/art/')
-                            .join(`src="${kodiServiceBaseUrl}/art/`);
-                    }
-                    detailState.loading = false;
-                    detailState.error = null;
-                    detailState.page = payload;
                 } catch (error) {
-                    if (requestId !== detailRequestId || !detailState) return false;
-                    detailState.loading = false;
-                    detailState.error = null;
-                    detailState.page = buildFallbackDetailPage(item, spec);
-                    console.warn('[KODI] Detail request failed:', spec.kind, error);
+                    console.warn('[KODI] Unable to open detail page:', error);
+                    if (detailState) {
+                        detailState.loading = false;
+                        detailState.error = 'detail_open_failed';
+                        detailState.page = buildFallbackDetailPage(item, getDetailSpec(item) || {});
+                        renderDetailPage();
+                    }
+                    return false;
                 }
-
-                renderDetailPage();
-                return true;
             };
 
             const refreshList = () => {

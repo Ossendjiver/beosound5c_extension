@@ -4,7 +4,9 @@ A modern recreation of the Bang & Olufsen BeoSound 5 experience using web techno
 
 **Website: [www.beosound5c.com](https://www.beosound5c.com)**
 
-This project replaces the original BeoSound 5 software with a circular arc-based touch UI that integrates with Sonos players, music services (Spotify, Apple Music, TIDAL, Plex), and Home Assistant. It works with the original BS5 hardware (rotary encoder, laser pointer, display) and supports BeoRemote One for wireless control.
+This fork tracks the upstream BeoSound 5c project by Markus Kirsten and keeps the original arc-driven UI, hardware support, and licensing intact while adding a deploy mirror, Music Assistant / MASS integration, Kodi / LibreELEC browsing, configurable OTA release feeds, and Home Assistant-oriented install tweaks.
+
+It replaces the original BeoSound 5 software with a circular arc-based touch UI that integrates with Sonos, BluOS, MASS, Kodi, streaming services (Spotify, Apple Music, TIDAL, Plex), and Home Assistant. It works with the original BS5 hardware (rotary encoder, laser pointer, display) and supports BeoRemote One for wireless control.
 
 ## Quick Start
 
@@ -16,7 +18,7 @@ Runs on a [Raspberry Pi 5 4GB](https://www.raspberrypi.com/products/raspberry-pi
 2. Clone and run the installer:
 
 ```bash
-git clone https://github.com/mkirsten/beosound5c.git ~/beosound5c
+git clone https://github.com/Ossendjiver/beosound5c_extension.git ~/beosound5c
 cd ~/beosound5c
 sudo ./install/install.sh
 ```
@@ -36,6 +38,8 @@ git pull && sudo ./install/install.sh update
 ```
 
 Updates service files, sudoers, and Python packages. No reboot needed unless system packages changed.
+
+Over-the-air update checks use GitHub Releases. By default they still follow upstream `mkirsten/beosound5c`; to make a deployed fork follow this repository instead, set `system.update_repo` in `/etc/beosound5c/config.json` or `BS5C_UPDATE_REPO` in `/etc/beosound5c/secrets.env` to `Ossendjiver/beosound5c_extension`, then publish releases on the fork.
 
 ## Remote Support
 
@@ -61,6 +65,7 @@ Configuration lives in two files on the device:
 For the full list of fields and options, see the **[config schema](docs/config.schema.json)**.
 
 To edit scenes (names, icons, HA scripts), edit `/etc/beosound5c/config.json` directly — the `"scenes"` array.
+If the runtime config has no scene list, the web UI falls back to [`web/json/scenes.json`](web/json/scenes.json).
 
 ## Telemetry
 
@@ -73,8 +78,8 @@ To make that possible, each BS5c sends a small anonymous ping to `beosound5c.com
 | `device_id` | Random UUID generated at install time — not linked to any personal identifier |
 | `version` | Software version string |
 | `sources` | Names of enabled sources (e.g. `spotify`, `cd`) — no credentials or config values |
-| `player_type` | Player backend: `sonos`, `bluesound`, or `local` |
-| `volume_type` | Volume adapter type: `sonos`, `beolab5`, `powerlink`, etc. |
+| `player_type` | Player backend: `sonos`, `bluesound`, `mass`, `local`, or `none` |
+| `volume_type` | Volume adapter type: `sonos`, `bluesound`, `hass`, `beolab5`, `powerlink`, etc. |
 
 If you'd rather opt out, just create a `NO_TELEMETRY` file in the repo root:
 
@@ -84,13 +89,15 @@ touch ~/beosound5c/NO_TELEMETRY
 
 ## Documentation
 
-- [Audio, players & sources](docs/audio-setup.md) — player types, source compatibility, Spotify setup, volume adapters
+- [Audio, players & sources](docs/audio-setup.md) — player types, MASS/Kodi notes, source compatibility, Spotify setup, volume adapters
 - [Home Assistant integration](docs/home-assistant.md) — MQTT, webhooks, automation examples
 - [Remotes & IR](docs/remotes.md) — BeoRemote One pairing, IR source buttons, Beo6
 - [Development & contributing](docs/CONTRIBUTING.md) — local dev setup, repo layout, deploy script
 
 ## Acknowledgments
 
-Arc geometry in `web/js/arcs.js` derived from [Beolyd5](https://github.com/larsbaunwall/Beolyd5) by Lars Baunwall (Apache 2.0).
+This fork is based on **BeoSound 5c by Markus Kirsten**. Upstream credit, GPL-3.0-or-later licensing, and the attribution requirement in `LICENSE` Section 7(b) remain in force.
+
+Arc geometry in `web/js/arcs.js` derived from [Beolyd5](https://github.com/larsbaunwall/Beolyd5) by Lars Baunwall (Apache 2.0). 
 
 This project is not affiliated with Bang & Olufsen. "Bang & Olufsen", "BeoSound", "BeoRemote", and "MasterLink" are trademarks of Bang & Olufsen A/S.

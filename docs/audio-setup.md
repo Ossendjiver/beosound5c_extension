@@ -20,6 +20,7 @@ The player service handles network-based playback. Sources send play commands to
 |---|---|---|
 | Sonos | `spotify`, `url_stream` | ShareLink (Spotify, Apple Music, TIDAL) or `play_uri` (URLs) |
 | BlueSound | `url_stream` | BluOS HTTP API with stream URLs |
+| MASS | `url_stream` | Music Assistant player subscription + transport bridge |
 | Local | `spotify`, `url_stream` | mpv via PipeWire/PulseAudio; Spotify via go-librespot |
 
 Only one player is active — determined by `player.type` in config.json. The type guard in PlayerBase ensures only the matching player service starts.
@@ -44,6 +45,21 @@ Sources check the player's capabilities at startup to determine how to play cont
 - Plex and TIDAL (on BlueSound) manage their own queues (next/prev build new stream URLs) while Spotify and Apple Music let the player handle queue advancement after the initial share link is queued
 - CD always plays locally via mpv — it doesn't use the player service
 - USB auto-detects: if the player supports `url_stream`, it streams track URLs to the player; otherwise falls back to local mpv
+
+### MASS
+
+Music Assistant can also be the configured `player.type`. In that mode BS5c monitors a target MASS player directly, exposes transport controls through the MASS websocket API, and can use the `hass` volume adapter for Home Assistant-driven zone volume.
+
+**Config:**
+```json
+"player": { "type": "mass", "ip": "musicassistant.local" },
+"volume": { "type": "hass", "output_name": "Music Assistant" }
+```
+
+**Secrets / env:**
+- `MASS_TOKEN` is required
+- `MASS_WS_URL` overrides the websocket endpoint if needed
+- `MASS_QUEUE_ID` and `MASS_PLAYER_ID` are optional pins when auto-discovery is not deterministic
 
 ### Sonos
 
@@ -126,6 +142,8 @@ There are two playback paths depending on the source:
 
 **Local playback** — The source plays audio directly on the Pi using mpv. For wired outputs (PowerLink, HDMI, Optical, RCA) audio goes directly to the hardware. CD always plays locally. USB falls back to this mode when no player with `url_stream` is available.
 
+**Source-managed playback** — Some sources talk to their backend directly and do not rely on the shared player abstraction for the actual play call. MASS controls its Music Assistant queue/player directly, and Kodi controls Kodi's JSON-RPC player directly. These sources still register with the router so the PLAYING screen and transport controls follow the active source correctly.
+
 ## Sources
 
 Sources provide content to the BS5c. Each source registers with the router and appears in the menu. The remote's media keys (play, pause, next, prev) are forwarded to whichever source is currently active.
@@ -136,6 +154,8 @@ Sources provide content to the BS5c. Each source registers with the router and a
 | Apple Music | Sends Apple Music share URLs to player via `player_play(uri=...)`. Sonos uses patched ShareLink. Sonos only. | Player manages queue |
 | TIDAL | Sonos: sends TIDAL share URLs via `player_play(uri=...)` (ShareLink). BlueSound: resolves direct stream URLs via tidalapi `track.get_url()`, sends via `player_play(url=...)`. | Sonos: player manages queue. BlueSound: source manages queue (next/prev play new stream URLs) |
 | Plex | Builds direct stream URLs from Plex server. Sends to player via `player_play(url=...)`. Works with Sonos and BlueSound. | Source manages queue (next/prev build new URLs) |
+| MASS | Browses Music Assistant library data and sends play commands directly to the configured MASS queue/player. | Source manages queue and now-playing handoff |
+| Kodi | Browses Kodi / LibreELEC video and live-TV libraries via JSON-RPC and opens items directly in Kodi. | Kodi manages queue / playlist playback |
 | CD | Local mpv playback from USB CD/DVD drive. Metadata from MusicBrainz. No player service needed. | Source manages tracks (mpv chapters) |
 | USB | Auto-detects: streams track URLs to player if `url_stream` available, otherwise local mpv. Supports BeoMaster 5 library databases and plain USB drives. Works with both players or standalone. | Source manages queue |
 

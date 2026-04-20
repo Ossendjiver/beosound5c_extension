@@ -61,6 +61,7 @@ CREATE_TASK_BASELINE: dict[str, int] = {
     "sources/usb/service.py": 2,
     "sources/plex/service.py": 7,
     "sources/tidal/service.py": 5,
+    "lib/volume_adapters/hass.py": 1,
     "lib/file_playback/file_player.py": 1,
     "lib/file_playback/remote_player.py": 3,
     "lib/file_playback/transcode_cache.py": 1,
@@ -85,12 +86,15 @@ SYS_PATH_INSERT_BASELINE: dict[str, int] = {
     "sources/spotify/service.py": 2,
     "sources/spotify/spotify_auth.py": 1,
     "sources/usb/service.py": 2,
+    "sources/kodi/service.py": 1,
+    "sources/mass/service.py": 1,
     "sources/plex/fetch.py": 1,
     "sources/plex/service.py": 2,
     "sources/plex/plex_auth.py": 2,
     "sources/tidal/fetch.py": 1,
     "sources/tidal/service.py": 2,
     "sources/tidal/tidal_auth.py": 1,
+    "players/mass.py": 1,
     "http_server.py": 1,
 }
 

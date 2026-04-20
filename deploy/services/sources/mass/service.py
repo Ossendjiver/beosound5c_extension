@@ -144,8 +144,8 @@ class MassSource(SourceBase):
             logger.warning("MASS source missing MASS_TOKEN; login/bootstrap actions will be required.")
         self._http_session = ClientSession(timeout=ClientTimeout(total=20))
         await self.register("available")
-        asyncio.create_task(self._maintain_connection())
-        asyncio.create_task(self._schedule_sync_loop())
+        self._spawn(self._maintain_connection(), name="mass_connection")
+        self._spawn(self._schedule_sync_loop(), name="mass_sync_loop")
 
     async def on_stop(self):
         if self._http_session and not self._http_session.closed:
@@ -197,7 +197,7 @@ class MassSource(SourceBase):
             if auth_res.get("result", {}).get("authenticated"):
                 self._connected = True
                 logger.info("MASS authenticated.")
-                asyncio.create_task(self._listen_loop())
+                self._spawn(self._listen_loop(), name="mass_listener")
             else:
                 logger.error("MASS authentication failed.")
                 await self.websocket.close()
@@ -800,6 +800,85 @@ class MassSource(SourceBase):
             }
         )
         return status
+
+    def _command_node_id(self, data):
+        if not isinstance(data, dict):
+            return ""
+        return str(
+            data.get("playlist_id")
+            or data.get("item_id")
+            or data.get("id")
+            or ""
+        ).strip()
+
+    def _build_command_media_payload(self, data, uri, state="playing"):
+        node = self._find_node_by_id(self._command_node_id(data))
+        if not isinstance(node, dict):
+            return None
+        artwork = str(node.get("image") or "").strip()
+        return {
+            "state": str(state or "playing").strip().lower() or "playing",
+            "title": str(node.get("name") or "").strip() or "Music Assistant",
+            "artist": str(node.get("artist") or "").strip(),
+            "album": str(node.get("album") or "").strip(),
+            "artwork": artwork,
+            "uri": str(uri or node.get("url") or node.get("play_url") or "").strip(),
+        }
+
+    async def _publish_now_playing(self, queue_id, *, data=None, requested_uri="", reason="track_change", force_state=""):
+        payload = await self._build_now_playing_payload(queue_id)
+        requested = str(requested_uri or "").strip()
+        payload_uri = str(payload.get("uri") or "").strip() if isinstance(payload, dict) else ""
+        if not payload or (requested and payload_uri and payload_uri != requested):
+            fallback = self._build_command_media_payload(data or {}, requested, state=force_state or "playing")
+            if fallback:
+                if isinstance(payload, dict):
+                    payload.update({k: v for k, v in fallback.items() if v or not payload.get(k)})
+                else:
+                    payload = fallback
+        if not isinstance(payload, dict):
+            return None
+
+        register_state = str(force_state or payload.get("state") or "").strip().lower()
+        if register_state == "paused":
+            await self.register("paused")
+        else:
+            register_state = "playing"
+            await self.register("playing", auto_power=True)
+
+        await self.post_media_update(
+            title=str(payload.get("title") or "").strip(),
+            artist=str(payload.get("artist") or "").strip(),
+            album=str(payload.get("album") or "").strip(),
+            artwork=str(payload.get("artwork") or "").strip(),
+            state=register_state,
+            reason=reason,
+            track_uri=str(payload.get("uri") or "").strip(),
+        )
+        payload["state"] = register_state
+        return payload
+
+    async def handle_resync(self) -> dict:
+        for queue_id in await self._resolve_queue_candidates():
+            payload = await self._build_now_playing_payload(queue_id)
+            if not isinstance(payload, dict):
+                continue
+            raw_state = self._extract_playback_state(payload)
+            register_state = "paused" if raw_state == "paused" else (
+                "playing" if self._is_active_state(raw_state) else ""
+            )
+            if not register_state:
+                continue
+            await self._publish_now_playing(
+                queue_id,
+                requested_uri=payload.get("uri", ""),
+                reason="resync",
+                force_state=register_state,
+            )
+            return {"status": "ok", "resynced": True, "state": register_state}
+
+        await self.register("available")
+        return {"status": "ok", "resynced": False}
 
     # ── Playback ──────────────────────────────────────────────────────────────
 
@@ -1606,10 +1685,10 @@ class MassSource(SourceBase):
         return candidates
 
     @staticmethod
-    def _options_for_request(cmd, uri, queue_state):
+    def _options_for_request(cmd, uri, queue_state, source_active):
         if cmd == "play_now":
             return ("replace",)
-        if str(queue_state or "").strip().lower() in ACTIVE_PLAYBACK_STATES:
+        if source_active and str(queue_state or "").strip().lower() in ACTIVE_PLAYBACK_STATES:
             return ("add",)
         uri_text = str(uri or "").lower()
         if any(token in uri_text for token in ("/track/", "track://")):
@@ -1627,11 +1706,62 @@ class MassSource(SourceBase):
         if not api_command:
             return {"state": "error", "reason": "unsupported_transport_command", "command": cmd}
 
+        successful_player = ""
         for player_id in await self._resolve_transport_player_candidates():
             response = await self._send_command_response(api_command, player_id=player_id)
             if response is not None:
-                return {"state": "available", "player_id": player_id, "command": cmd}
-        return {"state": "error", "reason": "transport_command_failed", "command": cmd}
+                successful_player = player_id
+                break
+        if not successful_player:
+            return {"state": "error", "reason": "transport_command_failed", "command": cmd}
+
+        if cmd == "transport_stop":
+            await self.register("available")
+            return {"state": "available", "player_id": successful_player, "command": cmd}
+
+        await asyncio.sleep(0.25)
+        for queue_id in await self._resolve_queue_candidates():
+            payload = await self._build_now_playing_payload(queue_id)
+            if not isinstance(payload, dict):
+                continue
+            raw_state = self._extract_playback_state(payload)
+            register_state = "paused" if raw_state == "paused" else (
+                "playing" if self._is_active_state(raw_state) else ""
+            )
+            if not register_state:
+                continue
+            await self._publish_now_playing(
+                queue_id,
+                requested_uri=payload.get("uri", ""),
+                reason=cmd,
+                force_state=register_state,
+            )
+            return {
+                "state": register_state,
+                "player_id": successful_player,
+                "command": cmd,
+                "uri": payload.get("uri", ""),
+            }
+
+        if self._last_media:
+            register_state = "paused" if cmd == "transport_toggle" and self._registered_state == "playing" else "playing"
+            await self.register(register_state, auto_power=(register_state == "playing"))
+            await self.post_media_update(
+                title=self._last_media.get("title", ""),
+                artist=self._last_media.get("artist", ""),
+                album=self._last_media.get("album", ""),
+                artwork=self._last_media.get("artwork", ""),
+                state=register_state,
+                reason=cmd,
+                track_uri=self._last_media.get("track_uri", ""),
+            )
+            return {
+                "state": register_state,
+                "player_id": successful_player,
+                "command": cmd,
+                "uri": self._last_media.get("track_uri", ""),
+            }
+        return {"state": "available", "player_id": successful_player, "command": cmd}
 
     async def _kick_player_transport(self, queue_id):
         kicked = False
@@ -1671,11 +1801,12 @@ class MassSource(SourceBase):
 
         media_candidates = await self._resolve_media_candidates(uri)
         accepted_but_idle = False
+        source_active = self._registered_state in {"playing", "paused"}
 
         for queue_id in queue_ids:
             before_snapshot = await self._get_queue_snapshot(queue_id)
             queue_state = self._extract_playback_state(before_snapshot)
-            for option in self._options_for_request(cmd, uri, queue_state):
+            for option in self._options_for_request(cmd, uri, queue_state, source_active):
                 accepted_response = None
                 accepted_media = None
 
@@ -1740,10 +1871,17 @@ class MassSource(SourceBase):
                 )
 
                 if self._is_active_state(latest_state):
+                    published = await self._publish_now_playing(
+                        queue_id,
+                        data=data,
+                        requested_uri=uri,
+                        reason="track_change",
+                        force_state="playing",
+                    )
                     return {
-                        "state": "available",
+                        "state": "playing",
                         "queue_id": queue_id,
-                        "uri": uri,
+                        "uri": (published or {}).get("uri", uri),
                         "option": option,
                         "verified_state": latest_state,
                     }
@@ -1765,10 +1903,17 @@ class MassSource(SourceBase):
                             active_state or "unknown",
                             uri,
                         )
+                        published = await self._publish_now_playing(
+                            queue_id,
+                            data=data,
+                            requested_uri=uri,
+                            reason="track_change",
+                            force_state="playing",
+                        )
                         return {
-                            "state": "available",
+                            "state": "playing",
                             "queue_id": queue_id,
-                            "uri": uri,
+                            "uri": (published or {}).get("uri", uri),
                             "option": option,
                             "verified_state": active_state or "unknown",
                         }
@@ -1780,10 +1925,17 @@ class MassSource(SourceBase):
                             active_state or latest_state or "loaded",
                             uri,
                         )
+                        published = await self._publish_now_playing(
+                            queue_id,
+                            data=data,
+                            requested_uri=uri,
+                            reason="track_change",
+                            force_state="playing",
+                        )
                         return {
-                            "state": "available",
+                            "state": "playing",
                             "queue_id": queue_id,
-                            "uri": uri,
+                            "uri": (published or {}).get("uri", uri),
                             "option": option,
                             "verified_state": active_state or latest_state or "loaded",
                         }
@@ -1798,10 +1950,17 @@ class MassSource(SourceBase):
                             final_state or "loaded",
                             uri,
                         )
+                        published = await self._publish_now_playing(
+                            queue_id,
+                            data=data,
+                            requested_uri=uri,
+                            reason="track_change",
+                            force_state="playing",
+                        )
                         return {
-                            "state": "available",
+                            "state": "playing",
                             "queue_id": queue_id,
-                            "uri": uri,
+                            "uri": (published or {}).get("uri", uri),
                             "option": option,
                             "verified_state": final_state or "loaded",
                         }

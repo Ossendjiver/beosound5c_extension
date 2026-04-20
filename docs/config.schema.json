@@ -209,6 +209,53 @@
       "additionalProperties": false
     },
 
+    "radio": {
+      "type": "object",
+      "description": "Radio source configuration.",
+      "properties": {
+        "source": {
+          "type": "string",
+          "description": "Radio provider identifier or source preset.",
+          "default": "radio"
+        }
+      },
+      "additionalProperties": false
+    },
+
+    "join": {
+      "type": "object",
+      "description": "JOIN source configuration. Empty object is valid; device discovery happens at runtime.",
+      "properties": {},
+      "additionalProperties": false
+    },
+
+    "mass": {
+      "type": "object",
+      "description": "Music Assistant source settings. Connection credentials and target queue/player pins live in /etc/beosound5c/secrets.env.",
+      "properties": {},
+      "additionalProperties": false
+    },
+
+    "kodi": {
+      "type": "object",
+      "description": "Kodi / LibreELEC source settings. Host and credentials are typically supplied through /etc/beosound5c/secrets.env.",
+      "properties": {},
+      "additionalProperties": false
+    },
+
+    "system": {
+      "type": "object",
+      "description": "System-level runtime settings.",
+      "properties": {
+        "update_repo": {
+          "type": "string",
+          "description": "GitHub owner/repository to use for OTA update checks. Uses GitHub Releases, not branch heads.",
+          "examples": ["mkirsten/beosound5c", "Ossendjiver/beosound5c_extension"]
+        }
+      },
+      "additionalProperties": false
+    },
+
     "showing": {
       "type": "object",
       "description": "SHOWING view configuration. Displays what's playing on a media player (e.g. Apple TV) via Home Assistant.",
@@ -251,6 +298,11 @@
           "type": "string",
           "description": "Home Assistant dashboard path to embed (security source only).",
           "examples": ["dashboard-cameras/home"]
+        },
+        "url": {
+          "type": "string",
+          "description": "Direct web view path for static pages such as custom softarc routes.",
+          "examples": ["softarc/security.html"]
         }
       },
       "additionalProperties": false

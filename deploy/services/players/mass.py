@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import sys
+import urllib.parse
 
 import aiohttp
 import websockets
@@ -66,6 +67,8 @@ class MassPlayer(PlayerBase):
         self.websocket = None
         self._connected = False
         self.state = "idle"
+        self._current_track_uri = ""
+        self._current_track_id = ""
         self._mass_uri = _mass_ws_url()
         self._mass_token = os.getenv("MASS_TOKEN", "").strip()
         self._target_player_id = (
@@ -80,7 +83,144 @@ class MassPlayer(PlayerBase):
 
     async def on_start(self):
         logger.info("Starting MASS player backend")
-        asyncio.create_task(self._maintain_connection())
+        self._spawn(self._maintain_connection(), name="mass_player_connection")
+
+    @property
+    def _mass_http_base(self) -> str:
+        return self._mass_uri.replace("/ws", "").replace("ws://", "http://").replace("wss://", "https://")
+
+    def _get_img(self, item):
+        if not isinstance(item, dict):
+            return ""
+        images = item.get("metadata", {}).get("images", [])
+        if not isinstance(images, list) or not images:
+            return ""
+        best = next(
+            (
+                img for img in images
+                if isinstance(img, dict) and img.get("type") in ("thumb", "landscape", "poster")
+            ),
+            images[0],
+        )
+        if not isinstance(best, dict):
+            return ""
+        path = str(best.get("path") or "").strip()
+        provider = str(best.get("provider") or "library").strip() or "library"
+        if not path:
+            return ""
+        clean = urllib.parse.unquote(path)
+        if "tidal" in provider.lower() and not clean.endswith(".jpg"):
+            clean = clean + "x750.jpg" if clean.endswith("750") else clean.rstrip("/") + "/750x750.jpg"
+        encoded = (
+            urllib.parse.quote(urllib.parse.quote(clean, safe=""), safe="")
+            if clean.startswith("http")
+            else urllib.parse.quote(clean, safe="")
+        )
+        return f"{self._mass_http_base}/imageproxy?path={encoded}&provider={provider}&size=256"
+
+    @staticmethod
+    def _extract_current_media(payload):
+        current_media = payload.get("current_media")
+        return current_media if isinstance(current_media, dict) else {}
+
+    @staticmethod
+    def _extract_media_item(payload):
+        current_media = MassPlayer._extract_current_media(payload)
+        media_item = current_media.get("media_item")
+        return media_item if isinstance(media_item, dict) else {}
+
+    @staticmethod
+    def _extract_artist_name(item):
+        artists = item.get("artists", [])
+        if isinstance(artists, list) and artists and isinstance(artists[0], dict):
+            return str(artists[0].get("name") or "").strip()
+        return ""
+
+    @staticmethod
+    def _normalize_state(raw_state):
+        state = str(raw_state or "").strip().lower()
+        if state in {"playing", "buffering"}:
+            return "playing"
+        if state == "paused":
+            return "paused"
+        return "stopped"
+
+    async def _build_media_data(self, payload):
+        current_media = self._extract_current_media(payload)
+        media_item = self._extract_media_item(payload)
+        if not current_media and not media_item:
+            return None
+
+        title = ""
+        for container in (current_media, media_item):
+            for key in ("name", "title", "sort_name"):
+                value = str(container.get(key) or "").strip()
+                if value:
+                    title = value
+                    break
+            if title:
+                break
+
+        artist = ""
+        for container in (current_media, media_item):
+            value = str(container.get("artist") or container.get("artist_str") or "").strip()
+            if value:
+                artist = value
+                break
+        if not artist and media_item:
+            artist = self._extract_artist_name(media_item)
+
+        album = ""
+        for container in (current_media, media_item):
+            value = container.get("album") or container.get("album_name")
+            if isinstance(value, dict):
+                value = value.get("name")
+            value = str(value or "").strip()
+            if value:
+                album = value
+                break
+
+        uri = ""
+        for container in (current_media, media_item):
+            for key in ("uri", "media_item_uri", "url"):
+                value = str(container.get(key) or "").strip()
+                if value:
+                    uri = value
+                    break
+            if uri:
+                break
+
+        image_url = ""
+        for container in (current_media, media_item):
+            value = str(container.get("image") or "").strip()
+            if value:
+                image_url = value
+                break
+            image_url = self._get_img(container)
+            if image_url:
+                break
+        if not image_url:
+            album_data = current_media.get("album") if isinstance(current_media.get("album"), dict) else {}
+            if not album_data and isinstance(media_item.get("album"), dict):
+                album_data = media_item.get("album")
+            if isinstance(album_data, dict):
+                image_url = str(album_data.get("image") or "").strip() or self._get_img(album_data)
+
+        artwork = None
+        if image_url:
+            if image_url.startswith("/"):
+                image_url = f"{self._mass_http_base}{image_url}"
+            result = await self.fetch_artwork(image_url, session=self._http_session)
+            artwork = f"data:image/jpeg;base64,{result['base64']}" if result else image_url
+
+        return {
+            "title": title or "—",
+            "artist": artist or "—",
+            "album": album or "—",
+            "artwork": artwork,
+            "state": self._normalize_state(payload.get("state") or self.state),
+            "uri": uri,
+        }
 
     async def _send_request(self, command: str, **kwargs):
         if not self.websocket:
@@ -171,7 +311,7 @@ class MassPlayer(PlayerBase):
                     )
                     self._connected = True
                     logger.info("Connected to MASS player %s", self._target_player_id)
-                    asyncio.create_task(self._listen())
+                    self._spawn(self._listen(), name="mass_player_listener")
                 except Exception as exc:
                     logger.warning("MASS connection failed: %s", exc)
             await asyncio.sleep(5)
@@ -183,7 +323,36 @@ class MassPlayer(PlayerBase):
                 if data.get("event") == "player_updated":
                     player_data = data.get("data", {})
                     if str(player_data.get("player_id") or "") == self._target_player_id:
-                        self.state = player_data.get("state", "idle") or "idle"
+                        next_state = self._normalize_state(player_data.get("state") or "idle")
+                        previous_state = self._current_playback_state
+                        self.state = next_state
+                        self._current_playback_state = next_state
+
+                        media_data = await self._build_media_data(player_data)
+                        if media_data:
+                            self._current_track_uri = media_data.get("uri", "")
+                            track_id = "|".join(
+                                [
+                                    self._current_track_uri,
+                                    media_data.get("title", ""),
+                                    media_data.get("artist", ""),
+                                    media_data.get("album", ""),
+                                ]
+                            )
+                            track_changed = track_id != self._current_track_id
+                            state_changed = next_state != previous_state
+                            if track_changed or state_changed:
+                                self._current_track_id = track_id
+                                self._cached_media_data = media_data
+                                await self.broadcast_media_update(
+                                    media_data,
+                                    "track_change" if track_changed else "state_change",
+                                )
+                                if next_state == "playing" and previous_state != "playing":
+                                    self._spawn(self.trigger_wake(), name="mass_player_wake")
+                        elif next_state != previous_state and self._cached_media_data:
+                            self._cached_media_data["state"] = next_state
+                            await self.broadcast_media_update(self._cached_media_data, "state_change")
         except Exception as exc:
             logger.warning("MASS websocket listener stopped: %s", exc)
         finally:
@@ -292,7 +461,7 @@ class MassPlayer(PlayerBase):
         return self.state
 
     async def get_track_uri(self) -> str:
-        return ""
+        return self._current_track_uri or ""
 
     async def get_capabilities(self) -> list:
         # Playback is source-managed, so this backend exposes transport only.

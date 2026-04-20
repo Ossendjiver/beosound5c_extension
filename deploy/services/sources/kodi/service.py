@@ -130,7 +130,7 @@ class KodiSource(SourceBase):
             timeout=ClientTimeout(total=30),
         )
         await self.register("available")
-        asyncio.create_task(self._schedule_sync_loop())
+        self._spawn(self._schedule_sync_loop(), name="kodi_sync_loop")
 
     async def on_stop(self):
         if self._session and not self._session.closed:
@@ -1023,7 +1023,7 @@ class KodiSource(SourceBase):
         async def _handle_sync(request):
             """Manual sync trigger â€” POST /sync"""
             if not self._is_syncing:
-                asyncio.create_task(self.update_library_cache())
+                self._spawn(self.update_library_cache(), name="kodi_manual_sync")
             return web.json_response({"status": "syncing"}, headers=self._cors_headers())
 
         async def _handle_movie_details(request):
@@ -1314,6 +1314,178 @@ class KodiSource(SourceBase):
         )
         return status
 
+    def _walk_library(self):
+        stack = [(node, []) for node in reversed(self._library_data or [])]
+        while stack:
+            node, parents = stack.pop()
+            if not isinstance(node, dict):
+                continue
+            yield node, parents
+            children = node.get("tracks")
+            if isinstance(children, list):
+                for child in reversed(children):
+                    stack.append((child, parents + [node]))
+
+    def _find_node_by_uri(self, uri):
+        target = str(uri or "").strip()
+        if not target:
+            return None, []
+        for node, parents in self._walk_library():
+            if str(node.get("url") or "").strip() == target or str(node.get("play_url") or "").strip() == target:
+                return node, parents
+        return None, []
+
+    @staticmethod
+    def _format_clock(value):
+        if not isinstance(value, dict):
+            return ""
+        hours = int(value.get("hours") or 0)
+        minutes = int(value.get("minutes") or 0)
+        seconds = int(value.get("seconds") or 0)
+        if hours:
+            return f"{hours}:{minutes:02d}:{seconds:02d}"
+        return f"{minutes}:{seconds:02d}"
+
+    async def _build_cached_media_payload(self, uri, state="playing"):
+        node, parents = self._find_node_by_uri(uri)
+        if not isinstance(node, dict):
+            return None
+        image = str(node.get("image") or "").strip()
+        if image.startswith("http"):
+            image = await self._cache_image_locally(image)
+        album = ""
+        if parents:
+            album = str(parents[-1].get("name") or "").strip()
+        artist = str(node.get("artist") or "").strip()
+        if not artist and len(parents) > 1:
+            artist = str(parents[-2].get("name") or "").strip()
+        return {
+            "title": str(node.get("name") or "").strip() or "Kodi",
+            "artist": artist,
+            "album": album,
+            "artwork": image,
+            "state": str(state or "playing").strip().lower() or "playing",
+            "uri": str(uri or "").strip(),
+        }
+
+    async def _build_active_media_payload(self):
+        if not self._session:
+            return None
+        active_players = await self._get_active_player_ids()
+        if not active_players:
+            return None
+
+        player_id = active_players[0]
+        properties = await self._rpc(
+            "Player.GetProperties",
+            {
+                "playerid": player_id,
+                "properties": ["speed", "time", "totaltime"],
+            },
+        ) or {}
+        item_result = await self._rpc(
+            "Player.GetItem",
+            {
+                "playerid": player_id,
+                "properties": ["title", "album", "artist", "showtitle", "thumbnail", "art", "file"],
+            },
+        ) or {}
+        item = item_result.get("item") if isinstance(item_result, dict) else {}
+        if not isinstance(item, dict) or not item:
+            return None
+
+        item_type = str(item.get("type") or "").strip().lower()
+        item_id = (
+            item.get("movieid")
+            or item.get("episodeid")
+            or item.get("channelid")
+        )
+        uri = ""
+        if item_type in {"movie", "episode", "channel"} and item_id is not None:
+            uri = self._kodi_uri(item_type, item_id)
+
+        node, parents = self._find_node_by_uri(uri)
+        title = ""
+        if isinstance(node, dict):
+            title = str(node.get("name") or "").strip()
+        if not title:
+            title = str(item.get("title") or item.get("label") or "Kodi").strip()
+
+        artist = self._join_values(item.get("artist"))
+        if not artist and isinstance(node, dict):
+            artist = str(node.get("artist") or "").strip()
+        if not artist:
+            artist = str(item.get("showtitle") or "").strip()
+        if not artist and len(parents) > 1:
+            artist = str(parents[-2].get("name") or "").strip()
+
+        album = str(item.get("album") or "").strip()
+        if not album and parents:
+            album = str(parents[-1].get("name") or "").strip()
+        if not album:
+            album = str(item.get("showtitle") or "").strip()
+
+        image = self._img(
+            item.get("art", {}),
+            "poster",
+            "thumb",
+            "landscape",
+            "fanart",
+            "banner",
+            "clearlogo",
+            "clearart",
+            "keyart",
+            "icon",
+        )
+        if not image:
+            image = self._img({"thumb": item.get("thumbnail", "")}, "thumb")
+        if not image and isinstance(node, dict):
+            image = str(node.get("image") or "").strip()
+        if image.startswith("http"):
+            image = await self._cache_image_locally(image)
+
+        speed = int(properties.get("speed") or 0)
+        state = "paused" if speed == 0 else "playing"
+        return {
+            "title": title,
+            "artist": artist,
+            "album": album,
+            "artwork": image,
+            "state": state,
+            "position": self._format_clock(properties.get("time")),
+            "duration": self._format_clock(properties.get("totaltime")),
+            "uri": uri,
+        }
+
+    async def _post_media_snapshot(self, payload, *, reason="track_change", force_state=""):
+        if not isinstance(payload, dict):
+            return False
+        state = str(force_state or payload.get("state") or "").strip().lower()
+        if state not in {"playing", "paused"}:
+            await self.register("available")
+            return False
+        await self.register(state, auto_power=(state == "playing"))
+        await self.post_media_update(
+            title=str(payload.get("title") or "").strip(),
+            artist=str(payload.get("artist") or "").strip(),
+            album=str(payload.get("album") or "").strip(),
+            artwork=str(payload.get("artwork") or "").strip(),
+            state=state,
+            duration=payload.get("duration", 0),
+            position=payload.get("position", 0),
+            reason=reason,
+            track_uri=str(payload.get("uri") or "").strip(),
+        )
+        return True
+
+    async def handle_resync(self) -> dict:
+        payload = await self._build_active_media_payload()
+        if payload:
+            await self._post_media_snapshot(payload, reason="resync", force_state=payload.get("state", "playing"))
+            return {"status": "ok", "resynced": True, "state": payload.get("state", "playing")}
+        await self.register("available")
+        return {"status": "ok", "resynced": False}
+
     async def _play_kodi_uri(self, uri):
         """
         Resolve a kodi:// URI and issue the appropriate Kodi API call.
@@ -1454,6 +1626,43 @@ class KodiSource(SourceBase):
             payload.update(extra)
             result = await self._rpc(method, payload)
             if result is not None:
+                if cmd == "transport_stop":
+                    await self.register("available")
+                    return {"state": "available", "player_id": player_id, "command": cmd}
+
+                await asyncio.sleep(0.35)
+                media_payload = await self._build_active_media_payload()
+                if media_payload:
+                    await self._post_media_snapshot(
+                        media_payload,
+                        reason=cmd,
+                        force_state=media_payload.get("state", "playing"),
+                    )
+                    return {
+                        "state": media_payload.get("state", "available"),
+                        "player_id": player_id,
+                        "command": cmd,
+                        "uri": media_payload.get("uri", ""),
+                    }
+
+                if self._last_media:
+                    next_state = "paused" if cmd == "transport_toggle" and self._registered_state == "playing" else "playing"
+                    await self.register(next_state, auto_power=(next_state == "playing"))
+                    await self.post_media_update(
+                        title=self._last_media.get("title", ""),
+                        artist=self._last_media.get("artist", ""),
+                        album=self._last_media.get("album", ""),
+                        artwork=self._last_media.get("artwork", ""),
+                        state=next_state,
+                        reason=cmd,
+                        track_uri=self._last_media.get("track_uri", ""),
+                    )
+                    return {
+                        "state": next_state,
+                        "player_id": player_id,
+                        "command": cmd,
+                        "uri": self._last_media.get("track_uri", ""),
+                    }
                 return {"state": "available", "player_id": player_id, "command": cmd}
 
         return {"state": "error", "reason": "transport_command_failed", "command": cmd}
@@ -1471,7 +1680,15 @@ class KodiSource(SourceBase):
         ok = await self._play_kodi_uri(uri)
         if not ok:
             return {"state": "error", "reason": "playback_rejected", "uri": uri}
-        return {"state": "available", "uri": uri}
+        await asyncio.sleep(0.2)
+        payload = await self._build_active_media_payload()
+        if not payload:
+            payload = await self._build_cached_media_payload(uri, state="playing")
+        if payload:
+            await self._post_media_snapshot(payload, reason="track_change", force_state="playing")
+        else:
+            await self.register("playing", auto_power=True)
+        return {"state": "playing", "uri": uri}
 
 if __name__ == '__main__':
     asyncio.run(KodiSource().run())

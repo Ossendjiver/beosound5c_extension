@@ -40,8 +40,8 @@ ROUTER_BROADCAST_URL = ROUTER_BROADCAST
 
 # ——— Update management ———
 
-GITHUB_RELEASES_URL = 'https://api.github.com/repos/mkirsten/beosound5c/releases/latest'
-_update_cache: dict = {'data': None, 'fetched_at': 0.0}
+DEFAULT_UPDATE_REPO = 'mkirsten/beosound5c'
+_update_cache: dict = {'data': None, 'fetched_at': 0.0, 'repo': ''}
 _UPDATE_CACHE_TTL = 3600  # seconds
 _update_in_progress = False
 _update_step = 'idle'  # 'downloading' | 'extracting' | 'installing' | 'restarting'
@@ -64,6 +64,25 @@ _UPDATE_EXCLUDES = [
     'services/sources/radio/radio_last_station.json',
     'services/sources/radio/radio_favourites.json',
 ]
+
+
+def _get_update_repo() -> str:
+    configured = str(
+        os.getenv('BS5C_UPDATE_REPO')
+        or cfg('system', 'update_repo', default='')
+        or ''
+    ).strip()
+    if configured:
+        owner, _, repo = configured.partition('/')
+        if owner and repo and '/' not in repo:
+            return f'{owner}/{repo}'
+        logger.warning('Invalid update repo %r; falling back to %s',
+                       configured, DEFAULT_UPDATE_REPO)
+    return DEFAULT_UPDATE_REPO
+
+
+def _get_releases_url(repo: str | None = None) -> str:
+    return f'https://api.github.com/repos/{repo or _get_update_repo()}/releases/latest'
 
 # Shared HTTP client session (created lazily in async context)
 _http_session = None
@@ -260,6 +279,7 @@ def get_system_info() -> dict:
                         info['git_tag'] = v
             except Exception:
                 pass
+        info['update_repo'] = _get_update_repo()
 
         # Audio HAT info (from install-time detection)
         info['audio_hat'] = None
@@ -384,12 +404,16 @@ def _get_current_version() -> str:
 async def _fetch_latest_release():
     """Fetch latest GitHub release info. Cached for 1 hour."""
     now = time.time()
-    if _update_cache['data'] and now - _update_cache['fetched_at'] < _UPDATE_CACHE_TTL:
+    repo = _get_update_repo()
+    releases_url = _get_releases_url(repo)
+    if (_update_cache['data']
+            and _update_cache.get('repo') == repo
+            and now - _update_cache['fetched_at'] < _UPDATE_CACHE_TTL):
         return _update_cache['data']
     try:
         session = await get_http_session()
         async with session.get(
-            GITHUB_RELEASES_URL,
+            releases_url,
             headers={'Accept': 'application/vnd.github.v3+json', 'User-Agent': 'beosound5c'},
             timeout=aiohttp.ClientTimeout(total=10),
         ) as resp:
@@ -397,6 +421,8 @@ async def _fetch_latest_release():
                 return None
             data = await resp.json()
             result = {
+                'repo': repo,
+                'api_url': releases_url,
                 'latest': data.get('tag_name', ''),
                 'release_url': data.get('html_url', ''),
                 'tarball_url': data.get('tarball_url', ''),
@@ -405,6 +431,7 @@ async def _fetch_latest_release():
             }
             _update_cache['data'] = result
             _update_cache['fetched_at'] = now
+            _update_cache['repo'] = repo
             return result
     except Exception as e:
         logger.warning('GitHub release check failed: %s', e)
@@ -533,16 +560,24 @@ async def _run_update():
 async def handle_update_check(request):
     """GET /update/check — current version vs latest GitHub release."""
     current = _get_current_version()
+    update_repo = _get_update_repo()
 
     release = await _fetch_latest_release()
 
-    result = {'current': current, 'update_in_progress': _update_in_progress, 'update_step': _update_step}
+    result = {
+        'current': current,
+        'update_in_progress': _update_in_progress,
+        'update_step': _update_step,
+        'update_repo': update_repo,
+    }
     if release:
         latest = release['latest']
         result['latest'] = latest
         result['update_available'] = _is_newer(latest, current) and not _update_in_progress
         result['release_url'] = release['release_url']
         result['release_notes'] = release['release_notes']
+        result['published_at'] = release.get('published_at', '')
+        result['update_repo'] = release.get('repo', update_repo)
     else:
         result['update_available'] = False
         result['error'] = 'Could not reach GitHub'

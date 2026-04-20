@@ -1,14 +1,14 @@
 # Contributing to BeoSound 5c
 
+This fork is based on **BeoSound 5c by Markus Kirsten**. Please preserve upstream credit, keep the attribution notice required by `LICENSE` Section 7(b), and avoid removing documentation or UI references that identify the upstream project.
+
 ## Reporting Issues
 
-**Installation/configuration problems**: Email markus@beosound5c.com — I'm happy to help troubleshoot your setup.
-
-**Bugs in the system**: Open a GitHub issue with steps to reproduce and relevant logs (`journalctl -u beo-* -f`).
+Open a GitHub issue with steps to reproduce and relevant logs (`journalctl -u beo-* -f`). If a bug appears to come from upstream rather than this fork-specific layer, include the upstream commit or release you were testing against.
 
 ## Suggesting Features
 
-Email markus@beosound5c.com with your idea and use case.
+Open a GitHub issue or discussion with your use case, any hardware assumptions, and whether the change belongs in upstream `mkirsten/beosound5c`, this fork, or a Home Assistant automation.
 
 ## Submitting Code
 
@@ -31,7 +31,7 @@ Using AI for code assistance is fine. Please:
 
 ## License
 
-By contributing, you agree that your contributions will be licensed under the MIT License.
+By contributing, you agree that your contributions will be licensed under the repository's **GPL-3.0-or-later** terms, including the attribution requirement in `LICENSE`.
 
 ## Local Development
 
@@ -90,3 +90,7 @@ BEOSOUND5C_HOSTS="my-device.local" ./deploy.sh  # Target a specific device
 ```
 
 Device hostnames are configured in `my-hosts.env` (see `my-hosts.env.example`).
+
+## Deploy Mirror
+
+This fork also keeps a mirrored `deploy/` tree with the current deployable copies of the changed source, player, install, and frontend files. When you update deployable runtime files, keep the matching `deploy/` copy in sync in the same commit.
