@@ -92,6 +92,71 @@ class TestMassNowPlayingPayload:
         assert payload["uri"] == "mass://queue-track"
 
 
+class TestMassQueuePayload:
+    def test_extracts_paginated_queue_items(self):
+        source = _make_mass_source()
+
+        payload = {
+            "items": {
+                "items": [
+                    {"queue_item_id": "one", "name": "Track One", "uri": "mass://one"},
+                    {"queue_item_id": "two", "name": "Track Two", "uri": "mass://two"},
+                ],
+                "total": 2,
+            }
+        }
+
+        items = source._extract_queue_items(payload)
+
+        assert [item["name"] for item in items] == ["Track One", "Track Two"]
+
+    def test_get_queue_returns_standard_source_queue_shape(self):
+        source = _make_mass_source()
+        source._get_queue_snapshot = AsyncMock(return_value={
+            "resolved_queue_id": "queue-main",
+            "current_index": 1,
+            "items": {
+                "items": [
+                    {"queue_item_id": "one", "name": "Track One", "artist": "Artist A", "uri": "mass://one"},
+                    {"queue_item_id": "two", "name": "Track Two", "artist": "Artist B", "uri": "mass://two"},
+                ]
+            },
+        })
+        source._resolve_queue_candidates = AsyncMock(return_value=["queue-main"])
+        source._cache_image_locally = AsyncMock(side_effect=lambda image: image)
+
+        queue = _run(source.get_queue())
+
+        assert queue["queue_id"] == "queue-main"
+        assert queue["total"] == 2
+        assert queue["current_index"] == 1
+        assert queue["tracks"][1]["title"] == "Track Two"
+        assert queue["tracks"][1]["current"] is True
+
+
+class TestMassLibraryMenu:
+    def test_normalize_renames_legacy_mixes_root_to_radio(self):
+        source = _make_mass_source()
+        tree = [
+            {"id": "mixes", "name": "Mixes", "tracks": []},
+            {"id": "playlist_mixes", "name": "Old", "tracks": []},
+        ]
+
+        source._normalize_library_tree(tree)
+
+        assert tree[0]["name"] == "Radio"
+        assert tree[1]["name"] == "Mixes"
+
+    def test_identifies_library_mixes_playlist(self):
+        source = _make_mass_source()
+
+        assert source._is_mixes_playlist({
+            "item_id": "98",
+            "provider": "library",
+            "uri": "playlist://library/98",
+        })
+
+
 class TestMassMusicVideoRouting:
     def test_router_surfaces_cached_music_video_for_mass_payload(self):
         router = router_module.EventRouter()

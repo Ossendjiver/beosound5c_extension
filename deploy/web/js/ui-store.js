@@ -231,6 +231,9 @@ class UIStore {
 
     _setupEventListeners() {
         document.addEventListener('keydown', (event) => {
+            if (window.dummyHardwareManager?.isActive) {
+                return;
+            }
             switch (event.key) {
                 case "ArrowUp":
                     this.topWheelPosition = -1;
@@ -264,16 +267,17 @@ class UIStore {
             }
         });
 
-        document.addEventListener('mousemove', (event) => {
+        const updatePointerFromClientPoint = (clientX, clientY, target) => {
+            if (target?.closest?.('iframe, .webpage-iframe')) return false;
             const mainMenu = document.getElementById('mainMenu');
-            if (!mainMenu) return;
+            if (!mainMenu) return false;
 
             const rect = mainMenu.getBoundingClientRect();
             const centerX = arcs.cx - rect.left;
             const centerY = arcs.cy - rect.top;
 
-            const dx = event.clientX - rect.left - centerX;
-            const dy = event.clientY - rect.top - centerY;
+            const dx = clientX - rect.left - centerX;
+            const dy = clientY - rect.top - centerY;
             let angle = Math.atan2(dy, dx) * 180 / Math.PI + 90;
             if (angle < 0) angle += 360;
 
@@ -285,8 +289,30 @@ class UIStore {
                     this.laserPosition = Math.round(window.LaserPositionMapper.angleToLaserPosition(angle));
                 }
                 this.handleWheelChange();
+                return true;
             }
+            return false;
+        };
+
+        document.addEventListener('mousemove', (event) => {
+            updatePointerFromClientPoint(event.clientX, event.clientY, event.target);
         });
+
+        document.addEventListener('touchstart', (event) => {
+            const touch = event.touches && event.touches[0];
+            if (!touch) return;
+            if (updatePointerFromClientPoint(touch.clientX, touch.clientY, event.target)) {
+                event.preventDefault();
+            }
+        }, { passive: false });
+
+        document.addEventListener('touchmove', (event) => {
+            const touch = event.touches && event.touches[0];
+            if (!touch) return;
+            if (updatePointerFromClientPoint(touch.clientX, touch.clientY, event.target)) {
+                event.preventDefault();
+            }
+        }, { passive: false });
 
         document.getElementById('menuItems').addEventListener('click', (event) => {
             const clickedItem = event.target.closest('.list-item');

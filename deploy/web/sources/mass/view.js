@@ -2,10 +2,16 @@
  * MASS Source Preset
  */
 const _massPlayingPreset = (() => {
-    const PAGE_IDS = ['now', 'artist', 'queue'];
+    const PAGE_IDS = ['now', 'artist', 'queue', 'transfer'];
     const QUEUE_REFRESH_MS = 3000;
     const NOW_PLAYING_REFRESH_MS = 2000;
     const PAGE_CYCLE_COOLDOWN_MS = 520;
+    const YOUTUBE_PREF_KEY = 'bs5c.youtubeVideosEnabled';
+    const TRANSFER_TARGETS = [
+        { id: '08a2eca2-247c-96fe-7998-7baddf01b2b1', label: 'Cuisine' },
+        { id: '64ad9554-d5e6-116c-8b0b-069c1f0b7885', label: 'Bedroom Mini' },
+        { id: 'up50411c87e1c0', label: 'Link' },
+    ];
     let currentPageIndex = 0;
     let mountedContainer = null;
     let queueTimer = null;
@@ -33,11 +39,50 @@ const _massPlayingPreset = (() => {
         bio: '',
         name: '',
     };
+    let transferState = {
+        selectedIndex: 0,
+        sending: false,
+        message: '',
+        error: '',
+    };
 
     function getServiceUrlSafe() {
         return (typeof getServiceUrl === 'function')
             ? getServiceUrl('massServiceUrl', 8783)
             : 'http://localhost:8783';
+    }
+
+    function youtubeVideosEnabled() {
+        if (window.MusicVideoPreference) {
+            return window.MusicVideoPreference.enabled !== false;
+        }
+        try {
+            return localStorage.getItem(YOUTUBE_PREF_KEY) !== 'false';
+        } catch (error) {
+            return true;
+        }
+    }
+
+    function setYoutubeVideosEnabled(enabled) {
+        const normalized = enabled !== false;
+        if (window.MusicVideoPreference?.setEnabled) {
+            return window.MusicVideoPreference.setEnabled(normalized);
+        }
+        try {
+            localStorage.setItem(YOUTUBE_PREF_KEY, normalized ? 'true' : 'false');
+        } catch (error) {}
+        document.dispatchEvent(new CustomEvent('bs5c:music-video-preference', {
+            detail: { enabled: normalized }
+        }));
+        return normalized;
+    }
+
+    function toggleYoutubeVideos() {
+        const enabled = setYoutubeVideosEnabled(!youtubeVideosEnabled());
+        transferState.message = `YouTube videos ${enabled ? 'enabled' : 'disabled'}`;
+        transferState.error = '';
+        if (mountedContainer) renderOverlay(mountedContainer);
+        return true;
     }
 
     function resolveArtworkUrl(value) {
@@ -231,6 +276,32 @@ const _massPlayingPreset = (() => {
                 transform: scale(1.45);
             }
 
+            #now-playing.mass-playing-active .mass-paused-overlay {
+                position: absolute;
+                inset: 0;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                gap: 18px;
+                background: rgba(0, 0, 0, 0.34);
+                opacity: 0;
+                transition: opacity 180ms ease;
+                pointer-events: none;
+                z-index: 3;
+            }
+
+            #now-playing.mass-playing-active.is-mass-paused .mass-paused-overlay {
+                opacity: 1;
+            }
+
+            #now-playing.mass-playing-active .mass-paused-bar {
+                width: 18px;
+                height: 96px;
+                border-radius: 3px;
+                background: rgba(255, 255, 255, 0.88);
+                box-shadow: 0 12px 36px rgba(0, 0, 0, 0.38);
+            }
+
             #now-playing.mass-playing-active[data-mass-page="queue"] .playing-info-slot {
                 opacity: 0.18;
             }
@@ -288,6 +359,94 @@ const _massPlayingPreset = (() => {
             #now-playing.mass-playing-active .mass-playing-queue-item.is-current .mass-playing-queue-title {
                 color: #9ed1ff;
             }
+
+            #now-playing.mass-playing-active .mass-playing-transfer {
+                margin-top: 18px;
+                display: flex;
+                flex-direction: column;
+                gap: 10px;
+                pointer-events: auto;
+            }
+
+            #now-playing.mass-playing-active .mass-transfer-option,
+            #now-playing.mass-playing-active .mass-transfer-action {
+                width: 100%;
+                min-height: 42px;
+                border: 1px solid rgba(148, 199, 255, 0.26);
+                border-radius: 6px;
+                background: rgba(255, 255, 255, 0.08);
+                color: #ffffff;
+                font: 500 14px/1.2 Arial, sans-serif;
+                text-align: left;
+                padding: 0 14px;
+                touch-action: manipulation;
+            }
+
+            #now-playing.mass-playing-active .mass-transfer-option.active {
+                background: rgba(148, 199, 255, 0.22);
+                border-color: rgba(158, 209, 255, 0.74);
+            }
+
+            #now-playing.mass-playing-active .mass-transfer-action {
+                margin-top: 4px;
+                text-align: center;
+                background: rgba(158, 209, 255, 0.18);
+            }
+
+            #now-playing.mass-playing-active .mass-transfer-action:disabled {
+                opacity: 0.55;
+            }
+
+            #now-playing.mass-playing-active .mass-youtube-toggle {
+                width: 100%;
+                min-height: 46px;
+                border: 1px solid rgba(255, 255, 255, 0.16);
+                border-radius: 6px;
+                background: rgba(255, 255, 255, 0.06);
+                color: #ffffff;
+                display: grid;
+                grid-template-columns: 1fr 52px;
+                gap: 12px;
+                align-items: center;
+                padding: 0 12px 0 14px;
+                font: 500 14px/1.2 Arial, sans-serif;
+                text-align: left;
+                touch-action: manipulation;
+            }
+
+            #now-playing.mass-playing-active .mass-youtube-toggle.active {
+                border-color: rgba(158, 209, 255, 0.62);
+                background: rgba(158, 209, 255, 0.12);
+            }
+
+            #now-playing.mass-playing-active .mass-youtube-switch {
+                position: relative;
+                width: 44px;
+                height: 24px;
+                border-radius: 999px;
+                background: rgba(255, 255, 255, 0.22);
+                justify-self: end;
+            }
+
+            #now-playing.mass-playing-active .mass-youtube-switch::after {
+                content: "";
+                position: absolute;
+                left: 3px;
+                top: 3px;
+                width: 18px;
+                height: 18px;
+                border-radius: 999px;
+                background: rgba(255, 255, 255, 0.9);
+                transition: transform 160ms ease;
+            }
+
+            #now-playing.mass-playing-active .mass-youtube-toggle.active .mass-youtube-switch {
+                background: rgba(158, 209, 255, 0.72);
+            }
+
+            #now-playing.mass-playing-active .mass-youtube-toggle.active .mass-youtube-switch::after {
+                transform: translateX(20px);
+            }
         `;
         document.head.appendChild(style);
     }
@@ -299,19 +458,41 @@ const _massPlayingPreset = (() => {
         overlay = document.createElement('div');
         overlay.className = 'mass-playing-overlay';
         overlay.innerHTML = `
+            <div class="mass-paused-overlay" hidden>
+                <span class="mass-paused-bar"></span>
+                <span class="mass-paused-bar"></span>
+            </div>
             <div class="mass-playing-panel">
                 <div class="mass-playing-kicker">Music</div>
                 <div class="mass-playing-heading">—</div>
                 <div class="mass-playing-copy">—</div>
                 <div class="mass-playing-meta"></div>
                 <div class="mass-playing-queue" hidden></div>
+                <div class="mass-playing-transfer" hidden></div>
             </div>
             <div class="mass-playing-indicators">
                 <span class="mass-playing-indicator" data-page="now"></span>
                 <span class="mass-playing-indicator" data-page="artist"></span>
                 <span class="mass-playing-indicator" data-page="queue"></span>
+                <span class="mass-playing-indicator" data-page="transfer"></span>
             </div>
         `;
+        overlay.addEventListener('click', (event) => {
+            const youtubeToggle = event.target.closest('[data-youtube-toggle]');
+            if (youtubeToggle) {
+                toggleYoutubeVideos();
+                return;
+            }
+            const option = event.target.closest('[data-transfer-target]');
+            if (option) {
+                selectTransferTarget(option.dataset.transferTarget);
+                return;
+            }
+            const action = event.target.closest('[data-transfer-action]');
+            if (action) {
+                void transferQueueToSelected();
+            }
+        });
         container.classList.add('mass-playing-active');
         container.appendChild(overlay);
         return overlay;
@@ -358,6 +539,112 @@ const _massPlayingPreset = (() => {
         return PAGE_IDS[currentPageIndex] || 'now';
     }
 
+    function currentTransferTarget() {
+        return TRANSFER_TARGETS[transferState.selectedIndex] || TRANSFER_TARGETS[0];
+    }
+
+    function selectTransferTarget(targetId) {
+        const nextIndex = TRANSFER_TARGETS.findIndex((target) => target.id === targetId);
+        if (nextIndex >= 0) {
+            transferState.selectedIndex = nextIndex;
+            transferState.message = '';
+            transferState.error = '';
+            if (mountedContainer) renderOverlay(mountedContainer);
+        }
+    }
+
+    function stepTransferTarget(delta) {
+        const count = TRANSFER_TARGETS.length;
+        transferState.selectedIndex = (transferState.selectedIndex + delta + count) % count;
+        transferState.message = '';
+        transferState.error = '';
+        if (mountedContainer) renderOverlay(mountedContainer);
+    }
+
+    function renderTransferOptions(transferEl) {
+        if (!transferEl) return;
+        const selected = currentTransferTarget();
+        transferEl.innerHTML = '';
+        TRANSFER_TARGETS.forEach((target) => {
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.className = 'mass-transfer-option';
+            if (target.id === selected.id) button.classList.add('active');
+            button.dataset.transferTarget = target.id;
+            button.textContent = target.label;
+            transferEl.appendChild(button);
+        });
+
+        const action = document.createElement('button');
+        action.type = 'button';
+        action.className = 'mass-transfer-action';
+        action.dataset.transferAction = 'send';
+        action.disabled = transferState.sending;
+        action.textContent = transferState.sending ? 'Transferring...' : `Transfer to ${selected.label}`;
+        transferEl.appendChild(action);
+
+        const youtubeEnabled = youtubeVideosEnabled();
+        const youtube = document.createElement('button');
+        youtube.type = 'button';
+        youtube.className = 'mass-youtube-toggle';
+        youtube.dataset.youtubeToggle = '1';
+        youtube.setAttribute('role', 'switch');
+        youtube.setAttribute('aria-checked', youtubeEnabled ? 'true' : 'false');
+        if (youtubeEnabled) youtube.classList.add('active');
+
+        const label = document.createElement('span');
+        label.className = 'mass-youtube-label';
+        label.textContent = `YouTube Videos ${youtubeEnabled ? 'On' : 'Off'}`;
+        const switchEl = document.createElement('span');
+        switchEl.className = 'mass-youtube-switch';
+        youtube.appendChild(label);
+        youtube.appendChild(switchEl);
+        transferEl.appendChild(youtube);
+    }
+
+    async function transferQueueToSelected() {
+        if (transferState.sending) return true;
+        const target = currentTransferTarget();
+        if (!target) return true;
+        transferState.sending = true;
+        transferState.message = `Sending queue to ${target.label}`;
+        transferState.error = '';
+        if (mountedContainer) renderOverlay(mountedContainer);
+
+        try {
+            const response = await fetch(`${getServiceUrlSafe()}/command`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    command: 'transfer_queue',
+                    target_player_id: target.id,
+                }),
+            });
+            let payload = null;
+            try {
+                payload = await response.json();
+            } catch (error) {}
+            if (!response.ok || !payload || payload.state === 'error' || payload.status === 'error') {
+                transferState.error = `Unable to transfer to ${target.label}`;
+                transferState.message = '';
+            } else {
+                transferState.message = `Queue transferred to ${target.label}`;
+                transferState.error = '';
+                setTimeout(() => {
+                    void refreshNowPlaying(true);
+                    void refreshQueue(true);
+                }, 500);
+            }
+        } catch (error) {
+            transferState.error = `Unable to transfer to ${target.label}`;
+            transferState.message = '';
+        } finally {
+            transferState.sending = false;
+            if (mountedContainer) renderOverlay(mountedContainer);
+        }
+        return true;
+    }
+
     function renderQueueList(queueEl) {
         if (!queueEl) return;
         queueEl.innerHTML = '';
@@ -402,17 +689,23 @@ const _massPlayingPreset = (() => {
         const copyEl = overlay.querySelector('.mass-playing-copy');
         const metaEl = overlay.querySelector('.mass-playing-meta');
         const queueEl = overlay.querySelector('.mass-playing-queue');
+        const transferEl = overlay.querySelector('.mass-playing-transfer');
+        const pausedEl = overlay.querySelector('.mass-paused-overlay');
         const pageId = currentPageId();
+        const isPaused = String(lastMedia.state || '').trim().toLowerCase() === 'paused';
 
         container.dataset.massPage = pageId;
+        container.classList.toggle('is-mass-paused', isPaused);
+        if (pausedEl) pausedEl.hidden = !isPaused;
         overlay.querySelectorAll('.mass-playing-indicator').forEach((node) => {
             node.classList.toggle('active', node.dataset.page === pageId);
         });
 
-        if (!panel || !kickerEl || !headingEl || !copyEl || !metaEl || !queueEl) return;
+        if (!panel || !kickerEl || !headingEl || !copyEl || !metaEl || !queueEl || !transferEl) return;
 
         if (pageId === 'now') {
             queueEl.hidden = true;
+            transferEl.hidden = true;
             kickerEl.textContent = 'Now Playing';
             headingEl.textContent = lastMedia.title || '—';
             copyEl.textContent = [lastMedia.artist || '', lastMedia.album || '']
@@ -424,6 +717,7 @@ const _massPlayingPreset = (() => {
 
         if (pageId === 'artist') {
             queueEl.hidden = true;
+            transferEl.hidden = true;
             kickerEl.textContent = 'Artist';
             headingEl.textContent = artistState.name || lastMedia.artist || 'Unknown Artist';
             if (artistState.loading && !artistState.bio) {
@@ -439,7 +733,22 @@ const _massPlayingPreset = (() => {
             return;
         }
 
+        if (pageId === 'transfer') {
+            queueEl.hidden = true;
+            transferEl.hidden = false;
+            const target = currentTransferTarget();
+            kickerEl.textContent = 'Transfer';
+            headingEl.textContent = 'Transfer Queue';
+            copyEl.textContent = transferState.error || transferState.message || '';
+            metaEl.textContent = target
+                ? `Selected: ${target.label} - YouTube: ${youtubeVideosEnabled() ? 'On' : 'Off'}`
+                : '';
+            renderTransferOptions(transferEl);
+            return;
+        }
+
         queueEl.hidden = false;
+        transferEl.hidden = true;
         kickerEl.textContent = 'Queue';
         headingEl.textContent = 'Active Queue';
         copyEl.textContent = queueState.loading && !queueState.items.length
@@ -526,6 +835,8 @@ const _massPlayingPreset = (() => {
                 album: String(payload.album || '').trim(),
                 artwork: resolveArtworkUrl(payload.artwork || ''),
                 state: String(payload.state || '').trim() || lastMedia.state || 'unknown',
+                queue_id: String(payload.queue_id || '').trim(),
+                player_id: String(payload.player_id || '').trim(),
             };
 
             if (hasMeaningfulMedia(media)) {
@@ -565,13 +876,19 @@ const _massPlayingPreset = (() => {
                 queueState.error = 'Unable to load the active queue right now.';
             } else {
                 const tracks = Array.isArray(payload.tracks) ? payload.tracks : [];
-                queueState.items = tracks.map((track) => {
+                const payloadCurrentIndex = Number(payload.current_index);
+                queueState.items = tracks.map((track, index) => {
+                    const trackIndex = Number(track?.index);
+                    const absoluteIndex = Number.isFinite(trackIndex) ? trackIndex : index;
                     const artistText = String(track?.artist || '').trim();
-                    const isCurrent = artistText.toLowerCase().startsWith('now playing');
+                    const isCurrent = Boolean(track?.current)
+                        || artistText.toLowerCase().startsWith('now playing')
+                        || (Number.isFinite(payloadCurrentIndex) && absoluteIndex === payloadCurrentIndex);
                     const subtitle = artistText.replace(/^Now Playing\s*-\s*/i, '').trim();
+                    const album = String(track?.album || '').trim();
                     return {
-                        title: String(track?.name || 'Queued Item'),
-                        subtitle,
+                        title: String(track?.name || track?.title || 'Queued Item'),
+                        subtitle: [subtitle, album].filter(Boolean).join(' - '),
                         isCurrent,
                     };
                 });
@@ -608,6 +925,27 @@ const _massPlayingPreset = (() => {
         return true;
     }
 
+    function handleTransferButton(button) {
+        if (currentPageId() !== 'transfer') return false;
+        const normalized = String(button || '').toLowerCase();
+        if (normalized === 'left') {
+            stepTransferTarget(-1);
+            return true;
+        }
+        if (normalized === 'right') {
+            stepTransferTarget(1);
+            return true;
+        }
+        if (normalized === 'go') {
+            void transferQueueToSelected();
+            return true;
+        }
+        if (normalized === 'up' || normalized === 'down') {
+            return toggleYoutubeVideos();
+        }
+        return false;
+    }
+
     function scheduleQueueRefresh() {
         if (queueTimer) clearInterval(queueTimer);
         queueTimer = setInterval(() => {
@@ -621,6 +959,12 @@ const _massPlayingPreset = (() => {
             void refreshNowPlaying(false);
         }, NOW_PLAYING_REFRESH_MS);
     }
+
+    document.addEventListener('bs5c:music-video-preference', () => {
+        if (mountedContainer && currentPageId() === 'transfer') {
+            renderOverlay(mountedContainer);
+        }
+    });
 
     return {
         onMount(container) {
@@ -672,13 +1016,21 @@ const _massPlayingPreset = (() => {
             }
             mountedContainer = null;
             currentPageIndex = 0;
+            queueRequestId += 1;
             artistRequestId += 1;
             nowPlayingRequestId += 1;
+            transferState = {
+                selectedIndex: 0,
+                sending: false,
+                message: '',
+                error: '',
+            };
             resetArtistState('');
             const overlay = container?.querySelector('.mass-playing-overlay');
             if (overlay) overlay.remove();
             if (container) {
                 container.classList.remove('mass-playing-active');
+                container.classList.remove('is-mass-paused');
                 container.removeAttribute('data-mass-page');
             }
         },
@@ -689,6 +1041,9 @@ const _massPlayingPreset = (() => {
         },
         refreshNowPlaying(force = false) {
             return refreshNowPlaying(force);
+        },
+        handleButton(button) {
+            return handleTransferButton(button);
         },
     };
 })();
@@ -737,6 +1092,9 @@ const _massController = (() => {
 
     function handlePlayingButton(button) {
         const normalized = String(button || '').toLowerCase();
+        if (_massPlayingPreset.handleButton(normalized)) {
+            return true;
+        }
         if (normalized === 'left') {
             void sendTransport('transport_previous');
             return true;

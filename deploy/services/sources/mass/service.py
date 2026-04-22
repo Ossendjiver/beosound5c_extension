@@ -10,8 +10,9 @@ Library structure served at /playlists:
     { id: "artists",   name: "Artists",   tracks: [ <artist-folder>, ... ] },
     { id: "albums",    name: "Albums",    tracks: [ <album-folder>,  ... ] },
     { id: "songs",     name: "Songs",     tracks: [ <track-leaf>,    ... ] },
-    { id: "playlists", name: "Playlists", tracks: [ <playlist-folder>, ... ] },
-    { id: "mixes",     name: "Mixes",     tracks: [ <radio-leaf>,   ... ] },
+    { id: "playlists",       name: "Playlists", tracks: [ <playlist-folder>, ... ] },
+    { id: "playlist_mixes",  name: "Mixes",     tracks: [ <track-leaf>, ... ] },
+    { id: "mixes",           name: "Radio",     tracks: [ <radio-leaf>, ... ] },
   ]
 
 Node contracts (enforced at construction + _finalize_node):
@@ -21,6 +22,7 @@ Node contracts (enforced at construction + _finalize_node):
 """
 
 import asyncio
+import copy
 import datetime
 import hashlib
 import json
@@ -73,6 +75,12 @@ PLAYBACK_PRE_KICK_DELAY = 0.12
 PLAYBACK_POST_KICK_ATTEMPTS = 6
 PLAYBACK_POST_KICK_DELAY = 0.35
 ACTIVE_PLAYBACK_STATES = {"playing", "paused", "buffering"}
+MASS_MIXES_PLAYLIST_ID = "98"
+MASS_MIXES_PLAYLIST_PROVIDER = "library"
+MASS_MIXES_PLAYLIST_ROOT_ID = "playlist_mixes"
+MASS_MIXES_PLAYLIST_TITLE = "Mixes"
+MASS_RADIO_ROOT_ID = "mixes"
+MASS_RADIO_ROOT_TITLE = "Radio"
 
 FALLBACK_IMAGE = (
     "data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNjQiIGhlaWdodD0iNjQiIHZpZXdCb3g9IjAgMCA2NCA2NCIg"
@@ -110,6 +118,7 @@ class MassSource(SourceBase):
         self._library_data = []
         self._is_syncing  = False
         self._http_session = None
+        self._preferred_player_id = ""
         self.has_cache    = self._load_local_cache()
 
     # ── Cache ─────────────────────────────────────────────────────────────────
@@ -330,10 +339,14 @@ class MassSource(SourceBase):
                     artist_node["tracks"] = self._sorted_nodes(artist_node.get("tracks"))
             artists_root["tracks"] = self._sorted_nodes(artists_root.get("tracks"))
 
-        for root_id in ("albums", "songs", "playlists", "mixes"):
+        for root_id in ("albums", "songs", "playlists", MASS_MIXES_PLAYLIST_ROOT_ID, MASS_RADIO_ROOT_ID):
             root_node = roots.get(root_id)
             if isinstance(root_node, dict):
                 root_node["tracks"] = self._sorted_nodes(root_node.get("tracks"))
+                if root_id == MASS_RADIO_ROOT_ID:
+                    root_node["name"] = MASS_RADIO_ROOT_TITLE
+                elif root_id == MASS_MIXES_PLAYLIST_ROOT_ID:
+                    root_node["name"] = MASS_MIXES_PLAYLIST_TITLE
 
     @staticmethod
     def _art_cache_basename(image_url):
@@ -479,6 +492,28 @@ class MassSource(SourceBase):
         if image:  node["image"]  = image
         return node
 
+    @staticmethod
+    def _playlist_uri(item_id, provider=MASS_MIXES_PLAYLIST_PROVIDER):
+        item = str(item_id or "").strip()
+        source = str(provider or MASS_MIXES_PLAYLIST_PROVIDER).strip() or MASS_MIXES_PLAYLIST_PROVIDER
+        return f"playlist://{source}/{item}" if item else ""
+
+    @staticmethod
+    def _is_mixes_playlist(item):
+        if not isinstance(item, dict):
+            return False
+        item_id = str(item.get("item_id") or item.get("id") or "").strip()
+        provider = str(item.get("provider") or MASS_MIXES_PLAYLIST_PROVIDER).strip().lower()
+        uri = str(item.get("uri") or item.get("path") or "").strip().lower()
+        return (
+            item_id == MASS_MIXES_PLAYLIST_ID
+            and (
+                provider == MASS_MIXES_PLAYLIST_PROVIDER
+                or uri.endswith(f"/{MASS_MIXES_PLAYLIST_PROVIDER}/{MASS_MIXES_PLAYLIST_ID}")
+                or uri.endswith(f"://{MASS_MIXES_PLAYLIST_PROVIDER}/{MASS_MIXES_PLAYLIST_ID}")
+            )
+        )
+
     def _finalize_node(self, node):
         """
         Recursive post-processing:
@@ -530,13 +565,13 @@ class MassSource(SourceBase):
         logger.info("--- Starting Deep Library Sync ---")
         base = MASS_URI.replace("ws://", "http://").replace("/ws", "")
 
-        tree = [
-            {"id": "artists",   "name": "Artists",   "tracks": []},
-            {"id": "albums",    "name": "Albums",     "tracks": []},
-            {"id": "songs",     "name": "Songs",      "tracks": []},
-            {"id": "playlists", "name": "Playlists",  "tracks": []},
-            {"id": "mixes",     "name": "Mixes",      "tracks": []},
-        ]
+        artists_root = {"id": "artists",   "name": "Artists",   "tracks": []}
+        albums_root = {"id": "albums",    "name": "Albums",     "tracks": []}
+        songs_root = {"id": "songs",     "name": "Songs",      "tracks": []}
+        playlists_root = {"id": "playlists", "name": "Playlists",  "tracks": []}
+        radio_root = {"id": MASS_RADIO_ROOT_ID, "name": MASS_RADIO_ROOT_TITLE, "tracks": []}
+        mixes_playlist_root = None
+        tree = [artists_root, albums_root, songs_root, playlists_root, radio_root]
 
         try:
             # ── 1. ARTISTS: Artists → Artist → Album → Track ─────────────────
@@ -578,7 +613,7 @@ class MassSource(SourceBase):
                         if alb_node["tracks"]:
                             a_node["tracks"].append(alb_node)
                     if a_node["tracks"]:
-                        tree[0]["tracks"].append(a_node)
+                        artists_root["tracks"].append(a_node)
                 except Exception as e:
                     logger.error(f"Error parsing artist {a.get('name')}: {e}")
 
@@ -608,14 +643,14 @@ class MassSource(SourceBase):
                         for t in trks
                     ]
                     if alb_node["tracks"]:
-                        tree[1]["tracks"].append(alb_node)
+                        albums_root["tracks"].append(alb_node)
                 except Exception as e:
                     logger.error(f"Error parsing album {alb.get('name')}: {e}")
 
             # ── 3. SONGS: flat track list ────────────────────────────────────
             try:
                 songs = await self.fetch_paginated("music/tracks/library_items")
-                tree[2]["tracks"] = [
+                songs_root["tracks"] = [
                     self._make_leaf_node(
                         id_=s.get('item_id', ''),
                         name=s.get('name', 'Unknown Track'),
@@ -636,11 +671,15 @@ class MassSource(SourceBase):
                         item_id=p.get('item_id'),
                         provider_instance_id_or_domain=p.get("provider", "library"),
                     )
+                    playlist_uri = p.get('uri', '') or self._playlist_uri(
+                        p.get('item_id'),
+                        p.get("provider", MASS_MIXES_PLAYLIST_PROVIDER),
+                    )
                     pl_node = self._make_folder_node(
                         id_=p.get('item_id', ''),
                         name=p.get('name', 'Unknown Playlist'),
                         image=self._get_img(p, base),
-                        url=p.get('uri', ''),
+                        url=playlist_uri,
                     )
                     pl_node["tracks"] = [
                         self._make_leaf_node(
@@ -652,7 +691,11 @@ class MassSource(SourceBase):
                         for t in trks
                     ]
                     if pl_node["tracks"]:
-                        tree[3]["tracks"].append(pl_node)
+                        playlists_root["tracks"].append(pl_node)
+                        if self._is_mixes_playlist(p):
+                            mixes_playlist_root = copy.deepcopy(pl_node)
+                            mixes_playlist_root["id"] = MASS_MIXES_PLAYLIST_ROOT_ID
+                            mixes_playlist_root["name"] = MASS_MIXES_PLAYLIST_TITLE
             except Exception as e:
                 logger.error(f"Error parsing playlists: {e}")
 
@@ -660,10 +703,10 @@ class MassSource(SourceBase):
             try:
                 radios = await self.fetch_paginated("music/radios/library_items")
                 for r in radios:
-                    tree[4]["tracks"].append(
+                    radio_root["tracks"].append(
                         self._make_leaf_node(
                             id_=r.get('item_id', ''),
-                            name=r.get('name', 'Unknown Mix'),
+                            name=r.get('name', 'Unknown Radio'),
                             url=r.get('uri', ''),
                             image=self._get_img(r, base),
                         )
@@ -672,6 +715,8 @@ class MassSource(SourceBase):
                 logger.error(f"Error parsing mixes: {e}")
 
             # Finalize + save before exposing to endpoint
+            if mixes_playlist_root:
+                tree.insert(4, mixes_playlist_root)
             self._normalize_library_tree(tree)
             await self._incremental_save(tree)
             self._library_data = tree
@@ -703,15 +748,6 @@ class MassSource(SourceBase):
                 return web.json_response({"loading": True}, headers=self._cors_headers())
             return web.json_response(self._library_data, headers=self._cors_headers())
 
-        async def _handle_queue(request):
-            queue_node = await self._build_queue_root()
-            if not queue_node:
-                return web.json_response(
-                    {"state": "empty", "tracks": []},
-                    headers=self._cors_headers(),
-                )
-            return web.json_response(queue_node, headers=self._cors_headers())
-
         async def _handle_artist_bio(request):
             for queue_id in await self._resolve_queue_candidates():
                 artist_info = await self._build_current_artist_info(queue_id)
@@ -742,7 +778,6 @@ class MassSource(SourceBase):
             return response
 
         app.router.add_get('/playlists', _handle_playlists)
-        app.router.add_get('/queue', _handle_queue)
         app.router.add_get('/artist_bio', _handle_artist_bio)
         app.router.add_get('/now_playing', _handle_now_playing)
         app.router.add_get('/art/{filename}', _handle_art)
@@ -759,7 +794,8 @@ class MassSource(SourceBase):
             "albums": len(self._library_root("albums").get("tracks") or []),
             "songs": len(self._library_root("songs").get("tracks") or []),
             "playlists": len(self._library_root("playlists").get("tracks") or []),
-            "mixes": len(self._library_root("mixes").get("tracks") or []),
+            "mixes": len(self._library_root(MASS_MIXES_PLAYLIST_ROOT_ID).get("tracks") or []),
+            "radio": len(self._library_root(MASS_RADIO_ROOT_ID).get("tracks") or []),
         }
 
     async def _build_queue_status(self):
@@ -798,6 +834,11 @@ class MassSource(SourceBase):
                 "queue_id": str(TARGET_QUEUE_ID or "").strip(),
                 "library": self._build_library_status(),
                 "queue": await self._build_queue_status(),
+                "transfer_targets": [
+                    {"id": "08a2eca2-247c-96fe-7998-7baddf01b2b1", "name": "Cuisine"},
+                    {"id": "64ad9554-d5e6-116c-8b0b-069c1f0b7885", "name": "Bedroom Mini"},
+                    {"id": "up50411c87e1c0", "name": "Link"},
+                ],
             }
         )
         return status
@@ -925,8 +966,9 @@ class MassSource(SourceBase):
         return node.get("play_url", "") or node.get("url", "")
 
     async def _resolve_queue_candidates(self):
+        preferred_player = str(self._preferred_player_id or "").strip()
         target_queue = str(TARGET_QUEUE_ID or "").strip()
-        if target_queue:
+        if target_queue and not preferred_player:
             return [target_queue]
         candidates = []
         available_players = []
@@ -946,6 +988,19 @@ class MassSource(SourceBase):
             value = str(candidate or "").strip()
             if value and value not in available_queues:
                 available_queues.append(value)
+
+        if preferred_player:
+            active_payload = await self.send_command(
+                "player_queues/get_active_queue",
+                player_id=preferred_player,
+            )
+            if isinstance(active_payload, dict):
+                add(
+                    active_payload.get("queue_id")
+                    or active_payload.get("player_id")
+                    or active_payload.get("id")
+                )
+            add(preferred_player)
 
         players = await self.send_command("players/all")
         player_items = players.get("items", []) if isinstance(players, dict) else (
@@ -1081,13 +1136,18 @@ class MassSource(SourceBase):
         async def _fetch_snapshot(candidate_queue_id):
             snapshot = await self.send_command("player_queues/get", queue_id=candidate_queue_id)
             result = dict(snapshot) if isinstance(snapshot, dict) else {}
-            items = await self.send_command(
+            items_payload = await self.send_command(
                 "player_queues/items",
                 queue_id=candidate_queue_id,
                 limit=500,
                 offset=0,
             )
-            if isinstance(items, list):
+            if isinstance(items_payload, dict):
+                for key, value in items_payload.items():
+                    if key not in {"items", "queue_items"}:
+                        result.setdefault(key, value)
+            items = self._coerce_queue_items(items_payload)
+            if items is not None:
                 result["items"] = items
                 result["queue_items"] = items
             result["resolved_queue_id"] = candidate_queue_id
@@ -1113,6 +1173,22 @@ class MassSource(SourceBase):
         return result
 
     @staticmethod
+    def _coerce_queue_items(value):
+        if isinstance(value, list):
+            return value
+        if not isinstance(value, dict):
+            return None
+        for key in ("items", "queue_items", "data", "result"):
+            nested = value.get(key)
+            if isinstance(nested, list):
+                return nested
+            if isinstance(nested, dict):
+                nested_items = MassSource._coerce_queue_items(nested)
+                if nested_items is not None:
+                    return nested_items
+        return None
+
+    @staticmethod
     def _extract_queue_items(payload):
         if not isinstance(payload, dict):
             return []
@@ -1120,6 +1196,9 @@ class MassSource(SourceBase):
             value = payload.get(key)
             if isinstance(value, list):
                 return value
+            coerced = MassSource._coerce_queue_items(value)
+            if coerced is not None:
+                return coerced
         return []
 
     @staticmethod
@@ -1525,11 +1604,16 @@ class MassSource(SourceBase):
             image="",
         )
 
-        current_marker = str(
-            snapshot.get("current_item_id")
-            or snapshot.get("current_index")
-            or ""
-        ).strip()
+        current_marker = str(snapshot.get("current_item_id") or "").strip()
+        current_item = snapshot.get("current_item")
+        if isinstance(current_item, dict) and current_item:
+            current_marker = current_marker or self._extract_queue_item_marker(current_item)
+        current_index = snapshot.get("current_index")
+        if isinstance(current_index, str) and current_index.isdigit():
+            current_index = int(current_index)
+        if not isinstance(current_index, int):
+            current_index = -1
+        resolved_current_index = -1
 
         for index, item in enumerate(queue_items):
             if not isinstance(item, dict):
@@ -1552,17 +1636,12 @@ class MassSource(SourceBase):
                 image = await self._cache_image_locally(image)
 
             name = self._extract_queue_name(item, f"Queue Item {index + 1}")
-            marker = str(item.get("queue_item_id") or item.get("id") or "").strip()
-            if not current_marker and snapshot.get("current_item"):
-                current_item = snapshot.get("current_item")
-                if isinstance(current_item, dict):
-                    current_marker = str(
-                        current_item.get("queue_item_id")
-                        or current_item.get("id")
-                        or current_item.get("uri")
-                        or ""
-                    ).strip()
-            if current_marker and marker and marker == current_marker:
+            marker = self._extract_queue_item_marker(item, index)
+            is_current = bool(current_marker and marker and marker == current_marker)
+            if not is_current and current_index == index:
+                is_current = True
+            if is_current:
+                resolved_current_index = index
                 artist = "Now Playing" if not artist else f"Now Playing - {artist}"
 
             queue_node["tracks"].append(
@@ -1580,7 +1659,56 @@ class MassSource(SourceBase):
 
         self._finalize_node(queue_node)
         queue_node["queue_id"] = queue_id
+        queue_node["current_index"] = resolved_current_index
         return queue_node
+
+    async def get_queue(self, start=0, max_items=50):
+        queue_node = await self._build_queue_root()
+        if not queue_node:
+            return {"tracks": [], "current_index": -1, "total": 0}
+
+        try:
+            start = max(0, int(start))
+        except (TypeError, ValueError):
+            start = 0
+        try:
+            max_items = max(1, int(max_items))
+        except (TypeError, ValueError):
+            max_items = 50
+
+        all_tracks = queue_node.get("tracks") or []
+        current_index = queue_node.get("current_index", -1)
+        if not isinstance(current_index, int) or current_index < 0:
+            current_index = -1
+            for index, track in enumerate(all_tracks):
+                artist_text = str(track.get("artist") or "").strip().lower()
+                if artist_text.startswith("now playing"):
+                    current_index = index
+                    break
+
+        tracks = []
+        for index, track in enumerate(all_tracks[start:start + max_items], start=start):
+            artist = str(track.get("artist") or "").strip()
+            current = artist.lower().startswith("now playing")
+            if current:
+                artist = re.sub(r"^Now Playing\s*-\s*", "", artist, flags=re.I).strip()
+            tracks.append({
+                "id": str(track.get("id") or f"q:{index}"),
+                "title": str(track.get("name") or track.get("title") or f"Queue Item {index + 1}"),
+                "artist": artist,
+                "album": str(track.get("album") or ""),
+                "artwork": str(track.get("image") or track.get("artwork") or ""),
+                "uri": str(track.get("url") or ""),
+                "index": index,
+                "current": current or index == current_index,
+            })
+
+        return {
+            "tracks": tracks,
+            "current_index": current_index,
+            "total": len(all_tracks),
+            "queue_id": queue_node.get("queue_id", ""),
+        }
 
     def _queue_has_progressed(self, before, after):
         before_state = self._extract_playback_state(before)
@@ -1638,7 +1766,11 @@ class MassSource(SourceBase):
             if value and value not in available_players:
                 available_players.append(value)
 
-        if TARGET_PLAYER_ID:
+        preferred_player = str(self._preferred_player_id or "").strip()
+        if preferred_player:
+            add(preferred_player)
+
+        if TARGET_PLAYER_ID and not preferred_player:
             add(TARGET_PLAYER_ID)
             return candidates
 
@@ -1666,6 +1798,10 @@ class MassSource(SourceBase):
         return candidates
 
     async def _resolve_transport_player_candidates(self):
+        preferred_player = str(self._preferred_player_id or "").strip()
+        if preferred_player:
+            return [preferred_player]
+
         target_queue = str(TARGET_QUEUE_ID or "").strip()
         candidates = []
 
@@ -1764,6 +1900,128 @@ class MassSource(SourceBase):
             }
         return {"state": "available", "player_id": successful_player, "command": cmd}
 
+    @staticmethod
+    def _api_response_ok(response):
+        if not isinstance(response, dict):
+            return False
+        if response.get("error"):
+            return False
+        return response.get("result") is not False
+
+    async def _handle_transfer_queue_command(self, data):
+        target_player_id = str(
+            data.get("target_player_id")
+            or data.get("player_id")
+            or data.get("target")
+            or ""
+        ).strip()
+        if not target_player_id:
+            return {"state": "error", "reason": "missing_target_player"}
+
+        source_queue_id = ""
+        source_player_id = ""
+        snapshot = {}
+        for queue_id in await self._resolve_queue_candidates():
+            candidate = await self._get_queue_snapshot(queue_id)
+            if not isinstance(candidate, dict):
+                continue
+            source_queue_id = str(candidate.get("resolved_queue_id") or queue_id).strip()
+            snapshot = candidate
+            for player_id in await self._resolve_player_candidates(source_queue_id or queue_id):
+                source_player_id = str(player_id or "").strip()
+                if source_player_id:
+                    break
+            if self._extract_queue_items(candidate) or self._extract_current_queue_item(candidate):
+                break
+
+        if not source_queue_id:
+            return {"state": "error", "reason": "missing_source_queue"}
+
+        source_player_id = source_player_id or source_queue_id
+        attempts = [
+            (
+                "player_queues/transfer_queue",
+                {
+                    "source_queue_id": source_queue_id,
+                    "target_player_id": target_player_id,
+                    "auto_play": True,
+                },
+            ),
+            (
+                "player_queues/transfer_queue",
+                {
+                    "queue_id": source_queue_id,
+                    "target_player_id": target_player_id,
+                    "auto_play": True,
+                },
+            ),
+            (
+                "player_queues/transfer_queue",
+                {
+                    "source_player_id": source_player_id,
+                    "target_player_id": target_player_id,
+                    "auto_play": True,
+                },
+            ),
+            (
+                "player_queues/transfer_queue",
+                {
+                    "source_queue_id": source_queue_id,
+                    "target_queue_id": target_player_id,
+                    "auto_play": True,
+                },
+            ),
+            (
+                "player_queues/transfer",
+                {
+                    "source_player_id": source_player_id,
+                    "target_player_id": target_player_id,
+                    "auto_play": True,
+                },
+            ),
+        ]
+
+        last_error = None
+        for api_command, kwargs in attempts:
+            response = await self._send_command_response(api_command, **kwargs)
+            if self._api_response_ok(response):
+                self._preferred_player_id = target_player_id
+                await asyncio.sleep(0.35)
+                published = None
+                for queue_id in await self._resolve_queue_candidates():
+                    published = await self._publish_now_playing(
+                        queue_id,
+                        requested_uri=self._extract_queue_uri(self._extract_current_queue_item(snapshot)),
+                        reason="transfer_queue",
+                    )
+                    if published:
+                        break
+                return {
+                    "state": "transferred",
+                    "source_queue_id": source_queue_id,
+                    "source_player_id": source_player_id,
+                    "target_player_id": target_player_id,
+                    "command": api_command,
+                    "media": published or {},
+                }
+            if isinstance(response, dict):
+                last_error = response.get("error") or response
+
+        logger.warning(
+            "MASS queue transfer failed source_queue=%s source_player=%s target_player=%s error=%s",
+            source_queue_id,
+            source_player_id,
+            target_player_id,
+            last_error,
+        )
+        return {
+            "state": "error",
+            "reason": "transfer_failed",
+            "source_queue_id": source_queue_id,
+            "source_player_id": source_player_id,
+            "target_player_id": target_player_id,
+        }
+
     async def _kick_player_transport(self, queue_id):
         kicked = False
 
@@ -1789,6 +2047,8 @@ class MassSource(SourceBase):
     async def handle_command(self, cmd, data) -> dict:
         if cmd in {"transport_toggle", "transport_stop", "transport_next", "transport_previous"}:
             return await self._handle_transport_command(cmd)
+        if cmd == "transfer_queue":
+            return await self._handle_transfer_queue_command(data)
 
         uri = self._resolve_command_url(data)
         if not uri:

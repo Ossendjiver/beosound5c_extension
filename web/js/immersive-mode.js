@@ -107,8 +107,10 @@
         const overlay = ensureOverlay();
         if (!overlay) return;
         const mi = window.uiStore && window.uiStore.mediaInfo;
+        const musicVideoEnabled = !window.MusicVideoPreference
+            || window.MusicVideoPreference.enabled !== false;
         const hasCanvas = !!(mi && mi.canvas_url);
-        const hasVideo  = !!(mi && mi.music_video_url);
+        const hasVideo  = musicVideoEnabled && !!(mi && mi.music_video_url);
         const titleEl  = overlay.querySelector('.immersive-info-title');
         const artistEl = overlay.querySelector('.immersive-info-artist');
         if (titleEl)  titleEl.classList.toggle('has-canvas', hasCanvas);
@@ -379,6 +381,10 @@
         // 5. Media update: sync dots when canvas/video URLs arrive (async injection,
         //    may not change title/artist so bs5c:media-text-updated won't fire)
         document.addEventListener('bs5c:media-update', () => {
+            syncOverlayDots();
+        });
+
+        document.addEventListener('bs5c:music-video-preference', () => {
             syncOverlayDots();
         });
 

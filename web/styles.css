@@ -13,6 +13,7 @@ html, body {
   padding: 0;
   overflow: hidden;
   background-color: black;
+  touch-action: none;
 }
 
 .container {
@@ -27,6 +28,7 @@ html, body {
   width: 100%;
   height: 100%;
   cursor: none;
+  touch-action: none;
 }
 
 #menuItems {
@@ -76,6 +78,7 @@ html, body {
 #mainMenu {
   transition: none;
   transform: none;
+  touch-action: none;
 }
 
 /* Ensure volume arc stays in place */
