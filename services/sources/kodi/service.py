@@ -1443,6 +1443,35 @@ class KodiSource(SourceBase):
             return f"{hours}:{minutes:02d}:{seconds:02d}"
         return f"{minutes}:{seconds:02d}"
 
+    @staticmethod
+    def _clock_to_milliseconds(value):
+        if not isinstance(value, dict):
+            return 0
+        try:
+            hours = int(value.get("hours") or 0)
+            minutes = int(value.get("minutes") or 0)
+            seconds = int(value.get("seconds") or 0)
+            milliseconds = int(value.get("milliseconds") or 0)
+        except (TypeError, ValueError):
+            return 0
+        return max(0, (((hours * 60 + minutes) * 60 + seconds) * 1000) + milliseconds)
+
+    @staticmethod
+    def _milliseconds_to_kodi_time(value):
+        try:
+            total_ms = max(0, int(value or 0))
+        except (TypeError, ValueError):
+            total_ms = 0
+        total_seconds, milliseconds = divmod(total_ms, 1000)
+        hours, remainder = divmod(total_seconds, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        return {
+            "hours": hours,
+            "minutes": minutes,
+            "seconds": seconds,
+            "milliseconds": milliseconds,
+        }
+
     async def _build_cached_media_payload(self, uri, state="playing"):
         node, parents = self._find_node_by_uri(uri)
         if not isinstance(node, dict):
@@ -1985,6 +2014,11 @@ class KodiSource(SourceBase):
         source_player_id, source_playlist_id, current_index = await self._active_playlist_context()
         if source_player_id < 0 or source_playlist_id < 0:
             return {"state": "error", "reason": "no_active_queue", "target_id": target_id}
+        source_properties = await self._rpc(
+            "Player.GetProperties",
+            {"playerid": source_player_id, "properties": ["time"]},
+        ) or {}
+        resume_ms = self._clock_to_milliseconds(source_properties.get("time"))
 
         items = await self._playlist_items(source_playlist_id)
         if not items:
@@ -2023,7 +2057,23 @@ class KodiSource(SourceBase):
         if open_result is None:
             return {"state": "error", "reason": "target_open_failed", "target_id": target_id, "items": added}
 
+        seeked = False
         await asyncio.sleep(0.35)
+        if resume_ms >= 1000:
+            for target_player_id in await self._get_active_player_ids(target=target):
+                seek_result = await self._rpc(
+                    "Player.Seek",
+                    {
+                        "playerid": target_player_id,
+                        "value": self._milliseconds_to_kodi_time(resume_ms),
+                    },
+                    target=target,
+                )
+                if seek_result is not None:
+                    seeked = True
+                    await asyncio.sleep(0.2)
+                    break
+
         media_payload = await self._build_active_media_payload(target=target)
         if media_payload:
             await self._post_media_snapshot(media_payload, reason="transfer_queue", force_state="playing")
@@ -2036,6 +2086,8 @@ class KodiSource(SourceBase):
             "target_playlist_id": target_playlist_id,
             "items": added,
             "position": position,
+            "resume_ms": resume_ms,
+            "seeked": seeked,
         }
 
     async def handle_command(self, cmd, data) -> dict:
