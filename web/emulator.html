@@ -982,6 +982,7 @@
                 const btnBack = document.getElementById('btn-back');
                 const btnFwd = document.getElementById('btn-fwd');
                 const btnGo = document.getElementById('btn-go');
+                let lastPointerPressAt = 0;
 
                 const press = (btn, el) => {
                     el.classList.add('active');
@@ -990,9 +991,29 @@
                     setTimeout(() => el.classList.remove('active'), 150);
                 };
 
-                btnBack.addEventListener('click', () => press('left', btnBack));
-                btnFwd.addEventListener('click', () => press('right', btnFwd));
-                btnGo.addEventListener('click', () => press('go', btnGo));
+                const bindPress = (el, btn) => {
+                    const run = (event) => {
+                        event.preventDefault();
+                        lastPointerPressAt = Date.now();
+                        press(btn, el);
+                    };
+                    if (window.PointerEvent) {
+                        el.addEventListener('pointerup', run);
+                    } else {
+                        el.addEventListener('touchend', run, { passive: false });
+                    }
+                    el.addEventListener('click', (event) => {
+                        if (Date.now() - lastPointerPressAt < 450) {
+                            event.preventDefault();
+                            return;
+                        }
+                        press(btn, el);
+                    });
+                };
+
+                bindPress(btnBack, 'left');
+                bindPress(btnFwd, 'right');
+                bindPress(btnGo, 'go');
             },
 
             setupKeyboardShortcuts() {
@@ -1052,24 +1073,46 @@
 
                 const startDrag = (e) => {
                     if (!e.target.closest('.bs5-wheel-bar')) {
-                        this.wheelDragState = { active: true, startY: e.clientY };
+                        e.preventDefault();
+                        const y = e.clientY ?? e.touches?.[0]?.clientY;
+                        this.wheelDragState = { active: true, startY: y };
                     }
                 };
 
-                wheelRing.addEventListener('mousedown', startDrag);
-                wheelDisc.addEventListener('mousedown', startDrag);
+                if (window.PointerEvent) {
+                    wheelRing.addEventListener('pointerdown', startDrag);
+                    wheelDisc.addEventListener('pointerdown', startDrag);
+                } else {
+                    wheelRing.addEventListener('touchstart', startDrag, { passive: false });
+                    wheelDisc.addEventListener('touchstart', startDrag, { passive: false });
+                    wheelRing.addEventListener('mousedown', startDrag);
+                    wheelDisc.addEventListener('mousedown', startDrag);
+                }
 
-                document.addEventListener('mousemove', (e) => {
+                const moveDrag = (e) => {
                     if (!this.wheelDragState.active) return;
-                    const deltaY = this.wheelDragState.startY - e.clientY;
+                    const y = e.clientY ?? e.touches?.[0]?.clientY;
+                    if (y == null) return;
+                    e.preventDefault();
+                    const deltaY = this.wheelDragState.startY - y;
                     if (Math.abs(deltaY) >= 15) {
                         this.sendToIframe('nav', { direction: deltaY > 0 ? 'counter' : 'clock', speed: 20 });
                         this.log(`Nav: ${deltaY > 0 ? 'up' : 'down'}`, 'nav');
-                        this.wheelDragState.startY = e.clientY;
+                        this.wheelDragState.startY = y;
                     }
-                });
+                };
 
-                document.addEventListener('mouseup', () => { this.wheelDragState.active = false; });
+                if (window.PointerEvent) {
+                    document.addEventListener('pointermove', moveDrag);
+                    document.addEventListener('pointerup', () => { this.wheelDragState.active = false; });
+                    document.addEventListener('pointercancel', () => { this.wheelDragState.active = false; });
+                } else {
+                    document.addEventListener('mousemove', moveDrag);
+                    document.addEventListener('touchmove', moveDrag, { passive: false });
+                    document.addEventListener('mouseup', () => { this.wheelDragState.active = false; });
+                    document.addEventListener('touchend', () => { this.wheelDragState.active = false; });
+                    document.addEventListener('touchcancel', () => { this.wheelDragState.active = false; });
+                }
             },
 
             setupIframeListener() {

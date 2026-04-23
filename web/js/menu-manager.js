@@ -80,6 +80,20 @@ class MenuManager {
                         </div>
                     </div>`
             },
+            'menu/queue': {
+                title: 'QUEUE',
+                content: `
+                    <div id="queue-view" class="queue-view">
+                        <div class="queue-view-header">
+                            <div class="queue-view-title">Queue</div>
+                            <div class="queue-view-count">Loading</div>
+                        </div>
+                        <div class="queue-view-list"></div>
+                        <div class="queue-view-footer">
+                            <div class="queue-view-status">Loading queue...</div>
+                        </div>
+                    </div>`
+            },
         };
 
         this._menuLoaded = false;
@@ -140,6 +154,16 @@ class MenuManager {
                     newItems.push(existing || { title: item.title, path });
                 }
             }
+            if (data.active_has_queue && !newItems.some((item) => item.path === 'menu/queue')) {
+                const playingIndex = newItems.findIndex((item) => item.path === 'menu/playing');
+                const queueItem = { title: 'QUEUE', path: 'menu/queue' };
+                if (playingIndex >= 0) {
+                    newItems.splice(playingIndex + 1, 0, queueItem);
+                } else {
+                    newItems.unshift(queueItem);
+                }
+            }
+
             this.menuItems = newItems;
 
             // Sync to laser position mapper

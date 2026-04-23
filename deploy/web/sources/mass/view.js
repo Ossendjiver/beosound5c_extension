@@ -2,15 +2,15 @@
  * MASS Source Preset
  */
 const _massPlayingPreset = (() => {
-    const PAGE_IDS = ['now', 'artist', 'queue', 'transfer'];
+    const PAGE_IDS = ['now', 'transfer'];
     const QUEUE_REFRESH_MS = 3000;
     const NOW_PLAYING_REFRESH_MS = 2000;
     const PAGE_CYCLE_COOLDOWN_MS = 520;
     const YOUTUBE_PREF_KEY = 'bs5c.youtubeVideosEnabled';
-    const TRANSFER_TARGETS = [
-        { id: '08a2eca2-247c-96fe-7998-7baddf01b2b1', label: 'Cuisine' },
-        { id: '64ad9554-d5e6-116c-8b0b-069c1f0b7885', label: 'Bedroom Mini' },
-        { id: 'up50411c87e1c0', label: 'Link' },
+    const DEFAULT_TRANSFER_TARGETS = [
+        { id: '08a2eca2-247c-96fe-7998-7baddf01b2b1', name: 'Cuisine' },
+        { id: '64ad9554-d5e6-116c-8b0b-069c1f0b7885', name: 'Bedroom Mini' },
+        { id: 'up50411c87e1c0', name: 'Link' },
     ];
     let currentPageIndex = 0;
     let mountedContainer = null;
@@ -220,7 +220,8 @@ const _massPlayingPreset = (() => {
             }
 
             #now-playing.mass-playing-active[data-mass-page="artist"] .mass-playing-panel,
-            #now-playing.mass-playing-active[data-mass-page="queue"] .mass-playing-panel {
+            #now-playing.mass-playing-active[data-mass-page="queue"] .mass-playing-panel,
+            #now-playing.mass-playing-active[data-mass-page="transfer"] .mass-playing-panel {
                 opacity: 1;
                 transform: translateX(0);
             }
@@ -472,8 +473,6 @@ const _massPlayingPreset = (() => {
             </div>
             <div class="mass-playing-indicators">
                 <span class="mass-playing-indicator" data-page="now"></span>
-                <span class="mass-playing-indicator" data-page="artist"></span>
-                <span class="mass-playing-indicator" data-page="queue"></span>
                 <span class="mass-playing-indicator" data-page="transfer"></span>
             </div>
         `;
@@ -539,12 +538,25 @@ const _massPlayingPreset = (() => {
         return PAGE_IDS[currentPageIndex] || 'now';
     }
 
+    function transferTargets() {
+        const configured = window.PlaybackTargets?.targetsFor?.('mass');
+        return (configured && configured.length ? configured : DEFAULT_TRANSFER_TARGETS)
+            .map((target) => ({
+                id: String(target.id || '').trim(),
+                name: String(target.name || target.label || target.id || '').trim(),
+            }))
+            .filter((target) => target.id)
+            .map((target) => ({ ...target, name: target.name || target.id }));
+    }
+
     function currentTransferTarget() {
-        return TRANSFER_TARGETS[transferState.selectedIndex] || TRANSFER_TARGETS[0];
+        const targets = transferTargets();
+        return targets[transferState.selectedIndex] || targets[0] || null;
     }
 
     function selectTransferTarget(targetId) {
-        const nextIndex = TRANSFER_TARGETS.findIndex((target) => target.id === targetId);
+        const targets = transferTargets();
+        const nextIndex = targets.findIndex((target) => target.id === targetId);
         if (nextIndex >= 0) {
             transferState.selectedIndex = nextIndex;
             transferState.message = '';
@@ -554,7 +566,8 @@ const _massPlayingPreset = (() => {
     }
 
     function stepTransferTarget(delta) {
-        const count = TRANSFER_TARGETS.length;
+        const count = transferTargets().length;
+        if (!count) return;
         transferState.selectedIndex = (transferState.selectedIndex + delta + count) % count;
         transferState.message = '';
         transferState.error = '';
@@ -563,15 +576,16 @@ const _massPlayingPreset = (() => {
 
     function renderTransferOptions(transferEl) {
         if (!transferEl) return;
+        const targets = transferTargets();
         const selected = currentTransferTarget();
         transferEl.innerHTML = '';
-        TRANSFER_TARGETS.forEach((target) => {
+        targets.forEach((target) => {
             const button = document.createElement('button');
             button.type = 'button';
             button.className = 'mass-transfer-option';
-            if (target.id === selected.id) button.classList.add('active');
+            if (target.id === selected?.id) button.classList.add('active');
             button.dataset.transferTarget = target.id;
-            button.textContent = target.label;
+            button.textContent = target.name;
             transferEl.appendChild(button);
         });
 
@@ -579,8 +593,10 @@ const _massPlayingPreset = (() => {
         action.type = 'button';
         action.className = 'mass-transfer-action';
         action.dataset.transferAction = 'send';
-        action.disabled = transferState.sending;
-        action.textContent = transferState.sending ? 'Transferring...' : `Transfer to ${selected.label}`;
+        action.disabled = transferState.sending || !selected;
+        action.textContent = transferState.sending
+            ? 'Transferring...'
+            : (selected ? `Transfer to ${selected.name}` : 'No targets configured');
         transferEl.appendChild(action);
 
         const youtubeEnabled = youtubeVideosEnabled();
@@ -607,17 +623,22 @@ const _massPlayingPreset = (() => {
         const target = currentTransferTarget();
         if (!target) return true;
         transferState.sending = true;
-        transferState.message = `Sending queue to ${target.label}`;
+        transferState.message = `Sending queue to ${target.name}`;
         transferState.error = '';
         if (mountedContainer) renderOverlay(mountedContainer);
 
         try {
+            if (window.PlaybackTargets?.setAudioTarget) {
+                await window.PlaybackTargets.setAudioTarget(target.id);
+            }
+            const targetPayload = window.PlaybackTargets?.payloadFor?.('mass') || {};
             const response = await fetch(`${getServiceUrlSafe()}/command`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     command: 'transfer_queue',
                     target_player_id: target.id,
+                    ...targetPayload,
                 }),
             });
             let payload = null;
@@ -625,18 +646,17 @@ const _massPlayingPreset = (() => {
                 payload = await response.json();
             } catch (error) {}
             if (!response.ok || !payload || payload.state === 'error' || payload.status === 'error') {
-                transferState.error = `Unable to transfer to ${target.label}`;
+                transferState.error = `Unable to transfer to ${target.name}`;
                 transferState.message = '';
             } else {
-                transferState.message = `Queue transferred to ${target.label}`;
+                transferState.message = `Queue transferred to ${target.name}`;
                 transferState.error = '';
                 setTimeout(() => {
                     void refreshNowPlaying(true);
-                    void refreshQueue(true);
                 }, 500);
             }
         } catch (error) {
-            transferState.error = `Unable to transfer to ${target.label}`;
+            transferState.error = `Unable to transfer to ${target.name}`;
             transferState.message = '';
         } finally {
             transferState.sending = false;
@@ -741,7 +761,7 @@ const _massPlayingPreset = (() => {
             headingEl.textContent = 'Transfer Queue';
             copyEl.textContent = transferState.error || transferState.message || '';
             metaEl.textContent = target
-                ? `Selected: ${target.label} - YouTube: ${youtubeVideosEnabled() ? 'On' : 'Off'}`
+                ? `Selected: ${target.name} - YouTube: ${youtubeVideosEnabled() ? 'On' : 'Off'}`
                 : '';
             renderTransferOptions(transferEl);
             return;
@@ -915,12 +935,6 @@ const _massPlayingPreset = (() => {
         currentPageIndex = (currentPageIndex + delta + PAGE_IDS.length) % PAGE_IDS.length;
         if (mountedContainer) {
             renderOverlay(mountedContainer);
-            if (currentPageId() === 'artist') {
-                void refreshArtistInfo(false);
-            }
-            if (currentPageId() === 'queue') {
-                void refreshQueue(true);
-            }
         }
         return true;
     }
@@ -983,10 +997,8 @@ const _massPlayingPreset = (() => {
             ensureOverlay(container);
             updateBaseView(container, lastMedia);
             renderOverlay(container);
-            scheduleQueueRefresh();
             scheduleNowPlayingRefresh();
             void refreshNowPlaying(true);
-            void refreshQueue(true);
         },
 
         onUpdate(container, data) {
@@ -995,12 +1007,6 @@ const _massPlayingPreset = (() => {
             if (!applyMediaSnapshot(data || {}, { syncSource: true }) && mountedContainer) {
                 updateBaseView(container, lastMedia);
                 renderOverlay(container);
-            }
-            if (currentPageId() === 'artist') {
-                void refreshArtistInfo(false);
-            }
-            if (currentPageId() === 'queue') {
-                void refreshQueue(false);
             }
             void refreshNowPlaying(false);
         },
@@ -1036,9 +1042,6 @@ const _massPlayingPreset = (() => {
         },
 
         cyclePage,
-        refreshQueue(force = false) {
-            return refreshQueue(force);
-        },
         refreshNowPlaying(force = false) {
             return refreshNowPlaying(force);
         },
@@ -1073,7 +1076,10 @@ const _massController = (() => {
             const response = await fetch(`${serviceUrl}/command`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ command }),
+                body: JSON.stringify({
+                    command,
+                    ...(window.PlaybackTargets?.payloadFor?.('mass') || {}),
+                }),
             });
             if (!response.ok) {
                 console.warn('[MASS UI] Transport command failed:', command, response.status);
@@ -1081,7 +1087,6 @@ const _massController = (() => {
             }
             setTimeout(() => {
                 void _massPlayingPreset.refreshNowPlaying(true);
-                void _massPlayingPreset.refreshQueue(true);
             }, 350);
             return true;
         } catch (error) {

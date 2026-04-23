@@ -41,9 +41,28 @@
     "step": 3,
     "output_name": "Sonos"
   },
+  "playback": {
+    "audio_target_id": "up50411c87e1c0",
+    "video_target_id": "",
+    "music_video_enabled": true,
+    "audio_targets": [
+      { "id": "08a2eca2-247c-96fe-7998-7baddf01b2b1", "name": "Cuisine" },
+      { "id": "64ad9554-d5e6-116c-8b0b-069c1f0b7885", "name": "Bedroom Mini" },
+      { "id": "up50411c87e1c0", "name": "Link" }
+    ],
+    "video_targets": []
+  },
   "cd": { "device": "/dev/sr0" },
   "join": {},
   "spotify": { "client_id": "" },
+  "mass": {
+    "transfer_targets": [
+      { "id": "08a2eca2-247c-96fe-7998-7baddf01b2b1", "name": "Cuisine" },
+      { "id": "64ad9554-d5e6-116c-8b0b-069c1f0b7885", "name": "Bedroom Mini" },
+      { "id": "up50411c87e1c0", "name": "Link" }
+    ]
+  },
+  "kodi": { "transfer_targets": [] },
   "radio": { "source": "radio" },
   "news": { "guardian_api_key": "test" }
 }

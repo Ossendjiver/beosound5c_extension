@@ -42,6 +42,7 @@ if 'lib' in os.listdir(current_dir):
     sys.path.insert(0, current_dir)
 
 from lib.config import cfg
+from lib.playback_targets import get_audio_targets
 from lib.source_base import SourceBase
 
 # ── CONFIG ────────────────────────────────────────────────────────────────────
@@ -60,10 +61,18 @@ def _mass_ws_url():
 MASS_URI = _mass_ws_url()
 MASS_TOKEN = os.getenv("MASS_TOKEN", "").strip()
 TARGET_QUEUE_ID = (
-    os.getenv("MASS_QUEUE_ID") or os.getenv("BS5C_MASS_TARGET_QUEUE_ID") or ""
+    os.getenv("MASS_QUEUE_ID")
+    or os.getenv("BS5C_MASS_TARGET_QUEUE_ID")
+    or cfg("mass", "queue_id", default="")
+    or cfg("mass", "target_queue_id", default="")
+    or ""
 ).strip()
 TARGET_PLAYER_ID = (
-    os.getenv("MASS_PLAYER_ID") or os.getenv("BS5C_MASS_TARGET_PLAYER_ID") or ""
+    os.getenv("MASS_PLAYER_ID")
+    or os.getenv("BS5C_MASS_TARGET_PLAYER_ID")
+    or cfg("mass", "player_id", default="")
+    or cfg("mass", "target_player_id", default="")
+    or ""
 ).strip()
 CACHE_FILE       = "/media/local/cache/mass_playlists.json"
 LEGACY_CACHE_FILE = "/home/thomas/beosound5c/web/json/mass_playlists.json"
@@ -798,6 +807,13 @@ class MassSource(SourceBase):
             "radio": len(self._library_root(MASS_RADIO_ROOT_ID).get("tracks") or []),
         }
 
+    @staticmethod
+    def _configured_transfer_targets():
+        return [
+            {"id": target["id"], "name": target.get("name") or target["id"]}
+            for target in get_audio_targets()
+        ]
+
     async def _build_queue_status(self):
         for queue_id in await self._resolve_queue_candidates():
             snapshot = await self._get_queue_snapshot(queue_id)
@@ -834,11 +850,7 @@ class MassSource(SourceBase):
                 "queue_id": str(TARGET_QUEUE_ID or "").strip(),
                 "library": self._build_library_status(),
                 "queue": await self._build_queue_status(),
-                "transfer_targets": [
-                    {"id": "08a2eca2-247c-96fe-7998-7baddf01b2b1", "name": "Cuisine"},
-                    {"id": "64ad9554-d5e6-116c-8b0b-069c1f0b7885", "name": "Bedroom Mini"},
-                    {"id": "up50411c87e1c0", "name": "Link"},
-                ],
+                "transfer_targets": self._configured_transfer_targets(),
             }
         )
         return status
@@ -1908,7 +1920,133 @@ class MassSource(SourceBase):
             return False
         return response.get("result") is not False
 
+    def _apply_playback_target_from_data(self, data):
+        if not isinstance(data, dict):
+            return ""
+        target_player_id = str(
+            data.get("target_player_id")
+            or data.get("audio_target_id")
+            or (data.get("playback") or {}).get("audio_target_id")
+            or ""
+        ).strip()
+        if target_player_id:
+            self._preferred_player_id = target_player_id
+        return target_player_id
+
+    @staticmethod
+    def _clean_queue_item_id(value):
+        text = str(value or "").strip()
+        if text.startswith("queue_item_"):
+            return text[len("queue_item_"):]
+        return text
+
+    async def _resolve_queue_command_item(self, data):
+        raw_item_id = self._clean_queue_item_id(
+            data.get("queue_item_id") or data.get("id") or data.get("item_id")
+        )
+        raw_index = data.get("index")
+        try:
+            requested_index = int(raw_index)
+        except (TypeError, ValueError):
+            requested_index = -1
+        for queue_id in await self._resolve_queue_candidates():
+            snapshot = await self._get_queue_snapshot(queue_id)
+            items = self._extract_queue_items(snapshot)
+            for index, item in enumerate(items):
+                marker = self._clean_queue_item_id(self._extract_queue_item_marker(item, index))
+                if (raw_item_id and marker == raw_item_id) or index == requested_index:
+                    return str(snapshot.get("resolved_queue_id") or queue_id).strip(), item, index, snapshot
+        return "", {}, -1, {}
+
+    async def _handle_queue_remove_command(self, data):
+        queue_id, item, index, _snapshot = await self._resolve_queue_command_item(data)
+        if not queue_id or not item:
+            return {"state": "error", "reason": "queue_item_not_found"}
+        queue_item_id = self._clean_queue_item_id(self._extract_queue_item_marker(item, index))
+        attempts = [
+            ("player_queues/delete_item", {"queue_id": queue_id, "queue_item_id": queue_item_id}),
+            ("player_queues/remove_item", {"queue_id": queue_id, "queue_item_id": queue_item_id}),
+            ("player_queues/delete_item", {"queue_id": queue_id, "item_id": queue_item_id}),
+            ("player_queues/remove_item", {"queue_id": queue_id, "item_id": queue_item_id}),
+        ]
+        for command, kwargs in attempts:
+            response = await self._send_command_response(command, **kwargs)
+            if self._api_response_ok(response):
+                return {
+                    "state": "removed",
+                    "queue_id": queue_id,
+                    "queue_item_id": queue_item_id,
+                    "index": index,
+                    "command": command,
+                }
+        return {"state": "error", "reason": "remove_failed", "queue_item_id": queue_item_id}
+
+    async def _handle_queue_play_next_command(self, data):
+        queue_id, item, index, snapshot = await self._resolve_queue_command_item(data)
+        if not queue_id or not item:
+            return {"state": "error", "reason": "queue_item_not_found"}
+        queue_item_id = self._clean_queue_item_id(self._extract_queue_item_marker(item, index))
+        current_index = snapshot.get("current_index")
+        try:
+            current_index = int(current_index)
+        except (TypeError, ValueError):
+            current_index = -1
+        target_index = max(0, current_index + 1) if current_index >= 0 else 0
+        if index <= target_index and current_index >= 0:
+            target_index = max(0, current_index)
+        pos_shift = target_index - index
+        attempts = [
+            ("player_queues/move_item", {"queue_id": queue_id, "queue_item_id": queue_item_id, "pos_shift": pos_shift}),
+            ("player_queues/move_item", {"queue_id": queue_id, "queue_item_id": queue_item_id, "position": target_index}),
+            ("player_queues/move_item", {"queue_id": queue_id, "item_id": queue_item_id, "pos_shift": pos_shift}),
+            ("player_queues/move_item", {"queue_id": queue_id, "item_id": queue_item_id, "position": target_index}),
+        ]
+        for command, kwargs in attempts:
+            response = await self._send_command_response(command, **kwargs)
+            if self._api_response_ok(response):
+                return {
+                    "state": "moved",
+                    "queue_id": queue_id,
+                    "queue_item_id": queue_item_id,
+                    "index": index,
+                    "target_index": target_index,
+                    "command": command,
+                }
+        return {"state": "error", "reason": "move_failed", "queue_item_id": queue_item_id}
+
+    async def _handle_queue_play_index_command(self, data):
+        queue_id, item, index, _snapshot = await self._resolve_queue_command_item(data)
+        if not queue_id or not item:
+            return {"state": "error", "reason": "queue_item_not_found"}
+        queue_item_id = self._clean_queue_item_id(self._extract_queue_item_marker(item, index))
+        attempts = [
+            ("player_queues/play_item", {"queue_id": queue_id, "queue_item_id": queue_item_id}),
+            ("player_queues/play_item", {"queue_id": queue_id, "item_id": queue_item_id}),
+            ("player_queues/play_index", {"queue_id": queue_id, "index": index}),
+            ("player_queues/resume", {"queue_id": queue_id, "queue_item_id": queue_item_id}),
+        ]
+        for command, kwargs in attempts:
+            response = await self._send_command_response(command, **kwargs)
+            if self._api_response_ok(response):
+                await asyncio.sleep(0.25)
+                await self._publish_now_playing(queue_id, reason="queue_play", force_state="playing")
+                return {
+                    "state": "playing",
+                    "queue_id": queue_id,
+                    "index": index,
+                    "queue_item_id": queue_item_id,
+                    "command": command,
+                }
+
+        uri = self._extract_queue_uri(item)
+        if uri:
+            fallback = dict(data)
+            fallback["url"] = uri
+            return await self.handle_command("play_now", fallback)
+        return {"state": "error", "reason": "play_index_failed", "queue_item_id": queue_item_id}
+
     async def _handle_transfer_queue_command(self, data):
+        self._apply_playback_target_from_data(data)
         target_player_id = str(
             data.get("target_player_id")
             or data.get("player_id")
@@ -2045,10 +2183,17 @@ class MassSource(SourceBase):
         return kicked
 
     async def handle_command(self, cmd, data) -> dict:
+        self._apply_playback_target_from_data(data)
         if cmd in {"transport_toggle", "transport_stop", "transport_next", "transport_previous"}:
             return await self._handle_transport_command(cmd)
         if cmd == "transfer_queue":
             return await self._handle_transfer_queue_command(data)
+        if cmd == "queue_remove":
+            return await self._handle_queue_remove_command(data)
+        if cmd == "queue_play_next":
+            return await self._handle_queue_play_next_command(data)
+        if cmd == "play_index":
+            return await self._handle_queue_play_index_command(data)
 
         uri = self._resolve_command_url(data)
         if not uri:

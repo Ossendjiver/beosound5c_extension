@@ -757,6 +757,109 @@
             margin-right: 4px;
         }
 
+        /* Playback section */
+        .playback-section {
+            padding-right: 18px;
+        }
+
+        .playback-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 28px;
+            max-width: 720px;
+        }
+
+        .playback-group {
+            min-width: 0;
+        }
+
+        .playback-group-title {
+            font-size: 12px;
+            color: #777;
+            text-transform: uppercase;
+            letter-spacing: 1.8px;
+            margin-bottom: 12px;
+        }
+
+        .playback-option,
+        .playback-toggle {
+            min-height: 46px;
+            border: 1px solid #222;
+            background: #0d0d0d;
+            color: #ddd;
+            border-radius: 6px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 14px;
+            padding: 0 14px;
+            margin-bottom: 8px;
+            font-size: 14px;
+            cursor: pointer;
+        }
+
+        .playback-option.selected {
+            border-color: #446b9a;
+            color: #fff;
+        }
+
+        .playback-option.focused,
+        .playback-toggle.focused {
+            border-color: #8bc6ff;
+            background: #162232;
+        }
+
+        .playback-option-id {
+            color: #666;
+            font: 11px/1.2 Monaco, Consolas, monospace;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            max-width: 180px;
+        }
+
+        .playback-empty {
+            color: #666;
+            font-size: 13px;
+            padding: 12px 0;
+        }
+
+        .playback-switch {
+            position: relative;
+            width: 44px;
+            height: 24px;
+            border-radius: 999px;
+            background: #333;
+            flex-shrink: 0;
+        }
+
+        .playback-switch::after {
+            content: "";
+            position: absolute;
+            left: 3px;
+            top: 3px;
+            width: 18px;
+            height: 18px;
+            border-radius: 50%;
+            background: #ddd;
+            transition: transform 160ms ease;
+        }
+
+        .playback-toggle.active .playback-switch {
+            background: #4f7eac;
+        }
+
+        .playback-toggle.active .playback-switch::after {
+            transform: translateX(20px);
+        }
+
+        .playback-status {
+            margin-top: 18px;
+            color: #777;
+            font-size: 12px;
+            min-height: 18px;
+        }
+
         /* Scrollbar styling */
         .section-content::-webkit-scrollbar {
             width: 6px;
@@ -788,6 +891,7 @@
             <div class="section-tab" data-section="services">Services</div>
             <div class="section-tab" data-section="remotes">Remotes</div>
             <div class="section-tab" data-section="people">People</div>
+            <div class="section-tab" data-section="playback">Playback</div>
             <div class="section-tab" data-section="config">Config</div>
         </nav>
 
@@ -873,6 +977,27 @@
         <div class="section-content people-section" id="people">
             <div class="people-grid" id="people-grid">
                 <span class="people-loading">Loading people...</span>
+            </div>
+        </div>
+
+        <!-- Playback Section -->
+        <div class="section-content playback-section" id="playback">
+            <div class="playback-grid">
+                <div class="playback-group">
+                    <div class="playback-group-title">Audio Target</div>
+                    <div id="audio-targets"></div>
+                </div>
+                <div class="playback-group">
+                    <div class="playback-group-title">Video Target</div>
+                    <div id="video-targets"></div>
+                    <div class="playback-group-title" style="margin-top:22px;">Music Video</div>
+                    <div id="music-video-toggle"></div>
+                </div>
+            </div>
+            <div class="playback-status" id="playback-status"></div>
+            <div class="section-hint">
+                <span class="key">UP/DOWN</span> Select &nbsp;
+                <span class="key">GO</span> Apply / Toggle
             </div>
         </div>
 
@@ -1444,7 +1569,7 @@
 
         class SystemPanel {
             constructor() {
-                this.sections = ['info', 'services', 'remotes', 'people', 'config'];
+                this.sections = ['info', 'services', 'remotes', 'people', 'playback', 'config'];
                 this.currentSection = 0;
                 this.inputWs = null;
                 this.serviceStatus = {};
@@ -1458,6 +1583,11 @@
                 this.subcardData = {};    // id -> last fetched data
                 this.subcardOnline = {};  // id -> bool
                 this.subcardRefreshTimer = null;
+
+                // Playback targets
+                this.playbackState = null;
+                this.playbackItems = [];
+                this.currentPlaybackItem = 0;
 
                 // Debouncing
                 this.lastButtonTime = 0;
@@ -1665,6 +1795,8 @@
                         if (selected && selected.dataset.action === 'pair') {
                             this.startBTPairing();
                         }
+                    } else if (section === 'playback') {
+                        this.activatePlaybackItem();
                     }
                 }
             }
@@ -1697,6 +1829,15 @@
                             this.currentRemoteItem = Math.min(this.remoteItems.length - 1, this.currentRemoteItem + 1);
                         }
                         this.updateRemoteSelection();
+                    }
+                } else if (section === 'playback') {
+                    if (this.playbackItems.length > 0) {
+                        if (direction === 'counter') {
+                            this.currentPlaybackItem = Math.max(0, this.currentPlaybackItem - 1);
+                        } else if (direction === 'clock') {
+                            this.currentPlaybackItem = Math.min(this.playbackItems.length - 1, this.currentPlaybackItem + 1);
+                        }
+                        this.updatePlaybackSelection();
                     }
                 } else if (section === 'config') {
                     document.getElementById('config').scrollTop +=
@@ -1737,8 +1878,120 @@
                     this.fetchPeople();
                 }
 
+                if (section === 'playback') {
+                    this.fetchPlayback();
+                }
+
                 if (section === 'config') {
                     this.loadConfig();
+                }
+            }
+
+            // ── Playback ──
+
+            async fetchPlayback() {
+                const statusEl = document.getElementById('playback-status');
+                if (statusEl) statusEl.textContent = 'Loading playback targets...';
+                try {
+                    const resp = await fetch('http://localhost:8770/router/playback', { cache: 'no-store' });
+                    if (!resp.ok) throw new Error('offline');
+                    this.playbackState = await resp.json();
+                    this.renderPlayback();
+                    if (statusEl) statusEl.textContent = '';
+                } catch (e) {
+                    this.playbackState = null;
+                    this.renderPlayback();
+                    if (statusEl) statusEl.textContent = 'Unable to load playback settings';
+                }
+            }
+
+            renderPlayback() {
+                const state = this.playbackState || {};
+                const audio = Array.isArray(state.audio_targets) ? state.audio_targets : [];
+                const video = Array.isArray(state.video_targets) ? state.video_targets : [];
+                const audioEl = document.getElementById('audio-targets');
+                const videoEl = document.getElementById('video-targets');
+                const toggleEl = document.getElementById('music-video-toggle');
+
+                const renderTargets = (targets, selectedId, group) => {
+                    if (!targets.length) return '<div class="playback-empty">No targets configured</div>';
+                    return targets.map((target) => {
+                        const id = String(target.id || '');
+                        const name = String(target.name || target.label || id || 'Target');
+                        const selected = id === selectedId ? ' selected' : '';
+                        return `
+                            <div class="playback-option${selected}" data-group="${group}" data-target-id="${id}">
+                                <span>${name}</span>
+                                <span class="playback-option-id">${id}</span>
+                            </div>
+                        `;
+                    }).join('');
+                };
+
+                if (audioEl) audioEl.innerHTML = renderTargets(audio, state.audio_target_id || '', 'audio');
+                if (videoEl) videoEl.innerHTML = renderTargets(video, state.video_target_id || '', 'video');
+                if (toggleEl) {
+                    const enabled = state.music_video_enabled !== false;
+                    toggleEl.innerHTML = `
+                        <div class="playback-toggle${enabled ? ' active' : ''}" data-group="music-video">
+                            <span>YouTube Videos ${enabled ? 'On' : 'Off'}</span>
+                            <span class="playback-switch"></span>
+                        </div>
+                    `;
+                }
+
+                document.querySelectorAll('.playback-option').forEach((item) => {
+                    item.addEventListener('click', () => {
+                        this.currentPlaybackItem = this.playbackItems.indexOf(item);
+                        this.activatePlaybackItem();
+                    });
+                });
+                document.querySelectorAll('.playback-toggle').forEach((item) => {
+                    item.addEventListener('click', () => {
+                        this.currentPlaybackItem = this.playbackItems.indexOf(item);
+                        this.activatePlaybackItem();
+                    });
+                });
+                this.playbackItems = Array.from(document.querySelectorAll('.playback-option, .playback-toggle'));
+                this.currentPlaybackItem = Math.max(0, Math.min(this.currentPlaybackItem, Math.max(0, this.playbackItems.length - 1)));
+                this.updatePlaybackSelection();
+            }
+
+            updatePlaybackSelection() {
+                this.playbackItems.forEach((item, index) => {
+                    item.classList.toggle('focused', index === this.currentPlaybackItem);
+                });
+            }
+
+            async activatePlaybackItem() {
+                const item = this.playbackItems[this.currentPlaybackItem];
+                if (!item) return;
+                const group = item.dataset.group;
+                const payload = {};
+                if (group === 'audio') {
+                    payload.audio_target_id = item.dataset.targetId || '';
+                } else if (group === 'video') {
+                    payload.video_target_id = item.dataset.targetId || '';
+                } else if (group === 'music-video') {
+                    payload.music_video_enabled = !(this.playbackState?.music_video_enabled !== false);
+                } else {
+                    return;
+                }
+
+                const statusEl = document.getElementById('playback-status');
+                if (statusEl) statusEl.textContent = 'Updating playback settings...';
+                try {
+                    const resp = await fetch('http://localhost:8770/router/playback', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload),
+                    });
+                    if (!resp.ok) throw new Error('update failed');
+                    this.playbackState = await resp.json();
+                    this.renderPlayback();
+                    if (statusEl) statusEl.textContent = 'Playback settings updated';
+                } catch (e) {
+                    if (statusEl) statusEl.textContent = 'Unable to update playback settings';
                 }
             }
 

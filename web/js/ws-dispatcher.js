@@ -153,6 +153,10 @@ function processWebSocketEvent(message) {
             handleVolumeUpdate(data);
             break;
 
+        case 'playback_targets':
+            window.PlaybackTargets?.applyState?.(data);
+            break;
+
         case 'skip_hint':
             // Router detected a track-skip action (next/prev from any source:
             // physical button, BeoRemote, MQTT, Sonos app). Stop video panels
@@ -213,6 +217,7 @@ function handleExternalNavigation(uiStore, data) {
         'spotify': 'menu/spotify',
         'scenes': 'menu/scenes',
         'system': 'menu/system',
+        'queue': 'menu/queue',
         'showing': 'menu/showing',
         'home': 'menu/home'
     };
@@ -299,6 +304,21 @@ function handleSourceChange(uiStore, data) {
     uiStore.activeSource = sourceId;
     uiStore.activeSourcePlayer = player;
     uiStore.setActivePlayingPreset(sourceId);
+
+    if (data.manages_queue) {
+        uiStore.addMenuItem(
+            { title: 'QUEUE', path: 'menu/queue' },
+            'menu/playing',
+            uiStore.views?.['menu/queue']
+        );
+    } else {
+        if (uiStore.menuItems?.some((item) => item.path === 'menu/queue')) {
+            uiStore.removeMenuItem('menu/queue');
+        }
+        if (uiStore.currentRoute === 'menu/queue') {
+            uiStore.navigateToView('menu/playing');
+        }
+    }
 
     // Remote-triggered source start: arm immersive mode so the
     // subsequent navigate to menu/playing drops straight into the

@@ -187,6 +187,11 @@ function routeNavToView(page, data, uiStore) {
         if (ctrl?.isActive && ctrl.handleNavEvent && ctrl.handleNavEvent(data)) return true;
     }
 
+    if (page === 'menu/queue') {
+        if (window.QueueView?.handleNavEvent) window.QueueView.handleNavEvent(data);
+        return true;
+    }
+
     // Iframe page — iframe owns nav
     if (window.IframeMessenger?.routeHasIframe(page)) {
         window.IframeMessenger.sendNavEvent(page, data);
@@ -392,6 +397,11 @@ function routeButtonToView(page, button, uiStore) {
             if (action) { window.EmulatorBridge.notifyPlaybackControl(action); return true; }
         }
         return false; // no handler — fall through to webhook
+    }
+
+    if (page === 'menu/queue') {
+        if (window.QueueView?.handleButton) window.QueueView.handleButton(button);
+        return true;
     }
 
     // Iframe page — iframe owns all buttons

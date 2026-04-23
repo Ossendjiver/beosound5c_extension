@@ -95,6 +95,9 @@ class ViewManager {
                 }
             }
         }
+        if (this._previousRoute === 'menu/queue' && this._previousRoute !== this.currentRoute) {
+            window.QueueView?.onRemove?.();
+        }
         this._previousRoute = this.currentRoute;
 
         // Tear down any iframe currently in the content area before it's
@@ -166,6 +169,10 @@ class ViewManager {
         else if (this.currentRoute === 'menu/showing') {
             this.mediaManager.updateAppleTVMediaView();
             this.mediaManager.fetchAppleTVMediaInfo();
+        }
+        else if (this.currentRoute === 'menu/queue') {
+            const queueContainer = document.getElementById('queue-view');
+            window.QueueView?.onMount?.(queueContainer);
         }
         // Fire onMount for dynamic menu presets
         if (window.SourcePresets) {

@@ -263,6 +263,7 @@ class SourceRegistry:
                 await router.media.broadcast("source_change", {
                     "active_source": id, "source_name": source.name,
                     "player": source.player,
+                    "manages_queue": source.manages_queue,
                 })
                 # Player-backed sources own their metadata — the player service
                 # will push the correct track within milliseconds, so a
@@ -288,6 +289,7 @@ class SourceRegistry:
                     await router.media.broadcast("source_change", {
                         "active_source": id, "source_name": source.name,
                         "player": source.player,
+                        "manages_queue": source.manages_queue,
                     })
                     actions.append("source_change")
 
@@ -380,6 +382,7 @@ class SourceRegistry:
             "active_source": persisted_id,
             "source_name": persisted.name,
             "player": persisted.player,
+            "manages_queue": persisted.manages_queue,
         })
         logger.info("Startup resync: restored active source: %s", persisted_id)
         return True

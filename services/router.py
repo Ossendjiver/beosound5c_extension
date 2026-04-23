@@ -49,6 +49,7 @@ from lib.endpoints import (
 from lib.loop_monitor import LoopMonitor
 from lib.lydbro import LydbroHandler
 from lib.media_state import MediaState
+from lib.playback_targets import default_playback_state
 from lib.spotify_canvas import extract_spotify_track_id
 from lib.source_registry import (
     Source, SourceRegistry, DEFAULT_SOURCE_HANDLES, DEFAULT_SOURCE_PORTS,
@@ -66,7 +67,7 @@ ROUTER_PORT = 8770
 INPUT_WEBHOOK_URL = INPUT_WEBHOOK
 
 # Static menu IDs — these are built-in views (not dynamic sources)
-STATIC_VIEWS = {"showing", "system", "scenes", "playing"}
+STATIC_VIEWS = {"showing", "system", "scenes", "playing", "queue"}
 
 
 # ---------------------------------------------------------------------------
@@ -89,7 +90,7 @@ class EventRouter:
         self._volume = None
         self._accept_player_volume = False
         self._menu_order: list[dict] = []
-        self._local_button_views: set[str] = {"menu/system"}
+        self._local_button_views: set[str] = {"menu/system", "menu/queue"}
         self._default_source_id: str | None = cfg("remote", "default_source", default=None)
         self._source_buttons: dict[str, str] = {}
         self._handle_audio: bool = True
@@ -104,6 +105,7 @@ class EventRouter:
         self._music_video_pending_key: str = ""  # "artist||title" currently being looked up
         self._player_type: str = ""
         self._last_local_volume_set: float = 0.0
+        self.playback_state: dict = default_playback_state()
 
     # ── Background task tracking ──
 
@@ -364,6 +366,8 @@ class EventRouter:
             "items": items,
             "active_source": self.registry.active_id,
             "active_player": active.player if active else None,
+            "active_has_queue": bool(active and active.manages_queue),
+            "playback": self.playback_state,
         }
 
     # ── Event routing ──
@@ -540,6 +544,17 @@ class EventRouter:
     async def _forward_to_source(self, source: Source, payload: dict):
         if not source.command_url or not self._session:
             return
+        if isinstance(payload, dict):
+            payload = {
+                **payload,
+                "playback": self.playback_state,
+                "audio_target_id": self.playback_state.get("audio_target_id", ""),
+                "video_target_id": self.playback_state.get("video_target_id", ""),
+            }
+            if source.id == "mass":
+                payload.setdefault("target_player_id", self.playback_state.get("audio_target_id", ""))
+            elif source.id == "kodi":
+                payload.setdefault("target_player_id", self.playback_state.get("video_target_id", ""))
         try:
             async with self._session.post(
                 source.command_url,
@@ -1039,11 +1054,13 @@ async def handle_status(request: web.Request) -> web.Response:
         "active_source": router_instance.registry.active_id,
         "active_source_name": active.name if active else None,
         "active_player": active.player if active else None,
+        "active_has_queue": bool(active and active.manages_queue),
         "active_view": router_instance.active_view,
         "volume": router_instance.volume,
         "output_device": router_instance.output_device,
         "transport_mode": router_instance.transport.mode,
         "latest_action_ts": router_instance._latest_action_ts,
+        "playback": router_instance.playback_state,
         "sources": {
             s.id: {"state": s.state, "name": s.name, "player": s.player}
             for s in router_instance.registry.all_available()
@@ -1052,6 +1069,25 @@ async def handle_status(request: web.Request) -> web.Response:
     if router_instance.media.state:
         result["media"] = router_instance.media.state
     return web.json_response(result)
+
+
+async def handle_playback(request: web.Request) -> web.Response:
+    if request.method == "POST":
+        try:
+            data = await request.json()
+        except Exception:
+            data = {}
+        state = router_instance.playback_state
+        audio_target = str(data.get("audio_target_id") or data.get("audio_target") or "").strip()
+        video_target = str(data.get("video_target_id") or data.get("video_target") or "").strip()
+        if audio_target and any(t.get("id") == audio_target for t in state.get("audio_targets", [])):
+            state["audio_target_id"] = audio_target
+        if video_target and any(t.get("id") == video_target for t in state.get("video_targets", [])):
+            state["video_target_id"] = video_target
+        if "music_video_enabled" in data:
+            state["music_video_enabled"] = bool(data.get("music_video_enabled"))
+        await router_instance.media.broadcast("playback_targets", state)
+    return web.json_response(router_instance.playback_state)
 
 
 async def handle_queue(request: web.Request) -> web.Response:
@@ -1082,7 +1118,7 @@ async def handle_queue(request: web.Request) -> web.Response:
             ) as resp:
                 if resp.status == 200:
                     data = await resp.json()
-                    if data.get("tracks"):
+                    if isinstance(data.get("tracks"), list):
                         return data
         except Exception as e:
             logger.debug("Queue fetch from %s failed: %s", url, e)
@@ -1111,21 +1147,61 @@ async def handle_queue(request: web.Request) -> web.Response:
     return web.json_response(result)
 
 
+async def _forward_queue_command(command: str, data: dict) -> web.Response:
+    source = router_instance.registry.active_source
+    if not source or not source.command_url:
+        return web.json_response({"status": "error", "reason": "no_active_source"}, status=409)
+    if not source.manages_queue and source.player != "local":
+        return web.json_response({"status": "error", "reason": "active_source_has_no_queue"}, status=409)
+    payload = {"command": command, **data}
+    payload.update({
+        "playback": router_instance.playback_state,
+        "audio_target_id": router_instance.playback_state.get("audio_target_id", ""),
+        "video_target_id": router_instance.playback_state.get("video_target_id", ""),
+    })
+    if source.id == "mass":
+        payload.setdefault("target_player_id", router_instance.playback_state.get("audio_target_id", ""))
+    elif source.id == "kodi":
+        payload.setdefault("target_player_id", router_instance.playback_state.get("video_target_id", ""))
+    try:
+        async with router_instance._session.post(
+            source.command_url,
+            json=payload,
+            timeout=aiohttp.ClientTimeout(total=10),
+        ) as resp:
+            body = await resp.json()
+            return web.json_response(body, status=resp.status)
+    except Exception as e:
+        logger.warning("Queue command %s failed: %s", command, e)
+        return web.json_response({"status": "error", "reason": "queue_command_failed"}, status=500)
+
+
 async def handle_queue_play(request: web.Request) -> web.Response:
     try:
         data = await request.json()
     except Exception:
         return web.json_response({"error": "invalid json"}, status=400)
 
-    position = data.get("position", 0)
+    position = data.get("position", data.get("index", 0))
     source = router_instance.registry.active_source
 
     if source and (source.manages_queue or source.player == "local"):
         if source.command_url:
+            payload = {
+                "command": "play_index",
+                "index": position,
+                "playback": router_instance.playback_state,
+                "audio_target_id": router_instance.playback_state.get("audio_target_id", ""),
+                "video_target_id": router_instance.playback_state.get("video_target_id", ""),
+            }
+            if source.id == "mass":
+                payload.setdefault("target_player_id", router_instance.playback_state.get("audio_target_id", ""))
+            elif source.id == "kodi":
+                payload.setdefault("target_player_id", router_instance.playback_state.get("video_target_id", ""))
             try:
                 async with router_instance._session.post(
                     source.command_url,
-                    json={"command": "play_index", "index": position},
+                    json=payload,
                     timeout=aiohttp.ClientTimeout(total=10),
                 ) as resp:
                     if resp.status == 200:
@@ -1145,6 +1221,22 @@ async def handle_queue_play(request: web.Request) -> web.Response:
         except Exception as e:
             logger.warning("Player play_from_queue failed: %s", e)
             return web.json_response({"status": "error"}, status=500)
+
+
+async def handle_queue_remove(request: web.Request) -> web.Response:
+    try:
+        data = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid json"}, status=400)
+    return await _forward_queue_command("queue_remove", data)
+
+
+async def handle_queue_play_next(request: web.Request) -> web.Response:
+    try:
+        data = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid json"}, status=400)
+    return await _forward_queue_command("queue_play_next", data)
 
 
 async def handle_broadcast(request: web.Request) -> web.Response:
@@ -1197,6 +1289,8 @@ def create_app() -> web.Application:
     app.router.add_post("/router/volume", handle_volume_set)
     app.router.add_post("/router/volume/report", handle_volume_report)
     app.router.add_post("/router/playback_override", handle_playback_override)
+    app.router.add_get("/router/playback", handle_playback)
+    app.router.add_post("/router/playback", handle_playback)
     app.router.add_post("/router/output/off", handle_output_off)
     app.router.add_post("/router/output/on", handle_output_on)
     app.router.add_post("/router/resync", handle_resync)
@@ -1207,6 +1301,8 @@ def create_app() -> web.Application:
     app.router.add_post("/router/broadcast", handle_broadcast)
     app.router.add_get("/router/queue", handle_queue)
     app.router.add_post("/router/queue/play", handle_queue_play)
+    app.router.add_post("/router/queue/remove", handle_queue_remove)
+    app.router.add_post("/router/queue/play-next", handle_queue_play_next)
     app.on_startup.append(on_startup)
     app.on_cleanup.append(on_cleanup)
     return app

@@ -242,6 +242,7 @@ class MediaState:
                         "active_source": active.id,
                         "source_name": active.name,
                         "player": active.player,
+                        "manages_queue": active.manages_queue,
                     },
                 }))
             await ws.send_str(json.dumps({
