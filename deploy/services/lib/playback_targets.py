@@ -14,7 +14,33 @@ def _as_list(value) -> list:
     return value if isinstance(value, list) else []
 
 
-def _normalize_targets(value) -> list[dict]:
+_PRIVATE_TARGET_KEYS = {
+    "url",
+    "rpc_url",
+    "jsonrpc_url",
+    "base_url",
+    "host",
+    "hostname",
+    "ip",
+    "port",
+    "scheme",
+    "user",
+    "username",
+    "login",
+    "password",
+    "pass",
+    "token",
+    "headers",
+    "tls_verify",
+    "verify_ssl",
+    "ssl",
+    "player_id",
+    "playerid",
+    "local",
+}
+
+
+def _normalize_targets(value, *, include_private: bool = False) -> list[dict]:
     targets = []
     for item in _as_list(value):
         if not isinstance(item, dict):
@@ -23,7 +49,12 @@ def _normalize_targets(value) -> list[dict]:
         if not target_id:
             continue
         name = str(item.get("name") or item.get("label") or target_id).strip()
-        targets.append({"id": target_id, "name": name})
+        target = {"id": target_id, "name": name}
+        if include_private:
+            for key in _PRIVATE_TARGET_KEYS:
+                if key in item:
+                    target[key] = item[key]
+        targets.append(target)
     return targets
 
 
@@ -37,12 +68,12 @@ def get_audio_targets() -> list[dict]:
     )
 
 
-def get_video_targets() -> list[dict]:
+def get_video_targets(*, include_private: bool = False) -> list[dict]:
     playback_cfg = cfg("playback", default={}) or {}
     kodi_cfg = cfg("kodi", default={}) or {}
     return (
-        _normalize_targets(kodi_cfg.get("transfer_targets"))
-        or _normalize_targets(playback_cfg.get("video_targets"))
+        _normalize_targets(kodi_cfg.get("transfer_targets"), include_private=include_private)
+        or _normalize_targets(playback_cfg.get("video_targets"), include_private=include_private)
         or []
     )
 

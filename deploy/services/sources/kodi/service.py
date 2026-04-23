@@ -88,6 +88,7 @@ class KodiSource(SourceBase):
         self._cache_requires_resync = False
         self._session: ClientSession | None = None
         self._watched_status_cache = {"ts": 0.0, "value": {"movies": None, "tvshows": None, "episodes": None}}
+        self._preferred_target_id = ""
         self._preferred_player_id = ""
         self.has_cache     = self._load_local_cache()
 
@@ -130,9 +131,7 @@ class KodiSource(SourceBase):
         logger.info("Kodi Source Starting...")
         if not os.getenv("KODI_HOST"):
             logger.warning("KODI_HOST not set; defaulting to localhost.")
-        auth = BasicAuth(KODI_USER, KODI_PASS) if KODI_USER else None
         self._session = ClientSession(
-            auth=auth,
             timeout=ClientTimeout(total=30),
         )
         await self.register("available")
@@ -170,18 +169,107 @@ class KodiSource(SourceBase):
     def _rpc_url(self):
         return f"http://{KODI_HOST}:{KODI_PORT}/jsonrpc"
 
-    async def _rpc(self, method, params=None):
+    @staticmethod
+    def _normalize_rpc_url(value):
+        url = str(value or "").strip()
+        if not url:
+            return ""
+        parsed = urllib.parse.urlparse(url)
+        if not parsed.scheme or not parsed.netloc:
+            return url
+        path = parsed.path.rstrip("/")
+        if path.endswith("/jsonrpc") or path == "/jsonrpc":
+            return url
+        path = f"{path}/jsonrpc" if path else "/jsonrpc"
+        return urllib.parse.urlunparse(parsed._replace(path=path))
+
+    @staticmethod
+    def _configured_transfer_targets(include_private=False):
+        return [
+            {"id": target["id"], "name": target.get("name") or target["id"], **({
+                key: value
+                for key, value in target.items()
+                if key not in {"id", "name"}
+            } if include_private else {})}
+            for target in get_video_targets(include_private=include_private)
+        ]
+
+    def _target_config_for_id(self, target_id):
+        target_id = str(target_id or "").strip()
+        if not target_id:
+            return {}
+        for target in self._configured_transfer_targets(include_private=True):
+            if str(target.get("id") or "").strip() == target_id:
+                return dict(target)
+        return {}
+
+    def _target_rpc_url(self, target=None):
+        target = target if isinstance(target, dict) else {}
+        configured_url = (
+            target.get("jsonrpc_url")
+            or target.get("rpc_url")
+            or target.get("url")
+            or target.get("base_url")
+        )
+        if configured_url:
+            return self._normalize_rpc_url(configured_url)
+        host = str(target.get("host") or target.get("hostname") or target.get("ip") or "").strip()
+        if not host:
+            return self._rpc_url
+        scheme = str(target.get("scheme") or "http").strip() or "http"
+        port = str(target.get("port") or "8080").strip()
+        return f"{scheme}://{host}:{port}/jsonrpc"
+
+    @staticmethod
+    def _target_auth(target=None):
+        has_target = isinstance(target, dict) and bool(target)
+        target = target if isinstance(target, dict) else {}
+        use_default_auth = not has_target or target.get("local") is True
+        user = str(target.get("user") or target.get("username") or target.get("login") or (KODI_USER if use_default_auth else "") or "").strip()
+        password = str(target.get("password") or target.get("pass") or (KODI_PASS if use_default_auth else "") or "")
+        return BasicAuth(user, password) if user else None
+
+    @staticmethod
+    def _target_ssl(target=None):
+        target = target if isinstance(target, dict) else {}
+        verify = target.get("tls_verify", target.get("verify_ssl", target.get("ssl", None)))
+        if isinstance(verify, str):
+            verify = verify.strip().lower() not in {"0", "false", "no", "off"}
+        return False if verify is False else None
+
+    def _auth_for_url(self, url):
+        if not KODI_USER:
+            return None
+        try:
+            parsed = urllib.parse.urlparse(str(url or ""))
+        except Exception:
+            return None
+        host = (parsed.hostname or "").lower()
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        local_host = str(KODI_HOST or "").strip().lower()
+        if host == local_host and int(port) == int(KODI_PORT):
+            return BasicAuth(KODI_USER, KODI_PASS)
+        return None
+
+    async def _rpc(self, method, params=None, *, target=None):
         """Call a Kodi JSON-RPC method. Returns the `result` field or None."""
+        if not self._session:
+            return None
         payload = {
             "jsonrpc": "2.0",
             "method":  method,
             "params":  params or {},
             "id":      1,
         }
+        url = self._target_rpc_url(target)
+        kwargs = {"json": payload, "auth": self._target_auth(target)}
+        ssl_value = self._target_ssl(target)
+        if ssl_value is not None:
+            kwargs["ssl"] = ssl_value
         try:
-            async with self._session.post(self._rpc_url, json=payload) as resp:
+            async with self._session.post(url, **kwargs) as resp:
                 if resp.status != 200:
-                    logger.warning(f"Kodi RPC {method} HTTP {resp.status}")
+                    logger.warning(f"Kodi RPC {method} HTTP {resp.status} at {url}")
                     return None
                 data = await resp.json(content_type=None)
                 if "error" in data:
@@ -189,21 +277,21 @@ class KodiSource(SourceBase):
                     return None
                 return data.get("result")
         except Exception as e:
-            logger.warning(f"Kodi RPC failed [{method}]: {e}")
+            logger.warning(f"Kodi RPC failed [{method}] at {url}: {e}")
             return None
 
     async def _ping(self):
         result = await self._rpc("JSONRPC.Ping")
         return result == "pong"
 
-    async def _rpc_paginated(self, method, result_key, params=None, page_size=500):
+    async def _rpc_paginated(self, method, result_key, params=None, page_size=500, *, target=None):
         """Fetch all items from a Kodi list method using limit/offset pagination."""
         params    = dict(params or {})
         all_items = []
         start     = 0
         while True:
             params["limits"] = {"start": start, "end": start + page_size}
-            result = await self._rpc(method, params)
+            result = await self._rpc(method, params, target=target)
             if not result:
                 break
             batch = result.get(result_key, [])
@@ -269,7 +357,7 @@ class KodiSource(SourceBase):
 
         try:
             os.makedirs(ART_CACHE_DIR, exist_ok=True)
-            async with self._session.get(image_url) as response:
+            async with self._session.get(image_url, auth=self._auth_for_url(image_url)) as response:
                 if response.status != 200:
                     return image_url
                 payload = await response.read()
@@ -1254,13 +1342,6 @@ class KodiSource(SourceBase):
             "channels": self._count_leaf_items(live_groups),
         }
 
-    @staticmethod
-    def _configured_transfer_targets():
-        return [
-            {"id": target["id"], "name": target.get("name") or target["id"]}
-            for target in get_video_targets()
-        ]
-
     async def _build_watched_status(self, connected=None):
         watched = {"movies": None, "tvshows": None, "episodes": None}
         if not self._session:
@@ -1324,6 +1405,7 @@ class KodiSource(SourceBase):
                 "library": self._build_library_status(),
                 "watched": await self._build_watched_status(connected),
                 "transfer_targets": self._configured_transfer_targets(),
+                "target_id": self._preferred_target_id,
                 "player_id": self._preferred_player_id,
             }
         )
@@ -1383,10 +1465,10 @@ class KodiSource(SourceBase):
             "uri": str(uri or "").strip(),
         }
 
-    async def _build_active_media_payload(self):
+    async def _build_active_media_payload(self, *, target=None):
         if not self._session:
             return None
-        active_players = await self._get_active_player_ids()
+        active_players = await self._get_active_player_ids(target=target)
         if not active_players:
             return None
 
@@ -1397,6 +1479,7 @@ class KodiSource(SourceBase):
                 "playerid": player_id,
                 "properties": ["speed", "time", "totaltime"],
             },
+            target=target,
         ) or {}
         item_result = await self._rpc(
             "Player.GetItem",
@@ -1404,6 +1487,7 @@ class KodiSource(SourceBase):
                 "playerid": player_id,
                 "properties": ["title", "album", "artist", "showtitle", "thumbnail", "art", "file"],
             },
+            target=target,
         ) or {}
         item = item_result.get("item") if isinstance(item_result, dict) else {}
         if not isinstance(item, dict) or not item:
@@ -1501,7 +1585,7 @@ class KodiSource(SourceBase):
         await self.register("available")
         return {"status": "ok", "resynced": False}
 
-    async def _play_kodi_uri(self, uri):
+    async def _play_kodi_uri(self, uri, *, target=None):
         """
         Resolve a kodi:// URI and issue the appropriate Kodi API call.
 
@@ -1525,13 +1609,13 @@ class KodiSource(SourceBase):
             started = False
 
             if item_type == "movie":
-                started = await self._rpc("Player.Open", {"item": {"movieid": item_id}}) is not None
+                started = await self._rpc("Player.Open", {"item": {"movieid": item_id}}, target=target) is not None
 
             elif item_type == "episode":
-                started = await self._rpc("Player.Open", {"item": {"episodeid": item_id}}) is not None
+                started = await self._rpc("Player.Open", {"item": {"episodeid": item_id}}, target=target) is not None
 
             elif item_type == "channel":
-                started = await self._rpc("Player.Open", {"item": {"channelid": item_id}}) is not None
+                started = await self._rpc("Player.Open", {"item": {"channelid": item_id}}, target=target) is not None
 
             elif item_type == "tvshow":
                 episodes = await self._rpc_paginated(
@@ -1542,21 +1626,23 @@ class KodiSource(SourceBase):
                         "properties": [],
                         "sort": {"method": "episode", "order": "ascending"},
                     },
+                    target=target,
                 )
                 if not episodes:
                     return False
-                if await self._rpc("Playlist.Clear", {"playlistid": PLAYLIST_VIDEO}) is None:
+                if await self._rpc("Playlist.Clear", {"playlistid": PLAYLIST_VIDEO}, target=target) is None:
                     return False
                 added = 0
                 for ep in episodes:
                     if await self._rpc(
                         "Playlist.Add",
                         {"playlistid": PLAYLIST_VIDEO, "item": {"episodeid": ep["episodeid"]}},
+                        target=target,
                     ) is not None:
                         added += 1
                 if not added:
                     return False
-                started = await self._rpc("Player.Open", {"item": {"playlistid": PLAYLIST_VIDEO}}) is not None
+                started = await self._rpc("Player.Open", {"item": {"playlistid": PLAYLIST_VIDEO}}, target=target) is not None
 
             elif item_type == "season":
                 show_id, season_num = map(int, str(item_id).split("_", 1)) if "_" in str(item_id) else (item_id, 0)
@@ -1569,27 +1655,29 @@ class KodiSource(SourceBase):
                         "properties": [],
                         "sort": {"method": "episode", "order": "ascending"},
                     },
+                    target=target,
                 )
                 if not episodes:
                     return False
-                if await self._rpc("Playlist.Clear", {"playlistid": PLAYLIST_VIDEO}) is None:
+                if await self._rpc("Playlist.Clear", {"playlistid": PLAYLIST_VIDEO}, target=target) is None:
                     return False
                 added = 0
                 for ep in episodes:
                     if await self._rpc(
                         "Playlist.Add",
                         {"playlistid": PLAYLIST_VIDEO, "item": {"episodeid": ep["episodeid"]}},
+                        target=target,
                     ) is not None:
                         added += 1
                 if not added:
                     return False
-                started = await self._rpc("Player.Open", {"item": {"playlistid": PLAYLIST_VIDEO}}) is not None
+                started = await self._rpc("Player.Open", {"item": {"playlistid": PLAYLIST_VIDEO}}, target=target) is not None
 
             elif item_type == "playlist":
                 playlist_file = urllib.parse.unquote(str(item_id or "")).strip()
                 if not playlist_file:
                     return False
-                started = await self._rpc("Player.Open", {"item": {"file": playlist_file}}) is not None
+                started = await self._rpc("Player.Open", {"item": {"file": playlist_file}}, target=target) is not None
 
             else:
                 logger.warning(f"Unknown kodi:// type: {item_type}")
@@ -1609,18 +1697,24 @@ class KodiSource(SourceBase):
     def _apply_playback_target_from_data(self, data):
         if not isinstance(data, dict):
             return ""
-        target_player_id = str(
+        target_id = str(
             data.get("target_player_id")
             or data.get("video_target_id")
             or (data.get("playback") or {}).get("video_target_id")
             or ""
         ).strip()
-        if target_player_id:
-            self._preferred_player_id = target_player_id
-        return target_player_id
+        if target_id:
+            self._preferred_target_id = target_id
+            target = self._target_config_for_id(target_id)
+            player_id = str(target.get("player_id") or target.get("playerid") or "").strip()
+            if player_id:
+                self._preferred_player_id = player_id
+            elif target_id.isdigit():
+                self._preferred_player_id = target_id
+        return target_id
 
-    async def _get_active_player_ids(self):
-        result = await self._rpc("Player.GetActivePlayers") or []
+    async def _get_active_player_ids(self, *, target=None):
+        result = await self._rpc("Player.GetActivePlayers", target=target) or []
         if isinstance(result, dict):
             result = result.get("players") or result.get("items") or []
         active_ids = [
@@ -1628,14 +1722,15 @@ class KodiSource(SourceBase):
             for player in result
             if isinstance(player, dict) and str(player.get("playerid", "")).strip().isdigit()
         ]
-        preferred = str(self._preferred_player_id or "").strip()
+        target = target if isinstance(target, dict) else {}
+        preferred = str(target.get("player_id") or target.get("playerid") or self._preferred_player_id or "").strip()
         if preferred.isdigit():
             preferred_id = int(preferred)
             active_ids = [preferred_id] + [player_id for player_id in active_ids if player_id != preferred_id]
         return active_ids
 
-    async def _handle_transport_command(self, cmd) -> dict:
-        active_players = await self._get_active_player_ids()
+    async def _handle_transport_command(self, cmd, *, target=None) -> dict:
+        active_players = await self._get_active_player_ids(target=target)
         if not active_players:
             return {"state": "error", "reason": "no_active_player", "command": cmd}
 
@@ -1657,14 +1752,14 @@ class KodiSource(SourceBase):
         for player_id in active_players:
             payload = {"playerid": player_id}
             payload.update(extra)
-            result = await self._rpc(method, payload)
+            result = await self._rpc(method, payload, target=target)
             if result is not None:
                 if cmd == "transport_stop":
                     await self.register("available")
                     return {"state": "available", "player_id": player_id, "command": cmd}
 
                 await asyncio.sleep(0.35)
-                media_payload = await self._build_active_media_payload()
+                media_payload = await self._build_active_media_payload(target=target)
                 if media_payload:
                     await self._post_media_snapshot(
                         media_payload,
@@ -1700,14 +1795,15 @@ class KodiSource(SourceBase):
 
         return {"state": "error", "reason": "transport_command_failed", "command": cmd}
 
-    async def _active_playlist_context(self):
-        active_players = await self._get_active_player_ids()
+    async def _active_playlist_context(self, *, target=None):
+        active_players = await self._get_active_player_ids(target=target)
         if not active_players:
             return -1, -1, -1
         player_id = active_players[0]
         properties = await self._rpc(
             "Player.GetProperties",
             {"playerid": player_id, "properties": ["playlistid", "position"]},
+            target=target,
         ) or {}
         playlist_id = properties.get("playlistid")
         position = properties.get("position")
@@ -1737,6 +1833,15 @@ class KodiSource(SourceBase):
         file_path = str(item.get("file") or "").strip()
         return {"file": file_path} if file_path else {}
 
+    @staticmethod
+    def _playlist_transfer_item_ref(item):
+        if not isinstance(item, dict):
+            return {}
+        file_path = str(item.get("file") or "").strip()
+        if file_path:
+            return {"file": file_path}
+        return KodiSource._playlist_item_ref(item)
+
     def _art_from_item(self, item):
         if not isinstance(item, dict):
             return ""
@@ -1756,7 +1861,7 @@ class KodiSource(SourceBase):
             image = self._img({"thumb": item.get("thumbnail", "")}, "thumb")
         return image
 
-    async def _playlist_items(self, playlist_id):
+    async def _playlist_items(self, playlist_id, *, target=None):
         result = await self._rpc(
             "Playlist.GetItems",
             {
@@ -1766,6 +1871,7 @@ class KodiSource(SourceBase):
                     "art", "file", "duration",
                 ],
             },
+            target=target,
         ) or {}
         items = result.get("items") if isinstance(result, dict) else result
         return items if isinstance(items, list) else []
@@ -1868,10 +1974,77 @@ class KodiSource(SourceBase):
             await self._post_media_snapshot(payload, reason="queue_play", force_state="playing")
         return {"state": "playing", "index": position, "player_id": player_id}
 
+    async def _handle_transfer_queue_command(self, data):
+        target_id = self._apply_playback_target_from_data(data)
+        target = self._target_config_for_id(target_id)
+        if not target_id:
+            return {"state": "error", "reason": "missing_target"}
+        if not target:
+            return {"state": "error", "reason": "target_not_configured", "target_id": target_id}
+
+        source_player_id, source_playlist_id, current_index = await self._active_playlist_context()
+        if source_player_id < 0 or source_playlist_id < 0:
+            return {"state": "error", "reason": "no_active_queue", "target_id": target_id}
+
+        items = await self._playlist_items(source_playlist_id)
+        if not items:
+            return {"state": "error", "reason": "queue_empty", "target_id": target_id}
+
+        item_refs = [self._playlist_transfer_item_ref(item) for item in items]
+        item_refs = [item_ref for item_ref in item_refs if item_ref]
+        if not item_refs:
+            return {"state": "error", "reason": "queue_items_unaddressable", "target_id": target_id}
+
+        target_playlist_id = source_playlist_id if source_playlist_id in {PLAYLIST_AUDIO, PLAYLIST_VIDEO} else PLAYLIST_VIDEO
+        if await self._rpc("Playlist.Clear", {"playlistid": target_playlist_id}, target=target) is None:
+            return {"state": "error", "reason": "target_clear_failed", "target_id": target_id}
+
+        added = 0
+        for item_ref in item_refs:
+            result = await self._rpc(
+                "Playlist.Add",
+                {"playlistid": target_playlist_id, "item": item_ref},
+                target=target,
+            )
+            if result is not None:
+                added += 1
+
+        if added <= 0:
+            return {"state": "error", "reason": "target_add_failed", "target_id": target_id}
+
+        position = current_index if 0 <= current_index < added else 0
+        open_result = await self._rpc(
+            "Player.Open",
+            {"item": {"playlistid": target_playlist_id, "position": position}},
+            target=target,
+        )
+        if open_result is None:
+            open_result = await self._rpc("Player.Open", {"item": {"playlistid": target_playlist_id}}, target=target)
+        if open_result is None:
+            return {"state": "error", "reason": "target_open_failed", "target_id": target_id, "items": added}
+
+        await asyncio.sleep(0.35)
+        media_payload = await self._build_active_media_payload(target=target)
+        if media_payload:
+            await self._post_media_snapshot(media_payload, reason="transfer_queue", force_state="playing")
+
+        return {
+            "state": "transferred",
+            "source_player_id": source_player_id,
+            "source_playlist_id": source_playlist_id,
+            "target_id": target_id,
+            "target_playlist_id": target_playlist_id,
+            "items": added,
+            "position": position,
+        }
+
     async def handle_command(self, cmd, data) -> dict:
-        self._apply_playback_target_from_data(data)
+        target_id = self._apply_playback_target_from_data(data)
+        target = self._target_config_for_id(target_id)
         if cmd in {"transport_toggle", "transport_stop", "transport_next", "transport_previous"}:
-            return await self._handle_transport_command(cmd)
+            return await self._handle_transport_command(cmd, target=target or None)
+        if cmd == "transfer_queue":
+            return await self._handle_transfer_queue_command(data)
         if cmd == "queue_remove":
             return await self._handle_queue_remove_command(data)
         if cmd == "queue_play_next":
@@ -1885,11 +2058,11 @@ class KodiSource(SourceBase):
             return {"state": "error", "reason": "unresolved_uri"}
 
         logger.info("Kodi playback cmd=%s uri=%s", cmd, uri)
-        ok = await self._play_kodi_uri(uri)
+        ok = await self._play_kodi_uri(uri, target=target or None)
         if not ok:
             return {"state": "error", "reason": "playback_rejected", "uri": uri}
         await asyncio.sleep(0.2)
-        payload = await self._build_active_media_payload()
+        payload = await self._build_active_media_payload(target=target or None)
         if not payload:
             payload = await self._build_cached_media_payload(uri, state="playing")
         if payload:

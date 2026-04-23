@@ -13,7 +13,7 @@ const _kodiPlayingPreset = (() => {
     let currentPageIndex = 0;
     let mountedContainer = null;
     let lastPageCycleAt = 0;
-    let transferState = { selectedIndex: 0, sending: false, message: '', error: '' };
+    let transferState = { selectedIndex: 0, focusIndex: 0, sending: false, message: '', error: '' };
     let lastMedia = { title: '-', artist: '-', album: '-', artwork: '', state: 'idle' };
 
     function youtubeVideosEnabled() {
@@ -103,6 +103,12 @@ const _kodiPlayingPreset = (() => {
                 background: rgba(148, 199, 255, 0.22);
                 border-color: rgba(158, 209, 255, 0.74);
             }
+            #now-playing.kodi-playing-active .kodi-transfer-option.focused,
+            #now-playing.kodi-playing-active .kodi-transfer-action.focused,
+            #now-playing.kodi-playing-active .kodi-youtube-toggle.focused {
+                border-color: rgba(255, 255, 255, 0.86);
+                box-shadow: 0 0 0 2px rgba(158, 209, 255, 0.34);
+            }
             #now-playing.kodi-playing-active .kodi-transfer-action {
                 text-align: center; background: rgba(158, 209, 255, 0.18);
             }
@@ -160,15 +166,38 @@ const _kodiPlayingPreset = (() => {
             .map((target) => ({ ...target, name: target.name || target.id }));
     }
 
+    function actionFocusIndex() {
+        return transferTargets().length;
+    }
+
+    function youtubeFocusIndex() {
+        return transferTargets().length + 1;
+    }
+
+    function clampTransferFocus() {
+        const targets = transferTargets();
+        const maxFocus = targets.length + 1;
+        transferState.selectedIndex = Math.max(0, Math.min(transferState.selectedIndex, Math.max(0, targets.length - 1)));
+        transferState.focusIndex = Math.max(0, Math.min(transferState.focusIndex || 0, maxFocus));
+        if (transferState.focusIndex < targets.length) {
+            transferState.selectedIndex = transferState.focusIndex;
+        }
+    }
+
     function currentTransferTarget() {
         const targets = transferTargets();
+        clampTransferFocus();
         return targets[transferState.selectedIndex] || targets[0] || null;
     }
 
-    function stepTransferTarget(delta) {
+    function stepTransferFocus(delta) {
         const targets = transferTargets();
-        if (!targets.length) return;
-        transferState.selectedIndex = (transferState.selectedIndex + delta + targets.length) % targets.length;
+        const count = targets.length + 2;
+        if (!count) return;
+        transferState.focusIndex = ((transferState.focusIndex || 0) + delta + count) % count;
+        if (transferState.focusIndex < targets.length) {
+            transferState.selectedIndex = transferState.focusIndex;
+        }
         transferState.message = '';
         transferState.error = '';
         if (mountedContainer) renderOverlay(mountedContainer);
@@ -179,10 +208,37 @@ const _kodiPlayingPreset = (() => {
         const index = targets.findIndex((target) => target.id === targetId);
         if (index >= 0) {
             transferState.selectedIndex = index;
+            transferState.focusIndex = index;
             transferState.message = '';
             transferState.error = '';
             if (mountedContainer) renderOverlay(mountedContainer);
         }
+    }
+
+    async function setSelectedTarget() {
+        const target = currentTransferTarget();
+        if (!target) return true;
+        if (window.PlaybackTargets?.setVideoTarget) {
+            await window.PlaybackTargets.setVideoTarget(target.id);
+        }
+        transferState.message = `Selected ${target.name}`;
+        transferState.error = '';
+        if (mountedContainer) renderOverlay(mountedContainer);
+        return true;
+    }
+
+    function activateTransferFocus() {
+        const targets = transferTargets();
+        clampTransferFocus();
+        if (transferState.focusIndex < targets.length) {
+            void setSelectedTarget();
+            return true;
+        }
+        if (transferState.focusIndex === actionFocusIndex()) {
+            void transferQueueToSelected();
+            return true;
+        }
+        return toggleYoutubeVideos();
     }
 
     function ensureOverlay(container) {
@@ -214,10 +270,12 @@ const _kodiPlayingPreset = (() => {
                 return;
             }
             if (event.target.closest('[data-kodi-action]')) {
-                void applySelectedTarget();
+                transferState.focusIndex = actionFocusIndex();
+                void transferQueueToSelected();
                 return;
             }
             if (event.target.closest('[data-youtube-toggle]')) {
+                transferState.focusIndex = youtubeFocusIndex();
                 toggleYoutubeVideos();
             }
         });
@@ -250,6 +308,7 @@ const _kodiPlayingPreset = (() => {
     function renderTransferOptions(targetsEl) {
         const selected = currentTransferTarget();
         const targets = transferTargets();
+        clampTransferFocus();
         targetsEl.innerHTML = '';
         if (!targets.length) {
             const empty = document.createElement('div');
@@ -257,11 +316,12 @@ const _kodiPlayingPreset = (() => {
             empty.textContent = 'No Kodi targets configured';
             targetsEl.appendChild(empty);
         }
-        targets.forEach((target) => {
+        targets.forEach((target, index) => {
             const button = document.createElement('button');
             button.type = 'button';
             button.className = 'kodi-transfer-option';
             if (target.id === selected?.id) button.classList.add('active');
+            if (transferState.focusIndex === index) button.classList.add('focused');
             button.dataset.kodiTarget = target.id;
             button.textContent = target.name;
             targetsEl.appendChild(button);
@@ -271,9 +331,10 @@ const _kodiPlayingPreset = (() => {
         action.className = 'kodi-transfer-action';
         action.dataset.kodiAction = 'select';
         action.disabled = transferState.sending || !selected;
+        if (transferState.focusIndex === actionFocusIndex()) action.classList.add('focused');
         action.textContent = transferState.sending
-            ? 'Setting target...'
-            : (selected ? `Use ${selected.name}` : 'No targets configured');
+            ? 'Transferring...'
+            : (selected ? `Transfer to ${selected.name}` : 'No targets configured');
         targetsEl.appendChild(action);
 
         const youtubeEnabled = youtubeVideosEnabled();
@@ -284,6 +345,7 @@ const _kodiPlayingPreset = (() => {
         youtube.setAttribute('role', 'switch');
         youtube.setAttribute('aria-checked', youtubeEnabled ? 'true' : 'false');
         if (youtubeEnabled) youtube.classList.add('active');
+        if (transferState.focusIndex === youtubeFocusIndex()) youtube.classList.add('focused');
         youtube.innerHTML = `
             <span>YouTube Videos ${youtubeEnabled ? 'On' : 'Off'}</span>
             <span class="kodi-youtube-switch"></span>
@@ -322,21 +384,43 @@ const _kodiPlayingPreset = (() => {
         renderTransferOptions(targetsEl);
     }
 
-    async function applySelectedTarget() {
+    async function transferQueueToSelected() {
         if (transferState.sending) return true;
         const target = currentTransferTarget();
         if (!target) return true;
         transferState.sending = true;
-        transferState.message = `Setting Kodi target to ${target.name}`;
+        transferState.message = `Transferring queue to ${target.name}`;
         transferState.error = '';
         if (mountedContainer) renderOverlay(mountedContainer);
         try {
             if (window.PlaybackTargets?.setVideoTarget) {
                 await window.PlaybackTargets.setVideoTarget(target.id);
             }
-            transferState.message = `Kodi target set to ${target.name}`;
+            const serviceUrl = (typeof getServiceUrl === 'function')
+                ? getServiceUrl('kodiServiceUrl', 8782)
+                : 'http://localhost:8782';
+            const response = await fetch(`${serviceUrl}/command`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    command: 'transfer_queue',
+                    target_player_id: target.id,
+                    ...(window.PlaybackTargets?.payloadFor?.('kodi') || {}),
+                }),
+            });
+            let payload = null;
+            try {
+                payload = await response.json();
+            } catch (error) {}
+            if (!response.ok || !payload || payload.state === 'error' || payload.status === 'error') {
+                transferState.error = `Unable to transfer to ${target.name}`;
+                transferState.message = '';
+            } else {
+                transferState.message = `Queue transferred to ${target.name}`;
+                transferState.error = '';
+            }
         } catch (error) {
-            transferState.error = `Unable to set ${target.name}`;
+            transferState.error = `Unable to transfer to ${target.name}`;
             transferState.message = '';
         } finally {
             transferState.sending = false;
@@ -360,16 +444,15 @@ const _kodiPlayingPreset = (() => {
         if ((PAGE_IDS[currentPageIndex] || 'now') !== 'transfer') return false;
         const normalized = String(button || '').toLowerCase();
         if (normalized === 'left') {
-            stepTransferTarget(-1);
+            stepTransferFocus(-1);
             return true;
         }
         if (normalized === 'right') {
-            stepTransferTarget(1);
+            stepTransferFocus(1);
             return true;
         }
         if (normalized === 'go') {
-            void applySelectedTarget();
-            return true;
+            return activateTransferFocus();
         }
         if (normalized === 'up' || normalized === 'down') {
             return toggleYoutubeVideos();
@@ -387,6 +470,7 @@ const _kodiPlayingPreset = (() => {
         if (mountedContainer && (PAGE_IDS[currentPageIndex] || 'now') === 'transfer') {
             const targets = transferTargets();
             transferState.selectedIndex = Math.max(0, Math.min(transferState.selectedIndex, Math.max(0, targets.length - 1)));
+            transferState.focusIndex = Math.max(0, Math.min(transferState.focusIndex || 0, targets.length + 1));
             renderOverlay(mountedContainer);
         }
     });
@@ -396,7 +480,7 @@ const _kodiPlayingPreset = (() => {
             ensureStyles();
             mountedContainer = container;
             currentPageIndex = 0;
-            transferState = { selectedIndex: 0, sending: false, message: '', error: '' };
+            transferState = { selectedIndex: 0, focusIndex: 0, sending: false, message: '', error: '' };
             ensureOverlay(container);
             updateBaseView(container, lastMedia);
             renderOverlay(container);
@@ -411,6 +495,7 @@ const _kodiPlayingPreset = (() => {
         onRemove(container) {
             mountedContainer = null;
             currentPageIndex = 0;
+            transferState = { selectedIndex: 0, focusIndex: 0, sending: false, message: '', error: '' };
             const overlay = container?.querySelector('.kodi-playing-overlay');
             if (overlay) overlay.remove();
             if (container) {

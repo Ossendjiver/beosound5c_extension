@@ -268,7 +268,21 @@ class UIStore {
         });
 
         const updatePointerFromClientPoint = (clientX, clientY, target) => {
-            if (target?.closest?.('iframe, .webpage-iframe')) return false;
+            if (target?.closest?.([
+                'iframe',
+                '.webpage-iframe',
+                'button',
+                'a',
+                'input',
+                'select',
+                'textarea',
+                '[role="button"]',
+                '[role="switch"]',
+                '.mass-playing-transfer',
+                '.kodi-transfer-options',
+                '.queue-view',
+                '.system-page',
+            ].join(', '))) return false;
             const mainMenu = document.getElementById('mainMenu');
             if (!mainMenu) return false;
 
@@ -314,7 +328,9 @@ class UIStore {
             }
         }, { passive: false });
 
-        document.getElementById('menuItems').addEventListener('click', (event) => {
+        const menuItemsEl = document.getElementById('menuItems');
+        let lastMenuPointerActivateAt = 0;
+        const activateMenuItem = (event) => {
             const clickedItem = event.target.closest('.list-item');
             if (!clickedItem) return;
 
@@ -328,6 +344,38 @@ class UIStore {
             this.handleWheelChange();
 
             this.sendClickCommand();
+            return true;
+        };
+        const activateMenuItemFromPointer = (event) => {
+            if (event.pointerType === 'mouse') return;
+            if (Date.now() - lastMenuPointerActivateAt < 120) {
+                event.preventDefault();
+                return;
+            }
+            if (activateMenuItem(event)) {
+                lastMenuPointerActivateAt = Date.now();
+                event.preventDefault();
+            }
+        };
+        if (window.PointerEvent) {
+            menuItemsEl.addEventListener('pointerup', activateMenuItemFromPointer);
+        }
+        menuItemsEl.addEventListener('touchend', (event) => {
+            if (Date.now() - lastMenuPointerActivateAt < 120) {
+                event.preventDefault();
+                return;
+            }
+            if (activateMenuItem(event)) {
+                lastMenuPointerActivateAt = Date.now();
+                event.preventDefault();
+            }
+        }, { passive: false });
+        menuItemsEl.addEventListener('click', (event) => {
+            if (Date.now() - lastMenuPointerActivateAt < 450) {
+                event.preventDefault();
+                return;
+            }
+            activateMenuItem(event);
         });
     }
 

@@ -41,6 +41,7 @@ const _massPlayingPreset = (() => {
     };
     let transferState = {
         selectedIndex: 0,
+        focusIndex: 0,
         sending: false,
         message: '',
         error: '',
@@ -388,6 +389,13 @@ const _massPlayingPreset = (() => {
                 border-color: rgba(158, 209, 255, 0.74);
             }
 
+            #now-playing.mass-playing-active .mass-transfer-option.focused,
+            #now-playing.mass-playing-active .mass-transfer-action.focused,
+            #now-playing.mass-playing-active .mass-youtube-toggle.focused {
+                border-color: rgba(255, 255, 255, 0.86);
+                box-shadow: 0 0 0 2px rgba(158, 209, 255, 0.34);
+            }
+
             #now-playing.mass-playing-active .mass-transfer-action {
                 margin-top: 4px;
                 text-align: center;
@@ -479,6 +487,7 @@ const _massPlayingPreset = (() => {
         overlay.addEventListener('click', (event) => {
             const youtubeToggle = event.target.closest('[data-youtube-toggle]');
             if (youtubeToggle) {
+                transferState.focusIndex = youtubeFocusIndex();
                 toggleYoutubeVideos();
                 return;
             }
@@ -489,6 +498,7 @@ const _massPlayingPreset = (() => {
             }
             const action = event.target.closest('[data-transfer-action]');
             if (action) {
+                transferState.focusIndex = actionFocusIndex();
                 void transferQueueToSelected();
             }
         });
@@ -549,8 +559,27 @@ const _massPlayingPreset = (() => {
             .map((target) => ({ ...target, name: target.name || target.id }));
     }
 
+    function actionFocusIndex() {
+        return transferTargets().length;
+    }
+
+    function youtubeFocusIndex() {
+        return transferTargets().length + 1;
+    }
+
+    function clampTransferFocus() {
+        const targets = transferTargets();
+        const maxFocus = targets.length + 1;
+        transferState.selectedIndex = Math.max(0, Math.min(transferState.selectedIndex, Math.max(0, targets.length - 1)));
+        transferState.focusIndex = Math.max(0, Math.min(transferState.focusIndex || 0, maxFocus));
+        if (transferState.focusIndex < targets.length) {
+            transferState.selectedIndex = transferState.focusIndex;
+        }
+    }
+
     function currentTransferTarget() {
         const targets = transferTargets();
+        clampTransferFocus();
         return targets[transferState.selectedIndex] || targets[0] || null;
     }
 
@@ -559,31 +588,55 @@ const _massPlayingPreset = (() => {
         const nextIndex = targets.findIndex((target) => target.id === targetId);
         if (nextIndex >= 0) {
             transferState.selectedIndex = nextIndex;
+            transferState.focusIndex = nextIndex;
             transferState.message = '';
             transferState.error = '';
             if (mountedContainer) renderOverlay(mountedContainer);
         }
     }
 
-    function stepTransferTarget(delta) {
-        const count = transferTargets().length;
+    function stepTransferFocus(delta) {
+        const targets = transferTargets();
+        const count = targets.length + 2;
         if (!count) return;
-        transferState.selectedIndex = (transferState.selectedIndex + delta + count) % count;
+        transferState.focusIndex = ((transferState.focusIndex || 0) + delta + count) % count;
+        if (transferState.focusIndex < targets.length) {
+            transferState.selectedIndex = transferState.focusIndex;
+        }
         transferState.message = '';
         transferState.error = '';
         if (mountedContainer) renderOverlay(mountedContainer);
     }
 
+    function activateTransferFocus() {
+        const targets = transferTargets();
+        clampTransferFocus();
+        if (transferState.focusIndex < targets.length) {
+            transferState.selectedIndex = transferState.focusIndex;
+            transferState.message = `Selected ${targets[transferState.selectedIndex].name}`;
+            transferState.error = '';
+            if (mountedContainer) renderOverlay(mountedContainer);
+            return true;
+        }
+        if (transferState.focusIndex === actionFocusIndex()) {
+            void transferQueueToSelected();
+            return true;
+        }
+        return toggleYoutubeVideos();
+    }
+
     function renderTransferOptions(transferEl) {
         if (!transferEl) return;
         const targets = transferTargets();
+        clampTransferFocus();
         const selected = currentTransferTarget();
         transferEl.innerHTML = '';
-        targets.forEach((target) => {
+        targets.forEach((target, index) => {
             const button = document.createElement('button');
             button.type = 'button';
             button.className = 'mass-transfer-option';
             if (target.id === selected?.id) button.classList.add('active');
+            if (transferState.focusIndex === index) button.classList.add('focused');
             button.dataset.transferTarget = target.id;
             button.textContent = target.name;
             transferEl.appendChild(button);
@@ -594,6 +647,7 @@ const _massPlayingPreset = (() => {
         action.className = 'mass-transfer-action';
         action.dataset.transferAction = 'send';
         action.disabled = transferState.sending || !selected;
+        if (transferState.focusIndex === actionFocusIndex()) action.classList.add('focused');
         action.textContent = transferState.sending
             ? 'Transferring...'
             : (selected ? `Transfer to ${selected.name}` : 'No targets configured');
@@ -607,6 +661,7 @@ const _massPlayingPreset = (() => {
         youtube.setAttribute('role', 'switch');
         youtube.setAttribute('aria-checked', youtubeEnabled ? 'true' : 'false');
         if (youtubeEnabled) youtube.classList.add('active');
+        if (transferState.focusIndex === youtubeFocusIndex()) youtube.classList.add('focused');
 
         const label = document.createElement('span');
         label.className = 'mass-youtube-label';
@@ -943,16 +998,15 @@ const _massPlayingPreset = (() => {
         if (currentPageId() !== 'transfer') return false;
         const normalized = String(button || '').toLowerCase();
         if (normalized === 'left') {
-            stepTransferTarget(-1);
+            stepTransferFocus(-1);
             return true;
         }
         if (normalized === 'right') {
-            stepTransferTarget(1);
+            stepTransferFocus(1);
             return true;
         }
         if (normalized === 'go') {
-            void transferQueueToSelected();
-            return true;
+            return activateTransferFocus();
         }
         if (normalized === 'up' || normalized === 'down') {
             return toggleYoutubeVideos();
@@ -1027,6 +1081,7 @@ const _massPlayingPreset = (() => {
             nowPlayingRequestId += 1;
             transferState = {
                 selectedIndex: 0,
+                focusIndex: 0,
                 sending: false,
                 message: '',
                 error: '',
