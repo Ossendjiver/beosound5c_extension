@@ -2053,7 +2053,8 @@ class MassSource(SourceBase):
             or data.get("target")
             or ""
         ).strip()
-        if not target_player_id:
+        target_queue_id = str(data.get("target_queue_id") or target_player_id).strip()
+        if not target_queue_id and not target_player_id:
             return {"state": "error", "reason": "missing_target_player"}
 
         source_queue_id = ""
@@ -2076,7 +2077,23 @@ class MassSource(SourceBase):
             return {"state": "error", "reason": "missing_source_queue"}
 
         source_player_id = source_player_id or source_queue_id
+        target_player_id = target_player_id or target_queue_id
         attempts = [
+            (
+                "player_queues/transfer",
+                {
+                    "source_queue_id": source_queue_id,
+                    "target_queue_id": target_queue_id,
+                },
+            ),
+            (
+                "player_queues/transfer",
+                {
+                    "source_queue_id": source_queue_id,
+                    "target_queue_id": target_queue_id,
+                    "auto_play": True,
+                },
+            ),
             (
                 "player_queues/transfer_queue",
                 {
@@ -2139,6 +2156,7 @@ class MassSource(SourceBase):
                     "source_queue_id": source_queue_id,
                     "source_player_id": source_player_id,
                     "target_player_id": target_player_id,
+                    "target_queue_id": target_queue_id,
                     "command": api_command,
                     "media": published or {},
                 }
@@ -2158,6 +2176,7 @@ class MassSource(SourceBase):
             "source_queue_id": source_queue_id,
             "source_player_id": source_player_id,
             "target_player_id": target_player_id,
+            "target_queue_id": target_queue_id,
         }
 
     async def _kick_player_transport(self, queue_id):
