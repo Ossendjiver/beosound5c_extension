@@ -15,6 +15,8 @@ ALSA card name depends on the HAT — override with ALSA_CARD env var
 if the default doesn't match.
 """
 
+from __future__ import annotations
+
 import os
 
 from .local import LocalVolume

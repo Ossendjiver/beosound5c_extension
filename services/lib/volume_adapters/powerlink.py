@@ -15,6 +15,8 @@ endpoint, which applies it via ALSA (amixer) and also pokes the PC2 via 0xE3
 as a best-effort (PC2 firmware may ignore 0xE3 after power-on).
 """
 
+from __future__ import annotations
+
 import logging
 
 import aiohttp

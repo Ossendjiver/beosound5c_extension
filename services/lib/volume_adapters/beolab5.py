@@ -2,6 +2,8 @@
 BeoLab 5 volume adapter — controls volume via BeoLab 5 controller REST API.
 """
 
+from __future__ import annotations
+
 import asyncio
 import logging
 

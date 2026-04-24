@@ -2,6 +2,8 @@
 BlueSound volume adapter — controls volume via BluOS HTTP API.
 """
 
+from __future__ import annotations
+
 import asyncio
 import logging
 from xml.etree import ElementTree

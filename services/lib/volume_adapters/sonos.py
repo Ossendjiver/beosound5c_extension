@@ -2,6 +2,8 @@
 Sonos volume adapter — controls volume via SoCo library.
 """
 
+from __future__ import annotations
+
 import asyncio
 import logging
 

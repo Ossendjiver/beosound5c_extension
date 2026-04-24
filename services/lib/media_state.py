@@ -5,6 +5,8 @@ push/validation logic.  The router's single WebSocket endpoint flows
 through this module — it is the sole channel for UI state events.
 """
 
+from __future__ import annotations
+
 import asyncio
 import json
 import logging

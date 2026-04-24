@@ -15,6 +15,8 @@ Power and balance methods have sensible defaults for adapters that don't
 support them (power always on, balance always centred).
 """
 
+from __future__ import annotations
+
 import asyncio
 import logging
 from abc import ABC, abstractmethod

@@ -7,6 +7,8 @@ Source states: gone → available → playing/paused → available → gone
 Only one source can be active (playing/paused) at a time.
 """
 
+from __future__ import annotations
+
 import asyncio
 import json
 import logging
