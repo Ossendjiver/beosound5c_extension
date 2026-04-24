@@ -52,6 +52,13 @@ PLAYLIST_REFRESH_COOLDOWN = 5 * 60
 NIGHTLY_REFRESH_HOUR = 4  # offset from TIDAL (3am) and Apple Music (2am)
 FETCH_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'fetch.py')
 
+# Persistence for the last-played playlist/track so activate_playback can
+# resume where the user left off across service or device restarts.
+LAST_PLAYED_PATH_PROD = os.path.join(
+    os.getenv('BS5C_CONFIG_DIR', '/etc/beosound5c'), 'plex_last_played.json')
+LAST_PLAYED_PATH_DEV = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), 'plex_last_played.json')
+
 
 def _find_token_file():
     """Find the token file path (same logic as tokens.py)."""
@@ -78,8 +85,8 @@ class PlexService(DigitPlaylistMixin, SourceBase):
     manages_queue = True
     DIGIT_PLAYLISTS_FILE = DIGIT_PLAYLISTS_FILE
     action_map = {
-        "play": "toggle",
-        "pause": "toggle",
+        "play": "play",
+        "pause": "pause",
         "go": "toggle",
         "next": "next",
         "prev": "prev",
@@ -120,6 +127,7 @@ class PlexService(DigitPlaylistMixin, SourceBase):
 
         if has_creds:
             self._load_playlists()
+            self._load_last_played()
             self._detect_player()
 
             caps = await self.player_capabilities()
@@ -162,6 +170,53 @@ class PlexService(DigitPlaylistMixin, SourceBase):
             log.warning("Could not load playlists: %s", e)
             self.playlists = []
         self._reload_digit_playlists()
+
+    # ── Last-played persistence ──
+    # Stores {playlist_id, index} on disk so `activate_playback` resumes
+    # where the user left off after a service or device restart.
+
+    def _last_played_path(self) -> str:
+        if os.path.exists(os.path.dirname(LAST_PLAYED_PATH_PROD)):
+            return LAST_PLAYED_PATH_PROD
+        return LAST_PLAYED_PATH_DEV
+
+    def _load_last_played(self):
+        path = self._last_played_path()
+        try:
+            with open(path) as f:
+                data = json.load(f)
+            pid = data.get("playlist_id")
+            idx = int(data.get("index", 0) or 0)
+            if not pid:
+                return
+            for pl in self.playlists:
+                if pl.get("id") == pid:
+                    self._current_playlist = pl
+                    tracks = pl.get("tracks", [])
+                    self._current_index = max(0, min(idx, max(0, len(tracks) - 1)))
+                    log.info("Loaded last played: playlist=%s (%s) index=%d",
+                             pid, pl.get("name", "?"), self._current_index)
+                    return
+            log.info("Last-played playlist %s not in current library", pid)
+        except FileNotFoundError:
+            pass
+        except Exception as e:
+            log.warning("Failed to load last played: %s", e)
+
+    def _save_last_played(self):
+        if not self._current_playlist:
+            return
+        path = self._last_played_path()
+        try:
+            tmp = path + ".tmp"
+            with open(tmp, "w") as f:
+                json.dump({
+                    "playlist_id": self._current_playlist.get("id"),
+                    "index": self._current_index,
+                }, f, indent=2)
+            os.replace(tmp, path)
+        except Exception as e:
+            log.warning("Failed to save last played: %s", e)
 
     # -- SourceBase hooks --
 
@@ -265,6 +320,7 @@ class PlexService(DigitPlaylistMixin, SourceBase):
                 tracks = self._current_playlist.get('tracks', [])
                 if 0 <= index < len(tracks):
                     self._current_index = index
+                    self._save_last_played()
                     await self._play_current_track()
 
         elif cmd == 'stop':
@@ -312,6 +368,7 @@ class PlexService(DigitPlaylistMixin, SourceBase):
 
         self._current_playlist = playlist
         self._current_index = index
+        self._save_last_played()
 
         await self._play_current_track()
 
@@ -456,6 +513,7 @@ class PlexService(DigitPlaylistMixin, SourceBase):
             tracks = self._current_playlist.get('tracks', [])
             if self._current_index + 1 < len(tracks):
                 self._current_index += 1
+                self._save_last_played()
                 await self._play_current_track()
             else:
                 log.info("Already at last track")
@@ -470,6 +528,7 @@ class PlexService(DigitPlaylistMixin, SourceBase):
         if self._current_playlist:
             if self._current_index > 0:
                 self._current_index -= 1
+                self._save_last_played()
                 await self._play_current_track()
             else:
                 log.info("Already at first track")
@@ -624,6 +683,7 @@ class PlexService(DigitPlaylistMixin, SourceBase):
                     if self._current_index + 1 < len(tracks):
                         log.info("Track finished, advancing to next")
                         self._current_index += 1
+                        self._save_last_played()
                         await self._play_current_track()
                         return
                     else:

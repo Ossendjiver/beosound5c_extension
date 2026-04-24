@@ -91,6 +91,6 @@ touch ~/beosound5c/NO_TELEMETRY
 
 ## Acknowledgments
 
-Arc geometry in `web/js/arcs.js` derived from [Beolyd5](https://github.com/larsbaunwall/Beolyd5) by Lars Baunwall (Apache 2.0).
+`services/masterlink.py` is substantially a derivative work of [libpc2](https://github.com/toresbe/libpc2) by Tore Sinding Bekkedal (GPL-3.0). Arc geometry in `web/js/arcs.js` is derived from [Beolyd5](https://github.com/larsbaunwall/Beolyd5) by Lars Baunwall (Apache 2.0). See [THIRDPARTY.md](THIRDPARTY.md) for the full list.
 
 This project is not affiliated with Bang & Olufsen. "Bang & Olufsen", "BeoSound", "BeoRemote", and "MasterLink" are trademarks of Bang & Olufsen A/S.

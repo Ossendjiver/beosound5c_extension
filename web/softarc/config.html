@@ -110,6 +110,19 @@
         .restart-modal-status { font-size: 14px; color: #0af; margin-bottom: 8px; }
         .restart-modal-hint { font-size: 12px; color: #444; line-height: 1.5; }
 
+        /* Tone controls */
+        .cfg-tone-row { display: flex; align-items: center; justify-content: space-between; margin: 10px 0; gap: 12px; }
+        .cfg-tone-row > label { margin: 0; color: #aaa; font-size: 13px; flex-shrink: 0; min-width: 72px; text-transform: none; letter-spacing: 0; }
+        .cfg-tone-control { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; }
+        .cfg-tone-slider { -webkit-appearance: none; appearance: none; flex: 1; height: 4px; background: #1a1a1a; border-radius: 2px; outline: none; cursor: pointer; }
+        .cfg-tone-slider::-webkit-slider-thumb { -webkit-appearance: none; width: 18px; height: 18px; background: #0af; border-radius: 50%; cursor: pointer; border: none; }
+        .cfg-tone-slider::-moz-range-thumb { width: 18px; height: 18px; background: #0af; border-radius: 50%; cursor: pointer; border: none; }
+        .cfg-tone-val { font-size: 13px; color: #888; font-family: monospace; min-width: 36px; text-align: right; }
+        .cfg-tone-check { -webkit-appearance: none; appearance: none; width: 22px; height: 22px; background: #1a1a1a; border: 1px solid #3a3a3a; border-radius: 4px; cursor: pointer; position: relative; flex-shrink: 0; margin: 0; }
+        .cfg-tone-check:hover { border-color: #555; }
+        .cfg-tone-check:checked { background: #0af; border-color: #0af; }
+        .cfg-tone-check:checked::after { content: ""; position: absolute; left: 7px; top: 3px; width: 6px; height: 11px; border: solid #fff; border-width: 0 2px 2px 0; transform: rotate(45deg); }
+
         /* Instructions box */
         .cfg-instructions { font-size: 13px; color: #666; background: #0d0d0d; border: 1px solid #1a2a3a; border-radius: 6px; padding: 10px 12px; margin: 0 0 10px; line-height: 1.6; }
         .cfg-instructions a { color: #0af; text-decoration: none; }
@@ -223,6 +236,12 @@ const VOLUME_TYPES = [
 ];
 // Volume adapters that need a host/IP field
 const VOLUME_HOST_TYPES = ['beolab5', 'bluesound', 'c4amp'];
+// Volume adapters that do NOT expose a local DSP (the other device
+// handles bass/treble/loudness) — hide those tone controls for these.
+// Balance is broader: it's applied pre-output in our PipeWire chain
+// even for beolab5, so only the truly remote outputs exclude it.
+const TONE_EXCLUDED_TYPES = ['sonos', 'bluesound', 'beolab5'];
+const BALANCE_EXCLUDED_TYPES = ['sonos', 'bluesound'];
 
 const CFG_SOURCE_VIEWS = {
     'PLAYING':'playing','JOIN':'join','SPOTIFY':'spotify','TIDAL':'tidal',
@@ -293,6 +312,15 @@ function renderVolume(cfg) {
     const playerType = (cfg.player || {}).type || 'sonos';
     const compatTypes = VOLUME_TYPES.filter(([,, c]) => c.split(' ').includes(playerType));
     const showHost = VOLUME_HOST_TYPES.includes(v.type);
+    const showTone = !TONE_EXCLUDED_TYPES.includes(v.type);
+    const showBalance = !BALANCE_EXCLUDED_TYPES.includes(v.type);
+    const showSection = showTone || showBalance;
+    const tone = v.tone || {};
+    const bass = Number.isFinite(tone.bass) ? tone.bass : 0;
+    const treble = Number.isFinite(tone.treble) ? tone.treble : 0;
+    const balance = Number.isFinite(tone.balance) ? tone.balance : 0;
+    const loudness = !!tone.loudness;
+    const hidden = 'style="display:none"';
     return `<div class="cfg-card">
         <h2>Volume</h2>
         <label for="cfg-volume-type">Output type</label>
@@ -315,7 +343,42 @@ function renderVolume(cfg) {
                 <input id="cfg-volume-step" type="number" min="1" max="20" value="${v.step ?? 3}">
             </div>
         </div>
+        <div id="cfg-tone-cond" class="cfg-cond${showSection?' show':''}" style="margin-top:18px; padding-top:14px; border-top:1px solid #1a1a1a">
+            <div style="font-size:11px; font-weight:600; color:#666; letter-spacing:0.1em; text-transform:uppercase; margin-bottom:12px">Sound</div>
+            <div id="cfg-tone-bass-row" class="cfg-tone-row cfg-tone-full" ${showTone?'':hidden}>
+                <label>Bass</label>
+                <div class="cfg-tone-control">
+                    <input id="cfg-tone-bass" class="cfg-tone-slider" type="range" min="-10" max="10" step="1" value="${bass}">
+                    <span id="cfg-tone-bass-val" class="cfg-tone-val">${bass > 0 ? '+' : ''}${bass}</span>
+                </div>
+            </div>
+            <div id="cfg-tone-treble-row" class="cfg-tone-row cfg-tone-full" ${showTone?'':hidden}>
+                <label>Treble</label>
+                <div class="cfg-tone-control">
+                    <input id="cfg-tone-treble" class="cfg-tone-slider" type="range" min="-10" max="10" step="1" value="${treble}">
+                    <span id="cfg-tone-treble-val" class="cfg-tone-val">${treble > 0 ? '+' : ''}${treble}</span>
+                </div>
+            </div>
+            <div id="cfg-tone-balance-row" class="cfg-tone-row cfg-tone-balance" ${showBalance?'':hidden}>
+                <label>Balance</label>
+                <div class="cfg-tone-control">
+                    <input id="cfg-tone-balance" class="cfg-tone-slider" type="range" min="-10" max="10" step="1" value="${balance}">
+                    <span id="cfg-tone-balance-val" class="cfg-tone-val">${balanceLabel(balance)}</span>
+                </div>
+            </div>
+            <div id="cfg-tone-loudness-row" class="cfg-tone-row cfg-tone-full" style="margin-top:10px${showTone?'':'; display:none'}">
+                <label for="cfg-tone-loudness" style="cursor:pointer">Loudness</label>
+                <input id="cfg-tone-loudness" class="cfg-tone-check" type="checkbox" ${loudness?'checked':''}>
+            </div>
+            <div id="cfg-tone-status" class="hint" style="margin-top:8px; display:none"></div>
+        </div>
     </div>`;
+}
+
+function balanceLabel(b) {
+    if (b === 0) return '0';
+    if (b < 0) return `L${b}`;
+    return `R+${b}`;
 }
 
 function renderHA(cfg) {
@@ -442,8 +505,17 @@ function setupListeners() {
         updateVolumeOptions();
     });
     document.getElementById('cfg-volume-type')?.addEventListener('change', e => {
-        document.getElementById('cfg-volume-host-cond')?.classList.toggle('show', VOLUME_HOST_TYPES.includes(e.target.value));
+        const t = e.target.value;
+        const showTone = !TONE_EXCLUDED_TYPES.includes(t);
+        const showBalance = !BALANCE_EXCLUDED_TYPES.includes(t);
+        document.getElementById('cfg-volume-host-cond')?.classList.toggle('show', VOLUME_HOST_TYPES.includes(t));
+        document.getElementById('cfg-tone-cond')?.classList.toggle('show', showTone || showBalance);
+        document.querySelectorAll('.cfg-tone-full').forEach(el =>
+            el.style.display = showTone ? '' : 'none');
+        document.querySelectorAll('.cfg-tone-balance').forEach(el =>
+            el.style.display = showBalance ? '' : 'none');
     });
+    setupToneListeners();
     document.getElementById('cfg-transport-mode')?.addEventListener('change', e => {
         const show = ['mqtt','both'].includes(e.target.value);
         document.getElementById('cfg-mqtt-cond').classList.toggle('show', show);
@@ -457,6 +529,104 @@ function setupListeners() {
         if (e.target.classList.contains('cfg-ir-select')) updateIrDropdowns();
     });
     document.getElementById('cfg-save')?.addEventListener('click', saveConfig);
+}
+
+// ── Tone controls (bass / treble / balance / loudness) ──────────────
+// Talk to the router directly on port 8770 (it has CORS wide open).
+// On input: debounce ~150 ms per axis and POST the change so a slider
+// drag feels live.  On load: GET current state to re-sync in case
+// another client has changed values since this page was rendered.
+
+const TONE_ROUTER_URL = `http://${location.hostname}:8770/router/tone`;
+const _toneDebounce = {};
+// Short debounce so BeoLab 5 / PowerLink actually feel live under the
+// slider. Still coalesces bursts of input events (browsers fire them
+// per pixel of drag) without queueing a round-trip per event.
+const TONE_DEBOUNCE_MS = 60;
+
+function setupToneListeners() {
+    ['bass', 'treble', 'balance'].forEach(axis => {
+        const slider = document.getElementById(`cfg-tone-${axis}`);
+        const valEl = document.getElementById(`cfg-tone-${axis}-val`);
+        if (!slider) return;
+        slider.addEventListener('input', () => {
+            const v = parseInt(slider.value, 10);
+            if (valEl) valEl.textContent =
+                axis === 'balance' ? balanceLabel(v) : (v > 0 ? `+${v}` : `${v}`);
+            scheduleToneSend(axis, v);
+        });
+    });
+    const loud = document.getElementById('cfg-tone-loudness');
+    if (loud) {
+        loud.addEventListener('change', () =>
+            scheduleToneSend('loudness', loud.checked));
+    }
+    refreshToneFromRouter();
+}
+
+function scheduleToneSend(axis, value) {
+    if (_toneDebounce[axis]) clearTimeout(_toneDebounce[axis]);
+    _toneDebounce[axis] = setTimeout(() => {
+        _toneDebounce[axis] = null;
+        sendTone({[axis]: value});
+    }, TONE_DEBOUNCE_MS);
+}
+
+async function sendTone(body) {
+    const status = document.getElementById('cfg-tone-status');
+    try {
+        const resp = await fetch(TONE_ROUTER_URL, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(body),
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.error || `HTTP ${resp.status}`);
+        if (data.supported === false) {
+            toneShowStatus('Tone control not available on this output');
+            document.getElementById('cfg-tone-cond')?.classList.remove('show');
+            return;
+        }
+        if (status) status.style.display = 'none';
+    } catch (e) {
+        toneShowStatus(`Tone update failed: ${e.message}`);
+    }
+}
+
+function toneShowStatus(msg) {
+    const status = document.getElementById('cfg-tone-status');
+    if (!status) return;
+    status.textContent = msg;
+    status.style.display = 'block';
+}
+
+async function refreshToneFromRouter() {
+    try {
+        const resp = await fetch(TONE_ROUTER_URL);
+        if (!resp.ok) return;
+        const data = await resp.json();
+        if (data.supported === false) {
+            document.getElementById('cfg-tone-cond')?.classList.remove('show');
+            return;
+        }
+        applyToneToUi(data);
+    } catch { /* offline or router not up — leave UI defaults */ }
+}
+
+function applyToneToUi(data) {
+    for (const axis of ['bass', 'treble', 'balance']) {
+        if (!Number.isFinite(data[axis])) continue;
+        const slider = document.getElementById(`cfg-tone-${axis}`);
+        const valEl = document.getElementById(`cfg-tone-${axis}-val`);
+        if (slider) slider.value = data[axis];
+        if (valEl) valEl.textContent =
+            axis === 'balance' ? balanceLabel(data[axis])
+                               : (data[axis] > 0 ? `+${data[axis]}` : `${data[axis]}`);
+    }
+    if (typeof data.loudness === 'boolean') {
+        const loud = document.getElementById('cfg-tone-loudness');
+        if (loud) loud.checked = data.loudness;
+    }
 }
 
 function updateVolumeOptions() {
@@ -599,6 +769,28 @@ function buildConfig() {
     cfg.volume.output_name = document.getElementById('cfg-volume-output')?.value || '';
     cfg.volume.max = parseInt(document.getElementById('cfg-volume-max')?.value) || 80;
     cfg.volume.step = parseInt(document.getElementById('cfg-volume-step')?.value) || 3;
+    // Snapshot the live tone state into the config being saved so the
+    // user's sliders don't get reverted by a full-config POST racing
+    // masterlink's debounced persist.
+    const keepTone = !TONE_EXCLUDED_TYPES.includes(vt);
+    const keepBalance = !BALANCE_EXCLUDED_TYPES.includes(vt);
+    if (keepTone || keepBalance) {
+        cfg.volume.tone = {};
+        if (keepTone) {
+            const bass   = parseInt(document.getElementById('cfg-tone-bass')?.value);
+            const treble = parseInt(document.getElementById('cfg-tone-treble')?.value);
+            const loud   = document.getElementById('cfg-tone-loudness')?.checked;
+            cfg.volume.tone.bass   = Number.isFinite(bass)   ? bass   : 0;
+            cfg.volume.tone.treble = Number.isFinite(treble) ? treble : 0;
+            cfg.volume.tone.loudness = !!loud;
+        }
+        if (keepBalance) {
+            const bal = parseInt(document.getElementById('cfg-tone-balance')?.value);
+            cfg.volume.tone.balance = Number.isFinite(bal) ? bal : 0;
+        }
+    } else {
+        delete cfg.volume.tone;
+    }
     cfg.home_assistant = cfg.home_assistant || {};
     cfg.home_assistant.url = document.getElementById('cfg-ha-url')?.value || '';
     cfg.home_assistant.webhook_url = document.getElementById('cfg-ha-webhook')?.value || '';

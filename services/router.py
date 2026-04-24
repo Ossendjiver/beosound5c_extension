@@ -382,6 +382,20 @@ class EventRouter:
         # track_change round-trip (covers all origins: button, BeoRemote, MQTT).
         _SKIP_ACTIONS = frozenset({"next", "prev", "left", "right"})
 
+        # 0b. Color-button balance shortcuts.
+        # GREEN  → R+4    YELLOW → L-4    HOME → centre (0)
+        # Runs before any source / HA routing so it always wins on devices
+        # where the volume adapter actually exposes balance. Safe no-op on
+        # adapters whose set_tone returns None (Sonos / BlueSound).
+        _BAL_BUTTONS = {"green": 4, "yellow": -4, "home": 0}
+        if is_local and action in _BAL_BUTTONS and self._volume \
+                and hasattr(self._volume, "set_tone"):
+            bal = _BAL_BUTTONS[action]
+            logger.info("-> balance: %s → %+d", action, bal)
+            result = await self._volume.set_tone(balance=bal)
+            if result is not None:
+                return  # adapter handled it; skip HA / source routing
+
         # 1. Active source handles this action
         if is_local and active and active.state in ("playing", "paused") and action in active.handles:
             action_ts = self._latest_action_ts or 0
@@ -421,11 +435,13 @@ class EventRouter:
                     default, {**payload, "action_ts": action_ts})
                 return
 
-        # 1c. Transport actions direct to player
+        # 1c. Transport actions direct to player.
+        # "play" maps to resume (never toggle); "pause" stays pause; "go"
+        # is the one true toggle. Mirrors the per-source action_maps.
         _TRANSPORT_ACTIONS = {
             "go": "toggle", "left": "prev", "right": "next",
             "up": "next", "down": "prev",
-            "play": "toggle", "pause": "pause", "next": "next", "prev": "prev",
+            "play": "resume", "pause": "pause", "next": "next", "prev": "prev",
         }
         if is_local and not active and action in _TRANSPORT_ACTIONS:
             player_action = _TRANSPORT_ACTIONS[action]
@@ -956,6 +972,53 @@ async def handle_volume_report(request: web.Request) -> web.Response:
     return web.json_response({"status": "ok", "volume": router_instance.volume})
 
 
+async def handle_tone(request: web.Request) -> web.Response:
+    """GET  /router/tone — current tone state from the volume adapter,
+                           or {"supported": false} if the adapter can't
+                           do tone (e.g. Sonos / Bluesound / BeoLab 5).
+       POST /router/tone  body: any subset of
+            {"bass": int -10..10, "treble": int, "balance": int,
+             "loudness": bool}
+    """
+    adapter = router_instance._volume
+    if adapter is None or not hasattr(adapter, "set_tone"):
+        return web.json_response({"supported": False})
+
+    if request.method == "GET":
+        state = await adapter.get_tone()
+        if state is None:
+            return web.json_response({"supported": False})
+        return web.json_response({"supported": True, **state})
+
+    try:
+        data = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid json"}, status=400)
+
+    body: dict = {}
+    for key in ("bass", "treble", "balance"):
+        if key in data:
+            try:
+                v = int(data[key])
+            except (TypeError, ValueError):
+                return web.json_response(
+                    {"error": f"'{key}' must be an integer"}, status=400)
+            if v < -10 or v > 10:
+                return web.json_response(
+                    {"error": f"'{key}' must be between -10 and 10"},
+                    status=400)
+            body[key] = v
+    if "loudness" in data:
+        body["loudness"] = bool(data["loudness"])
+    if not body:
+        return web.json_response({"error": "no tone fields"}, status=400)
+
+    result = await adapter.set_tone(**body)
+    if result is None:
+        return web.json_response({"supported": False, "applied": body})
+    return web.json_response({"supported": True, "applied": body, **result})
+
+
 async def handle_output_off(request: web.Request) -> web.Response:
     if router_instance._volume:
         await router_instance._volume.power_off()
@@ -1191,6 +1254,8 @@ def create_app() -> web.Application:
     app.router.add_post("/router/view", handle_view)
     app.router.add_post("/router/volume", handle_volume_set)
     app.router.add_post("/router/volume/report", handle_volume_report)
+    app.router.add_get("/router/tone", handle_tone)
+    app.router.add_post("/router/tone", handle_tone)
     app.router.add_post("/router/playback_override", handle_playback_override)
     app.router.add_post("/router/output/off", handle_output_off)
     app.router.add_post("/router/output/on", handle_output_on)

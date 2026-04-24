@@ -564,6 +564,13 @@
 
         .up-to-date-callout.visible { display: flex; }
 
+        .update-check-failed-callout {
+            border-left-color: #aa8;
+            background: rgba(170, 170, 68, 0.04);
+            color: #aa8;
+            max-width: 260px;
+        }
+
         .up-to-date-check {
             font-size: 14px;
             line-height: 1;
@@ -806,6 +813,10 @@
                 <span class="up-to-date-check">✓</span>
                 Up to date
             </div>
+            <div id="update-check-failed-callout" class="up-to-date-callout update-check-failed-callout">
+                <span class="up-to-date-check">!</span>
+                Couldn't check for updates
+            </div>
             <div id="update-notes" class="update-notes" style="display:none">
                 <div class="update-notes-label">What's new</div>
                 <div class="update-notes-body" id="update-notes-body"></div>
@@ -976,6 +987,7 @@
                     html += row('Device', cfg.device || inp.hostname);
                     html += row('IP', inp.ip_address);
                     html += row('Version', inp.git_tag);
+                    if (inp.device_id) html += row('UUID', inp.device_id);
                     html += row('Uptime', inp.uptime);
 
                     // Sources configured
@@ -1693,8 +1705,10 @@
                         this.updateAvailable = true;
                         this.latestVersion = data.latest;
                         this.showUpdateInfo(data);
-                    } else if (data.current) {
+                    } else if (data.latest && data.current) {
                         this.showUpToDate();
+                    } else if (data.error) {
+                        this.showUpdateCheckFailed(data.error);
                     }
                 } catch (e) { /* offline or service not running */ }
             }
@@ -1715,6 +1729,12 @@
 
             showUpToDate() {
                 document.getElementById('up-to-date-callout').className = 'up-to-date-callout visible';
+            }
+
+            showUpdateCheckFailed(msg) {
+                const el = document.getElementById('update-check-failed-callout');
+                el.className = 'up-to-date-callout update-check-failed-callout visible';
+                if (msg) el.title = msg;
             }
 
             showReleaseNotes() {
