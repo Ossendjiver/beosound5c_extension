@@ -145,6 +145,15 @@ class TestMassQueuePayload:
                         "media_item": {
                             "item_id": "track-one",
                             "name": "Track One",
+                            "metadata": {
+                                "images": [
+                                    {
+                                        "type": "thumb",
+                                        "path": "https://images.example/track-one.jpg",
+                                        "provider": "library",
+                                    },
+                                ],
+                            },
                         },
                     },
                     {
@@ -164,6 +173,8 @@ class TestMassQueuePayload:
         assert [track["title"] for track in queue["tracks"]] == ["Track One", "Track Two"]
         assert queue["tracks"][0]["uri"] == ""
         assert queue["tracks"][0]["current"] is True
+        assert "imageproxy?path=" in queue["tracks"][0]["artwork"]
+        source._cache_image_locally.assert_not_called()
 
 
 class TestMassLibraryMenu:

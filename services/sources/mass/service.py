@@ -1735,8 +1735,13 @@ class MassSource(SourceBase):
 
             artist = self._extract_queue_artist(item)
             image = item.get("image") or self._get_img(media_item, base) or ""
-            if image:
-                image = await self._cache_image_locally(image)
+            if isinstance(image, str) and image.startswith("http"):
+                # Queue requests must stay fast enough for the router timeout;
+                # reuse cached artwork when available but never block on a
+                # fresh network fetch while assembling the queue payload.
+                cached_name = self._find_cached_art_name(image)
+                if cached_name:
+                    image = f"{ART_ROUTE_PREFIX}/{cached_name}"
 
             name = self._extract_queue_name(item, f"Queue Item {index + 1}")
             marker = self._extract_queue_item_marker(item, index)
