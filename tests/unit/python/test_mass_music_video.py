@@ -133,6 +133,38 @@ class TestMassQueuePayload:
         assert queue["tracks"][1]["title"] == "Track Two"
         assert queue["tracks"][1]["current"] is True
 
+    def test_get_queue_keeps_items_without_playable_uri(self):
+        source = _make_mass_source()
+        source._get_queue_snapshot = AsyncMock(return_value={
+            "resolved_queue_id": "queue-main",
+            "current_index": 0,
+            "items": {
+                "items": [
+                    {
+                        "queue_item_id": "one",
+                        "media_item": {
+                            "item_id": "track-one",
+                            "name": "Track One",
+                        },
+                    },
+                    {
+                        "queue_item_id": "two",
+                        "name": "Track Two",
+                        "artist": "Artist B",
+                    },
+                ]
+            },
+        })
+        source._resolve_queue_candidates = AsyncMock(return_value=["queue-main"])
+        source._cache_image_locally = AsyncMock(side_effect=lambda image: image)
+
+        queue = _run(source.get_queue())
+
+        assert queue["total"] == 2
+        assert [track["title"] for track in queue["tracks"]] == ["Track One", "Track Two"]
+        assert queue["tracks"][0]["uri"] == ""
+        assert queue["tracks"][0]["current"] is True
+
 
 class TestMassLibraryMenu:
     def test_normalize_renames_legacy_mixes_root_to_radio(self):

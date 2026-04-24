@@ -180,8 +180,7 @@ html, body {
   display: flex;
   flex-direction: column;
   padding: 44px 58px 46px;
-  background: radial-gradient(circle at 28% 24%, rgba(30, 62, 92, 0.28), transparent 42%),
-              linear-gradient(180deg, rgba(8, 10, 14, 0.96), rgba(0, 0, 0, 0.96));
+  background: #000;
 }
 
 .queue-view-header {

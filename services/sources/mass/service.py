@@ -1732,8 +1732,6 @@ class MassSource(SourceBase):
                 or index
             )
             uri = self._extract_queue_uri(item)
-            if not uri:
-                continue
 
             artist = self._extract_queue_artist(item)
             image = item.get("image") or self._get_img(media_item, base) or ""
