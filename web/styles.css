@@ -211,7 +211,16 @@ html, body {
   display: flex;
   flex-direction: column;
   gap: 7px;
-  overflow: hidden;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-right: 6px;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  scroll-behavior: smooth;
+}
+
+.queue-view-list::-webkit-scrollbar {
+  display: none;
 }
 
 .queue-view-item {
@@ -238,6 +247,17 @@ html, body {
 .queue-view-item.current .queue-view-index,
 .queue-view-item.current .queue-view-title {
   color: #9ed1ff;
+}
+
+.queue-view-item.past:not(.selected):not(.current) {
+  border-color: rgba(255, 255, 255, 0.03);
+  background: rgba(255, 255, 255, 0.018);
+}
+
+.queue-view-item.past:not(.selected):not(.current) .queue-view-index,
+.queue-view-item.past:not(.selected):not(.current) .queue-view-title,
+.queue-view-item.past:not(.selected):not(.current) .queue-view-subtitle {
+  color: rgba(188, 198, 212, 0.4);
 }
 
 .queue-view-index {

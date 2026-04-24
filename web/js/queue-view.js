@@ -13,6 +13,8 @@
     let message = '';
     let confirm = null;
     let refreshTimer = null;
+    let userHasNavigated = false;
+    let pendingScrollMode = '';
 
     function itemId(item) {
         return item?.queue_item_id || item?.item_id || item?.id || `index:${item?.index ?? 0}`;
@@ -44,13 +46,32 @@
         message = '';
     }
 
+    function clampSelectedIndex(nextIndex) {
+        return Math.max(0, Math.min(items.length - 1, Number(nextIndex) || 0));
+    }
+
+    function syncScrollPosition(list, mode) {
+        if (!list || !items.length) return;
+        const row = list.querySelector(`.queue-view-item[data-index="${selectedIndex}"]`);
+        if (!row) return;
+        if (mode === 'top') {
+            list.scrollTop = Math.max(0, row.offsetTop);
+            return;
+        }
+        row.scrollIntoView({
+            block: 'nearest',
+            inline: 'nearest',
+            behavior: 'auto',
+        });
+    }
+
     function render() {
         if (!container) return;
         const list = container.querySelector('.queue-view-list');
         const status = container.querySelector('.queue-view-status');
         const count = container.querySelector('.queue-view-count');
         if (count) {
-            count.textContent = items.length ? `${items.length} item${items.length === 1 ? '' : 's'}` : 'No items';
+            count.textContent = items.length ? `${selectedIndex + 1} / ${items.length}` : 'No items';
         }
         if (status) {
             status.textContent = busy ? 'Working...' : (message || 'Left removes, right plays next');
@@ -67,6 +88,7 @@
             row.className = 'queue-view-item';
             if (index === selectedIndex) row.classList.add('selected');
             if (index === currentIndex || item.current) row.classList.add('current');
+            if (currentIndex >= 0 && index < currentIndex) row.classList.add('past');
             row.dataset.index = String(index);
             const title = String(item.name || item.title || 'Queued Item').trim();
             row.innerHTML = `
@@ -78,15 +100,22 @@
             `;
             row.addEventListener('click', () => {
                 selectedIndex = index;
+                userHasNavigated = true;
+                pendingScrollMode = 'nearest';
                 clearConfirm();
                 render();
             });
             list.appendChild(row);
         });
+        if (pendingScrollMode) {
+            syncScrollPosition(list, pendingScrollMode);
+            pendingScrollMode = '';
+        }
     }
 
     async function refresh() {
         if (!container) return;
+        const hadItems = items.length > 0;
         busy = true;
         message = items.length ? message : 'Loading queue...';
         render();
@@ -100,7 +129,17 @@
             } else {
                 items = Array.isArray(data.tracks) ? data.tracks : [];
                 currentIndex = Number.isFinite(Number(data.current_index)) ? Number(data.current_index) : -1;
-                selectedIndex = Math.max(0, Math.min(selectedIndex, Math.max(0, items.length - 1)));
+                if (items.length) {
+                    if (!userHasNavigated || !hadItems) {
+                        selectedIndex = clampSelectedIndex(currentIndex >= 0 ? currentIndex : 0);
+                        pendingScrollMode = currentIndex >= 0 ? 'top' : 'nearest';
+                    } else {
+                        selectedIndex = clampSelectedIndex(selectedIndex);
+                        pendingScrollMode = 'nearest';
+                    }
+                } else {
+                    selectedIndex = 0;
+                }
                 message = items.length ? '' : 'Queue empty';
             }
         } catch (error) {
@@ -159,7 +198,9 @@
     function handleNavEvent(data) {
         if (!items.length) return true;
         const delta = String(data?.direction || '').toLowerCase() === 'counter' ? -1 : 1;
-        selectedIndex = Math.max(0, Math.min(items.length - 1, selectedIndex + delta));
+        selectedIndex = clampSelectedIndex(selectedIndex + delta);
+        userHasNavigated = true;
+        pendingScrollMode = 'nearest';
         clearConfirm();
         render();
         return true;
@@ -186,6 +227,8 @@
         busy = false;
         message = 'Loading queue...';
         confirm = null;
+        userHasNavigated = false;
+        pendingScrollMode = '';
         render();
         void refresh();
         refreshTimer = setInterval(() => { void refresh(); }, 5000);
