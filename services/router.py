@@ -16,6 +16,8 @@ and provides a source registry for dynamic sources.
 Port: 8770
 """
 
+from __future__ import annotations
+
 import asyncio
 import logging
 import os
@@ -544,7 +546,7 @@ class EventRouter:
     async def _forward_to_source(self, source: Source, payload: dict):
         if not source.command_url or not self._session:
             return
-        if isinstance(payload, dict):
+        if isinstance(payload, dict) and payload.get("action") != "stop":
             payload = {
                 **payload,
                 "playback": self.playback_state,

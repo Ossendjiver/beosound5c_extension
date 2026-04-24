@@ -320,16 +320,6 @@ function handleSourceChange(uiStore, data) {
         }
     }
 
-    // Remote-triggered source start: arm immersive mode so the
-    // subsequent navigate to menu/playing drops straight into the
-    // immersive view instead of flashing the menu for a beat. Only
-    // when we transition from no-source (or a different source) to a
-    // real source — clearing or re-registering the same source
-    // shouldn't force-enter immersive.
-    if (sourceId && sourceId !== prevSource && window.ImmersiveMode?.armEagerEntry) {
-        window.ImmersiveMode.armEagerEntry();
-    }
-
     // Clear canvas when switching away from Spotify
     if (sourceId !== 'spotify') {
         uiStore.mediaInfo.canvas_url = '';

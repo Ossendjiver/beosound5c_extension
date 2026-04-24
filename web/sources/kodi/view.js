@@ -56,6 +56,7 @@ const _kodiPlayingPreset = (() => {
         style.id = 'kodi-playing-preset-style';
         style.textContent = `
             #now-playing.kodi-playing-active { position: relative; overflow: hidden; }
+            #now-playing.kodi-playing-active.immersive-active { overflow: visible; }
             #now-playing.kodi-playing-active .kodi-playing-overlay {
                 position: absolute; inset: 0; display: flex; justify-content: flex-end;
                 pointer-events: none; z-index: 3;
@@ -133,7 +134,11 @@ const _kodiPlayingPreset = (() => {
             }
             #now-playing.kodi-playing-active .kodi-playing-indicators {
                 position: absolute; left: 50%; bottom: 26px; transform: translateX(-50%);
-                display: flex; gap: 10px; z-index: 4;
+                display: flex; gap: 10px; z-index: 4; opacity: 0;
+                transition: opacity 180ms ease;
+            }
+            #now-playing.kodi-playing-active[data-kodi-page="transfer"] .kodi-playing-indicators {
+                opacity: 1;
             }
             #now-playing.kodi-playing-active .kodi-playing-indicator {
                 width: 8px; height: 8px; border-radius: 999px; background: rgba(255, 255, 255, 0.22);
@@ -166,17 +171,18 @@ const _kodiPlayingPreset = (() => {
             .map((target) => ({ ...target, name: target.name || target.id }));
     }
 
-    function actionFocusIndex() {
+    function youtubeFocusIndex() {
         return transferTargets().length;
     }
 
-    function youtubeFocusIndex() {
-        return transferTargets().length + 1;
+    function canShowTransferOverlay() {
+        return window.uiStore?.currentRoute === 'menu/playing'
+            && window.uiStore?.menuVisible !== false;
     }
 
     function clampTransferFocus() {
         const targets = transferTargets();
-        const maxFocus = targets.length + 1;
+        const maxFocus = Math.max(0, targets.length);
         transferState.selectedIndex = Math.max(0, Math.min(transferState.selectedIndex, Math.max(0, targets.length - 1)));
         transferState.focusIndex = Math.max(0, Math.min(transferState.focusIndex || 0, maxFocus));
         if (transferState.focusIndex < targets.length) {
@@ -191,10 +197,32 @@ const _kodiPlayingPreset = (() => {
     }
 
     function stepTransferFocus(delta) {
+        if (!canShowTransferOverlay()) {
+            currentPageIndex = 0;
+            if (mountedContainer) renderOverlay(mountedContainer);
+            return;
+        }
+
         const targets = transferTargets();
-        const count = targets.length + 2;
-        if (!count) return;
-        transferState.focusIndex = ((transferState.focusIndex || 0) + delta + count) % count;
+        const count = targets.length + 1;
+        if (!count) {
+            currentPageIndex = 1;
+            if (mountedContainer) renderOverlay(mountedContainer);
+            return;
+        }
+
+        if (currentPageIndex !== 1) {
+            currentPageIndex = 1;
+            transferState.focusIndex = delta < 0 ? count - 1 : 0;
+        } else {
+            const nextFocus = (transferState.focusIndex || 0) + delta;
+            if (nextFocus < 0 || nextFocus >= count) {
+                currentPageIndex = 0;
+                if (mountedContainer) renderOverlay(mountedContainer);
+                return;
+            }
+            transferState.focusIndex = nextFocus;
+        }
         if (transferState.focusIndex < targets.length) {
             transferState.selectedIndex = transferState.focusIndex;
         }
@@ -209,36 +237,23 @@ const _kodiPlayingPreset = (() => {
         if (index >= 0) {
             transferState.selectedIndex = index;
             transferState.focusIndex = index;
-            transferState.message = '';
+            transferState.message = `Selected ${targets[index].name}`;
             transferState.error = '';
             if (mountedContainer) renderOverlay(mountedContainer);
         }
-    }
-
-    async function setSelectedTarget() {
-        const target = currentTransferTarget();
-        if (!target) return true;
-        if (window.PlaybackTargets?.setVideoTarget) {
-            await window.PlaybackTargets.setVideoTarget(target.id);
-        }
-        transferState.message = `Selected ${target.name}`;
-        transferState.error = '';
-        if (mountedContainer) renderOverlay(mountedContainer);
-        return true;
     }
 
     function activateTransferFocus() {
         const targets = transferTargets();
         clampTransferFocus();
         if (transferState.focusIndex < targets.length) {
-            void setSelectedTarget();
+            void transferQueueToSelected({ closeOnSuccess: true });
             return true;
         }
-        if (transferState.focusIndex === actionFocusIndex()) {
-            void transferQueueToSelected();
-            return true;
-        }
-        return toggleYoutubeVideos();
+        const handled = toggleYoutubeVideos();
+        currentPageIndex = 0;
+        if (mountedContainer) renderOverlay(mountedContainer);
+        return handled;
     }
 
     function ensureOverlay(container) {
@@ -267,16 +282,14 @@ const _kodiPlayingPreset = (() => {
             const option = event.target.closest('[data-kodi-target]');
             if (option) {
                 selectTransferTarget(option.dataset.kodiTarget);
-                return;
-            }
-            if (event.target.closest('[data-kodi-action]')) {
-                transferState.focusIndex = actionFocusIndex();
-                void transferQueueToSelected();
+                void transferQueueToSelected({ closeOnSuccess: true });
                 return;
             }
             if (event.target.closest('[data-youtube-toggle]')) {
                 transferState.focusIndex = youtubeFocusIndex();
                 toggleYoutubeVideos();
+                currentPageIndex = 0;
+                if (mountedContainer) renderOverlay(mountedContainer);
             }
         });
         container.classList.add('kodi-playing-active');
@@ -326,17 +339,6 @@ const _kodiPlayingPreset = (() => {
             button.textContent = target.name;
             targetsEl.appendChild(button);
         });
-        const action = document.createElement('button');
-        action.type = 'button';
-        action.className = 'kodi-transfer-action';
-        action.dataset.kodiAction = 'select';
-        action.disabled = transferState.sending || !selected;
-        if (transferState.focusIndex === actionFocusIndex()) action.classList.add('focused');
-        action.textContent = transferState.sending
-            ? 'Transferring...'
-            : (selected ? `Transfer to ${selected.name}` : 'No targets configured');
-        targetsEl.appendChild(action);
-
         const youtubeEnabled = youtubeVideosEnabled();
         const youtube = document.createElement('button');
         youtube.type = 'button';
@@ -356,7 +358,7 @@ const _kodiPlayingPreset = (() => {
     function renderOverlay(container) {
         if (!container) return;
         const overlay = ensureOverlay(container);
-        const pageId = PAGE_IDS[currentPageIndex] || 'now';
+        const pageId = currentPageIndex === 1 && canShowTransferOverlay() ? 'transfer' : 'now';
         const isPaused = String(lastMedia.state || '').trim().toLowerCase() === 'paused';
         container.dataset.kodiPage = pageId;
         container.classList.toggle('is-kodi-paused', isPaused);
@@ -384,7 +386,8 @@ const _kodiPlayingPreset = (() => {
         renderTransferOptions(targetsEl);
     }
 
-    async function transferQueueToSelected() {
+    async function transferQueueToSelected(options = {}) {
+        const closeOnSuccess = options.closeOnSuccess === true;
         if (transferState.sending) return true;
         const target = currentTransferTarget();
         if (!target) return true;
@@ -418,6 +421,9 @@ const _kodiPlayingPreset = (() => {
             } else {
                 transferState.message = `Queue transferred to ${target.name}`;
                 transferState.error = '';
+                if (closeOnSuccess) {
+                    currentPageIndex = 0;
+                }
             }
         } catch (error) {
             transferState.error = `Unable to transfer to ${target.name}`;
@@ -435,14 +441,19 @@ const _kodiPlayingPreset = (() => {
         lastPageCycleAt = now;
         const direction = String(data?.direction || 'clock').toLowerCase();
         const delta = direction === 'counter' ? -1 : 1;
-        currentPageIndex = (currentPageIndex + delta + PAGE_IDS.length) % PAGE_IDS.length;
+        stepTransferFocus(delta);
         if (mountedContainer) renderOverlay(mountedContainer);
         return true;
     }
 
     function handleButton(button) {
-        if ((PAGE_IDS[currentPageIndex] || 'now') !== 'transfer') return false;
         const normalized = String(button || '').toLowerCase();
+        if (normalized === '__close_transfer_overlay__') {
+            currentPageIndex = 0;
+            if (mountedContainer) renderOverlay(mountedContainer);
+            return true;
+        }
+        if (currentPageIndex !== 1 || !canShowTransferOverlay()) return false;
         if (normalized === 'left') {
             stepTransferFocus(-1);
             return true;
@@ -461,16 +472,16 @@ const _kodiPlayingPreset = (() => {
     }
 
     document.addEventListener('bs5c:music-video-preference', () => {
-        if (mountedContainer && (PAGE_IDS[currentPageIndex] || 'now') === 'transfer') {
+        if (mountedContainer && currentPageIndex === 1) {
             renderOverlay(mountedContainer);
         }
     });
 
     document.addEventListener('bs5c:playback-targets', () => {
-        if (mountedContainer && (PAGE_IDS[currentPageIndex] || 'now') === 'transfer') {
+        if (mountedContainer && currentPageIndex === 1) {
             const targets = transferTargets();
             transferState.selectedIndex = Math.max(0, Math.min(transferState.selectedIndex, Math.max(0, targets.length - 1)));
-            transferState.focusIndex = Math.max(0, Math.min(transferState.focusIndex || 0, targets.length + 1));
+            transferState.focusIndex = Math.max(0, Math.min(transferState.focusIndex || 0, Math.max(0, targets.length)));
             renderOverlay(mountedContainer);
         }
     });
@@ -508,6 +519,12 @@ const _kodiPlayingPreset = (() => {
         handleButton,
     };
 })();
+
+document.addEventListener('bs5c:menu-visibility', (event) => {
+    if (event.detail?.visible === false) {
+        _kodiPlayingPreset.handleButton('__close_transfer_overlay__');
+    }
+});
 
 const _kodiController = (() => {
     function currentRoute() {

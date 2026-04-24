@@ -156,6 +156,58 @@ class TestMassLibraryMenu:
             "uri": "playlist://library/98",
         })
 
+    def test_build_playlist_folder_node_can_create_mixes_root(self):
+        source = _make_mass_source()
+
+        node = source._build_playlist_folder_node(
+            {
+                "item_id": "98",
+                "name": "Anything",
+                "provider": "library",
+            },
+            [
+                {"item_id": "track-1", "name": "Track One", "uri": "mass://track-one"},
+            ],
+            "http://mass.example",
+            root_id="playlist_mixes",
+            root_name="Mixes",
+        )
+
+        assert node["id"] == "playlist_mixes"
+        assert node["name"] == "Mixes"
+        assert node["url"] == "playlist://library/98"
+        assert node["tracks"][0]["url"] == "mass://track-one"
+
+    def test_normalize_renames_and_sorts_podcasts_root(self):
+        source = _make_mass_source()
+        tree = [
+            {
+                "id": "podcasts",
+                "name": "Old",
+                "tracks": [
+                    {"id": "b", "name": "Zulu"},
+                    {"id": "a", "name": "Alpha"},
+                ],
+            },
+        ]
+
+        source._normalize_library_tree(tree)
+
+        assert tree[0]["name"] == "Podcasts"
+        assert [item["name"] for item in tree[0]["tracks"]] == ["Alpha", "Zulu"]
+
+    def test_library_status_includes_podcasts(self):
+        source = _make_mass_source()
+        source._library_data = [
+            {"id": "podcasts", "tracks": [{}, {}]},
+            {"id": "playlist_mixes", "tracks": [{}]},
+        ]
+
+        status = source._build_library_status()
+
+        assert status["podcasts"] == 2
+        assert status["mixes"] == 1
+
 
 class TestMassMusicVideoRouting:
     def test_router_surfaces_cached_music_video_for_mass_payload(self):

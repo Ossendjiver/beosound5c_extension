@@ -191,9 +191,13 @@ const _massPlayingPreset = (() => {
         const style = document.createElement('style');
         style.id = 'mass-playing-preset-style';
         style.textContent = `
-            #now-playing {
+            #now-playing.mass-playing-active {
                 position: relative;
                 overflow: hidden;
+            }
+
+            #now-playing.mass-playing-active.immersive-active {
+                overflow: visible;
             }
 
             #now-playing.mass-playing-active .mass-playing-overlay {
@@ -263,6 +267,12 @@ const _massPlayingPreset = (() => {
                 display: flex;
                 gap: 10px;
                 z-index: 4;
+                opacity: 0;
+                transition: opacity 180ms ease;
+            }
+
+            #now-playing.mass-playing-active[data-mass-page="transfer"] .mass-playing-indicators {
+                opacity: 1;
             }
 
             #now-playing.mass-playing-active .mass-playing-indicator {
@@ -489,17 +499,15 @@ const _massPlayingPreset = (() => {
             if (youtubeToggle) {
                 transferState.focusIndex = youtubeFocusIndex();
                 toggleYoutubeVideos();
+                currentPageIndex = 0;
+                if (mountedContainer) renderOverlay(mountedContainer);
                 return;
             }
             const option = event.target.closest('[data-transfer-target]');
             if (option) {
                 selectTransferTarget(option.dataset.transferTarget);
+                void transferQueueToSelected({ closeOnSuccess: true });
                 return;
-            }
-            const action = event.target.closest('[data-transfer-action]');
-            if (action) {
-                transferState.focusIndex = actionFocusIndex();
-                void transferQueueToSelected();
             }
         });
         container.classList.add('mass-playing-active');
@@ -545,7 +553,7 @@ const _massPlayingPreset = (() => {
     }
 
     function currentPageId() {
-        return PAGE_IDS[currentPageIndex] || 'now';
+        return currentPageIndex === 1 && canShowTransferOverlay() ? 'transfer' : 'now';
     }
 
     function transferTargets() {
@@ -559,17 +567,18 @@ const _massPlayingPreset = (() => {
             .map((target) => ({ ...target, name: target.name || target.id }));
     }
 
-    function actionFocusIndex() {
+    function youtubeFocusIndex() {
         return transferTargets().length;
     }
 
-    function youtubeFocusIndex() {
-        return transferTargets().length + 1;
+    function canShowTransferOverlay() {
+        return window.uiStore?.currentRoute === 'menu/playing'
+            && window.uiStore?.menuVisible !== false;
     }
 
     function clampTransferFocus() {
         const targets = transferTargets();
-        const maxFocus = targets.length + 1;
+        const maxFocus = Math.max(0, targets.length);
         transferState.selectedIndex = Math.max(0, Math.min(transferState.selectedIndex, Math.max(0, targets.length - 1)));
         transferState.focusIndex = Math.max(0, Math.min(transferState.focusIndex || 0, maxFocus));
         if (transferState.focusIndex < targets.length) {
@@ -589,17 +598,39 @@ const _massPlayingPreset = (() => {
         if (nextIndex >= 0) {
             transferState.selectedIndex = nextIndex;
             transferState.focusIndex = nextIndex;
-            transferState.message = '';
+            transferState.message = `Selected ${targets[nextIndex].name}`;
             transferState.error = '';
             if (mountedContainer) renderOverlay(mountedContainer);
         }
     }
 
     function stepTransferFocus(delta) {
+        if (!canShowTransferOverlay()) {
+            currentPageIndex = 0;
+            if (mountedContainer) renderOverlay(mountedContainer);
+            return;
+        }
+
         const targets = transferTargets();
-        const count = targets.length + 2;
-        if (!count) return;
-        transferState.focusIndex = ((transferState.focusIndex || 0) + delta + count) % count;
+        const count = targets.length + 1;
+        if (!count) {
+            currentPageIndex = 1;
+            if (mountedContainer) renderOverlay(mountedContainer);
+            return;
+        }
+
+        if (currentPageId() !== 'transfer') {
+            currentPageIndex = 1;
+            transferState.focusIndex = delta < 0 ? count - 1 : 0;
+        } else {
+            const nextFocus = (transferState.focusIndex || 0) + delta;
+            if (nextFocus < 0 || nextFocus >= count) {
+                currentPageIndex = 0;
+                if (mountedContainer) renderOverlay(mountedContainer);
+                return;
+            }
+            transferState.focusIndex = nextFocus;
+        }
         if (transferState.focusIndex < targets.length) {
             transferState.selectedIndex = transferState.focusIndex;
         }
@@ -613,16 +644,13 @@ const _massPlayingPreset = (() => {
         clampTransferFocus();
         if (transferState.focusIndex < targets.length) {
             transferState.selectedIndex = transferState.focusIndex;
-            transferState.message = `Selected ${targets[transferState.selectedIndex].name}`;
-            transferState.error = '';
-            if (mountedContainer) renderOverlay(mountedContainer);
+            void transferQueueToSelected({ closeOnSuccess: true });
             return true;
         }
-        if (transferState.focusIndex === actionFocusIndex()) {
-            void transferQueueToSelected();
-            return true;
-        }
-        return toggleYoutubeVideos();
+        const handled = toggleYoutubeVideos();
+        currentPageIndex = 0;
+        if (mountedContainer) renderOverlay(mountedContainer);
+        return handled;
     }
 
     function renderTransferOptions(transferEl) {
@@ -641,17 +669,6 @@ const _massPlayingPreset = (() => {
             button.textContent = target.name;
             transferEl.appendChild(button);
         });
-
-        const action = document.createElement('button');
-        action.type = 'button';
-        action.className = 'mass-transfer-action';
-        action.dataset.transferAction = 'send';
-        action.disabled = transferState.sending || !selected;
-        if (transferState.focusIndex === actionFocusIndex()) action.classList.add('focused');
-        action.textContent = transferState.sending
-            ? 'Transferring...'
-            : (selected ? `Transfer to ${selected.name}` : 'No targets configured');
-        transferEl.appendChild(action);
 
         const youtubeEnabled = youtubeVideosEnabled();
         const youtube = document.createElement('button');
@@ -673,7 +690,8 @@ const _massPlayingPreset = (() => {
         transferEl.appendChild(youtube);
     }
 
-    async function transferQueueToSelected() {
+    async function transferQueueToSelected(options = {}) {
+        const closeOnSuccess = options.closeOnSuccess === true;
         if (transferState.sending) return true;
         const target = currentTransferTarget();
         if (!target) return true;
@@ -706,6 +724,9 @@ const _massPlayingPreset = (() => {
             } else {
                 transferState.message = `Queue transferred to ${target.name}`;
                 transferState.error = '';
+                if (closeOnSuccess) {
+                    currentPageIndex = 0;
+                }
                 setTimeout(() => {
                     void refreshNowPlaying(true);
                 }, 500);
@@ -987,16 +1008,18 @@ const _massPlayingPreset = (() => {
         lastPageCycleAt = now;
         const direction = String(data?.direction || 'clock').toLowerCase();
         const delta = direction === 'counter' ? -1 : 1;
-        currentPageIndex = (currentPageIndex + delta + PAGE_IDS.length) % PAGE_IDS.length;
-        if (mountedContainer) {
-            renderOverlay(mountedContainer);
-        }
+        stepTransferFocus(delta);
         return true;
     }
 
     function handleTransferButton(button) {
-        if (currentPageId() !== 'transfer') return false;
         const normalized = String(button || '').toLowerCase();
+        if (normalized === '__close_transfer_overlay__') {
+            currentPageIndex = 0;
+            if (mountedContainer) renderOverlay(mountedContainer);
+            return true;
+        }
+        if (currentPageId() !== 'transfer') return false;
         if (normalized === 'left') {
             stepTransferFocus(-1);
             return true;
@@ -1105,6 +1128,12 @@ const _massPlayingPreset = (() => {
         },
     };
 })();
+
+document.addEventListener('bs5c:menu-visibility', (event) => {
+    if (event.detail?.visible === false) {
+        _massPlayingPreset.handleButton('__close_transfer_overlay__');
+    }
+});
 
 const _massController = (() => {
     function currentRoute() {

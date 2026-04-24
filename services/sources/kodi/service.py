@@ -2091,8 +2091,9 @@ class KodiSource(SourceBase):
         }
 
     async def handle_command(self, cmd, data) -> dict:
-        target_id = self._apply_playback_target_from_data(data)
-        target = self._target_config_for_id(target_id)
+        source_switch_stop = cmd == "transport_stop" and str(data.get("action") or "").strip().lower() == "stop"
+        target_id = "" if source_switch_stop else self._apply_playback_target_from_data(data)
+        target = {} if source_switch_stop else self._target_config_for_id(target_id)
         if cmd in {"transport_toggle", "transport_stop", "transport_next", "transport_previous"}:
             return await self._handle_transport_command(cmd, target=target or None)
         if cmd == "transfer_queue":

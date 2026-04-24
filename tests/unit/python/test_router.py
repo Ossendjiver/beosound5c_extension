@@ -299,3 +299,46 @@ class TestSpawnIntegration:
             assert len(router._background_tasks) == 0
 
         asyncio.run(run())
+
+
+class TestForwardToSourcePayloads:
+    def test_source_switch_stop_does_not_inject_playback_targets(self):
+        router = make_router()
+        router.playback_state = {
+            "audio_target_id": "audio-target",
+            "video_target_id": "video-target",
+            "audio_targets": [],
+            "video_targets": [],
+            "music_video_enabled": True,
+        }
+
+        sent = {}
+
+        class _FakeResponse:
+            status = 200
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+        class _FakeSession:
+            def post(self, url, json=None, timeout=None, headers=None):
+                sent["url"] = url
+                sent["json"] = json
+                sent["headers"] = headers
+                return _FakeResponse()
+
+        router._session = _FakeSession()
+
+        source = MagicMock()
+        source.id = "mass"
+        source.command_url = "http://localhost:8783/command"
+
+        async def run():
+            await router._forward_to_source(source, {"action": "stop"})
+
+        asyncio.run(run())
+
+        assert sent["json"] == {"action": "stop"}

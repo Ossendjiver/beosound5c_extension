@@ -12,6 +12,7 @@ Library structure served at /playlists:
     { id: "songs",     name: "Songs",     tracks: [ <track-leaf>,    ... ] },
     { id: "playlists",       name: "Playlists", tracks: [ <playlist-folder>, ... ] },
     { id: "playlist_mixes",  name: "Mixes",     tracks: [ <track-leaf>, ... ] },
+    { id: "podcasts",        name: "Podcasts",  tracks: [ <podcast-folder>, ... ] },
     { id: "mixes",           name: "Radio",     tracks: [ <radio-leaf>, ... ] },
   ]
 
@@ -22,7 +23,6 @@ Node contracts (enforced at construction + _finalize_node):
 """
 
 import asyncio
-import copy
 import datetime
 import hashlib
 import json
@@ -88,6 +88,8 @@ MASS_MIXES_PLAYLIST_ID = "98"
 MASS_MIXES_PLAYLIST_PROVIDER = "library"
 MASS_MIXES_PLAYLIST_ROOT_ID = "playlist_mixes"
 MASS_MIXES_PLAYLIST_TITLE = "Mixes"
+MASS_PODCASTS_ROOT_ID = "podcasts"
+MASS_PODCASTS_ROOT_TITLE = "Podcasts"
 MASS_RADIO_ROOT_ID = "mixes"
 MASS_RADIO_ROOT_TITLE = "Radio"
 
@@ -348,7 +350,14 @@ class MassSource(SourceBase):
                     artist_node["tracks"] = self._sorted_nodes(artist_node.get("tracks"))
             artists_root["tracks"] = self._sorted_nodes(artists_root.get("tracks"))
 
-        for root_id in ("albums", "songs", "playlists", MASS_MIXES_PLAYLIST_ROOT_ID, MASS_RADIO_ROOT_ID):
+        for root_id in (
+            "albums",
+            "songs",
+            "playlists",
+            MASS_MIXES_PLAYLIST_ROOT_ID,
+            MASS_PODCASTS_ROOT_ID,
+            MASS_RADIO_ROOT_ID,
+        ):
             root_node = roots.get(root_id)
             if isinstance(root_node, dict):
                 root_node["tracks"] = self._sorted_nodes(root_node.get("tracks"))
@@ -356,6 +365,8 @@ class MassSource(SourceBase):
                     root_node["name"] = MASS_RADIO_ROOT_TITLE
                 elif root_id == MASS_MIXES_PLAYLIST_ROOT_ID:
                     root_node["name"] = MASS_MIXES_PLAYLIST_TITLE
+                elif root_id == MASS_PODCASTS_ROOT_ID:
+                    root_node["name"] = MASS_PODCASTS_ROOT_TITLE
 
     @staticmethod
     def _art_cache_basename(image_url):
@@ -523,6 +534,57 @@ class MassSource(SourceBase):
             )
         )
 
+    def _build_playlist_folder_node(self, playlist, tracks, base, *, root_id="", root_name=""):
+        playlist = playlist if isinstance(playlist, dict) else {}
+        provider = str(playlist.get("provider") or MASS_MIXES_PLAYLIST_PROVIDER).strip() or MASS_MIXES_PLAYLIST_PROVIDER
+        item_id = str(playlist.get("item_id") or "").strip()
+        folder = self._make_folder_node(
+            id_=str(root_id or item_id),
+            name=str(root_name or playlist.get("name") or "Unknown Playlist"),
+            image=self._get_img(playlist, base),
+            url=str(playlist.get("uri") or self._playlist_uri(item_id, provider)),
+        )
+        folder["tracks"] = [
+            self._make_leaf_node(
+                id_=track.get("item_id", ""),
+                name=track.get("name", "Unknown Track"),
+                artist=self._get_artist_name(track, ""),
+                url=track.get("uri", ""),
+                image=self._get_img(track, base),
+            )
+            for track in (tracks or [])
+        ]
+        return folder
+
+    def _build_podcast_folder_node(self, podcast, episodes, base):
+        podcast = podcast if isinstance(podcast, dict) else {}
+        podcast_name = str(podcast.get("name") or "Unknown Podcast")
+        podcast_image = self._get_img(podcast, base)
+        publisher = str(
+            podcast.get("publisher")
+            or podcast.get("author")
+            or podcast.get("owner")
+            or ""
+        ).strip()
+        folder = self._make_folder_node(
+            id_=podcast.get("item_id", ""),
+            name=podcast_name,
+            artist=publisher,
+            image=podcast_image,
+            url=podcast.get("uri", ""),
+        )
+        folder["tracks"] = [
+            self._make_leaf_node(
+                id_=episode.get("item_id", ""),
+                name=episode.get("name", "Unknown Episode"),
+                artist=self._get_artist_name(episode, podcast_name) or podcast_name,
+                url=episode.get("uri", ""),
+                image=self._get_img(episode, base) or podcast_image,
+            )
+            for episode in (episodes or [])
+        ]
+        return folder
+
     def _finalize_node(self, node):
         """
         Recursive post-processing:
@@ -578,9 +640,9 @@ class MassSource(SourceBase):
         albums_root = {"id": "albums",    "name": "Albums",     "tracks": []}
         songs_root = {"id": "songs",     "name": "Songs",      "tracks": []}
         playlists_root = {"id": "playlists", "name": "Playlists",  "tracks": []}
+        podcasts_root = {"id": MASS_PODCASTS_ROOT_ID, "name": MASS_PODCASTS_ROOT_TITLE, "tracks": []}
         radio_root = {"id": MASS_RADIO_ROOT_ID, "name": MASS_RADIO_ROOT_TITLE, "tracks": []}
         mixes_playlist_root = None
-        tree = [artists_root, albums_root, songs_root, playlists_root, radio_root]
 
         try:
             # ── 1. ARTISTS: Artists → Artist → Album → Track ─────────────────
@@ -680,35 +742,63 @@ class MassSource(SourceBase):
                         item_id=p.get('item_id'),
                         provider_instance_id_or_domain=p.get("provider", "library"),
                     )
-                    playlist_uri = p.get('uri', '') or self._playlist_uri(
-                        p.get('item_id'),
-                        p.get("provider", MASS_MIXES_PLAYLIST_PROVIDER),
-                    )
-                    pl_node = self._make_folder_node(
-                        id_=p.get('item_id', ''),
-                        name=p.get('name', 'Unknown Playlist'),
-                        image=self._get_img(p, base),
-                        url=playlist_uri,
-                    )
-                    pl_node["tracks"] = [
-                        self._make_leaf_node(
-                            id_=t.get('item_id', ''),
-                            name=t.get('name', 'Unknown Track'),
-                            artist=self._get_artist_name(t, ""),
-                            url=t.get('uri', ''),
-                        )
-                        for t in trks
-                    ]
+                    pl_node = self._build_playlist_folder_node(p, trks, base)
                     if pl_node["tracks"]:
                         playlists_root["tracks"].append(pl_node)
                         if self._is_mixes_playlist(p):
-                            mixes_playlist_root = copy.deepcopy(pl_node)
-                            mixes_playlist_root["id"] = MASS_MIXES_PLAYLIST_ROOT_ID
-                            mixes_playlist_root["name"] = MASS_MIXES_PLAYLIST_TITLE
+                            mixes_playlist_root = self._build_playlist_folder_node(
+                                p,
+                                trks,
+                                base,
+                                root_id=MASS_MIXES_PLAYLIST_ROOT_ID,
+                                root_name=MASS_MIXES_PLAYLIST_TITLE,
+                            )
             except Exception as e:
                 logger.error(f"Error parsing playlists: {e}")
 
             # ── 5. MIXES / RADIO: flat list ──────────────────────────────────
+            if not mixes_playlist_root:
+                try:
+                    mixes_tracks = await self.fetch_list(
+                        "music/playlists/playlist_tracks",
+                        item_id=MASS_MIXES_PLAYLIST_ID,
+                        provider_instance_id_or_domain=MASS_MIXES_PLAYLIST_PROVIDER,
+                    )
+                    if mixes_tracks:
+                        mixes_playlist_root = self._build_playlist_folder_node(
+                            {
+                                "item_id": MASS_MIXES_PLAYLIST_ID,
+                                "provider": MASS_MIXES_PLAYLIST_PROVIDER,
+                                "name": MASS_MIXES_PLAYLIST_TITLE,
+                                "uri": self._playlist_uri(
+                                    MASS_MIXES_PLAYLIST_ID,
+                                    MASS_MIXES_PLAYLIST_PROVIDER,
+                                ),
+                            },
+                            mixes_tracks,
+                            base,
+                            root_id=MASS_MIXES_PLAYLIST_ROOT_ID,
+                            root_name=MASS_MIXES_PLAYLIST_TITLE,
+                        )
+                except Exception as e:
+                    logger.error(f"Error building mixes playlist root: {e}")
+
+            # Podcasts -> Podcast -> Episode
+            try:
+                podcasts = await self.fetch_paginated("music/podcasts/library_items")
+                for podcast in podcasts:
+                    episodes = await self.fetch_list(
+                        "music/podcasts/podcast_episodes",
+                        item_id=podcast.get("item_id"),
+                        provider_instance_id_or_domain=podcast.get("provider", "library"),
+                    )
+                    podcast_node = self._build_podcast_folder_node(podcast, episodes, base)
+                    if podcast_node["tracks"]:
+                        podcasts_root["tracks"].append(podcast_node)
+            except Exception as e:
+                logger.error(f"Error parsing podcasts: {e}")
+
+            # Radio stations
             try:
                 radios = await self.fetch_paginated("music/radios/library_items")
                 for r in radios:
@@ -724,8 +814,10 @@ class MassSource(SourceBase):
                 logger.error(f"Error parsing mixes: {e}")
 
             # Finalize + save before exposing to endpoint
+            tree = [artists_root, albums_root, songs_root, playlists_root]
             if mixes_playlist_root:
-                tree.insert(4, mixes_playlist_root)
+                tree.append(mixes_playlist_root)
+            tree.extend([podcasts_root, radio_root])
             self._normalize_library_tree(tree)
             await self._incremental_save(tree)
             self._library_data = tree
@@ -804,6 +896,7 @@ class MassSource(SourceBase):
             "songs": len(self._library_root("songs").get("tracks") or []),
             "playlists": len(self._library_root("playlists").get("tracks") or []),
             "mixes": len(self._library_root(MASS_MIXES_PLAYLIST_ROOT_ID).get("tracks") or []),
+            "podcasts": len(self._library_root(MASS_PODCASTS_ROOT_ID).get("tracks") or []),
             "radio": len(self._library_root(MASS_RADIO_ROOT_ID).get("tracks") or []),
         }
 
@@ -1809,8 +1902,10 @@ class MassSource(SourceBase):
 
         return candidates
 
-    async def _resolve_transport_player_candidates(self):
-        preferred_player = str(self._preferred_player_id or "").strip()
+    async def _resolve_transport_player_candidates(self, preferred_player=None):
+        if preferred_player is None:
+            preferred_player = self._preferred_player_id
+        preferred_player = str(preferred_player or "").strip()
         if preferred_player:
             return [preferred_player]
 
@@ -1844,7 +1939,7 @@ class MassSource(SourceBase):
             return ("play",)
         return ("replace",)
 
-    async def _handle_transport_command(self, cmd):
+    async def _handle_transport_command(self, cmd, *, preferred_player=None):
         command_map = {
             "transport_toggle": "players/cmd/play_pause",
             "transport_stop": "players/cmd/stop",
@@ -1856,7 +1951,7 @@ class MassSource(SourceBase):
             return {"state": "error", "reason": "unsupported_transport_command", "command": cmd}
 
         successful_player = ""
-        for player_id in await self._resolve_transport_player_candidates():
+        for player_id in await self._resolve_transport_player_candidates(preferred_player=preferred_player):
             response = await self._send_command_response(api_command, player_id=player_id)
             if response is not None:
                 successful_player = player_id
@@ -2202,9 +2297,14 @@ class MassSource(SourceBase):
         return kicked
 
     async def handle_command(self, cmd, data) -> dict:
-        self._apply_playback_target_from_data(data)
+        source_switch_stop = cmd == "transport_stop" and str(data.get("action") or "").strip().lower() == "stop"
+        if not source_switch_stop:
+            self._apply_playback_target_from_data(data)
         if cmd in {"transport_toggle", "transport_stop", "transport_next", "transport_previous"}:
-            return await self._handle_transport_command(cmd)
+            return await self._handle_transport_command(
+                cmd,
+                preferred_player="" if source_switch_stop else None,
+            )
         if cmd == "transfer_queue":
             return await self._handle_transfer_queue_command(data)
         if cmd == "queue_remove":

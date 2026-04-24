@@ -17,12 +17,6 @@
     let isTracking = false;     // true while laser is actively driving progress
     let lastOverlayText = { title: '', artist: '', album: '' };
     let transitionCleanup = null;  // setTimeout ID for post-transition cleanup
-    // Armed by ws-dispatcher on source_change. The next view-change to
-    // menu/playing enters immersive eagerly — without waiting for
-    // media to arrive — so a remote-triggered source start never
-    // flashes the menu before immersive mode kicks in.
-    let eagerEntryArmed = false;
-    let eagerEntryArmedTimer = null;
 
     function isFullyImmersive() { return progress >= 1; }
     function isPartiallyImmersive() { return progress > 0; }
@@ -350,26 +344,9 @@
                         syncOverlayText(false);
                         applyProgress(progress);
                     }, 100);
-                } else if (eagerEntryArmed || (!wasPlaying && isPlaying())) {
-                    // Either (a) a remote source-start just armed us, or
-                    // (b) we're waking to an already-playing view. Go
-                    // straight to immersive without waiting for media.
-                    // The media_update that follows will populate the
-                    // overlay text via the bs5c:media-text-updated path.
-                    if (eagerEntryArmed) {
-                        eagerEntryArmed = false;
-                        clearTimeout(eagerEntryArmedTimer);
-                        eagerEntryArmedTimer = null;
-                    }
-                    setTimeout(() => {
-                        ensureOverlay();
-                        uiStore.setMenuVisible(false);
-                        animatedEnter();
-                    }, 200);
-                } else {
-                    resetIdleTimer();
-                    setTimeout(() => ensureOverlay(), 100);
                 }
+                resetIdleTimer();
+                setTimeout(() => ensureOverlay(), 100);
             }
         });
 
@@ -390,49 +367,17 @@
 
         // Initial setup
         if (uiStore.currentRoute === 'menu/playing') {
-            // Media state may not be loaded yet — check periodically
-            let startupChecks = 0;
-            const startupCheck = () => {
-                if (isPlaying() && !isPartiallyImmersive()) {
-                    ensureOverlay();
-                    uiStore.setMenuVisible(false);
-                    animatedEnter();
-                    return; // done — don't keep polling
-                }
-                startupChecks++;
-                if (startupChecks < 10) {
-                    setTimeout(startupCheck, 500);
-                } else {
-                    // Media never arrived — fall back to idle timer
-                    resetIdleTimer();
-                    ensureOverlay();
-                }
-            };
-            setTimeout(startupCheck, 500);
+            resetIdleTimer();
+            ensureOverlay();
         }
 
         console.log('[IMMERSIVE] Module initialized (v6.0)');
-    }
-
-    /** Arm immersive-on-first-view-to-menu/playing.
-     *
-     * Called by ws-dispatcher when source_change indicates a new
-     * active source has been activated (remote button, digit, etc.).
-     * The flag auto-expires in 3s so a stale arm can't linger. */
-    function armEagerEntry() {
-        eagerEntryArmed = true;
-        clearTimeout(eagerEntryArmedTimer);
-        eagerEntryArmedTimer = setTimeout(() => {
-            eagerEntryArmed = false;
-            eagerEntryArmedTimer = null;
-        }, 3000);
     }
 
     // Expose for debugging / manual toggle
     window.ImmersiveMode = {
         enter: animatedEnter,
         exit: animatedExit,
-        armEagerEntry,
         get active() { return isPartiallyImmersive(); },
         get progress() { return progress; },
         syncText: () => syncOverlayText(false)

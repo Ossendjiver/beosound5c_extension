@@ -463,6 +463,8 @@
                 albums:    { icon: 'vinyl-record', color: '#1c7ed6' },
                 songs:     { icon: 'music-notes-simple', color: '#2b8a3e' },
                 playlists: { icon: 'list-bullets', color: '#862e9c' },
+                playlist_mixes: { icon: 'shuffle', color: '#b14ae0' },
+                podcasts:  { icon: 'microphone', color: '#ff6b6b' },
                 mixes:     { icon: 'radio', color: '#e6ca19' },
             };
             const cleanTitle = (value) => String(value || '').split('\n')[0].trim();
@@ -503,7 +505,7 @@
                 const nodeArtist = String(node.artist || context.artist || '').trim();
                 const nodeArtwork = normalizeServiceImageUrl(node.image || context.artwork || '');
                 const containsLeaves = !!children?.some((child) => !Array.isArray(child?.tracks) || child.tracks.length === 0);
-                const isRootCategory = ['queue', 'artists', 'albums', 'songs', 'playlists', 'mixes'].includes(String(node.id || ''));
+                const isRootCategory = ['queue', 'artists', 'albums', 'songs', 'playlists', 'playlist_mixes', 'podcasts', 'mixes'].includes(String(node.id || ''));
 
                 rememberTrackMeta(node, {
                     artist: nodeArtist,
