@@ -538,11 +538,12 @@ function setupListeners() {
 // another client has changed values since this page was rendered.
 
 const TONE_ROUTER_URL = `http://${location.hostname}:8770/router/tone`;
-const _toneDebounce = {};
-// Short debounce so BeoLab 5 / PowerLink actually feel live under the
-// slider. Still coalesces bursts of input events (browsers fire them
-// per pixel of drag) without queueing a round-trip per event.
-const TONE_DEBOUNCE_MS = 60;
+const _toneThrottle = {};
+// Throttle window so BeoLab 5 / PowerLink track the slider live during a
+// fast drag. Trailing-debounce was wrong here: while the user keeps
+// dragging, every input event resets the timer, so nothing fires until
+// they pause — the audio appeared dead during fast motion.
+const TONE_THROTTLE_MS = 60;
 
 function setupToneListeners() {
     ['bass', 'treble', 'balance'].forEach(axis => {
@@ -565,11 +566,16 @@ function setupToneListeners() {
 }
 
 function scheduleToneSend(axis, value) {
-    if (_toneDebounce[axis]) clearTimeout(_toneDebounce[axis]);
-    _toneDebounce[axis] = setTimeout(() => {
-        _toneDebounce[axis] = null;
-        sendTone({[axis]: value});
-    }, TONE_DEBOUNCE_MS);
+    const state = _toneThrottle[axis] || (_toneThrottle[axis] = {});
+    state.value = value;
+    if (state.timer) return;
+    const now = performance.now();
+    const wait = Math.max(0, TONE_THROTTLE_MS - (now - (state.lastSent || 0)));
+    state.timer = setTimeout(() => {
+        state.timer = null;
+        state.lastSent = performance.now();
+        sendTone({[axis]: state.value});
+    }, wait);
 }
 
 async function sendTone(body) {

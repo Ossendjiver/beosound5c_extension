@@ -821,6 +821,12 @@ class EventRouter:
                 break
         # Canvas injection for player-originated Spotify tracks
         source_id = payload.get("_validated_source_id")
+        # Radio metadata is station/programme names, not artist+title — drop
+        # any video URLs so a video carried over from a previous source
+        # (Spotify canvas, music video) doesn't keep playing under radio.
+        if source_id == "radio":
+            payload["canvas_url"] = ""
+            payload["music_video_url"] = ""
         if payload.get("canvas_url"):
             logger.info("Media has canvas_url: %s", payload["canvas_url"][:60])
         elif not source_id and self._should_fetch_canvas(payload):

@@ -200,25 +200,26 @@ def get_system_info() -> dict:
         # Backlight status
         info['backlight'] = 'On' if is_backlight_on() else 'Off'
 
-        # Git info (try git first, fall back to VERSION file from deploy)
+        # Version: prefer VERSION file (written by OTA + deploy.sh) over
+        # `git describe`. The .git dir, if present from a clone install,
+        # is not touched by OTA, so git describe goes stale after update.
         info['git_tag'] = '--'
         try:
-            result = subprocess.run(
-                ['git', 'describe', '--tags', '--always'],
-                capture_output=True, text=True, timeout=2,
-                cwd=BS5C_BASE_PATH
-            )
-            if result.stdout and result.stdout.strip():
-                info['git_tag'] = result.stdout.strip()
+            with open(os.path.join(BS5C_BASE_PATH, 'VERSION')) as f:
+                v = f.read().strip()
+                if v:
+                    info['git_tag'] = v
         except Exception:
             pass
         if info['git_tag'] == '--':
             try:
-                vf = os.path.join(BS5C_BASE_PATH, 'VERSION')
-                with open(vf) as f:
-                    v = f.read().strip()
-                    if v:
-                        info['git_tag'] = v
+                result = subprocess.run(
+                    ['git', 'describe', '--tags', '--always'],
+                    capture_output=True, text=True, timeout=2,
+                    cwd=BS5C_BASE_PATH
+                )
+                if result.stdout and result.stdout.strip():
+                    info['git_tag'] = result.stdout.strip()
             except Exception:
                 pass
 

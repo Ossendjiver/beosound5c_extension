@@ -759,6 +759,8 @@ class PC2Device:
         dest_node = msg[3]
         src_node = msg[4]
         ttype = msg[6]
+        dest_src = msg[7]
+        src_src = msg[8]
         ptype = msg[10]
         psize = msg[11]
         pver = msg[12]
@@ -769,12 +771,15 @@ class PC2Device:
         tname = self._ML_TELEGRAM_TYPES.get(ttype, f"0x{ttype:02X}")
         pname = self._ML_PAYLOAD_TYPES.get(ptype, f"0x{ptype:02X}")
 
-        logger.info("ML %s->%s %s/%s v%d [%d]: %s",
+        logger.info("ML RX raw: %s",
+                    " ".join(f"{b:02X}" for b in msg))
+        logger.info("ML RX %s->%s %s/%s v%d [%d] dst_src=0x%02X src_src=0x%02X payload=%s",
                     src_name, dst_name, tname, pname, pver, psize,
+                    dest_src, src_src,
                     " ".join(f"{b:02X}" for b in payload))
 
         try:
-            self._dispatch_ml(ttype, ptype, src_node, dest_node, payload)
+            self._dispatch_ml(ttype, ptype, src_node, dest_node, payload, pver)
         except Exception as e:
             logger.warning("ML dispatch failed (t=0x%02X p=0x%02X): %s",
                            ttype, ptype, e, exc_info=True)
@@ -802,9 +807,17 @@ class PC2Device:
         checksum = sum(frame) & 0xFF
         frame.append(checksum)
         frame.append(0x00)                     # EOT
-        self.send_message([0xE0] + frame)
-        logger.info("ML TX -> node=0x%02X type=0x%02X pt=0x%02X len=%d",
-                    dest_node, telegram_type, payload_type, len(payload))
+        usb_frame = [0xE0] + frame
+        self.send_message(usb_frame)
+        dst_name = self._ML_NODES.get(dest_node, f"0x{dest_node:02X}")
+        tname = self._ML_TELEGRAM_TYPES.get(telegram_type, f"0x{telegram_type:02X}")
+        pname = self._ML_PAYLOAD_TYPES.get(payload_type, f"0x{payload_type:02X}")
+        logger.info("ML TX %s %s/%s v%d [%d] dst_src=0x%02X src_src=0x%02X payload=%s",
+                    dst_name, tname, pname, payload_version, len(payload),
+                    dest_src, src_src,
+                    " ".join(f"{b:02X}" for b in payload))
+        logger.info("ML TX raw: %s",
+                    " ".join(f"{b:02X}" for b in usb_frame))
 
     # --- Audio-master role ---
     # Boilerplate telegram shapes below are derived from libpc2 (GPL-3.0) by
@@ -814,27 +827,66 @@ class PC2Device:
     # compatible; the byte sequences themselves are protocol facts rather than
     # creative expression.
 
-    def _dispatch_ml(self, ttype, ptype, src_node, dest_node, payload):
+    def _dispatch_ml(self, ttype, ptype, src_node, dest_node, payload, pver):
         """Act on incoming ML telegrams as the audio master.
 
         Only responds to telegrams we're actually addressed in (specifically
         us at 0xC1, or broadcasts to ALL / ALL_AUDIO / ALL_LINK).  Ignores
         echoes of our own outgoing traffic."""
         if src_node == self.OUR_NODE_ID:
+            logger.debug("ML dispatch: DROP echo (src=us=0x%02X)", src_node)
             return
         addressed_to_us = dest_node in (self.OUR_NODE_ID, 0x80, 0x81, 0x83)
         if not addressed_to_us:
+            logger.info("ML dispatch: DROP not-addressed-to-us "
+                        "(dest=0x%02X not in {0xC1,0x80,0x81,0x83}, t=0x%02X p=0x%02X)",
+                        dest_node, ttype, ptype)
             return
+
+        logger.info("ML dispatch: ACCEPT from 0x%02X -> 0x%02X t=0x%02X p=0x%02X",
+                    src_node, dest_node, ttype, ptype)
 
         # REQUEST / MASTER_PRESENT — "is there an audio master here?"
         if ttype == 0x0B and ptype == 0x04:
+            logger.info("ML dispatch: MATCH MASTER_PRESENT (REQUEST) from 0x%02X", src_node)
             self._reply_master_present(src_node)
+            return
+
+        # AUDIO_SETUP-style link/video device ping (payload_type 0x04 with a
+        # specific 3-byte payload).  From libpc2 masterlink.cpp commented
+        # case(0x04): payload_size=3, payload_version=4, payload[1]=0x01,
+        # payload[2]=0x00, payload[0]=0x08 (link device) or 0x02 (video
+        # device).  Reply is the same MASTER_PRESENT status, regardless of
+        # incoming telegram_type — link rooms send these with non-REQUEST
+        # ttype, which slips through the REQUEST-only match above.
+        # Author's note: "Link device ping, sending pong".
+        if ptype == 0x04 and len(payload) == 3 and payload[1] == 0x01 \
+                and payload[2] == 0x00 and payload[0] in (0x02, 0x08):
+            kind = "link device" if payload[0] == 0x08 else "video device"
+            logger.info("ML dispatch: MATCH %s ping (t=0x%02X p=0x04 payload=[%02X,01,00]) from 0x%02X",
+                        kind, ttype, payload[0], src_node)
+            self._reply_master_present(src_node)
+            return
+
+        # AUDIO_BUS request (payload_type 0x08, empty payload, pver=1).  From
+        # libpc2 masterlink.cpp commented case(0x08): "Not sure what this
+        # means but link room products will sometimes need this reply".
+        # Reply: STATUS/AUDIO_BUS, empty payload, pver=4.
+        if ptype == 0x08 and len(payload) == 0 and pver == 1:
+            logger.info("ML dispatch: MATCH AUDIO_BUS request (t=0x%02X) from 0x%02X",
+                        ttype, src_node)
+            self._reply_audio_bus(src_node)
             return
 
         # REQUEST / GOTO_SOURCE — link room wants us to play a source.
         if ttype == 0x0B and ptype == 0x45:
+            logger.info("ML dispatch: MATCH GOTO_SOURCE from 0x%02X payload=%s",
+                        src_node, " ".join(f"{b:02X}" for b in payload))
             self._handle_goto_source(src_node, payload)
             return
+
+        logger.info("ML dispatch: NO HANDLER t=0x%02X p=0x%02X pver=%d — link device may hang",
+                    ttype, ptype, pver)
 
     def _reply_master_present(self, requesting_node):
         """Reply to a MASTER_PRESENT probe.
@@ -850,6 +902,23 @@ class PC2Device:
             payload=[0x01, 0x01, 0x01],
         )
 
+    def _reply_audio_bus(self, requesting_node):
+        """Reply to an AUDIO_BUS request.
+
+        From libpc2 masterlink.cpp commented case(0x08).  Empty payload,
+        payload_version=4.  Author's comment: 'Not sure what this means but
+        link room products will sometimes need this reply'.  A casting
+        audio-master would reply with payload [0x04, 0x06, 0x02, 0x01, 0x00]
+        instead, but we're not casting so the empty form is correct."""
+        self.send_ml_telegram(
+            dest_node=requesting_node,
+            src_node=self.OUR_NODE_ID,
+            telegram_type=0x14,        # STATUS
+            payload_type=0x08,         # AUDIO_BUS
+            payload_version=4,
+            payload=[],
+        )
+
     def _handle_goto_source(self, src_node, payload):
         """Respond to a link-room source request and start the source locally.
 
@@ -861,8 +930,13 @@ class PC2Device:
 
         Payload byte [1] is the requested source ID per libpc2 GotoSource."""
         if len(payload) < 2:
+            logger.warning("GOTO_SOURCE payload too short (%d bytes): %s",
+                           len(payload), " ".join(f"{b:02X}" for b in payload))
             return
         source_id = payload[1]
+        source_name = self._ML_SOURCES.get(source_id, f"0x{source_id:02X}")
+        logger.info("GOTO_SOURCE: src_node=0x%02X source_id=0x%02X (%s)",
+                    src_node, source_id, source_name)
 
         # 1. STATUS_INFO broadcast to ALL_LINK_DEVICES (0x83).  31-byte
         # payload scaffold from libpc2 telegram.cpp StatusInfo(source_id).
@@ -898,22 +972,30 @@ class PC2Device:
         # BlueSound / BeoLab 5 via ESPHome, audio bypasses the PC2 so ML
         # distribution is physically impossible; we still reply to the
         # control telegrams so link rooms don't hang.
-        if self._is_powerlink_device():
+        is_pl = self._is_powerlink_device()
+        logger.info("GOTO_SOURCE: powerlink_device=%s -> %s distribute",
+                    is_pl, "will set" if is_pl else "skipping")
+        if is_pl:
             try:
                 self.set_routing(local=True, distribute=True)
+                logger.info("GOTO_SOURCE: set_routing(local=True, distribute=True) OK")
             except Exception as e:
-                logger.warning("set_routing(distribute) failed: %s", e)
+                logger.warning("set_routing(distribute) failed: %s", e, exc_info=True)
 
         # 4. Forward to beo-router as a synthetic IR source press.  Router's
         # source_buttons map turns the action into a source activation using
         # the same code path as a local remote.
         action = self._ML_SOURCE_TO_ACTION.get(source_id)
+        logger.info("GOTO_SOURCE: source 0x%02X -> action=%r (loop=%s)",
+                    source_id, action, bool(self.loop))
         if action and self.loop:
             asyncio.run_coroutine_threadsafe(
                 self._forward_source_to_router(action, src_node), self.loop)
         else:
-            logger.info("GOTO_SOURCE 0x%02X: no action mapping — replied but not forwarded",
-                        source_id)
+            logger.warning("GOTO_SOURCE 0x%02X (%s): no action mapping or no loop — "
+                           "replied but NOT forwarded to router; link room will see "
+                           "the protocol reply but no audio will start",
+                           source_id, source_name)
 
     def _is_powerlink_device(self):
         """True when audio physically passes through the PC2 — the only
@@ -957,8 +1039,11 @@ class PC2Device:
             try:
                 if self.connected:
                     self._broadcast_clock_once()
+                    logger.info("ML clock broadcast tick (connected=True)")
+                else:
+                    logger.info("ML clock broadcast tick: PC2 not connected, skipping")
             except Exception as e:
-                logger.warning("Clock broadcast failed: %s", e)
+                logger.warning("Clock broadcast failed: %s", e, exc_info=True)
             await asyncio.sleep(self.CLOCK_BROADCAST_INTERVAL)
 
     def _broadcast_clock_once(self):

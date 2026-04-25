@@ -372,7 +372,10 @@
                 if (changed) {
                     var p = preferredUrl();
                     if (!p) {
-                        stopCycle();
+                        // Both URLs cleared (e.g. switched to radio). Fully
+                        // reset so the cycle can't restart with stale state
+                        // and flash a black video panel between artworks.
+                        clearVideo();
                     } else if (p !== currentUrl) {
                         // Better video available — load it; cycle picks it up
                         loadVideo(p);
