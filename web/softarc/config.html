@@ -221,6 +221,7 @@ const CFG_SOURCE_DEFS = [
         { fid: 'ir_source', label: 'IR trigger', path: ['usb','source'], isIr: true, optional: true },
     ]},
     { key: 'MUSIC', label: 'Music Assistant', fields: [
+        { fid: 'ir_source', label: 'IR trigger', path: ['mass','source'], isIr: true, optional: true },
         { fid: 'ws_url', label: 'WebSocket URL', secretKey: 'mass_ws_url', placeholder: 'ws://musicassistant.local:8095/ws', optional: true, hint: 'Leave blank to keep the current MASS_WS_URL in /etc/beosound5c/secrets.env.' },
         { fid: 'token', label: 'Access token', secretKey: 'mass_token', type: 'password', placeholder: 'Leave blank to keep existing token', optional: true },
         { fid: 'queue_id', label: 'Queue ID pin', secretKey: 'mass_queue_id', placeholder: 'Optional queue id override', optional: true, hint: 'Optional: pin the queue when auto-discovery picks the wrong target.' },

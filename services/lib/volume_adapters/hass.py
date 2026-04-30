@@ -11,6 +11,7 @@ from ..config import cfg
 from .base import VolumeAdapter
 
 logger = logging.getLogger("beo-router.volume.hass")
+_MLGW_STEP_MULTIPLIER_DEFAULT = 2.0
 
 
 def _ha_api_base() -> str:
@@ -59,6 +60,18 @@ def _env_entity_map(name: str) -> dict[str, int]:
     return resolved
 
 
+def _positive_float(name: str, raw: object, default: float, minimum: float = 1.0) -> float:
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        logger.warning("Invalid %s=%r; using %.2f", name, raw, default)
+        return default
+    if value < minimum:
+        logger.warning("%s=%r below minimum %.2f; using %.2f", name, raw, minimum, minimum)
+        return minimum
+    return value
+
+
 class HassVolume(VolumeAdapter):
     """Bridge BS5c wheel updates to Home Assistant media-player commands."""
 
@@ -75,6 +88,11 @@ class HassVolume(VolumeAdapter):
         self._last_reported_vol = float(default_vol)
         self._powered = True
         self._step_size = max(1, int(cfg("volume", "step", default=3)))
+        self._mlgw_step_multiplier = _positive_float(
+            "volume.mlgw_step_multiplier",
+            cfg("volume", "mlgw_step_multiplier", default=_MLGW_STEP_MULTIPLIER_DEFAULT),
+            _MLGW_STEP_MULTIPLIER_DEFAULT,
+        )
         self._ha_api_base = _ha_api_base()
         self._ha_token = os.getenv("HA_TOKEN", "").strip()
         self._fallback_entity = os.getenv("HASS_FALLBACK_ENTITY", "").strip()
@@ -191,9 +209,10 @@ class HassVolume(VolumeAdapter):
             return
 
         steps = max(1, int(abs(diff) / self._step_size))
+        mlgw_steps = max(steps, int(steps * self._mlgw_step_multiplier + 0.5))
         self._last_reported_vol = volume
 
-        if await self._send_mlgw_steps(target, steps, diff):
+        if await self._send_mlgw_steps(target, mlgw_steps, diff):
             return
         await self._send_ha_steps(target, steps, diff)
 

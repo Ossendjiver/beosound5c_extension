@@ -53,13 +53,14 @@ Music Assistant can also be the configured `player.type`. In that mode BS5c moni
 **Config:**
 ```json
 "player": { "type": "mass", "ip": "musicassistant.local" },
-"volume": { "type": "hass", "output_name": "Music Assistant" }
+"volume": { "type": "hass", "output_name": "Music Assistant", "mlgw_step_multiplier": 2.0 }
 ```
 
 **Secrets / env:**
 - `MASS_TOKEN` is required
 - `MASS_WS_URL` overrides the websocket endpoint if needed
 - `MASS_QUEUE_ID` and `MASS_PLAYER_ID` are optional pins when auto-discovery is not deterministic
+- `volume.mlgw_step_multiplier` is optional when the `hass` adapter is bridged to MLGW. Default is `2.0` so each BS5c volume gesture sends a stronger MLGW step burst than the HA fallback path.
 
 ### Sonos
 
@@ -186,6 +187,7 @@ The `volume` section in `config.json`:
   "host": "192.168.1.100",  // Target IP/hostname (sonos, bluesound, beolab5, c4amp)
   "max": 70,                // Maximum volume percentage
   "step": 3,                // Volume step per wheel click
+  "mlgw_step_multiplier": 2.0, // Optional: scales MLGW-only step bursts when volume.type is "hass"
   "output_name": "Sonos"    // Name shown in the UI
 }
 ```

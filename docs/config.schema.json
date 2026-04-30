@@ -232,7 +232,12 @@
     "mass": {
       "type": "object",
       "description": "Music Assistant source settings. Connection credentials and target queue/player pins live in /etc/beosound5c/secrets.env.",
-      "properties": {},
+      "properties": {
+        "source": {
+          "type": "string",
+          "description": "Optional IR/B&O source button mapping for Music Assistant, for example n.music."
+        }
+      },
       "additionalProperties": false
     },
 

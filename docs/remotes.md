@@ -19,6 +19,7 @@ Add a `"source"` field to any source in `config.json` (or use the IR trigger fie
 ```json
 {
   "spotify": { "client_id": "...", "source": "radio" },
+  "mass":    { "source": "n.music" },
   "usb":     { "source": "amem" },
   "cd":      { "source": "cd" },
   "plex":    { "source": "tv" }
