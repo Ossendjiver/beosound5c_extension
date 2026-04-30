@@ -98,3 +98,13 @@ class VolumeAdapter(ABC):
 
     async def get_balance(self) -> float:
         return 0  # centred by default
+
+    # -- Optional: override in adapters that support tone (bass/treble/
+    #    balance/loudness).  Return None when the adapter has no tone
+    #    support so /router/tone can tell the UI to hide the section. --
+
+    async def get_tone(self) -> dict | None:
+        return None
+
+    async def set_tone(self, **kwargs) -> dict | None:
+        return None

@@ -3,6 +3,9 @@
 # Handles system-level changes that the service user can't do:
 #   - service files: refreshes /etc/systemd/system/beo-*.service from repo templates
 #   - sudoers: writes the current NOPASSWD entries
+#   - tone filter-chain: syncs install/configs/53-beosound5c-tone.conf into
+#     /etc/pipewire/filter-chain.conf.d/ and bounces the user's filter-chain
+#     service if the conf changed
 #   - daemon-reload: picks up any changed service definitions
 #   - pip packages: installs any new Python dependencies
 #
@@ -67,6 +70,7 @@ $SERVICE_USER ALL=(ALL) NOPASSWD: /bin/systemctl restart beo-*
 $SERVICE_USER ALL=(ALL) NOPASSWD: /bin/systemctl stop beo-*
 $SERVICE_USER ALL=(ALL) NOPASSWD: /bin/systemctl start beo-*
 $SERVICE_USER ALL=(ALL) NOPASSWD: $POST_UPDATE_PATH
+$SERVICE_USER ALL=(ALL) NOPASSWD: /bin/bash $BASE_DIR/services/system/reconcile-services.sh
 EOF
 
 visudo -c -f /tmp/beo-sudoers-new
@@ -75,11 +79,37 @@ chmod 440 "$SUDOERS_FILE"
 rm /tmp/beo-sudoers-new
 log "Sudoers updated"
 
-# ── 3. daemon-reload (picks up any service file changes from step 1) ─────────
+# ── 3. PipeWire tone filter-chain ────────────────────────────────────────────
+# Keep /etc/pipewire/filter-chain.conf.d/53-beosound5c-tone.conf in sync
+# with the copy in the repo. If it changed, bounce the user's
+# filter-chain.service so the new node definition is picked up.  Does NOT
+# restart pipewire itself — that would cut active playback.
+TONE_SRC="$BASE_DIR/install/configs/53-beosound5c-tone.conf"
+TONE_DEST="/etc/pipewire/filter-chain.conf.d/53-beosound5c-tone.conf"
+if [ -f "$TONE_SRC" ]; then
+    mkdir -p "$(dirname "$TONE_DEST")"
+    if ! cmp -s "$TONE_SRC" "$TONE_DEST"; then
+        install -m 0644 "$TONE_SRC" "$TONE_DEST"
+        log "Installed $(basename "$TONE_DEST")"
+        # User-session systemctl needs XDG_RUNTIME_DIR + dbus socket
+        if sudo -u "$SERVICE_USER" \
+               XDG_RUNTIME_DIR="/run/user/$SERVICE_UID" \
+               DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$SERVICE_UID/bus" \
+               systemctl --user restart filter-chain.service 2>/dev/null; then
+            log "filter-chain.service restarted"
+        else
+            log "filter-chain.service restart skipped (no user session yet — will load on next login)"
+        fi
+    else
+        log "Tone filter-chain already up to date"
+    fi
+fi
+
+# ── 4. daemon-reload (picks up any service file changes from step 1) ─────────
 systemctl daemon-reload
 log "daemon-reload done"
 
-# ── 4. Python packages ───────────────────────────────────────────────────────
+# ── 5. Python packages ───────────────────────────────────────────────────────
 REQUIREMENTS="$BASE_DIR/install/requirements.txt"
 if [ -f "$REQUIREMENTS" ]; then
     pip3 install -r "$REQUIREMENTS" -q --break-system-packages 2>/dev/null \

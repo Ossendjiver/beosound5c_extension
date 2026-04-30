@@ -22,6 +22,7 @@ $INSTALL_USER ALL=(ALL) NOPASSWD: /bin/systemctl restart beo-*
 $INSTALL_USER ALL=(ALL) NOPASSWD: /bin/systemctl stop beo-*
 $INSTALL_USER ALL=(ALL) NOPASSWD: /bin/systemctl start beo-*
 $INSTALL_USER ALL=(ALL) NOPASSWD: $INSTALL_HOME/beosound5c/install/post-update.sh
+$INSTALL_USER ALL=(ALL) NOPASSWD: /bin/bash $INSTALL_HOME/beosound5c/services/system/reconcile-services.sh
 SUDOEOF
     chmod 440 "$SUDOERS_FILE"
     log_success "Sudoers configured"

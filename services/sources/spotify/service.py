@@ -53,6 +53,13 @@ PLAYLIST_REFRESH_COOLDOWN = 5 * 60  # don't re-sync if last sync was <5 min ago
 NIGHTLY_REFRESH_HOUR = 2  # refresh playlists at 2am
 FETCH_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'fetch.py')
 
+# Persistence for the last-played playlist/track so we can resume on a fresh
+# source activation after a service or device restart.
+LAST_PLAYED_PATH_PROD = os.path.join(
+    os.getenv('BS5C_CONFIG_DIR', '/etc/beosound5c'), 'spotify_last_played.json')
+LAST_PLAYED_PATH_DEV = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), 'spotify_last_played.json')
+
 # OAuth setup
 SPOTIFY_SCOPES = ('playlist-read-private playlist-read-collaborative '
                   'user-library-read '
@@ -86,8 +93,8 @@ class SpotifyService(DigitPlaylistMixin, SourceBase):
         os.getenv('BS5C_BASE_PATH', PROJECT_ROOT),
         'web', 'json', 'digit_playlists.json')
     action_map = {
-        "play": "toggle",
-        "pause": "toggle",
+        "play": "play",
+        "pause": "pause",
         "go": "toggle",
         "next": "next",
         "prev": "prev",
@@ -135,6 +142,7 @@ class SpotifyService(DigitPlaylistMixin, SourceBase):
 
         if has_creds:
             self._load_playlists()
+            self._load_last_played()
             self._detect_player()
 
             # Fetch display name from Spotify profile
@@ -202,6 +210,44 @@ class SpotifyService(DigitPlaylistMixin, SourceBase):
             log.warning("Could not load playlists: %s", e)
             self.playlists = []
         self._reload_digit_playlists()
+
+    # ── Last-played persistence ──
+    # Keeps {playlist_id, track_uri} on disk so `activate_playback` can
+    # resume where the user left off after a service/device restart.
+
+    def _last_played_path(self) -> str:
+        if os.path.exists(os.path.dirname(LAST_PLAYED_PATH_PROD)):
+            return LAST_PLAYED_PATH_PROD
+        return LAST_PLAYED_PATH_DEV
+
+    def _load_last_played(self):
+        path = self._last_played_path()
+        try:
+            with open(path) as f:
+                data = json.load(f)
+            self._last_playlist_id = data.get("playlist_id") or None
+            self._last_track_uri = data.get("track_uri") or None
+            log.info("Loaded last played: playlist=%s track=%s",
+                     self._last_playlist_id, self._last_track_uri)
+        except FileNotFoundError:
+            pass
+        except Exception as e:
+            log.warning("Failed to load last played: %s", e)
+
+    def _save_last_played(self):
+        if not self._last_playlist_id and not self._last_track_uri:
+            return
+        path = self._last_played_path()
+        try:
+            tmp = path + ".tmp"
+            with open(tmp, "w") as f:
+                json.dump({
+                    "playlist_id": self._last_playlist_id,
+                    "track_uri": self._last_track_uri,
+                }, f, indent=2)
+            os.replace(tmp, path)
+        except Exception as e:
+            log.warning("Failed to save last played: %s", e)
 
     async def _warmup_canvas(self):
         """Pre-warm canvas client (TOTP secrets + web token) so first track is fast."""
@@ -322,6 +368,7 @@ class SpotifyService(DigitPlaylistMixin, SourceBase):
             self._last_track_uri = player_uri
             if not self._last_playlist_id and self.playlists:
                 self._last_playlist_id = self.playlists[0]['id']
+            self._save_last_played()
             await self.player_resume()
             self.state = "playing"
             self._start_polling()
@@ -373,6 +420,7 @@ class SpotifyService(DigitPlaylistMixin, SourceBase):
                             self._last_track_uri = None
                         self._track_advanced_at = time.monotonic()
                         self._track_gen += 1
+                        self._save_last_played()
                         return
                 break
 
@@ -583,6 +631,7 @@ class SpotifyService(DigitPlaylistMixin, SourceBase):
         self._last_playlist_id = playlist_id
         self._last_track_uri = track_uri
         self._track_gen += 1
+        self._save_last_played()
         await self.register("playing", auto_power=True)
         # Pre-broadcast metadata for instant PLAYING view (source is now active)
         # Canvas is fetched in background to avoid blocking the UI transition
@@ -875,6 +924,7 @@ class SpotifyService(DigitPlaylistMixin, SourceBase):
                             # Genuine auto-advance at end of song
                             self._last_track_uri = uri
                             self._track_gen += 1
+                            self._save_last_played()
                             await self._broadcast_current_track()
                 if self.state != "playing":
                     self.state = "playing"

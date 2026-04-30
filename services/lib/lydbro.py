@@ -89,6 +89,24 @@ class LydbroHandler:
         r.touch_activity()
         logger.info("Lydbro: %s (source=%s, id=%s)", event, source or "-", event_id)
 
+        # Balance shortcuts.
+        # Color buttons (no source) and sound/{west,east,center} scenes all
+        # drive the volume adapter's set_tone. No-op on adapters that don't
+        # expose balance (Sonos / BlueSound); full effect on BeoLab 5 (via
+        # ESPHome) and PowerLink (via PipeWire).
+        _BAL = {
+            ("", "Green"):   4, ("sound", "West"):   4,  # R+4
+            ("", "Yellow"): -4, ("sound", "East"):  -4,  # L-4
+            ("", "Home"):    0, ("sound", "Center"): 0,  # centre
+        }
+        bal = _BAL.get((source, event))
+        if bal is not None and r._volume and hasattr(r._volume, "set_tone"):
+            logger.info("Lydbro: balance %s/%s → %+d",
+                        source or "-", event, bal)
+            result = await r._volume.set_tone(balance=bal)
+            if result is not None:
+                return
+
         # Volume
         if event == "Volume Up":
             await r.set_volume(min(100, r.volume + self._volume_step))

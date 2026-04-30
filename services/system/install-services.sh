@@ -151,6 +151,7 @@ done
 echo "📋 Setting up health check and failure notification scripts..."
 chmod +x "$SCRIPT_DIR/notify-failure.sh"
 chmod +x "$SCRIPT_DIR/beo-health.sh"
+chmod +x "$SCRIPT_DIR/reconcile-services.sh"
 echo "  ✅ Scripts made executable"
 
 echo ""
@@ -199,94 +200,22 @@ menu_has() {
 # Enable and start services in dependency order
 echo "🚀 Enabling and starting services..."
 
-# Start base services first
+# Always-on infrastructure services (independent of player.type / menu).
 echo "  🌐 Starting HTTP server..."
 start_service beo-http.service
-
-# Determine configured player type from config.json
-PLAYER_TYPE=$(python3 -c "import json; print(json.load(open('$CONFIG_DIR/config.json')).get('player',{}).get('type','sonos'))" 2>/dev/null || echo "sonos")
-echo "  ℹ️  Configured player type: $PLAYER_TYPE"
-
-if [ "$PLAYER_TYPE" = "sonos" ]; then
-    echo "  📡 Starting Sonos player..."
-    start_service beo-player-sonos.service
-    echo "  📡 Disabling other players (not configured)..."
-    systemctl disable beo-player-bluesound.service 2>/dev/null || true
-    systemctl stop beo-player-bluesound.service 2>/dev/null || true
-    systemctl disable beo-player-local.service 2>/dev/null || true
-    systemctl stop beo-player-local.service 2>/dev/null || true
-    systemctl disable beo-player-mass.service 2>/dev/null || true
-    systemctl stop beo-player-mass.service 2>/dev/null || true
-elif [ "$PLAYER_TYPE" = "bluesound" ]; then
-    echo "  📡 Starting BlueSound player..."
-    start_service beo-player-bluesound.service
-    echo "  📡 Disabling other players (not configured)..."
-    systemctl disable beo-player-sonos.service 2>/dev/null || true
-    systemctl stop beo-player-sonos.service 2>/dev/null || true
-    systemctl disable beo-player-local.service 2>/dev/null || true
-    systemctl stop beo-player-local.service 2>/dev/null || true
-    systemctl disable beo-player-mass.service 2>/dev/null || true
-    systemctl stop beo-player-mass.service 2>/dev/null || true
-elif [ "$PLAYER_TYPE" = "local" ]; then
-    echo "  📡 Starting Local player..."
-    start_service beo-player-local.service
-    echo "  📡 Disabling network players (not configured)..."
-    systemctl disable beo-player-sonos.service 2>/dev/null || true
-    systemctl stop beo-player-sonos.service 2>/dev/null || true
-    systemctl disable beo-player-bluesound.service 2>/dev/null || true
-    systemctl stop beo-player-bluesound.service 2>/dev/null || true
-    systemctl disable beo-player-mass.service 2>/dev/null || true
-    systemctl stop beo-player-mass.service 2>/dev/null || true
-elif [ "$PLAYER_TYPE" = "mass" ]; then
-    echo "  📡 Starting Music Assistant player..."
-    start_service beo-player-mass.service
-    echo "  📡 Disabling other players (not configured)..."
-    systemctl disable beo-player-sonos.service 2>/dev/null || true
-    systemctl stop beo-player-sonos.service 2>/dev/null || true
-    systemctl disable beo-player-bluesound.service 2>/dev/null || true
-    systemctl stop beo-player-bluesound.service 2>/dev/null || true
-    systemctl disable beo-player-local.service 2>/dev/null || true
-    systemctl stop beo-player-local.service 2>/dev/null || true
-elif [ "$PLAYER_TYPE" = "none" ]; then
-    echo "  ℹ️  No network player configured — skipping player services"
-    disable_service beo-player-sonos.service
-    disable_service beo-player-bluesound.service
-    disable_service beo-player-local.service
-    disable_service beo-player-mass.service
-else
-    echo "  ⚠️  Unknown player type '$PLAYER_TYPE', starting known network players..."
-    start_service beo-player-sonos.service || true
-    start_service beo-player-bluesound.service || true
-    disable_service beo-player-local.service
-    disable_service beo-player-mass.service
-fi
-
 echo "  🎮 Starting input server..."
 start_service beo-input.service
-
 echo "  🔀 Starting Event Router..."
 start_service beo-router.service
-
 echo "  🔗 Starting MasterLink sniffer..."
 start_service beo-masterlink.service
-
 echo "  📱 Starting Bluetooth service..."
 start_service beo-bluetooth.service
 
-# Start source services based on menu configuration
-echo ""
-echo "  📋 Checking menu config for optional sources..."
-
-for entry in "${OPTIONAL_SOURCES[@]}"; do
-    IFS='|' read -r menu_key service emoji label <<< "$entry"
-    if menu_has "$menu_key"; then
-        echo "  $emoji Starting $label..."
-        start_service "$service"
-    else
-        echo "  ⏭️  $menu_key not in menu — skipping $service"
-        disable_service "$service"
-    fi
-done
+# Player + optional sources reconciled by reconcile-services.sh — single
+# source of truth for "which services should be running, given config.json".
+echo "  🔄 Reconciling player + source services from config..."
+"$SCRIPT_DIR/reconcile-services.sh"
 
 # Start UI service last (depends on HTTP)
 echo "  🖥️  Starting UI service..."

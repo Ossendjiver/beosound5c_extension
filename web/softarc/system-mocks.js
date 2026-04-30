@@ -16,6 +16,7 @@
         hostname: 'beosound5c-church', ip_address: '192.168.0.163',
         uptime: '3d 14h 22m', cpu_temp: '48.2°C', memory: '1.2G / 3.8G (32%)',
         git_tag: 'v0.9.2-dev',
+        device_id: '8e671b06-063c-4fd2-a16f-e9105475c60f',
     };
 
     const config = { device: 'Church' };

@@ -86,6 +86,26 @@ class BeoLab5Volume(VolumeAdapter):
             logger.warning("Could not read BeoLab 5 balance: %s", e)
             return 0
 
+    # -- Tone (BeoLab 5 has its own DSP for bass/treble/loudness; we only
+    #    expose balance, which our ESPHome bridge drives via the native
+    #    BeoLink protocol). UI range is ±10; ESPHome range is ±20, so we
+    #    scale by 2 on the way out / back. --
+
+    async def get_tone(self) -> dict | None:
+        bal_hw = await self.get_balance()
+        return {"balance": int(round(bal_hw / 2))}
+
+    async def set_tone(self, **kwargs) -> dict | None:
+        if "balance" not in kwargs or kwargs["balance"] is None:
+            return {"state": await self.get_tone() or {}}
+        try:
+            bal_ui = int(kwargs["balance"])
+        except (TypeError, ValueError):
+            return None
+        bal_ui = max(-10, min(10, bal_ui))
+        await self.set_balance(bal_ui * 2)
+        return {"ok": True, "state": {"balance": bal_ui}}
+
     async def power_on(self) -> None:
         try:
             async with self._session.post(

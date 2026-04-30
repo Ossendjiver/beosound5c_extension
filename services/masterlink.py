@@ -3,6 +3,32 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
 # Attribution required — see LICENSE, Section 7(b).
+#
+# -----------------------------------------------------------------------------
+# This file is substantially a derivative work of libpc2 by Tore Sinding
+# Bekkedal (GPL-3.0), https://github.com/toresbe/libpc2.  The following parts
+# are ports (logic + boilerplate byte sequences) from libpc2 source:
+#
+#   PC2Device.init                       ← pc2/pc2device.cpp   PC2Device::init
+#   PC2Device.set_address_filter         ← pc2/pc2device.cpp   PC2Device::set_address_filter
+#   PC2Device.speaker_power              ← pc2/mixer.cpp       PC2Mixer::speaker_power
+#   PC2Device.speaker_mute               ← pc2/mixer.cpp       PC2Mixer::speaker_mute
+#   PC2Device.set_volume (0xEB stepping) ← pc2/mixer.cpp       PC2Mixer::adjust_volume
+#   PC2Device.set_routing                ← pc2/mixer.cpp       PC2Mixer::send_routing_state
+#   PC2Device.set_parameters             ← pc2/mixer.cpp       PC2Mixer::set_parameters
+#   PC2Device.send_ml_telegram           ← masterlink/telegram.cpp MasterlinkTelegram::serialize
+#   PC2Device._reply_master_present      ← masterlink/telegram.cpp MasterPresent::reply_from_request
+#   PC2Device._handle_goto_source        ← masterlink/masterlink.cpp PC2Beolink::handle_ml_request (0x45 branch),
+#                                          telegram.cpp StatusInfo / TrackInfo
+#   PC2Device._broadcast_clock_once      ← masterlink/masterlink.cpp PC2Beolink::broadcast_timestamp
+#
+# Decode tables (_ML_TELEGRAM_TYPES, _ML_PAYLOAD_TYPES, _ML_NODES, _ML_SOURCES)
+# are the same facts libpc2 publishes in masterlink/telegram.hpp and
+# masterlink/masterlink.hpp; most values are also in B&O's MLGW02 spec.
+#
+# Both projects are GPL-3.0-or-later compatible.  See THIRDPARTY.md for the
+# repo-wide summary of third-party code this project builds on.
+# -----------------------------------------------------------------------------
 
 import usb.core
 import usb.util
@@ -141,6 +167,10 @@ class PC2Device:
     EP_OUT = 0x01  # For sending data to device
     EP_IN = 0x81   # For receiving data from device (LIBUSB_ENDPOINT_IN | 1)
 
+    # Our ML bus identity — matches the 0xF6 filter set in set_address_filter().
+    # Used as src_node on every outgoing telegram and to reject echoes.
+    OUR_NODE_ID = 0xC1  # AUDIO_MASTER
+
     # Reconnect settings
     RECONNECT_BASE_DELAY = 2.0    # Initial retry delay in seconds
     RECONNECT_MAX_DELAY = 30.0    # Max retry delay
@@ -247,9 +277,17 @@ class PC2Device:
         self.dev.write(self.EP_OUT, telegram, 0)
 
     def set_address_filter(self):
-        """Set the address filter to capture all data."""
-        self.send_message([0xF6, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF])
-        logger.info("Address filter set")
+        """Claim the Audio Master identity on the ML bus.
+
+        0xF6 is the PC2's address-filter opcode. libpc2's three modes are
+        audio-master / promiscuous / beoport-pc2; only audio-master causes
+        the PC2 to answer as 0xC1 and engage its audio output path.  The
+        previous 0xFF-wildcard value sniffed traffic but the card never
+        behaved as a master, which is why control messages flowed but audio
+        didn't.
+        Constants from libpc2 set_address_filter() (no code copied)."""
+        self.send_message([0xF6, 0x10, 0xC1, 0x80, 0x83, 0x05, 0x00, 0x00])
+        logger.info("Address filter set (Audio Master mode)")
 
     def start_sniffing(self):
         """Start sniffing USB messages and sending them via webhook"""
@@ -336,6 +374,8 @@ class PC2Device:
             asyncio.set_event_loop(self.loop)
             self.loop.run_until_complete(self._init_session())
             self.loop.run_until_complete(self._start_mixer_http())
+            self.loop.create_task(self._load_and_apply_tone())
+            self.loop.create_task(self._clock_broadcast_loop())
             self.loop.create_task(watchdog_loop())
             self.loop.run_until_complete(self._async_sender_loop())
         except Exception as e:
@@ -608,7 +648,7 @@ class PC2Device:
         0x04: "MASTER_PRESENT",
         0x06: "DISPLAY_SOURCE",
         0x07: "START_VIDEO_DISTRIBUTION",
-        0x08: "REQUEST_DISTRIBUTED_SOURCE",
+        0x08: "AUDIO_BUS",
         0x0B: "EXTENDED_SOURCE_INFORMATION",
         0x0D: "BEO4_KEY",
         0x10: "STANDBY",
@@ -659,6 +699,28 @@ class PC2Device:
         0xA1: "N_RADIO",
     }
 
+    # Source ID → router action name.  When a link room sends GOTO_SOURCE
+    # (0x45), the master replies + activates the source locally by forwarding
+    # this action to beo-router, where the config-driven source_buttons map
+    # picks the right local source.  Unmapped IDs still get a protocol reply
+    # so the link room doesn't hang, but no source is activated here.
+    _ML_SOURCE_TO_ACTION = {
+        0x0B: "tv",
+        0x15: "vmem",
+        0x16: "dvd",
+        0x1F: "dtv",
+        0x29: "dvd",
+        0x33: "v.aux",
+        0x3E: "v.aux2",
+        0x47: "pc",
+        0x6F: "radio",
+        0x79: "amem",
+        0x7A: "amem",
+        0x8D: "cd",
+        0x97: "a.aux",
+        0xA1: "n.radio",
+    }
+
     # Source activity byte — byte 21 (0-indexed) of a STATUS_INFO payload.
     # From MLGW02 §7.5.
     _ML_SOURCE_ACTIVITY = {
@@ -689,8 +751,8 @@ class PC2Device:
     }
 
     def _log_ml_telegram(self, msg):
-        """Parse and log an incoming ML telegram (message[2] == 0x00).
-        Read-only for now; full handling lives in the router."""
+        """Parse and log an incoming ML telegram (message[2] == 0x00),
+        then dispatch the audio-master replies we're responsible for."""
         if len(msg) < 14:
             logger.warning("Short ML telegram: %s", " ".join(f"{b:02X}" for b in msg))
             return
@@ -709,9 +771,18 @@ class PC2Device:
         tname = self._ML_TELEGRAM_TYPES.get(ttype, f"0x{ttype:02X}")
         pname = self._ML_PAYLOAD_TYPES.get(ptype, f"0x{ptype:02X}")
 
-        logger.info("ML %s->%s %s/%s v%d [%d]: %s",
+        logger.info("ML RX raw: %s",
+                    " ".join(f"{b:02X}" for b in msg))
+        logger.info("ML RX %s->%s %s/%s v%d [%d] dst_src=0x%02X src_src=0x%02X payload=%s",
                     src_name, dst_name, tname, pname, pver, psize,
+                    dest_src, src_src,
                     " ".join(f"{b:02X}" for b in payload))
+
+        try:
+            self._dispatch_ml(ttype, ptype, src_node, dest_node, payload, pver)
+        except Exception as e:
+            logger.warning("ML dispatch failed (t=0x%02X p=0x%02X): %s",
+                           ttype, ptype, e, exc_info=True)
 
     def send_ml_telegram(self, dest_node, src_node, telegram_type, payload_type,
                          payload_version, payload, dest_src=0x00, src_src=0x00):
@@ -736,13 +807,267 @@ class PC2Device:
         checksum = sum(frame) & 0xFF
         frame.append(checksum)
         frame.append(0x00)                     # EOT
-        self.send_message([0xE0] + frame)
-        logger.info("ML TX -> node=0x%02X type=0x%02X pt=0x%02X len=%d",
-                    dest_node, telegram_type, payload_type, len(payload))
+        usb_frame = [0xE0] + frame
+        self.send_message(usb_frame)
+        dst_name = self._ML_NODES.get(dest_node, f"0x{dest_node:02X}")
+        tname = self._ML_TELEGRAM_TYPES.get(telegram_type, f"0x{telegram_type:02X}")
+        pname = self._ML_PAYLOAD_TYPES.get(payload_type, f"0x{payload_type:02X}")
+        logger.info("ML TX %s %s/%s v%d [%d] dst_src=0x%02X src_src=0x%02X payload=%s",
+                    dst_name, tname, pname, payload_version, len(payload),
+                    dest_src, src_src,
+                    " ".join(f"{b:02X}" for b in payload))
+        logger.info("ML TX raw: %s",
+                    " ".join(f"{b:02X}" for b in usb_frame))
+
+    # --- Audio-master role ---
+    # Boilerplate telegram shapes below are derived from libpc2 (GPL-3.0) by
+    # Tore Sinding Bekkedal — see https://github.com/toresbe/libpc2,
+    # masterlink/telegram.cpp and masterlink/masterlink.cpp.  Exact function
+    # references are called out per-method.  Both projects are GPL-3.0-or-later
+    # compatible; the byte sequences themselves are protocol facts rather than
+    # creative expression.
+
+    def _dispatch_ml(self, ttype, ptype, src_node, dest_node, payload, pver):
+        """Act on incoming ML telegrams as the audio master.
+
+        Only responds to telegrams we're actually addressed in (specifically
+        us at 0xC1, or broadcasts to ALL / ALL_AUDIO / ALL_LINK).  Ignores
+        echoes of our own outgoing traffic."""
+        if src_node == self.OUR_NODE_ID:
+            logger.debug("ML dispatch: DROP echo (src=us=0x%02X)", src_node)
+            return
+        addressed_to_us = dest_node in (self.OUR_NODE_ID, 0x80, 0x81, 0x83)
+        if not addressed_to_us:
+            logger.info("ML dispatch: DROP not-addressed-to-us "
+                        "(dest=0x%02X not in {0xC1,0x80,0x81,0x83}, t=0x%02X p=0x%02X)",
+                        dest_node, ttype, ptype)
+            return
+
+        logger.info("ML dispatch: ACCEPT from 0x%02X -> 0x%02X t=0x%02X p=0x%02X",
+                    src_node, dest_node, ttype, ptype)
+
+        # REQUEST / MASTER_PRESENT — "is there an audio master here?"
+        if ttype == 0x0B and ptype == 0x04:
+            logger.info("ML dispatch: MATCH MASTER_PRESENT (REQUEST) from 0x%02X", src_node)
+            self._reply_master_present(src_node)
+            return
+
+        # AUDIO_SETUP-style link/video device ping (payload_type 0x04 with a
+        # specific 3-byte payload).  From libpc2 masterlink.cpp commented
+        # case(0x04): payload_size=3, payload_version=4, payload[1]=0x01,
+        # payload[2]=0x00, payload[0]=0x08 (link device) or 0x02 (video
+        # device).  Reply is the same MASTER_PRESENT status, regardless of
+        # incoming telegram_type — link rooms send these with non-REQUEST
+        # ttype, which slips through the REQUEST-only match above.
+        # Author's note: "Link device ping, sending pong".
+        if ptype == 0x04 and len(payload) == 3 and payload[1] == 0x01 \
+                and payload[2] == 0x00 and payload[0] in (0x02, 0x08):
+            kind = "link device" if payload[0] == 0x08 else "video device"
+            logger.info("ML dispatch: MATCH %s ping (t=0x%02X p=0x04 payload=[%02X,01,00]) from 0x%02X",
+                        kind, ttype, payload[0], src_node)
+            self._reply_master_present(src_node)
+            return
+
+        # AUDIO_BUS request (payload_type 0x08, empty payload, pver=1).  From
+        # libpc2 masterlink.cpp commented case(0x08): "Not sure what this
+        # means but link room products will sometimes need this reply".
+        # Reply: STATUS/AUDIO_BUS, empty payload, pver=4.
+        if ptype == 0x08 and len(payload) == 0 and pver == 1:
+            logger.info("ML dispatch: MATCH AUDIO_BUS request (t=0x%02X) from 0x%02X",
+                        ttype, src_node)
+            self._reply_audio_bus(src_node)
+            return
+
+        # REQUEST / GOTO_SOURCE — link room wants us to play a source.
+        if ttype == 0x0B and ptype == 0x45:
+            logger.info("ML dispatch: MATCH GOTO_SOURCE from 0x%02X payload=%s",
+                        src_node, " ".join(f"{b:02X}" for b in payload))
+            self._handle_goto_source(src_node, payload)
+            return
+
+        logger.info("ML dispatch: NO HANDLER t=0x%02X p=0x%02X pver=%d — link device may hang",
+                    ttype, ptype, pver)
+
+    def _reply_master_present(self, requesting_node):
+        """Reply to a MASTER_PRESENT probe.
+
+        Payload {0x01, 0x01, 0x01} and payload_version=4 from libpc2
+        telegram.cpp, DecodedTelegram::MasterPresent::reply_from_request()."""
+        self.send_ml_telegram(
+            dest_node=requesting_node,
+            src_node=self.OUR_NODE_ID,
+            telegram_type=0x14,        # STATUS
+            payload_type=0x04,         # MASTER_PRESENT
+            payload_version=4,
+            payload=[0x01, 0x01, 0x01],
+        )
+
+    def _reply_audio_bus(self, requesting_node):
+        """Reply to an AUDIO_BUS request.
+
+        From libpc2 masterlink.cpp commented case(0x08).  Empty payload,
+        payload_version=4.  Author's comment: 'Not sure what this means but
+        link room products will sometimes need this reply'.  A casting
+        audio-master would reply with payload [0x04, 0x06, 0x02, 0x01, 0x00]
+        instead, but we're not casting so the empty form is correct."""
+        self.send_ml_telegram(
+            dest_node=requesting_node,
+            src_node=self.OUR_NODE_ID,
+            telegram_type=0x14,        # STATUS
+            payload_type=0x08,         # AUDIO_BUS
+            payload_version=4,
+            payload=[],
+        )
+
+    def _handle_goto_source(self, src_node, payload):
+        """Respond to a link-room source request and start the source locally.
+
+        Replies with STATUS_INFO + TRACK_INFO (boilerplate from libpc2
+        telegram.cpp, DecodedTelegram::StatusInfo / TrackInfo), flips
+        distribute routing on for PowerLink devices (the only output type
+        where audio actually rides the bus), and forwards the source to
+        beo-router as a synthetic IR event.
+
+        Payload byte [1] is the requested source ID per libpc2 GotoSource."""
+        if len(payload) < 2:
+            logger.warning("GOTO_SOURCE payload too short (%d bytes): %s",
+                           len(payload), " ".join(f"{b:02X}" for b in payload))
+            return
+        source_id = payload[1]
+        source_name = self._ML_SOURCES.get(source_id, f"0x{source_id:02X}")
+        logger.info("GOTO_SOURCE: src_node=0x%02X source_id=0x%02X (%s)",
+                    src_node, source_id, source_name)
+
+        # 1. STATUS_INFO broadcast to ALL_LINK_DEVICES (0x83).  31-byte
+        # payload scaffold from libpc2 telegram.cpp StatusInfo(source_id).
+        # Most fields are "known unknowns" — B&O's status struct that link
+        # rooms inspect for source kind, track position, picture format etc.
+        status_payload = [
+            source_id, 0x01, 0x00, 0x00, 0x1F, 0xBE, 0x01, 0x00,
+            0x00, 0x00, 0xFF, 0x02, 0x01, 0x00, 0x03, 0x01,
+            0x01, 0x01, 0x03, 0x00, 0x02, 0x00, 0x00, 0x00,
+            0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00,
+        ]
+        self.send_ml_telegram(
+            dest_node=0x83,            # ALL_LINK_DEVICES
+            src_node=self.OUR_NODE_ID,
+            telegram_type=0x14,        # STATUS
+            payload_type=0x87,         # STATUS_INFO
+            payload_version=4,
+            payload=status_payload,
+        )
+
+        # 2. TRACK_INFO to the requesting node.  From libpc2 TrackInfo(source_id).
+        self.send_ml_telegram(
+            dest_node=src_node,
+            src_node=self.OUR_NODE_ID,
+            telegram_type=0x14,        # STATUS
+            payload_type=0x44,         # TRACK_INFO
+            payload_version=5,
+            payload=[0x02, source_id, 0x00, 0x02, 0x01, 0x00, 0x00, 0x00],
+        )
+
+        # 3. Distribute routing — only meaningful on devices where our audio
+        # actually passes through the PC2 mixer (PowerLink).  On Sonos /
+        # BlueSound / BeoLab 5 via ESPHome, audio bypasses the PC2 so ML
+        # distribution is physically impossible; we still reply to the
+        # control telegrams so link rooms don't hang.
+        is_pl = self._is_powerlink_device()
+        logger.info("GOTO_SOURCE: powerlink_device=%s -> %s distribute",
+                    is_pl, "will set" if is_pl else "skipping")
+        if is_pl:
+            try:
+                self.set_routing(local=True, distribute=True)
+                logger.info("GOTO_SOURCE: set_routing(local=True, distribute=True) OK")
+            except Exception as e:
+                logger.warning("set_routing(distribute) failed: %s", e, exc_info=True)
+
+        # 4. Forward to beo-router as a synthetic IR source press.  Router's
+        # source_buttons map turns the action into a source activation using
+        # the same code path as a local remote.
+        action = self._ML_SOURCE_TO_ACTION.get(source_id)
+        logger.info("GOTO_SOURCE: source 0x%02X -> action=%r (loop=%s)",
+                    source_id, action, bool(self.loop))
+        if action and self.loop:
+            asyncio.run_coroutine_threadsafe(
+                self._forward_source_to_router(action, src_node), self.loop)
+        else:
+            logger.warning("GOTO_SOURCE 0x%02X (%s): no action mapping or no loop — "
+                           "replied but NOT forwarded to router; link room will see "
+                           "the protocol reply but no audio will start",
+                           source_id, source_name)
+
+    def _is_powerlink_device(self):
+        """True when audio physically passes through the PC2 — the only
+        case where 'distribute on ML' does anything audible."""
+        return cfg("volume", "type", default="") == "powerlink"
+
+    async def _forward_source_to_router(self, action, src_node):
+        """Synthesize an IR-like event for a link-room GOTO_SOURCE."""
+        link_name = self._ML_NODES.get(src_node, f"0x{src_node:02X}")
+        webhook_data = {
+            'device_name': BEOSOUND_DEVICE_NAME,
+            'source': 'ml',
+            'link': link_name,
+            'action': action,
+            'device_type': 'Audio',
+            'count': 1,
+            'timestamp': datetime.now().isoformat(),
+        }
+        try:
+            async with self.session.post(
+                ROUTER_URL, json=webhook_data,
+                timeout=aiohttp.ClientTimeout(total=1.0),
+            ) as resp:
+                if resp.status != 200:
+                    logger.warning("Router returned HTTP %d (goto_source)",
+                                   resp.status)
+        except Exception as e:
+            logger.warning("Router unreachable (goto_source): %s", e)
+        logger.info("GOTO_SOURCE forwarded: %s from %s", action, link_name)
+
+    # --- Clock broadcast ---
+    # A real audio master periodically broadcasts the time so link-room
+    # displays stay updated.  Payload layout + BCD encoding from libpc2
+    # masterlink.cpp PC2Beolink::broadcast_timestamp().  Cadence here (60s)
+    # is our choice — libpc2 doesn't commit to one.
+
+    CLOCK_BROADCAST_INTERVAL = 60  # seconds
+
+    async def _clock_broadcast_loop(self):
+        while self.running:
+            try:
+                if self.connected:
+                    self._broadcast_clock_once()
+                    logger.info("ML clock broadcast tick (connected=True)")
+                else:
+                    logger.info("ML clock broadcast tick: PC2 not connected, skipping")
+            except Exception as e:
+                logger.warning("Clock broadcast failed: %s", e, exc_info=True)
+            await asyncio.sleep(self.CLOCK_BROADCAST_INTERVAL)
+
+    def _broadcast_clock_once(self):
+        t = time.localtime()
+        def bcd(n: int) -> int: return ((n // 10) << 4) | (n % 10)
+        payload = [
+            0x0A, 0x00, 0x03,
+            bcd(t.tm_hour), bcd(t.tm_min), bcd(t.tm_sec),
+            0x00,
+            bcd(t.tm_mday), bcd(t.tm_mon), bcd(t.tm_year % 100),
+            0x02,
+        ]
+        self.send_ml_telegram(
+            dest_node=0x80,            # ALL
+            src_node=self.OUR_NODE_ID,
+            telegram_type=0x14,        # STATUS
+            payload_type=0x40,         # CLOCK
+            payload_version=11,
+            payload=payload,
+        )
 
     # --- Mixer control (PC2 commands) ---
-    # Protocol details derived from libpc2 (GPL-3.0) by Tore Sinding Bekkedal;
-    # no source code was copied. See https://github.com/toresbe/libpc2
+    # Protocol details derived from libpc2 (GPL-3.0) by Tore Sinding Bekkedal.
+    # See https://github.com/toresbe/libpc2
 
     def speaker_power(self, on):
         """Turn speakers on or off with proper mute sequencing.
@@ -918,12 +1243,11 @@ class PC2Device:
         """GET /mixer/tone               – read current tone state
         POST /mixer/tone  body: {bass?, treble?, balance?, loudness?}
 
-        Runtime tone is applied via an ALSA/PipeWire command template from
-        config (volume.tone.alsa_card + volume.tone.{bass,treble,...}_control)
-        so the change is heard even though the PC2's TDA7409 only accepts
-        0xE3 at power-on.  The PC2 is *also* nudged via 0xE3 on a best-effort
-        basis — if your PC2 firmware honours it mid-session, it takes effect;
-        if not, the ALSA path carries the change."""
+        Applied via a PipeWire filter-chain named ``beo_tone_sink``
+        (see install/configs/53-beosound5c-tone.conf).  The PC2's TDA7409
+        ignores 0xE3 mid-session over USB, so the DSP path is the only
+        one that takes effect.  We still push 0xE3 on a best-effort
+        basis for any hardware that honours it."""
         if request.method == 'GET':
             return web.json_response({
                 'bass': self.mixer_state['bass'],
@@ -936,15 +1260,17 @@ class PC2Device:
         applied = {}
         for key in ('bass', 'treble', 'balance'):
             if key in data:
-                val = int(data[key])
+                val = max(-10, min(10, int(data[key])))
                 self.mixer_state[key] = val
                 applied[key] = val
-                await self._apply_alsa_tone(key, val)
+                await self._apply_pw_tone(key, val)
         if 'loudness' in data:
             val = bool(data['loudness'])
             self.mixer_state['loudness'] = val
             applied['loudness'] = val
-            await self._apply_alsa_tone('loudness', val)
+            await self._apply_pw_tone('loudness', val)
+        if applied:
+            self._schedule_tone_save()
 
         # Best-effort: also push to PC2 via 0xE3 with the current volume.
         loop = asyncio.get_running_loop()
@@ -972,53 +1298,192 @@ class PC2Device:
         except Exception as e:
             logger.debug("0xE3 push failed (expected if PC2 ignores runtime): %s", e)
 
-    async def _apply_alsa_tone(self, kind, value):
-        """Apply bass/treble/balance/loudness via an amixer shell command.
+    # ── PipeWire filter-chain tone control ─────────────────────────────
+    #
+    # Bass / treble / loudness live as biquad shelf filters inside the
+    # ``beo_tone_sink`` virtual sink installed by
+    # ``install/configs/53-beosound5c-tone.conf``.  Balance is a pair of
+    # per-channel volumes on the same node.
+    #
+    # Runtime control is over ``pw-cli s <node-id> Props '{...}'``.  The
+    # node id changes across pipewire restarts, so we resolve it by name
+    # with a short cache.
 
-        Config (config.json):
-            volume.tone.alsa_card:    ALSA card index/name (default "0")
-            volume.tone.bass_control:    "Bass"     (name of amixer control)
-            volume.tone.treble_control:  "Treble"
-            volume.tone.balance_control: "Balance"
-            volume.tone.loudness_control:"Loudness"   (switch control)
+    PW_TONE_NODE = "beo_tone_sink"
+    # Fixed loudness curve when the switch is on.  Low shelf boost at
+    # 100 Hz (+6 dB) + high shelf at 10 kHz (+3 dB).  Independent of
+    # current volume — a simple "smile" tilt the user can toggle.
+    PW_LOUD_BASS_DB = 6.0
+    PW_LOUD_TREBLE_DB = 3.0
 
-        If the matching *_control key is absent, the call is a no-op — the
-        operator hasn't wired up that tone axis for this device.  Failures
-        are logged at warning level and never raised.
-        """
-        tone_cfg = cfg("volume", "tone", default={}) or {}
-        control = tone_cfg.get(f"{kind}_control")
-        if not control:
-            logger.debug("ALSA tone %s: no control configured, skipping", kind)
-            return
-        card = str(tone_cfg.get("alsa_card", "0"))
+    def _pw_env(self):
+        """Environment for pw-cli subprocesses — the masterlink service
+        runs as user ``kirsten`` but outside kirsten's login session, so
+        we need ``XDG_RUNTIME_DIR`` set to reach the pipewire socket."""
+        env = os.environ.copy()
+        env.setdefault('XDG_RUNTIME_DIR', f'/run/user/{os.getuid()}')
+        return env
 
-        if kind == 'loudness':
-            arg = "on" if value else "off"
-        else:
-            arg = str(int(value))
-
-        cmd = ["amixer", "-c", card, "sset", control, arg]
-        logger.info("ALSA tone %s=%s -> %s", kind, arg, " ".join(shlex.quote(c) for c in cmd))
+    async def _find_pw_node(self, name):
+        """Resolve a pipewire node id by ``node.name``.  Short cache —
+        cleared on failure so a restart is picked up on next change."""
+        cached = getattr(self, '_pw_node_cache', {}).get(name)
+        if cached is not None:
+            return cached
         try:
             proc = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.PIPE,
+                'pw-dump',
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+                env=self._pw_env(),
             )
-            _, stderr = await asyncio.wait_for(proc.communicate(), timeout=2.0)
-            if proc.returncode != 0:
-                logger.warning("amixer %s=%s failed (rc=%d): %s",
-                               control, arg, proc.returncode,
-                               stderr.decode(errors='replace').strip())
-        except asyncio.TimeoutError:
-            logger.warning("amixer timed out (%s=%s)", control, arg)
-            try: proc.kill()
-            except Exception: pass
-        except FileNotFoundError:
-            logger.warning("amixer not installed — ALSA tone controls unavailable")
+            out, _ = await asyncio.wait_for(proc.communicate(), timeout=2.0)
+            data = json.loads(out)
         except Exception as e:
-            logger.warning("ALSA tone %s=%s failed: %s", kind, arg, e)
+            logger.warning("pw-dump failed: %s", e)
+            return None
+        for obj in data:
+            info = obj.get('info') or {}
+            props = info.get('props') or {}
+            if props.get('node.name') == name:
+                node_id = obj.get('id')
+                self._pw_node_cache = {name: node_id}
+                return node_id
+        return None
+
+    async def _pw_set_props(self, spec):
+        """Run ``pw-cli s <id> Props '{<spec>}'`` against the tone node.
+        Re-resolves node id once on failure in case pipewire restarted."""
+        for attempt in (1, 2):
+            node_id = await self._find_pw_node(self.PW_TONE_NODE)
+            if node_id is None:
+                logger.warning("PipeWire filter-chain '%s' not found",
+                               self.PW_TONE_NODE)
+                return False
+            cmd = ['pw-cli', 's', str(node_id), 'Props', '{ ' + spec + ' }']
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    *cmd,
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.PIPE,
+                    env=self._pw_env(),
+                )
+                _, stderr = await asyncio.wait_for(
+                    proc.communicate(), timeout=2.0)
+                if proc.returncode == 0:
+                    return True
+                logger.warning("pw-cli rc=%d: %s | %s",
+                               proc.returncode, ' '.join(cmd),
+                               stderr.decode(errors='replace').strip())
+            except Exception as e:
+                logger.warning("pw-cli exception (attempt %d): %s", attempt, e)
+            # First attempt failed — clear the cached id and retry once.
+            self._pw_node_cache = {}
+        return False
+
+    async def _apply_pw_tone(self, kind, value):
+        """Map a tone axis to a PipeWire Props update.  The filter-chain
+        has separate FL/FR nodes (see install/configs/53-beosound5c-tone.conf)
+        so we drive both in one call.
+
+          bass/treble           (-10..+10 → same dB via shelf Gain)
+          balance               (-10..+10 → per-channel mixer gain,
+                                 quieter side scales 1 → 0)
+          loudness              (bool → fixed shelf pair on/off)
+        """
+        if kind in ('bass', 'treble'):
+            g = float(value)
+            return await self._pw_set_props(
+                f'params = [ "{kind}_FL:Gain" {g:.2f} '
+                f'"{kind}_FR:Gain" {g:.2f} ]')
+        if kind == 'loudness':
+            lb = self.PW_LOUD_BASS_DB if value else 0.0
+            lt = self.PW_LOUD_TREBLE_DB if value else 0.0
+            return await self._pw_set_props(
+                f'params = [ "loud_bass_FL:Gain" {lb:.2f} '
+                f'"loud_bass_FR:Gain" {lb:.2f} '
+                f'"loud_treble_FL:Gain" {lt:.2f} '
+                f'"loud_treble_FR:Gain" {lt:.2f} ]')
+        if kind == 'balance':
+            b = max(-10, min(10, int(value)))
+            if b <= 0:
+                fl, fr = 1.0, 1.0 + b / 10.0
+            else:
+                fl, fr = 1.0 - b / 10.0, 1.0
+            return await self._pw_set_props(
+                f'params = [ "bal_FL:Gain 1" {fl:.3f} '
+                f'"bal_FR:Gain 1" {fr:.3f} ]')
+        logger.warning("Unknown tone axis: %s", kind)
+        return False
+
+    # ── Tone persistence to config.json ───────────────────────────────
+    # Debounced — repeated slider drags only trigger one write after the
+    # user stops moving.  Atomic replace so a concurrent write from
+    # beo-input's /config handler can't corrupt the file.
+
+    _TONE_SAVE_DEBOUNCE = 2.0
+
+    def _schedule_tone_save(self):
+        existing = getattr(self, '_tone_save_task', None)
+        if existing and not existing.done():
+            existing.cancel()
+        if self.loop:
+            self._tone_save_task = asyncio.run_coroutine_threadsafe(
+                self._delayed_tone_save(), self.loop)
+
+    async def _delayed_tone_save(self):
+        try:
+            await asyncio.sleep(self._TONE_SAVE_DEBOUNCE)
+            await self._save_tone_to_config()
+        except asyncio.CancelledError:
+            pass
+
+    async def _save_tone_to_config(self):
+        from lib.config import _SEARCH_PATHS
+        path = next((p for p in _SEARCH_PATHS if os.path.exists(p)), None)
+        if not path:
+            logger.warning("No config.json found; tone not persisted")
+            return
+        snapshot = {
+            'bass': int(self.mixer_state['bass']),
+            'treble': int(self.mixer_state['treble']),
+            'balance': int(self.mixer_state['balance']),
+            'loudness': bool(self.mixer_state['loudness']),
+        }
+
+        def _do_save():
+            with open(path) as f:
+                data = json.load(f)
+            data.setdefault('volume', {})['tone'] = snapshot
+            tmp = path + '.tmp'
+            with open(tmp, 'w') as f:
+                json.dump(data, f, indent=2)
+            os.replace(tmp, path)
+
+        try:
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(None, _do_save)
+            logger.info("Persisted tone: %s", snapshot)
+        except PermissionError as e:
+            logger.warning("Tone persist permission denied (%s): %s",
+                           path, e)
+        except Exception as e:
+            logger.warning("Tone persist failed: %s", e)
+
+    async def _load_and_apply_tone(self):
+        """Read saved tone values from config and push them to the
+        filter-chain.  Called once at startup after the mixer HTTP API
+        is up."""
+        tone = cfg('volume', 'tone', default={}) or {}
+        for key in ('bass', 'treble', 'balance'):
+            val = int(tone.get(key, 0))
+            self.mixer_state[key] = max(-10, min(10, val))
+        self.mixer_state['loudness'] = bool(tone.get('loudness', False))
+        for key in ('bass', 'treble', 'balance', 'loudness'):
+            await self._apply_pw_tone(key, self.mixer_state[key])
+        logger.info("Loaded tone from config: bass=%d treble=%d bal=%d loud=%s",
+                    self.mixer_state['bass'], self.mixer_state['treble'],
+                    self.mixer_state['balance'], self.mixer_state['loudness'])
 
     async def _handle_ml_send(self, request):
         """POST /ml/send — raw ML telegram TX for experimentation.
@@ -1126,16 +1591,29 @@ if __name__ == "__main__":
     try:
         pc2 = PC2Device()
         pc2.sniff_mode = ml_sniff
-        pc2.open()
+        # PC2 dongle is optional — devices without it (e.g. Sonos-only setups
+        # like Church) still need masterlink running for the mixer HTTP API
+        # (tone controls). If open() fails we skip init/filter, but still
+        # start_sniffing() so the sender thread boots the mixer HTTP and the
+        # sniffer thread enters its reconnect loop in case a PC2 appears later.
+        try:
+            pc2.open()
+            pc2_ready = True
+        except Exception as e:
+            logger.warning("PC2 open failed: %s — running tone API only; "
+                           "sniffer will retry in background", e)
+            pc2_ready = False
+
         pc2.start_sniffing()
 
-        logger.info("Starting device initialization")
-        pc2.init()
+        if pc2_ready:
+            logger.info("Starting device initialization")
+            pc2.init()
 
-        logger.info("Setting address filter")
-        pc2.set_address_filter()
-        if ml_sniff:
-            logger.info("ML sniffer ON — every USB packet will be logged in full hex.")
+            logger.info("Setting address filter")
+            pc2.set_address_filter()
+            if ml_sniff:
+                logger.info("ML sniffer ON — every USB packet will be logged in full hex.")
 
         if audio_test:
             logger.info("Audio test mode. Commands: on [vol], off, vol <n>, vol+ [n], vol- [n], mute, unmute, status, quit")

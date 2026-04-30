@@ -74,8 +74,8 @@ class AppleMusicService(DigitPlaylistMixin, SourceBase):
     name = "Apple Music"
     port = 8774
     action_map = {
-        "play": "toggle",
-        "pause": "toggle",
+        "play": "play",
+        "pause": "pause",
         "go": "toggle",
         "next": "next",
         "prev": "prev",

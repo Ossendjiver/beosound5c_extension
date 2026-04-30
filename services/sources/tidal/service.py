@@ -73,8 +73,8 @@ class TidalService(DigitPlaylistMixin, SourceBase):
     name = "TIDAL"
     port = 8777
     action_map = {
-        "play": "toggle",
-        "pause": "toggle",
+        "play": "play",
+        "pause": "pause",
         "go": "toggle",
         "next": "next",
         "prev": "prev",

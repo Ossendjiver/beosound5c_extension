@@ -564,6 +564,13 @@
 
         .up-to-date-callout.visible { display: flex; }
 
+        .update-check-failed-callout {
+            border-left-color: #aa8;
+            background: rgba(170, 170, 68, 0.04);
+            color: #aa8;
+            max-width: 260px;
+        }
+
         .up-to-date-check {
             font-size: 14px;
             line-height: 1;
@@ -616,10 +623,47 @@
             font-size: 13px;
             color: #888;
             line-height: 1.6;
-            white-space: pre-wrap;
             max-height: 150px;
             overflow-y: auto;
         }
+
+        /* Rendered release-notes markup (shared between inline preview
+           and full-screen release-notes view). */
+        .rn-h3 {
+            color: #bbb;
+            font-size: 12px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin: 14px 0 6px 0;
+        }
+        .rn-h3:first-child { margin-top: 0; }
+        .rn-item {
+            display: flex;
+            gap: 8px;
+            margin: 3px 0;
+            padding-left: 2px;
+        }
+        .rn-item::before {
+            content: "·";
+            color: #555;
+            flex: 0 0 auto;
+        }
+        .rn-bold { color: #e0e0e0; font-weight: 600; }
+        .rn-code {
+            font-family: 'Monaco', 'Consolas', monospace;
+            font-size: 0.9em;
+            color: #ccc;
+            background: #1a1a1a;
+            padding: 0 4px;
+            border-radius: 2px;
+        }
+        /* Full-screen view is lighter weight / airier than the preview. */
+        #release-notes-screen .rn-h3 {
+            color: #ddd;
+            font-size: 13px;
+            margin: 22px 0 10px 0;
+        }
+        #release-notes-screen .rn-item { margin: 6px 0; }
 
         .update-release-link {
             display: inline-block;
@@ -731,7 +775,6 @@
             font-size: 14px;
             color: #999;
             line-height: 1.75;
-            white-space: pre-wrap;
             scroll-behavior: smooth;
         }
 
@@ -909,6 +952,10 @@
             <div id="up-to-date-callout" class="up-to-date-callout">
                 <span class="up-to-date-check">✓</span>
                 Up to date
+            </div>
+            <div id="update-check-failed-callout" class="up-to-date-callout update-check-failed-callout">
+                <span class="up-to-date-check">!</span>
+                Couldn't check for updates
             </div>
             <div id="update-notes" class="update-notes" style="display:none">
                 <div class="update-notes-label">What's new</div>
@@ -1101,6 +1148,7 @@
                     html += row('Device', cfg.device || inp.hostname);
                     html += row('IP', inp.ip_address);
                     html += row('Version', inp.git_tag);
+                    if (inp.device_id) html += row('UUID', inp.device_id);
                     html += row('Uptime', inp.uptime);
 
                     // Sources configured
@@ -2010,8 +2058,10 @@
                         this.updateAvailable = true;
                         this.latestVersion = data.latest;
                         this.showUpdateInfo(data);
-                    } else if (data.current) {
+                    } else if (data.latest && data.current) {
                         this.showUpToDate();
+                    } else if (data.error) {
+                        this.showUpdateCheckFailed(data.error);
                     }
                 } catch (e) { /* offline or service not running */ }
             }
@@ -2021,7 +2071,9 @@
                 document.getElementById('update-callout').className = 'update-callout visible';
 
                 if (data.release_notes) {
-                    document.getElementById('update-notes-body').textContent = data.release_notes;
+                    this.releaseNotesMd = data.release_notes;
+                    document.getElementById('update-notes-body').innerHTML =
+                        this.renderReleaseNotes(data.release_notes);
                     document.getElementById('update-release-link').href = data.release_url || '#';
                     document.getElementById('update-notes').style.display = 'block';
                 }
@@ -2030,15 +2082,63 @@
                 document.getElementById('info-hint').style.display = '';
             }
 
+            // Render the narrow subset of Markdown our release notes actually
+            // use: ## version (stripped — already shown elsewhere), ### section,
+            // - bullet, **bold**, `code`.  Multi-line bullets wrap back into a
+            // single item.  Everything is escaped before transforms to keep
+            // arbitrary release-body text safe to innerHTML.
+            renderReleaseNotes(md) {
+                if (!md) return '';
+                const esc = s => s
+                    .replace(/&/g, '&amp;')
+                    .replace(/</g, '&lt;')
+                    .replace(/>/g, '&gt;');
+                const inline = s => s
+                    .replace(/`([^`]+)`/g, '<span class="rn-code">$1</span>')
+                    .replace(/\*\*([^*]+)\*\*/g, '<span class="rn-bold">$1</span>');
+
+                // Fold continuation lines (indented) into the preceding line.
+                const folded = [];
+                for (const raw of md.split('\n')) {
+                    if (/^\s+\S/.test(raw) && folded.length) {
+                        folded[folded.length - 1] += ' ' + raw.trim();
+                    } else {
+                        folded.push(raw);
+                    }
+                }
+
+                const out = [];
+                for (const raw of folded) {
+                    const line = raw.trim();
+                    if (!line) continue;
+                    if (line.startsWith('## ')) continue;
+                    if (line.startsWith('### ')) {
+                        out.push('<div class="rn-h3">' + esc(line.slice(4)) + '</div>');
+                    } else if (line.startsWith('- ')) {
+                        out.push('<div class="rn-item"><span>' + inline(esc(line.slice(2))) + '</span></div>');
+                    } else {
+                        out.push('<div>' + inline(esc(line)) + '</div>');
+                    }
+                }
+                return out.join('');
+            }
+
             showUpToDate() {
                 document.getElementById('up-to-date-callout').className = 'up-to-date-callout visible';
             }
 
+            showUpdateCheckFailed(msg) {
+                const el = document.getElementById('update-check-failed-callout');
+                el.className = 'up-to-date-callout update-check-failed-callout visible';
+                if (msg) el.title = msg;
+            }
+
             showReleaseNotes() {
                 document.getElementById('rn-version').textContent = this.latestVersion || '--';
-                document.getElementById('rn-body').textContent =
-                    document.getElementById('update-notes-body').textContent || 'No release notes available.';
-                document.getElementById('rn-body').scrollTop = 0;
+                const body = document.getElementById('rn-body');
+                const rendered = this.renderReleaseNotes(this.releaseNotesMd || '');
+                body.innerHTML = rendered || '<div>No release notes available.</div>';
+                body.scrollTop = 0;
                 document.getElementById('release-notes-screen').className = 'active';
                 this.relNotesVisible = true;
             }
