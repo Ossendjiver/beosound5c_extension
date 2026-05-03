@@ -132,8 +132,42 @@ const _massPlayingPreset = (() => {
         }
     }
 
+    function buildSharedMediaSnapshot(data) {
+        return {
+            title: data?.title || '—',
+            artist: data?.artist || '—',
+            album: data?.album || '—',
+            artwork: data?.artwork || '',
+            back_artwork: data?.back_artwork || '',
+            state: data?.state || 'unknown',
+            position: data?.position || '0:00',
+            duration: data?.duration || '0:00',
+            source_id: 'mass',
+        };
+    }
+
+    function seedMediaFromUiStore() {
+        const snapshot = buildSharedMediaSnapshot(window.uiStore?.mediaInfo || {});
+        if (!hasMeaningfulMedia(snapshot) && !String(snapshot.state || '').trim()) {
+            return null;
+        }
+        return snapshot;
+    }
+
+    function publishSharedMediaSnapshot(data, reason = 'mass_now_playing') {
+        if (!window.uiStore) return;
+        const snapshot = buildSharedMediaSnapshot(data);
+        if (typeof window.uiStore.handleMediaUpdate === 'function') {
+            window.uiStore.handleMediaUpdate(snapshot, reason);
+        } else {
+            window.uiStore.mediaInfo = snapshot;
+        }
+    }
+
     function applyMediaSnapshot(data, options = {}) {
         const normalized = Object.assign({}, data || {});
+        const publishToUiStore = options.publishToUiStore === true;
+        const publishReason = options.publishReason || 'mass_now_playing';
         if (normalized.artwork) normalized.artwork = resolveArtworkUrl(normalized.artwork);
         if (normalized.back_artwork) normalized.back_artwork = resolveArtworkUrl(normalized.back_artwork);
         const hasUpdate = hasMeaningfulMedia(normalized)
@@ -146,7 +180,9 @@ const _massPlayingPreset = (() => {
         if (nextArtistKey !== previousArtistKey) {
             resetArtistState(nextArtistKey);
         }
-        if (window.uiStore) {
+        if (publishToUiStore) {
+            publishSharedMediaSnapshot(lastMedia, publishReason);
+        } else if (window.uiStore) {
             window.uiStore.mediaInfo = {
                 title: lastMedia.title || 'â€”',
                 artist: lastMedia.artist || 'â€”',
@@ -915,9 +951,14 @@ const _massPlayingPreset = (() => {
             };
 
             if (hasMeaningfulMedia(media)) {
-                applyMediaSnapshot(media, { syncSource: true });
+                applyMediaSnapshot(media, {
+                    syncSource: true,
+                    publishToUiStore: true,
+                    publishReason: 'mass_now_playing',
+                });
             } else if (media.state && media.state !== lastMedia.state) {
                 lastMedia = Object.assign({}, lastMedia, { state: media.state });
+                publishSharedMediaSnapshot(lastMedia, 'mass_state');
                 if (mountedContainer) {
                     updateBaseView(mountedContainer, lastMedia);
                     renderOverlay(mountedContainer);
@@ -1039,7 +1080,7 @@ const _massPlayingPreset = (() => {
             ensureStyles();
             mountedContainer = container;
             currentPageIndex = 0;
-            lastMedia = {
+            lastMedia = seedMediaFromUiStore() || {
                 title: 'â€”',
                 artist: 'â€”',
                 album: 'â€”',
