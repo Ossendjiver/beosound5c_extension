@@ -1152,7 +1152,7 @@ async def handle_camera_stream(request):
 
     try:
         session = await get_http_session()
-        headers = {'Authorization': f'Bearer {ha_token}'} if ha_token else {}
+        headers = _showing_ha_headers()
 
         camera_url = f'{ha_url}/api/camera_proxy_stream/{entity}'
         logger.info('Proxying camera stream from: %s', camera_url)
@@ -1476,6 +1476,45 @@ async def handle_forward(request):
         response.headers['Access-Control-Allow-Origin'] = '*'
         return response
 
+def _showing_ha_headers() -> dict:
+    ha_token = os.getenv('HA_TOKEN', '')
+    return {'Authorization': f'Bearer {ha_token}'} if ha_token else {}
+
+
+def _showing_payload(data: dict, ha_url: str, entity_id: str) -> dict:
+    attrs = data.get('attributes', {}) or {}
+    artwork = attrs.get('entity_picture', '') or ''
+    if artwork and not artwork.startswith('http'):
+        artwork = f'{ha_url}{artwork}'
+
+    app_name = attrs.get('app_name') or attrs.get('source') or '—'
+    friendly_name = attrs.get('friendly_name') or entity_id or '—'
+    artist = attrs.get('media_artist') or attrs.get('media_series_title') or app_name or '—'
+    album = attrs.get('media_album_name') or attrs.get('source') or friendly_name or '—'
+
+    return {
+        'entity_id': entity_id,
+        'title': attrs.get('media_title') or attrs.get('title') or '—',
+        'artist': artist,
+        'album': album,
+        'app_name': app_name,
+        'friendly_name': friendly_name,
+        'artwork': artwork,
+        'state': data.get('state', 'unknown'),
+        'supported_features': attrs.get('supported_features', 0),
+    }
+
+
+def _showing_command_service(command: str) -> str | None:
+    normalized = str(command or '').strip().lower()
+    return {
+        'toggle': 'media_play_pause',
+        'previous': 'media_previous_track',
+        'next': 'media_next_track',
+        'stop': 'media_stop',
+    }.get(normalized)
+
+
 async def handle_appletv(request):
     """Fetch Apple TV media info from Home Assistant."""
     # Handle CORS preflight
@@ -1487,38 +1526,121 @@ async def handle_appletv(request):
         })
 
     ha_url = cfg("home_assistant", "url", default="http://homeassistant.local:8123")
-    ha_token = os.getenv('HA_TOKEN', '')
     entity_id = cfg("showing", "entity_id")
     if not entity_id:
-        response = web.json_response({'error': 'showing.entity_id not configured', 'title': '—', 'app_name': '—', 'friendly_name': '—', 'artwork': '', 'state': 'error'})
+        response = web.json_response({
+            'error': 'showing.entity_id not configured',
+            'entity_id': '',
+            'title': '—',
+            'artist': '—',
+            'album': '—',
+            'app_name': '—',
+            'friendly_name': '—',
+            'artwork': '',
+            'state': 'error',
+            'supported_features': 0,
+        })
         response.headers['Access-Control-Allow-Origin'] = '*'
         return response
 
     try:
         session = await get_http_session()
-        headers = {'Authorization': f'Bearer {ha_token}'} if ha_token else {}
+        headers = _showing_ha_headers()
         async with session.get(f'{ha_url}/api/states/{entity_id}', headers=headers) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    # Transform for frontend
-                    result = {
-                        'title': data.get('attributes', {}).get('media_title', '—'),
-                        'app_name': data.get('attributes', {}).get('app_name', '—'),
-                        'friendly_name': data.get('attributes', {}).get('friendly_name', '—'),
-                        'artwork': data.get('attributes', {}).get('entity_picture', ''),
-                        'state': data.get('state', 'unknown')
-                    }
-                    # Prepend HA URL to artwork if relative
-                    if result['artwork'] and not result['artwork'].startswith('http'):
-                        result['artwork'] = f'{ha_url}{result["artwork"]}'
-                    response = web.json_response(result)
-                else:
-                    response = web.json_response({'error': 'Failed to fetch', 'title': '—', 'app_name': '—', 'friendly_name': '—', 'artwork': '', 'state': 'unavailable'}, status=resp.status)
-                response.headers['Access-Control-Allow-Origin'] = '*'
-                return response
+            if resp.status == 200:
+                data = await resp.json()
+                response = web.json_response(_showing_payload(data, ha_url, entity_id))
+            else:
+                response = web.json_response({
+                    'error': 'Failed to fetch',
+                    'entity_id': entity_id,
+                    'title': '—',
+                    'artist': '—',
+                    'album': '—',
+                    'app_name': '—',
+                    'friendly_name': '—',
+                    'artwork': '',
+                    'state': 'unavailable',
+                    'supported_features': 0,
+                }, status=resp.status)
+            response.headers['Access-Control-Allow-Origin'] = '*'
+            return response
     except Exception as e:
         logger.error('Apple TV error: %s', e)
-        response = web.json_response({'error': str(e), 'title': '—', 'app_name': '—', 'friendly_name': '—', 'artwork': '', 'state': 'error'})
+        response = web.json_response({
+            'error': str(e),
+            'entity_id': entity_id,
+            'title': '—',
+            'artist': '—',
+            'album': '—',
+            'app_name': '—',
+            'friendly_name': '—',
+            'artwork': '',
+            'state': 'error',
+            'supported_features': 0,
+        })
+        response.headers['Access-Control-Allow-Origin'] = '*'
+        return response
+
+async def handle_appletv_command(request):
+    """Forward basic transport commands to the configured showing entity."""
+    if request.method == 'OPTIONS':
+        return web.Response(headers={
+            'Access-Control-Allow-Origin': '*',
+            'Access-Control-Allow-Methods': 'POST, OPTIONS',
+            'Access-Control-Allow-Headers': 'Content-Type',
+        })
+
+    ha_url = cfg("home_assistant", "url", default="http://homeassistant.local:8123")
+    entity_id = cfg("showing", "entity_id")
+    if not entity_id:
+        response = web.json_response({'error': 'showing.entity_id not configured'}, status=400)
+        response.headers['Access-Control-Allow-Origin'] = '*'
+        return response
+
+    try:
+        payload = await request.json()
+    except json.JSONDecodeError:
+        response = web.json_response({'error': 'Invalid JSON'}, status=400)
+        response.headers['Access-Control-Allow-Origin'] = '*'
+        return response
+
+    command = str((payload or {}).get('command', '')).strip().lower()
+    service = _showing_command_service(command)
+    if not service:
+        response = web.json_response({'error': f'Unsupported command: {command or "empty"}'}, status=400)
+        response.headers['Access-Control-Allow-Origin'] = '*'
+        return response
+
+    try:
+        session = await get_http_session()
+        headers = _showing_ha_headers()
+        headers['Content-Type'] = 'application/json'
+        async with session.post(
+            f'{ha_url}/api/services/media_player/{service}',
+            headers=headers,
+            json={'entity_id': entity_id},
+        ) as resp:
+            if resp.status >= 400:
+                details = await resp.text()
+                response = web.json_response({
+                    'error': f'HA service call failed: HTTP {resp.status}',
+                    'details': details[:400],
+                    'command': command,
+                    'service': service,
+                }, status=resp.status)
+            else:
+                response = web.json_response({
+                    'status': 'ok',
+                    'entity_id': entity_id,
+                    'command': command,
+                    'service': service,
+                })
+        response.headers['Access-Control-Allow-Origin'] = '*'
+        return response
+    except Exception as e:
+        logger.error('Apple TV command error: %s', e)
+        response = web.json_response({'error': str(e), 'command': command, 'service': service}, status=500)
         response.headers['Access-Control-Allow-Origin'] = '*'
         return response
 
@@ -1868,6 +1990,8 @@ async def main():
     app.router.add_options('/forward', handle_forward)  # CORS preflight
     app.router.add_get('/appletv', handle_appletv)
     app.router.add_options('/appletv', handle_appletv)  # CORS preflight
+    app.router.add_post('/appletv/command', handle_appletv_command)
+    app.router.add_options('/appletv/command', handle_appletv_command)  # CORS preflight
     app.router.add_get('/people', handle_people)
     app.router.add_options('/people', handle_people)  # CORS preflight
     app.router.add_get('/health', handle_health)

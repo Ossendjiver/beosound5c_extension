@@ -22,8 +22,8 @@ class UIStore {
         this.menu.onNavigate = (path) => this.view.navigateToView(path);
         this.menu.onMenuLoaded = (data) => {
             if (data.active_source) {
-                this.media.activeSource = data.active_source;
-                this.media.activeSourcePlayer = data.active_player || null;
+                this.activeSource = data.active_source;
+                this.activeSourcePlayer = data.active_player || null;
                 this.media.setActivePlayingPreset(data.active_source);
             }
         };
@@ -57,6 +57,7 @@ class UIStore {
         this._initializeUI();
         this._setupEventListeners();
         this.view.updateView();
+        this.media.handleRouteChange(this.view.currentRoute);
 
         setTimeout(() => {
             this.view.setMenuVisible(true);
@@ -76,10 +77,16 @@ class UIStore {
     set mediaInfo(v) { this.media.mediaInfo = v; }
 
     get activeSource() { return this.media.activeSource; }
-    set activeSource(v) { this.media.activeSource = v; }
+    set activeSource(v) {
+        this.media.activeSource = v;
+        this.media.syncActiveSourceContext();
+    }
 
     get activeSourcePlayer() { return this.media.activeSourcePlayer; }
-    set activeSourcePlayer(v) { this.media.activeSourcePlayer = v; }
+    set activeSourcePlayer(v) {
+        this.media.activeSourcePlayer = v;
+        this.media.syncActiveSourceContext();
+    }
 
     get activePlayingPreset() { return this.media.activePlayingPreset; }
 

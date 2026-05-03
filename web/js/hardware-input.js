@@ -387,6 +387,9 @@ function routeButtonToView(page, button, uiStore) {
             }
         }
         // Fallback: no active source — send transport commands directly to player
+        if (uiStore.media?.shouldUseShowingAsPlaying?.() && uiStore.media.handleShowingButton?.(button)) {
+            return true;
+        }
         const playerAction = { go: 'toggle', left: 'prev', right: 'next' }[button];
         if (playerAction) {
             sendToPlayer(playerAction);
@@ -397,6 +400,13 @@ function routeButtonToView(page, button, uiStore) {
             if (action) { window.EmulatorBridge.notifyPlaybackControl(action); return true; }
         }
         return false; // no handler — fall through to webhook
+    }
+
+    if (page === 'menu/showing') {
+        if (uiStore.media?.handleShowingButton?.(button)) {
+            return true;
+        }
+        return false;
     }
 
     if (page === 'menu/queue') {
