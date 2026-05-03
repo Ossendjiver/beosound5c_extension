@@ -21,10 +21,11 @@ class UIStore {
 
         this.menu.onNavigate = (path) => this.view.navigateToView(path);
         this.menu.onMenuLoaded = (data) => {
-            const sourceId = data.active_source || null;
-            this.activeSource = sourceId;
-            this.activeSourcePlayer = data.active_player || null;
-            this.media.setActivePlayingPreset(sourceId);
+            if (data.active_source) {
+                this.media.activeSource = data.active_source;
+                this.media.activeSourcePlayer = data.active_player || null;
+                this.media.setActivePlayingPreset(data.active_source);
+            }
         };
         this.menu.onItemHover = (angle) => {
             this.wheelPointerAngle = angle;
@@ -56,7 +57,6 @@ class UIStore {
         this._initializeUI();
         this._setupEventListeners();
         this.view.updateView();
-        this.media.handleRouteChange(this.view.currentRoute);
 
         setTimeout(() => {
             this.view.setMenuVisible(true);
@@ -76,16 +76,10 @@ class UIStore {
     set mediaInfo(v) { this.media.mediaInfo = v; }
 
     get activeSource() { return this.media.activeSource; }
-    set activeSource(v) {
-        this.media.activeSource = v;
-        this.media.syncActiveSourceContext();
-    }
+    set activeSource(v) { this.media.activeSource = v; }
 
     get activeSourcePlayer() { return this.media.activeSourcePlayer; }
-    set activeSourcePlayer(v) {
-        this.media.activeSourcePlayer = v;
-        this.media.syncActiveSourceContext();
-    }
+    set activeSourcePlayer(v) { this.media.activeSourcePlayer = v; }
 
     get activePlayingPreset() { return this.media.activePlayingPreset; }
 

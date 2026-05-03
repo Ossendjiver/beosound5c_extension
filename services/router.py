@@ -87,6 +87,12 @@ class EventRouter:
         self.output_device = cfg("volume", "output_name", default="BeoLab 5")
         self._volume_step = int(cfg("volume", "step", default=3))
         self._balance_step = 1
+        self._remote_volume_state_only = bool(
+            cfg(
+                "remote", "volume_state_only",
+                default=cfg("lydbro", "volume_state_only", default=False),
+            )
+        )
         self._pre_mute_vol: float = 30.0
         self._session: aiohttp.ClientSession | None = None
         self._volume = None
@@ -485,31 +491,49 @@ class EventRouter:
 
         # 4. Volume
         if action in ("volup", "voldown") and is_local:
+            volume_setter = self.set_volume_state if self._remote_volume_state_only else self.set_volume
+            volume_task_name = "set_volume_state" if self._remote_volume_state_only else "set_volume"
             if action == "volup" and self.volume == 0 and self._pre_mute_vol > 0:
                 logger.info("-> unmute via volup: restoring %.0f%%", self._pre_mute_vol)
-                if self._volume and self._volume.is_on_cached() is False:
+                if (not self._remote_volume_state_only
+                        and self._volume and self._volume.is_on_cached() is False):
                     self._spawn(self._volume.power_on(), name="vol_power_on")
-                self._spawn(self.set_volume(self._pre_mute_vol), name="unmute")
+                self._spawn(volume_setter(self._pre_mute_vol), name="unmute")
             else:
                 delta = self._volume_step if action == "volup" else -self._volume_step
                 new_vol = max(0, min(100, self.volume + delta))
-                logger.info("-> volume: %.0f%% -> %.0f%% (%s)", self.volume, new_vol, action)
-                if action == "volup" and self._volume and self._volume.is_on_cached() is False:
+                logger.info(
+                    "-> %s: %.0f%% -> %.0f%% (%s)",
+                    "volume state" if self._remote_volume_state_only else "volume",
+                    self.volume,
+                    new_vol,
+                    action,
+                )
+                if (not self._remote_volume_state_only
+                        and action == "volup"
+                        and self._volume
+                        and self._volume.is_on_cached() is False):
                     self._spawn(self._volume.power_on(), name="vol_power_on")
-                self._spawn(self.set_volume(new_vol), name="set_volume")
+                self._spawn(volume_setter(new_vol), name=volume_task_name)
             return
 
         # 4a. Mute toggle — zero volume saves pre-mute level, restore on second press
         if action in ("mute", "p.mute") and is_local:
+            volume_setter = self.set_volume_state if self._remote_volume_state_only else self.set_volume
             if self.volume > 0:
                 self._pre_mute_vol = self.volume
-                logger.info("-> mute: saving %.0f%%, setting volume to 0", self._pre_mute_vol)
-                self._spawn(self.set_volume(0), name="mute")
+                logger.info(
+                    "-> mute%s: saving %.0f%%, setting volume to 0",
+                    " state" if self._remote_volume_state_only else "",
+                    self._pre_mute_vol,
+                )
+                self._spawn(volume_setter(0), name="mute")
             else:
                 logger.info("-> unmute: restoring volume to %.0f%%", self._pre_mute_vol)
-                if self._volume and self._volume.is_on_cached() is False:
+                if (not self._remote_volume_state_only
+                        and self._volume and self._volume.is_on_cached() is False):
                     self._spawn(self._volume.power_on(), name="unmute_power_on")
-                self._spawn(self.set_volume(self._pre_mute_vol), name="unmute")
+                self._spawn(volume_setter(self._pre_mute_vol), name="unmute")
             return
 
         # 4b. Balance

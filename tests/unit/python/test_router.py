@@ -235,6 +235,51 @@ class TestVolumeStateSync:
         asyncio.run(run())
 
 
+class TestRemoteButtonVolumeStateOnly:
+    def _make_remote_router(self):
+        router = make_router()
+        router._remote_volume_state_only = True
+        router._volume_step = 3
+        router.volume = 30
+        router.set_volume = AsyncMock()
+        router.set_volume_state = AsyncMock()
+        router._volume = MagicMock()
+        router._volume.is_on_cached = MagicMock(return_value=True)
+        spawned = []
+
+        def _spawn(coro, *, name=None):
+            task = asyncio.create_task(coro, name=name)
+            spawned.append(task)
+            return task
+
+        router._spawn = MagicMock(side_effect=_spawn)
+        router._spawned = spawned
+        return router
+
+    def test_volup_updates_state_without_adapter_command(self):
+        router = self._make_remote_router()
+
+        async def run():
+            await router.route_event({"action": "volup", "device_type": "Audio"})
+            await asyncio.gather(*router._spawned)
+            router.set_volume.assert_not_awaited()
+            router.set_volume_state.assert_awaited_once_with(33)
+
+        asyncio.run(run())
+
+    def test_mute_updates_state_without_adapter_command(self):
+        router = self._make_remote_router()
+        router.volume = 42
+
+        async def run():
+            await router.route_event({"action": "mute", "device_type": "Audio"})
+            await asyncio.gather(*router._spawned)
+            router.set_volume.assert_not_awaited()
+            router.set_volume_state.assert_awaited_once_with(0)
+
+        asyncio.run(run())
+
+
 class TestVolumeScaling:
     """UI 0–100 ↔ hardware 0–max_volume scaling.
 

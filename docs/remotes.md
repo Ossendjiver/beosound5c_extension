@@ -65,9 +65,11 @@ volume arc in sync without sending duplicate output commands:
 }
 ```
 
-With `volume_state_only: true`, Lydbro volume and mute events update the BS5c
-UI state only. The front wheel still drives the configured BS5c volume adapter
-normally.
+With `volume_state_only: true`, remote volume and mute button events update
+the BS5c UI state only and skip the configured output command. This applies to
+Lydbro MQTT volume events and the normal remote-button `volup`/`voldown`/mute
+path, so the front wheel still drives the BS5c volume adapter normally while a
+BS3/MLGW path can handle the real room volume.
 
 ## Beo6
 
