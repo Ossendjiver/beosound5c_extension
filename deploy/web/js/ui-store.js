@@ -21,11 +21,10 @@ class UIStore {
 
         this.menu.onNavigate = (path) => this.view.navigateToView(path);
         this.menu.onMenuLoaded = (data) => {
-            if (data.active_source) {
-                this.activeSource = data.active_source;
-                this.activeSourcePlayer = data.active_player || null;
-                this.media.setActivePlayingPreset(data.active_source);
-            }
+            const sourceId = data.active_source || null;
+            this.activeSource = sourceId;
+            this.activeSourcePlayer = data.active_player || null;
+            this.media.setActivePlayingPreset(sourceId);
         };
         this.menu.onItemHover = (angle) => {
             this.wheelPointerAngle = angle;

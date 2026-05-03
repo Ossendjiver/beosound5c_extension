@@ -206,6 +206,7 @@ class MediaManager {
         this.activePlayingPreset = DEFAULT_PLAYING_PRESET;
         this._appleTVRefreshInterval = null;
         this._appleTVUnloadBound = null;
+        this._sourceContextReady = false;
 
         ensureSharedMediaStyle();
         document.addEventListener('bs5c:view-change', (event) => {
@@ -274,7 +275,17 @@ class MediaManager {
     }
 
     shouldUseShowingAsPlaying() {
-        return !this.activeSource && !this._hasRouterMedia() && this._hasShowingMedia();
+        return this._sourceContextReady
+            && this.activePlayingPreset === DEFAULT_PLAYING_PRESET
+            && !this.activeSource
+            && !this._hasRouterMedia()
+            && this._hasShowingMedia();
+    }
+
+    getPlayingViewData() {
+        return this.shouldUseShowingAsPlaying()
+            ? this._buildShowingFallbackMedia()
+            : this.mediaInfo;
     }
 
     _buildShowingFallbackMedia() {
@@ -351,7 +362,8 @@ class MediaManager {
     }
 
     syncActiveSourceContext() {
-        this.syncDisplayedMedia('source_context');
+        this._sourceContextReady = true;
+        this.updateNowPlayingView();
     }
 
     handleRouteChange(path) {
@@ -361,7 +373,7 @@ class MediaManager {
             if (route === 'menu/showing') {
                 this.updateAppleTVMediaView();
             } else {
-                this.syncDisplayedMedia('route_change');
+                this.updateNowPlayingView();
             }
         } else {
             this.stopAppleTVMediaInfoRefresh();
@@ -397,20 +409,25 @@ class MediaManager {
             duration: data.duration || '0:00'
         };
 
-        this.syncDisplayedMedia(reason);
+        this.mediaInfo = { ...this._routerMediaInfo };
+        document.dispatchEvent(new CustomEvent('bs5c:media-update', {
+            detail: { data: this.mediaInfo, reason }
+        }));
+        this.updateNowPlayingView();
     }
 
     updateNowPlayingView() {
         const container = document.getElementById('now-playing');
         if (!container || !this.activePlayingPreset?.onUpdate) return;
+        const displayData = this.getPlayingViewData();
 
-        this.activePlayingPreset.onUpdate(container, this.mediaInfo);
-        container.classList.toggle('is-showing-fallback', this.mediaInfo.source_id === 'showing');
+        this.activePlayingPreset.onUpdate(container, displayData);
+        container.classList.toggle('is-showing-fallback', displayData.source_id === 'showing');
 
         const showGenericPausedOverlay = this.activePlayingPreset === DEFAULT_PLAYING_PRESET;
         setPausedOverlayVisible(
             container.querySelector('.playing-artwork-slot'),
-            showGenericPausedOverlay && isPausedPlaybackState(this.mediaInfo.state)
+            showGenericPausedOverlay && isPausedPlaybackState(displayData.state)
         );
     }
 
@@ -452,7 +469,7 @@ class MediaManager {
                 supported_features: 0
             };
             this.updateAppleTVMediaView();
-            this.syncDisplayedMedia('showing_refresh');
+            this.updateNowPlayingView();
             return;
         }
 
@@ -471,7 +488,7 @@ class MediaManager {
                     supported_features: 0
                 };
                 this.updateAppleTVMediaView();
-                this.syncDisplayedMedia('showing_unavailable');
+                this.updateNowPlayingView();
                 return;
             }
 
@@ -488,7 +505,7 @@ class MediaManager {
                 supported_features: Number(data.supported_features || 0)
             };
             this.updateAppleTVMediaView();
-            this.syncDisplayedMedia('showing_refresh');
+            this.updateNowPlayingView();
         } catch (error) {
             console.error('Error fetching Apple TV info:', error);
             this.appleTVMediaInfo = {
@@ -503,7 +520,7 @@ class MediaManager {
                 supported_features: 0
             };
             this.updateAppleTVMediaView();
-            this.syncDisplayedMedia('showing_error');
+            this.updateNowPlayingView();
         }
     }
 
