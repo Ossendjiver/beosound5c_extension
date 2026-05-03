@@ -34,6 +34,7 @@ class LydbroHandler:
         self._pre_mute_vol: float = 30.0
         self._volume_step: int = 1
         self._last_music_mode_ts: float = 0.0  # timestamp of last bare "Music" button press
+        self._volume_state_only: bool = False
 
     def setup(self):
         """Subscribe to Lydbro MQTT topic if configured."""
@@ -42,9 +43,19 @@ class LydbroHandler:
             return
         self._playlists = cfg("lydbro", "playlists", default={})
         self._volume_step = int(cfg("lydbro", "volume_step", default=1))
+        self._volume_state_only = bool(cfg("lydbro", "volume_state_only", default=False))
         self.router.transport.add_subscription(topic, self.handle_event)
         logger.info("Lydbro One remote: subscribing to %s (%d playlists)",
                      topic, len(self._playlists))
+        if self._volume_state_only:
+            logger.info("Lydbro One remote: volume buttons update BS5c state only")
+
+    async def _apply_volume_change(self, volume: float):
+        target = max(0, min(100, volume))
+        if self._volume_state_only and hasattr(self.router, "set_volume_state"):
+            await self.router.set_volume_state(target)
+        else:
+            await self.router.set_volume(target)
 
     async def handle_event(self, data: dict):
         """Handle an MQTT event from the Lydbro One BeoRemote bridge."""
@@ -109,17 +120,18 @@ class LydbroHandler:
 
         # Volume
         if event == "Volume Up":
-            await r.set_volume(min(100, r.volume + self._volume_step))
+            await self._apply_volume_change(min(100, r.volume + self._volume_step))
             return
         if event == "Volume Down":
-            await r.set_volume(max(0, r.volume - self._volume_step))
+            await self._apply_volume_change(max(0, r.volume - self._volume_step))
             return
         if event == "Mute":
             if r.volume > 0:
                 self._pre_mute_vol = r.volume
-                await r.set_volume(0)
+                r._pre_mute_vol = r.volume
+                await self._apply_volume_change(0)
             else:
-                await r.set_volume(self._pre_mute_vol)
+                await self._apply_volume_change(self._pre_mute_vol)
             return
 
         # Transport

@@ -49,6 +49,26 @@ In B&O systems, each source is classified as Audio or Video. A device that handl
 { "spotify": { "source": "radio" }, "plex": { "source": "tv" } }
 ```
 
+## Lydbro One
+
+If you use a Lydbro One bridge and the remote already changes the room's
+volume directly (for example via an MLGW / BS3 path), you can keep the BS5c
+volume arc in sync without sending duplicate output commands:
+
+```json
+{
+  "lydbro": {
+    "topic": "beoremote/livingroom",
+    "volume_step": 3,
+    "volume_state_only": true
+  }
+}
+```
+
+With `volume_state_only: true`, Lydbro volume and mute events update the BS5c
+UI state only. The front wheel still drives the configured BS5c volume adapter
+normally.
+
 ## Beo6
 
 The BS5c can be controlled by a [Beo6](https://support.bang-olufsen.com/hc/en-us/articles/360041401952-Beo6) remote. Basic control (volume, source selection) works out of the box. For two-way artwork display and playlist browsing on the Beo6 screen, the `beo-beo6` service emulates a BeoMaster 5's XMPP-based BeoNet interface.

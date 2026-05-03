@@ -198,6 +198,43 @@ class TestVolumeReportCooldown:
         asyncio.run(run())
 
 
+class TestVolumeStateSync:
+    def _attach_adapter(self, router, max_volume=100):
+        router._volume = MagicMock()
+        router._volume._max_volume = max_volume
+        router._volume.set_volume = AsyncMock()
+        router._volume.is_on_cached = MagicMock(return_value=True)
+        return router._volume
+
+    def test_set_volume_state_updates_ui_without_hardware_command(self):
+        router = make_router()
+        router.media.broadcast = AsyncMock()
+        adapter = self._attach_adapter(router)
+        router.volume = 30
+        router._last_local_volume_set = 12.0
+
+        async def run():
+            await router.set_volume_state(42)
+            assert router.volume == 42
+            adapter.set_volume.assert_not_awaited()
+            router.media.broadcast.assert_awaited_once()
+            assert router._last_local_volume_set == 12.0
+
+        asyncio.run(run())
+
+    def test_set_volume_state_dedups_same_value(self):
+        router = make_router()
+        router.media.broadcast = AsyncMock()
+        self._attach_adapter(router)
+        router.volume = 42
+
+        async def run():
+            await router.set_volume_state(42)
+            router.media.broadcast.assert_not_awaited()
+
+        asyncio.run(run())
+
+
 class TestVolumeScaling:
     """UI 0–100 ↔ hardware 0–max_volume scaling.
 

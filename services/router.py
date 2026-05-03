@@ -627,6 +627,15 @@ class EventRouter:
             await self._volume.power_on()
         await self._volume.set_volume(self._ui_to_hw(self.volume))
 
+    async def set_volume_state(self, volume: float, broadcast: bool = True):
+        ui_volume = max(0, min(100, volume))
+        if round(ui_volume) == round(self.volume):
+            return
+        self.volume = ui_volume
+        logger.info("Volume state synced: %.0f%%", self.volume)
+        if broadcast:
+            await self._broadcast_volume()
+
     async def report_volume(self, volume: float):
         if not self._accept_player_volume:
             return
