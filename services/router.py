@@ -93,6 +93,15 @@ class EventRouter:
                 default=cfg("lydbro", "volume_state_only", default=False),
             )
         )
+        remote_volume_step = cfg("remote", "volume_step", default=None)
+        if remote_volume_step is not None:
+            self._remote_volume_step = int(remote_volume_step)
+        elif self._remote_volume_state_only:
+            self._remote_volume_step = 1
+        else:
+            self._remote_volume_step = int(
+                cfg("lydbro", "volume_step", default=self._volume_step)
+            )
         self._pre_mute_vol: float = 30.0
         self._session: aiohttp.ClientSession | None = None
         self._volume = None
@@ -500,7 +509,7 @@ class EventRouter:
                     self._spawn(self._volume.power_on(), name="vol_power_on")
                 self._spawn(volume_setter(self._pre_mute_vol), name="unmute")
             else:
-                delta = self._volume_step if action == "volup" else -self._volume_step
+                delta = self._remote_volume_step if action == "volup" else -self._remote_volume_step
                 new_vol = max(0, min(100, self.volume + delta))
                 logger.info(
                     "-> %s: %.0f%% -> %.0f%% (%s)",

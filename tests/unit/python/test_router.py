@@ -239,7 +239,7 @@ class TestRemoteButtonVolumeStateOnly:
     def _make_remote_router(self):
         router = make_router()
         router._remote_volume_state_only = True
-        router._volume_step = 3
+        router._remote_volume_step = 1
         router.volume = 30
         router.set_volume = AsyncMock()
         router.set_volume_state = AsyncMock()
@@ -263,7 +263,7 @@ class TestRemoteButtonVolumeStateOnly:
             await router.route_event({"action": "volup", "device_type": "Audio"})
             await asyncio.gather(*router._spawned)
             router.set_volume.assert_not_awaited()
-            router.set_volume_state.assert_awaited_once_with(33)
+            router.set_volume_state.assert_awaited_once_with(31)
 
         asyncio.run(run())
 

@@ -59,7 +59,6 @@ volume arc in sync without sending duplicate output commands:
 {
   "lydbro": {
     "topic": "beoremote/livingroom",
-    "volume_step": 3,
     "volume_state_only": true
   }
 }
@@ -70,6 +69,17 @@ the BS5c UI state only and skip the configured output command. This applies to
 Lydbro MQTT volume events and the normal remote-button `volup`/`voldown`/mute
 path, so the front wheel still drives the BS5c volume adapter normally while a
 BS3/MLGW path can handle the real room volume.
+
+When `volume_state_only` is enabled, remote button presses default to `1%`
+steps. If you want a different remote-only step size, add:
+
+```json
+{
+  "remote": {
+    "volume_step": 1
+  }
+}
+```
 
 ## Beo6
 

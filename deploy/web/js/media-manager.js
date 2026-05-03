@@ -29,6 +29,71 @@ function crossfadeText(el, newText) {
 }
 window.crossfadeText = crossfadeText;
 
+const SHARED_MEDIA_STYLE_ID = 'bs5c-shared-media-style';
+
+function isPausedPlaybackState(state) {
+    return String(state || '').trim().toLowerCase() === 'paused';
+}
+
+function ensureSharedMediaStyle() {
+    if (document.getElementById(SHARED_MEDIA_STYLE_ID)) return;
+    const style = document.createElement('style');
+    style.id = SHARED_MEDIA_STYLE_ID;
+    style.textContent = `
+        .bs5c-paused-overlay {
+            position: absolute;
+            top: 18px;
+            right: 18px;
+            display: flex;
+            align-items: center;
+            gap: 7px;
+            padding: 12px 14px;
+            border-radius: 999px;
+            background: rgba(0, 0, 0, 0.38);
+            backdrop-filter: blur(10px);
+            box-shadow: 0 14px 30px rgba(0, 0, 0, 0.26);
+            opacity: 0;
+            transform: translateY(-6px);
+            transition: opacity 180ms ease, transform 180ms ease;
+            pointer-events: none;
+            z-index: 4;
+        }
+        .bs5c-paused-overlay.is-visible {
+            opacity: 1;
+            transform: translateY(0);
+        }
+        .bs5c-paused-bar {
+            width: 7px;
+            height: 24px;
+            border-radius: 999px;
+            background: rgba(255, 255, 255, 0.92);
+            box-shadow: 0 0 12px rgba(255, 255, 255, 0.14);
+        }
+    `;
+    document.head.appendChild(style);
+}
+
+function ensurePausedOverlay(host) {
+    if (!host) return null;
+    let overlay = host.querySelector('.bs5c-paused-overlay');
+    if (overlay) return overlay;
+    overlay = document.createElement('div');
+    overlay.className = 'bs5c-paused-overlay';
+    overlay.setAttribute('aria-hidden', 'true');
+    overlay.innerHTML = `
+        <span class="bs5c-paused-bar"></span>
+        <span class="bs5c-paused-bar"></span>
+    `;
+    host.appendChild(overlay);
+    return overlay;
+}
+
+function setPausedOverlayVisible(host, visible) {
+    const overlay = ensurePausedOverlay(host);
+    if (!overlay) return;
+    overlay.classList.toggle('is-visible', !!visible);
+}
+
 const DEFAULT_PLAYING_PRESET = {
     // All sources push metadata via the unified router media path.
     // media_update events reach this preset via handleMediaUpdate() → updateNowPlayingView().
@@ -113,6 +178,7 @@ class MediaManager {
         this.activePlayingPreset = DEFAULT_PLAYING_PRESET;
 
         this._appleTVRefreshInterval = null;
+        ensureSharedMediaStyle();
     }
 
     resolveArtworkUrl(url, sourceId = '') {
@@ -196,6 +262,11 @@ class MediaManager {
         if (container && this.activePlayingPreset?.onUpdate) {
             this.activePlayingPreset.onUpdate(container, this.mediaInfo);
         }
+        setPausedOverlayVisible(
+            container?.querySelector('.playing-artwork-slot'),
+            this.activePlayingPreset === DEFAULT_PLAYING_PRESET
+                && isPausedPlaybackState(this.mediaInfo.state)
+        );
     }
 
     /**
@@ -260,6 +331,7 @@ class MediaManager {
         const titleEl = document.getElementById('apple-tv-media-title');
         const detailsEl = document.getElementById('apple-tv-media-details');
         const stateEl = document.getElementById('apple-tv-state');
+        const artworkHost = document.getElementById('apple-tv-artwork-container');
 
         if (titleEl) titleEl.textContent = this.appleTVMediaInfo.title;
         if (detailsEl) detailsEl.textContent = this.appleTVMediaInfo.app_name;
@@ -268,6 +340,8 @@ class MediaManager {
         if (artworkEl && window.ArtworkManager) {
             window.ArtworkManager.displayArtwork(artworkEl, this.appleTVMediaInfo.artwork, 'showing');
         }
+
+        setPausedOverlayVisible(artworkHost, isPausedPlaybackState(this.appleTVMediaInfo.state));
     }
 
     setupAppleTVMediaInfoRefresh() {

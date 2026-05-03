@@ -42,8 +42,14 @@ class LydbroHandler:
         if not topic:
             return
         self._playlists = cfg("lydbro", "playlists", default={})
-        self._volume_step = int(cfg("lydbro", "volume_step", default=1))
         self._volume_state_only = bool(cfg("lydbro", "volume_state_only", default=False))
+        remote_volume_step = cfg("remote", "volume_step", default=None)
+        if remote_volume_step is not None:
+            self._volume_step = int(remote_volume_step)
+        elif self._volume_state_only:
+            self._volume_step = 1
+        else:
+            self._volume_step = int(cfg("lydbro", "volume_step", default=1))
         self.router.transport.add_subscription(topic, self.handle_event)
         logger.info("Lydbro One remote: subscribing to %s (%d playlists)",
                      topic, len(self._playlists))
