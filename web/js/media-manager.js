@@ -262,6 +262,17 @@ class MediaManager {
             );
     }
 
+    _hasDisplayedMedia() {
+        return (
+            hasDisplayValue(this.mediaInfo.title)
+            || hasDisplayValue(this.mediaInfo.artist)
+            || hasDisplayValue(this.mediaInfo.album)
+            || !!String(this.mediaInfo.artwork || '').trim()
+            || !!String(this.mediaInfo.canvas_url || '').trim()
+            || !!String(this.mediaInfo.music_video_url || '').trim()
+        );
+    }
+
     shouldUseShowingAsPlaying() {
         return !this.activeSource && !this._hasRouterMedia() && this._hasShowingMedia();
     }
@@ -317,10 +328,26 @@ class MediaManager {
     }
 
     syncDisplayedMedia(reason = 'sync') {
-        const next = this.shouldUseShowingAsPlaying()
-            ? this._buildShowingFallbackMedia()
-            : this._routerMediaInfo;
-        this._applyDisplayedMedia(next, reason);
+        if (this.shouldUseShowingAsPlaying()) {
+            this._applyDisplayedMedia(this._buildShowingFallbackMedia(), reason);
+            return;
+        }
+
+        if (this._hasRouterMedia()) {
+            this._applyDisplayedMedia(this._routerMediaInfo, reason);
+            return;
+        }
+
+        // Source-owned media (for example MASS) can drive PLAYING without the
+        // router emitting shared media payloads. In that case, preserve the
+        // current snapshot instead of blanking the view while the source
+        // controller refreshes its own now-playing data.
+        if (this.activeSource && this._hasDisplayedMedia()) {
+            this.updateNowPlayingView();
+            return;
+        }
+
+        this._applyDisplayedMedia(this._routerMediaInfo, reason);
     }
 
     syncActiveSourceContext() {
