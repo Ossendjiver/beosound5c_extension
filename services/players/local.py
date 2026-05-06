@@ -68,7 +68,10 @@ class LocalPlayer(PlayerBase):
         if uri:
             # Spotify share URL or native URI → go-librespot
             spotify_uri = share_url_to_uri(uri)
-            if spotify_uri and self._librespot_available:
+            if spotify_uri:
+                if not self._librespot_available:
+                    logger.warning("Spotify URI but go-librespot not available: %s", uri)
+                    return False
                 # Stop mpv if it was playing
                 await self._kill_mpv()
 
@@ -79,12 +82,20 @@ class LocalPlayer(PlayerBase):
                     self._current_playback_state = 'playing'
                     logger.info("Playing via go-librespot: %s", spotify_uri)
                     return True
-                else:
-                    logger.error("go-librespot play failed for %s", spotify_uri)
-                    return False
-            elif not self._librespot_available:
-                logger.warning("Spotify URI but go-librespot not available: %s", uri)
+                logger.error("go-librespot play failed for %s", spotify_uri)
                 return False
+
+            # Non-Spotify URI: local player has no DRM-capable client for
+            # Tidal / Apple Music. Sonos / BlueSound handle those natively.
+            service = "Tidal" if "tidal.com" in uri else \
+                      "Apple Music" if "music.apple.com" in uri else \
+                      "this service"
+            logger.warning(
+                "Local player cannot play %s (DRM-protected stream). "
+                "Only Spotify is supported locally (via go-librespot); "
+                "Tidal / Apple Music require a Sonos or BlueSound player. URI: %s",
+                service, uri)
+            return False
 
         if url:
             # Stop go-librespot playback if it was active

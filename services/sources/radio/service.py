@@ -13,6 +13,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import sys
 import time
 import urllib.parse
@@ -89,6 +90,65 @@ SR_CHANNEL_MAP = {
 SR_POLL_INTERVAL = 60  # seconds
 
 
+# Short-name suggestion — generates an alias for play_by_name (BeoRemote
+# menu label matching). Heuristic: strip codec/bitrate noise and bracketed
+# annotations, normalize separators, apply known broadcaster prefixes,
+# then cap length. Examples:
+#   "Sveriges Radio - P3"                    → "SR P3"
+#   "Danmarks Radio P1"                      → "DR P1"
+#   "BBC Radio 4"                            → "BBC R4"
+#   "Radio Paradise Main Mix (EU) 320k AAC"  → "RP Main Mix"
+#   "SomaFM Groove Salad"                    → "Soma Groove"
+#   "Lugna Favoriter"                        → "Lugna"
+_SHORT_NAME_PREFIXES = [
+    (re.compile(r"^Sveriges\s+Radio\b\s*", re.I),         "SR "),
+    (re.compile(r"^Danmarks\s+Radio\b\s*", re.I),         "DR "),
+    (re.compile(r"^Norsk\s+Rikskringkasting\b\s*", re.I), "NRK "),
+    (re.compile(r"^BBC\s+Radio\b\s*", re.I),              "BBC R"),
+    (re.compile(r"^Radio\s+Paradise\b\s*", re.I),         "RP "),
+    (re.compile(r"^Soma\s*FM\b\s*", re.I),                "Soma "),
+]
+_SHORT_NAME_MAX_LEN = 14
+# Trailing codec/bitrate junk ("AAC 320", "320kbps", "MP3", "320k AAC", etc.)
+_SHORT_NAME_TRAIL_PATTERNS = [
+    re.compile(r"\s+\d+\s*k(?:bps)?\s+(?:AAC|MP3|OGG|FLAC|HE-AAC)\s*$", re.I),
+    re.compile(r"\s+\d+\s+(?:AAC|MP3|OGG|FLAC|HE-AAC)\s*$", re.I),
+    re.compile(r"\s+(?:AAC|MP3|OGG|FLAC|HE-AAC)(?:\s+\d+\s*k?(?:bps)?)?\s*$", re.I),
+    re.compile(r"\s+\d+\s*k(?:bps)?\s*$", re.I),
+]
+
+
+def _suggest_short_name(name: str) -> str:
+    if not name:
+        return ""
+    s = name.strip()
+    # Drop bracketed annotations: "(EU)", "[HD]", etc.
+    s = re.sub(r"\s*[\(\[][^\)\]]*[\)\]]", "", s)
+    # Drop trailing codec/bitrate noise
+    for pat in _SHORT_NAME_TRAIL_PATTERNS:
+        s = pat.sub("", s)
+    # Normalize "Name - P3" / "Name – P3" → "Name P3"
+    s = re.sub(r"\s*[-–—]\s*", " ", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    if not s:
+        return ""
+    # Apply broadcaster prefix substitutions (first match wins)
+    for pat, repl in _SHORT_NAME_PREFIXES:
+        new = pat.sub(repl, s, count=1)
+        if new != s:
+            s = new.strip()
+            break
+    # Length cap — prefer first 2 words if it fits, else first word
+    if len(s) > _SHORT_NAME_MAX_LEN:
+        words = s.split()
+        if len(words) >= 2:
+            two = " ".join(words[:2])
+            s = two if len(two) <= _SHORT_NAME_MAX_LEN else words[0][:_SHORT_NAME_MAX_LEN]
+        else:
+            s = words[0][:_SHORT_NAME_MAX_LEN]
+    return s.strip()
+
+
 class RadioService(SourceBase):
     """Internet radio browser and player."""
 
@@ -97,6 +157,11 @@ class RadioService(SourceBase):
     port = 8779
     player = "local"
     manages_queue = True
+    # Base action map shared by all instances. RadioService.__init__ adds
+    # color buttons (red/green/yellow/blue) to a per-instance copy only
+    # when the user has bound them in config.json (radio.station_buttons).
+    # Unbound color buttons fall through to the router's global handlers
+    # (GREEN/YELLOW balance shortcut, BLUE→JOIN, RED→HA).
     action_map = {
         "play": "toggle",
         "pause": "toggle",
@@ -106,8 +171,6 @@ class RadioService(SourceBase):
         "left": "prev",
         "right": "next",
         "up": "next",
-        "red": "toggle_favourite",
-        "blue": "remove_favourite",
         "down": "prev",
         "stop": "stop",
         "0": "digit", "1": "digit", "2": "digit",
@@ -116,8 +179,16 @@ class RadioService(SourceBase):
         "9": "digit",
     }
 
+    DIGIT_KEYS = ("1","2","3","4","5","6","7","8","9","0")
+    COLOR_KEYS = ("red","green","yellow","blue")
+
     def __init__(self):
         super().__init__()
+        # Per-instance action_map so we can attach the user's color-button
+        # bindings without leaking into the class default.
+        self.action_map = dict(RadioService.action_map)
+        self._station_buttons: dict[str, str] = {}
+        self._load_station_buttons()
         self._stations: list[dict] = []       # snapshotted on play — stable for next/prev
         self._browse_stations: list[dict] = []  # updated on every browse
         self._current_index: int = 0
@@ -159,6 +230,58 @@ class RadioService(SourceBase):
         app.router.add_get("/browse", self._handle_browse)
         app.router.add_get("/favicon", self._handle_favicon)
         app.router.add_get("/sr-artwork", self._handle_sr_artwork)
+        app.router.add_get("/favourites", self._handle_favourites_list)
+        app.router.add_post("/favourites/short_name", self._handle_set_short_name)
+        # CORS preflight — the Config UI is served from port 80 and POSTs
+        # JSON here, so browsers send an OPTIONS check first.
+        app.router.add_options("/favourites/short_name", self._handle_cors)
+
+    async def _handle_favourites_list(self, request):
+        """Return current favourites + button bindings for the Config UI."""
+        items = [
+            {
+                "stationuuid": s.get("stationuuid", ""),
+                "name": s.get("name", ""),
+                "short_name": s.get("short_name", ""),
+                "favicon": s.get("favicon", ""),
+                "country": s.get("country", ""),
+                "tags": s.get("tags", ""),
+                "codec": s.get("codec", ""),
+                "bitrate": s.get("bitrate", 0),
+            }
+            for s in self._favourites
+        ]
+        return web.json_response(
+            {"favourites": items, "station_buttons": dict(self._station_buttons)},
+            headers=self._cors_headers(),
+        )
+
+    async def _handle_set_short_name(self, request):
+        """Set a favourite's short_name alias. {stationuuid, short_name}.
+
+        Empty short_name = "user wants no alias" — stored as ""  so
+        _load_favourites' auto-suggest backfill leaves it alone on the
+        next restart (key-present means "user has decided").
+        """
+        try:
+            data = await request.json()
+        except Exception:
+            return web.json_response({"error": "invalid json"}, status=400,
+                                     headers=self._cors_headers())
+        uuid = (data.get("stationuuid") or "").strip()
+        short = (data.get("short_name") or "").strip()
+        if not uuid:
+            return web.json_response({"error": "stationuuid required"}, status=400,
+                                     headers=self._cors_headers())
+        for s in self._favourites:
+            if s.get("stationuuid") == uuid:
+                s["short_name"] = short
+                self._save_favourites()
+                log.info("Favourite %s short_name → %r", s.get("name"), short)
+                return web.json_response({"ok": True, "short_name": short},
+                                         headers=self._cors_headers())
+        return web.json_response({"error": "station not in favourites"}, status=404,
+                                 headers=self._cors_headers())
 
     # ── Browse API ──
 
@@ -500,14 +623,36 @@ class RadioService(SourceBase):
             await self.register("available")
 
         elif cmd == "digit":
-            digit = int(data.get("action", "1"))
-            idx = (digit - 1) if digit >= 1 else 9  # 1→0, 2→1, ..., 9→8, 0→9
-            if idx < len(self._favourites):
+            digit_str = str(data.get("action", "1"))
+            station = self._resolve_station_button(digit_str)
+            if station:
                 self._stations = list(self._favourites)
-                self._current_index = idx
-                await self._play_station(self._favourites[idx])
+                # Track index in favourites if present, else 0
+                self._current_index = next(
+                    (i for i, s in enumerate(self._favourites)
+                     if s.get("stationuuid") == station.get("stationuuid")), 0)
+                await self._play_station(station)
             else:
-                log.info("No favourite at digit %d (have %d)", digit, len(self._favourites))
+                digit = int(digit_str)
+                idx = (digit - 1) if digit >= 1 else 9  # 1→0, 2→1, ..., 9→8, 0→9
+                if idx < len(self._favourites):
+                    self._stations = list(self._favourites)
+                    self._current_index = idx
+                    await self._play_station(self._favourites[idx])
+                else:
+                    log.info("No favourite at digit %d (have %d)", digit, len(self._favourites))
+
+        elif cmd == "play_button":
+            key = str(data.get("action", "")).lower()
+            station = self._resolve_station_button(key)
+            if station:
+                self._stations = list(self._favourites)
+                self._current_index = next(
+                    (i for i, s in enumerate(self._favourites)
+                     if s.get("stationuuid") == station.get("stationuuid")), 0)
+                await self._play_station(station)
+            else:
+                log.info("Button %r has no resolvable station binding", key)
 
         elif cmd == "play_index":
             idx = data.get("index", 0)
@@ -549,6 +694,46 @@ class RadioService(SourceBase):
                     return self._toggle_favourite(station)  # removes since it exists
                 return {"status": "ok", "favourite": False}  # not a favourite, no-op
             return {"status": "error", "message": "No station playing"}
+
+        elif cmd == "add_favourite":
+            # Persist a full station object (used by the Config UI when a
+            # user picks a station from the browse hierarchy that wasn't
+            # already in favourites, OR when adding a custom stream URL).
+            station = data.get("station") or {}
+            uuid = station.get("stationuuid", "")
+            url = station.get("url_resolved", station.get("url", ""))
+            if not uuid or not station.get("name"):
+                return {"status": "error",
+                        "message": "Missing 'station' with stationuuid + name"}
+            # Custom entries (uuid prefixed "custom-") MUST carry a URL —
+            # they have no Radio Browser fallback to look it up later.
+            if uuid.startswith("custom-") and not url:
+                return {"status": "error",
+                        "message": "Custom station requires url_resolved"}
+            if any(s.get("stationuuid") == uuid for s in self._favourites):
+                return {"status": "ok", "favourite": True}  # already
+            entry = {
+                "stationuuid": uuid,
+                "name": station.get("name", ""),
+                "url_resolved": station.get("url_resolved", station.get("url", "")),
+                "favicon": station.get("favicon", ""),
+                "country": station.get("country", ""),
+                "tags": station.get("tags", ""),
+                "codec": station.get("codec", ""),
+                "bitrate": station.get("bitrate", 0),
+                "votes": station.get("votes", 0),
+            }
+            # Caller may pre-supply a short_name; otherwise auto-suggest.
+            caller_short = station.get("short_name")
+            if caller_short is not None:
+                entry["short_name"] = caller_short
+            else:
+                suggested = _suggest_short_name(entry["name"])
+                if suggested:
+                    entry["short_name"] = suggested
+            self._favourites.append(entry)
+            self._save_favourites()
+            return {"status": "ok", "favourite": True, "short_name": entry.get("short_name", "")}
 
         else:
             return {"status": "error", "message": f"Unknown: {cmd}"}
@@ -636,9 +821,18 @@ class RadioService(SourceBase):
     async def _find_station_by_name(self, name: str) -> dict | None:
         """Find a station by name — checks local caches first, then Radio Browser API.
 
-        Matches case-insensitively. Prefers exact match, then substring match.
-        Checks favourites → curated → browse cache → API search."""
+        Match priority: favourite short_name (exact, case-insensitive) →
+        favourite/browse/stations name (exact) → name substring → curated
+        → Radio Browser API. The short_name pass exists so users can map
+        short BeoRemote menu labels (e.g. "SR P3") to longer favourite
+        names ("Sveriges Radio - P3"). Empty short_names are skipped."""
         name_lower = name.lower()
+
+        # Favourite short_name alias — explicit override beats everything else.
+        for s in self._favourites:
+            short = s.get("short_name", "")
+            if short and short.lower() == name_lower:
+                return s
 
         # Check all local sources first
         for pool in (self._favourites, self._browse_stations, self._stations):
@@ -887,6 +1081,39 @@ class RadioService(SourceBase):
             headers={**self._cors_headers(), "Cache-Control": "public, max-age=60"},
         )
 
+    # ── Station-button bindings ──
+
+    def _load_station_buttons(self):
+        """Read radio.station_buttons from config.json and update action_map.
+
+        Color buttons (red/green/yellow/blue) only get added to the action_map
+        when explicitly bound. That keeps the global behaviour intact for
+        unbound buttons: GREEN/YELLOW stay with the router's balance shortcut
+        and BLUE keeps falling through to JOIN/HA.
+        """
+        raw = cfg("radio", "station_buttons", default={}) or {}
+        self._station_buttons = {
+            k: v for k, v in raw.items()
+            if isinstance(v, str) and v
+        }
+        for key in self.COLOR_KEYS:
+            if key in self._station_buttons:
+                self.action_map[key] = "play_button"
+            else:
+                self.action_map.pop(key, None)
+
+    def _resolve_station_button(self, key: str) -> dict | None:
+        """Return the favourite station bound to this button, if any."""
+        uuid = self._station_buttons.get(key)
+        if not uuid:
+            return None
+        for s in self._favourites:
+            if s.get("stationuuid") == uuid:
+                return s
+        log.info("Bound station for button %r (uuid=%s) is not in favourites",
+                 key, uuid)
+        return None
+
     # ── Favourites ──
 
     def _favourites_path(self) -> str:
@@ -905,6 +1132,19 @@ class RadioService(SourceBase):
         except Exception as e:
             log.warning("Failed to load favourites: %s", e)
             self._favourites = []
+        # Backfill missing short_name aliases. Empty string = "user cleared
+        # it"; we only suggest when the key is absent entirely so manual
+        # clears stick across restarts.
+        backfilled = 0
+        for s in self._favourites:
+            if "short_name" not in s:
+                suggested = _suggest_short_name(s.get("name", ""))
+                if suggested:
+                    s["short_name"] = suggested
+                    backfilled += 1
+        if backfilled:
+            self._save_favourites()
+            log.info("Auto-suggested short_name aliases on %d favourites", backfilled)
 
     def _save_favourites(self):
         path = self._favourites_path()
@@ -956,7 +1196,7 @@ class RadioService(SourceBase):
             self._save_favourites()
             return {"status": "ok", "favourite": False}
         else:
-            self._favourites.append({
+            entry = {
                 "stationuuid": station.get("stationuuid", ""),
                 "name": station.get("name", ""),
                 "url_resolved": station.get("url_resolved", station.get("url", "")),
@@ -966,7 +1206,11 @@ class RadioService(SourceBase):
                 "codec": station.get("codec", ""),
                 "bitrate": station.get("bitrate", 0),
                 "votes": station.get("votes", 0),
-            })
+            }
+            suggested = _suggest_short_name(entry["name"])
+            if suggested:
+                entry["short_name"] = suggested
+            self._favourites.append(entry)
             self._save_favourites()
             return {"status": "ok", "favourite": True}
 

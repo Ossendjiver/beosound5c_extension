@@ -1271,6 +1271,23 @@ class MediaServer(PlayerBase):
                 logger.debug("No track info available")
                 return None
 
+            # Sonos surfaces "ZPSTR_BUFFERING" / "ZPSTR_CONNECTING" as title
+            # (and sometimes artist/album) while a live stream is buffering or
+            # negotiating with the source — particularly hits radio. Those
+            # aren't real metadata; broadcasting them overwrites whatever the
+            # source service (e.g. the radio service's SR programme name) had
+            # already set in the router, and Sonos won't push another
+            # track_change for the same live stream once buffering settles —
+            # so the placeholder sticks until the next programme change.
+            # Drop the update entirely; the radio source's poller (or the
+            # next real Sonos track event) will keep the router state fresh.
+            for _k in ("title", "artist", "album"):
+                _v = track_info.get(_k, "")
+                if isinstance(_v, str) and _v.startswith("ZPSTR_"):
+                    logger.debug("Skipping media update (Sonos placeholder %s=%r)",
+                                 _k, _v)
+                    return None
+
             artwork_url = self.sonos_viewer.get_artwork_url()
             artwork_base64 = None
             artwork_size = None

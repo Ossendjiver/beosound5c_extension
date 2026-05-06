@@ -408,8 +408,15 @@ class EventRouter:
         # Runs before any source / HA routing so it always wins on devices
         # where the volume adapter actually exposes balance. Safe no-op on
         # adapters whose set_tone returns None (Sonos / BlueSound).
+        # Skipped when the active source explicitly claims the action
+        # (e.g. radio with a user-bound GREEN/YELLOW favourite) so the
+        # source's binding takes precedence over the global shortcut.
         _BAL_BUTTONS = {"green": 4, "yellow": -4, "home": 0}
-        if is_local and action in _BAL_BUTTONS and self._volume \
+        source_claims = (
+            is_local and active and active.state in ("playing", "paused")
+            and action in active.handles
+        )
+        if is_local and action in _BAL_BUTTONS and not source_claims and self._volume \
                 and hasattr(self._volume, "set_tone"):
             bal = _BAL_BUTTONS[action]
             logger.info("-> balance: %s → %+d", action, bal)
@@ -445,15 +452,40 @@ class EventRouter:
                     await self._forward_to_source(src, payload)
                 return
 
-        # 1b2. Default source
+        # 1b2. PLAY/GO with no active source — resume the most-recent
+        # source instead of jumping to the configured default.  Triggered
+        # by Beo4 GO and by the masterlink master role's PLAY-burst
+        # detection.  Falls through to the default-source path (1b3) if
+        # no last-active is known or it's no longer available.
+        if (is_local and not active and action in ("go", "play")
+                and self.registry.last_active_id):
+            last = self.registry.get(self.registry.last_active_id)
+            if last and last.state != "gone" and last.command_url \
+                    and action in last.handles:
+                action_ts = time.monotonic()
+                self._latest_action_ts = action_ts
+                logger.info("-> %s: %s (last source)", last.id, action)
+                await self._forward_to_source(
+                    last, {**payload, "action": "activate",
+                           "action_ts": action_ts})
+                return
+
+        # 1b3. Default source
         if is_local and not active and self._default_source_id:
             default = self.registry.get(self._default_source_id)
             if default and default.state != "gone" and default.command_url and action in default.handles:
                 action_ts = time.monotonic()
                 self._latest_action_ts = action_ts
-                logger.info("-> %s: %s (default source)", default.id, action)
-                await self._forward_to_source(
-                    default, {**payload, "action_ts": action_ts})
+                # PLAY/GO from idle: convert to ``activate`` so the source
+                # actually starts playback.  Forwarding ``go`` would map
+                # to ``toggle`` on the player — a no-op when nothing is
+                # loaded.  Mirrors the last-source fallback (1b2).
+                forward_payload = {**payload, "action_ts": action_ts}
+                if action in ("go", "play"):
+                    forward_payload["action"] = "activate"
+                logger.info("-> %s: %s (default source)", default.id,
+                            forward_payload["action"])
+                await self._forward_to_source(default, forward_payload)
                 return
 
         # 1c. Transport actions direct to player.
@@ -566,6 +598,9 @@ class EventRouter:
 
         # 4d. BLUE → JOIN — returns only if JOIN is configured locally; otherwise
         # intentional fallthrough to HA so HA can handle the BLUE button.
+        # The active-source claim check at step 1 has already absorbed BLUE
+        # presses when the source binds it (e.g. radio favourite); reaching
+        # here means no source claimed it.
         if action == "blue" and is_local:
             join_cfg = cfg("join")
             default_player = join_cfg.get("default_player") if join_cfg else None
@@ -750,7 +785,6 @@ class EventRouter:
 
     async def _wake_screen(self):
         await self._set_backlight(True)
-        await self.media.broadcast("navigate", {"page": "now_playing"})
 
     async def _screen_off(self):
         await self._set_backlight(False)
@@ -903,10 +937,12 @@ class EventRouter:
                 name="canvas_inject")
 
         # Music video injection — works for all sources except radio
-        # (radio metadata is station/programme names, not artist+title)
+        # (radio metadata is station/programme names, not artist+title).
+        # Use the validated id captured above; ``_source_id`` itself was
+        # popped by validate_update and is no longer on the payload.
         mv_artist = payload.get("artist", "").strip()
         mv_title = payload.get("title", "").strip()
-        mv_source = payload.get("_source_id", "")
+        mv_source = source_id or ""
         # Allow lookup on track_change/external_control regardless of state —
         # Sonos briefly reports "stopped" during track transitions even when
         # a new track is about to play. Also trigger on resync (router restart)

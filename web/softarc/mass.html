@@ -659,6 +659,10 @@
             const originalHandleKeyPress         = arcList.handleKeyPress?.bind(arcList);
             const originalRender                 = arcList.render?.bind(arcList);
             const originalCreateImageElement     = arcList.createImageElement?.bind(arcList);
+            const originalSaveState              = arcList.saveState?.bind(arcList);
+            const originalDestroy                = arcList.destroy?.bind(arcList);
+            const MASS_BROWSE_STATE_KEY          = `${massConfig.storagePrefix}_browse_state_v1`;
+            let lastBrowseContextStamp           = 0;
 
             arcList.createImageElement = function (item) {
                 if (item?.icon) {
@@ -701,6 +705,160 @@
                 return Math.max(0, Math.min(items.length - 1, Math.round(index || 0)));
             };
 
+            const itemKey = (item) => String(
+                item?.id
+                || item?.url
+                || item?.play_url
+                || cleanTitle(item?.name)
+                || ''
+            ).trim();
+
+            const normalizeLookup = (value) => cleanTitle(String(value || ''))
+                .toLowerCase()
+                .replace(/[^a-z0-9]+/g, ' ')
+                .trim();
+
+            const saveBrowseState = () => {
+                try {
+                    const current = getCurrentItem();
+                    const payload = {
+                        trail: folderStack.map((entry) => itemKey(entry.item)).filter(Boolean),
+                        selection_key: itemKey(current),
+                        selection_name: cleanTitle(current?.name),
+                        selection_index: clampIndex(arcList.items, arcList.currentIndex),
+                        saved_at: Date.now(),
+                    };
+                    localStorage.setItem(MASS_BROWSE_STATE_KEY, JSON.stringify(payload));
+                } catch (error) {}
+            };
+
+            const loadBrowseState = () => {
+                try {
+                    const raw = localStorage.getItem(MASS_BROWSE_STATE_KEY);
+                    return raw ? JSON.parse(raw) : null;
+                } catch (error) {
+                    return null;
+                }
+            };
+
+            const findItemIndex = (items, predicate) => {
+                if (!Array.isArray(items) || !items.length) return -1;
+                return items.findIndex((entry) => {
+                    try {
+                        return predicate(entry);
+                    } catch (error) {
+                        return false;
+                    }
+                });
+            };
+
+            const restoreBrowseState = (state) => {
+                if (!state || typeof state !== 'object') return false;
+
+                let currentItems = rootItems();
+                folderStack.length = 0;
+
+                for (const trailKey of Array.isArray(state.trail) ? state.trail : []) {
+                    const folderIndex = currentItems.findIndex((entry) => itemKey(entry) === String(trailKey || '').trim());
+                    const folder = folderIndex >= 0 ? currentItems[folderIndex] : null;
+                    if (!folder || !Array.isArray(folder.tracks) || !folder.tracks.length) {
+                        break;
+                    }
+                    folderStack.push({
+                        item: folder,
+                        items: currentItems.slice(),
+                        currentIndex: folderIndex,
+                        targetIndex: folderIndex,
+                    });
+                    currentItems = mapChildrenForParent(folder);
+                }
+
+                arcList.items = currentItems;
+
+                let selectionIndex = -1;
+                const selectionKey = String(state.selection_key || '').trim();
+                if (selectionKey) {
+                    selectionIndex = currentItems.findIndex((entry) => itemKey(entry) === selectionKey);
+                }
+                if (selectionIndex < 0) {
+                    const selectionName = normalizeLookup(state.selection_name || '');
+                    if (selectionName) {
+                        selectionIndex = currentItems.findIndex((entry) => normalizeLookup(entry?.name) === selectionName);
+                    }
+                }
+                arcList.currentIndex = clampIndex(currentItems, selectionIndex >= 0 ? selectionIndex : state.selection_index);
+                arcList.targetIndex = arcList.currentIndex;
+                return true;
+            };
+
+            const focusMappedFolder = (rootId, predicate) => {
+                const roots = rootItems();
+                const rootIndex = roots.findIndex((entry) => String(entry?.id || '').trim() === String(rootId || '').trim());
+                if (rootIndex < 0) return false;
+
+                const rootFolder = roots[rootIndex];
+                const childItems = mapChildrenForParent(rootFolder);
+                let selectionIndex = findItemIndex(childItems, predicate);
+                if (selectionIndex < 0) return false;
+
+                folderStack.length = 0;
+                folderStack.push({
+                    item: rootFolder,
+                    items: roots.slice(),
+                    currentIndex: rootIndex,
+                    targetIndex: rootIndex,
+                });
+                arcList.items = childItems;
+                arcList.currentIndex = clampIndex(childItems, selectionIndex);
+                arcList.targetIndex = arcList.currentIndex;
+                refreshList();
+                saveBrowseState();
+                return true;
+            };
+
+            const applyBrowseContext = (context) => {
+                if (!context || typeof context !== 'object') return false;
+                const contextStamp = Number(context.ts || 0);
+                if (contextStamp && contextStamp <= lastBrowseContextStamp) return false;
+
+                const artistKey = normalizeLookup(context.artist);
+                const albumKey = normalizeLookup(context.album);
+                const titleKey = normalizeLookup(context.title);
+
+                const strategies = [];
+                if (artistKey) {
+                    strategies.push({
+                        rootId: 'artists',
+                        match: (entry) => normalizeLookup(entry?.artist || entry?.name) === artistKey,
+                    });
+                }
+                if (albumKey) {
+                    strategies.push({
+                        rootId: 'albums',
+                        match: (entry) => {
+                            if (normalizeLookup(entry?.album || entry?.name) !== albumKey) return false;
+                            const entryArtist = normalizeLookup(entry?.artist || getItemMeta(entry).artist);
+                            return !artistKey || !entryArtist || entryArtist === artistKey;
+                        },
+                    });
+                }
+                if (titleKey) {
+                    strategies.push({
+                        rootId: 'songs',
+                        match: (entry) => {
+                            if (normalizeLookup(entry?.name || entry?.title) !== titleKey) return false;
+                            const entryArtist = normalizeLookup(entry?.artist || getItemMeta(entry).artist);
+                            return !artistKey || !entryArtist || entryArtist === artistKey;
+                        },
+                    });
+                }
+
+                const applied = strategies.some((strategy) => focusMappedFolder(strategy.rootId, strategy.match));
+                if (applied) {
+                    lastBrowseContextStamp = contextStamp || Date.now();
+                }
+                return applied;
+            };
 
             const rootItems = () => {
                 const src = withQueueRoot(arcList.parentData || preloadedData || []);
@@ -878,6 +1036,7 @@
                 if (typeof arcList.updateCounter === 'function') arcList.updateCounter();
                 if (typeof originalRender === 'function') originalRender();
                 renderBreadcrumbs();
+                saveBrowseState();
             };
 
             let fastLetterTimer = null;
@@ -937,6 +1096,20 @@
             arcList.render = function () {
                 if (typeof originalRender === 'function') originalRender();
                 renderBreadcrumbs();
+            };
+
+            arcList.saveState = function () {
+                if (typeof originalSaveState === 'function') {
+                    originalSaveState();
+                }
+                saveBrowseState();
+            };
+
+            arcList.destroy = function () {
+                saveBrowseState();
+                if (typeof originalDestroy === 'function') {
+                    originalDestroy();
+                }
             };
 
             // GO = PLAY (leaf via `url`, folder via `play_url`)
@@ -1050,11 +1223,16 @@
                 }
             };
 
+            arcList.handleBrowseContextFromParent = function (context) {
+                return applyBrowseContext(context);
+            };
+
             const initNavigation = () => {
                 arcList.parentData    = Array.isArray(preloadedData) ? preloadedData : [];
                 arcList.items         = rootItems();
                 arcList.currentIndex  = 0;
                 arcList.targetIndex   = 0;
+                restoreBrowseState(loadBrowseState());
                 refreshList();
                 requestAnimationFrame(() => refreshList());
                 setTimeout(() => refreshList(), 120);

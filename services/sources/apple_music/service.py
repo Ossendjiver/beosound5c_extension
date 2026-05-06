@@ -111,6 +111,12 @@ class AppleMusicService(DigitPlaylistMixin, SourceBase):
             self._load_playlists()
             self._detect_player()
 
+            if self.player == "local":
+                log.warning(
+                    "Apple Music is configured but the local player cannot "
+                    "decrypt Apple Music streams. Playback will fail. Use a "
+                    "Sonos (ShareLink) or BlueSound player to play Apple Music.")
+
             caps = await self.player_capabilities()
             if caps:
                 log.info("Player service available — using player API")

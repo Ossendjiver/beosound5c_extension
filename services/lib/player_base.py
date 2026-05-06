@@ -464,9 +464,13 @@ class PlayerBase:
             data = await request.json()
         except Exception:
             data = {}
-        # Timestamp gating: reject stale play commands
+        # Timestamp gating: reject stale play commands.
+        # `_latest_action_ts` is per-process and shared across sources, so a
+        # strict `<` comparison would drop legitimate plays from a different
+        # source whenever another source had run more recently. A 3-second
+        # window still deduplicates rapid double-taps within one interaction.
         action_ts = data.get("action_ts", 0)
-        if action_ts and action_ts < self._latest_action_ts:
+        if action_ts and 0 < self._latest_action_ts - action_ts < 3.0:
             log.warning("Dropped stale play (ts=%.3f < latest=%.3f)",
                         action_ts, self._latest_action_ts)
             return web.json_response(
@@ -695,13 +699,13 @@ class PlayerBase:
         return self._http_session is not None and not self._http_session.closed
 
     async def trigger_wake(self):
-        """Trigger screen wake via input service webhook."""
+        """Wake the display via the input service without changing views."""
         if not self._session_ready():
             return
         try:
             async with self._http_session.post(
                 INPUT_WAKE_URL,
-                json={"command": "wake", "params": {"page": "now_playing"}},
+                json={"command": "screen_on"},
                 timeout=aiohttp.ClientTimeout(total=2),
             ) as resp:
                 if resp.status == 200:

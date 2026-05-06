@@ -45,16 +45,17 @@
     "player": {
       "type": "object",
       "description": "External player service configuration. The player handles audio playback, monitoring, and artwork.",
-      "required": ["type"],
+      "required": ["type", "ip"],
       "properties": {
         "type": {
           "type": "string",
-          "enum": ["sonos", "bluesound", "mass", "local", "none"],
-          "description": "Player type. Determines which player service handles playback. Networked players use a companion player service; 'local' uses the on-device local player and 'none' disables external player services."
+          "enum": ["sonos", "bluesound"],
+          "description": "Player type. Determines which player service handles playback. Both beo-player-sonos and beo-player-bluesound are installed; the type guard ensures only the matching one runs."
         },
         "ip": {
           "type": "string",
-          "description": "Host or IP address of the player device for networked players (Sonos speaker, BluOS player, or Music Assistant host)."
+          "format": "ipv4",
+          "description": "IP address of the player device (Sonos speaker or BluOS player)."
         }
       },
       "additionalProperties": false
@@ -126,7 +127,7 @@
       "properties": {
         "type": {
           "type": "string",
-          "enum": ["beolab5", "sonos", "bluesound", "powerlink", "hass", "c4amp", "hdmi", "spdif", "rca"],
+          "enum": ["beolab5", "sonos", "bluesound", "powerlink", "c4amp", "hdmi", "spdif", "rca"],
           "description": "Volume adapter type. If omitted, inferred from player.type for sonos/bluesound, otherwise defaults to 'beolab5'.",
           "default": "beolab5"
         },
@@ -185,6 +186,29 @@
       "additionalProperties": false
     },
 
+    "radio": {
+      "type": "object",
+      "description": "Internet radio source settings.",
+      "properties": {
+        "source": {
+          "type": "string",
+          "description": "BeoLink IR source mapping (radio, n.radio, etc.)."
+        },
+        "station_buttons": {
+          "type": "object",
+          "description": "Map remote/keypad buttons to favourite radio stations. Keys are button names ('1'-'9', '0', 'red', 'green', 'yellow', 'blue'); values are station UUIDs from the favourites list. Pressing a bound button while the radio source is selected jumps directly to that station; bound color buttons take precedence over the global balance shortcut (GREEN/YELLOW) and BLUE→JOIN handler.",
+          "propertyNames": {
+            "enum": ["0","1","2","3","4","5","6","7","8","9","red","green","yellow","blue"]
+          },
+          "additionalProperties": {
+            "type": "string",
+            "description": "Station UUID, or empty string to leave the slot unbound."
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+
     "spotify": {
       "type": "object",
       "description": "Spotify integration settings. Requires a Spotify Developer app with PKCE redirect URI.",
@@ -209,14 +233,45 @@
       "additionalProperties": false
     },
 
-    "radio": {
+    "masterlink": {
       "type": "object",
-      "description": "Radio source configuration.",
+      "description": "B&O Master Link bus role + IR filter. Read by services/masterlink.py at startup.",
       "properties": {
-        "source": {
+        "role": {
           "type": "string",
-          "description": "Radio provider identifier or source preset.",
-          "default": "radio"
+          "enum": ["master", "provider", "link"],
+          "default": "master",
+          "description": "Which side of the ML bus the BS5c plays. 'master' = audio master (default; standalone collapses into this). 'provider' = N.MUSIC/N.RADIO source-center for an external master like a BS9000 (N.MUSIC verified against BC2; N.RADIO unverified). 'link' = link room receiving sources from a remote master."
+        },
+        "ir": {
+          "type": "object",
+          "description": "Filter for incoming Beo4 IR keycodes (categorised by the device-type byte in the telegram). Light/All/unknown always pass through.",
+          "properties": {
+            "audio": { "type": "boolean", "default": true, "description": "Forward Audio-typed Beo4 keys (Radio, CD, A.Mem, …)." },
+            "video": { "type": "boolean", "default": true, "description": "Forward Video-typed Beo4 keys (TV, DVD, V.Aux, …)." }
+          },
+          "additionalProperties": false
+        },
+        "provider": {
+          "type": "object",
+          "description": "Provider role config: which enabled source feeds N.MUSIC vs N.RADIO when an external master requests them.",
+          "properties": {
+            "nmusic_source": { "type": "string", "description": "Menu key (e.g. 'SPOTIFY') to expose as N.MUSIC. Empty = don't claim N.MUSIC." },
+            "nradio_source": { "type": "string", "description": "Menu key (e.g. 'RADIO') to expose as N.RADIO. Empty = don't claim N.RADIO." }
+          },
+          "additionalProperties": false
+        },
+        "link": {
+          "type": "object",
+          "description": "Link role config.",
+          "properties": {
+            "sources": {
+              "type": "array",
+              "items": { "type": "string", "enum": ["radio", "cd", "amem", "a.aux", "n.radio", "n.music"] },
+              "description": "Beo4 source keys to surface in the LINK view (TBD) when the BS5c is a link room."
+            }
+          },
+          "additionalProperties": false
         }
       },
       "additionalProperties": false
@@ -303,11 +358,6 @@
           "type": "string",
           "description": "Home Assistant dashboard path to embed (security source only).",
           "examples": ["dashboard-cameras/home"]
-        },
-        "url": {
-          "type": "string",
-          "description": "Direct web view path for static pages such as custom softarc routes.",
-          "examples": ["softarc/security.html"]
         }
       },
       "additionalProperties": false

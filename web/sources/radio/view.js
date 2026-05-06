@@ -37,7 +37,7 @@ const _radioController = (() => {
             if (sendToIframe('button', { button })) return true;
             // Iframe not mounted -> PLAYING page media controls
             if (!_playing) return false;
-            const cmd = { go: 'toggle', left: 'prev', right: 'next', up: 'toggle_favourite', down: 'prev' }[button];
+            const cmd = { go: 'toggle', left: 'prev', right: 'next', down: 'prev' }[button];
             if (!cmd) return false;
             fetch(`${RADIO_URL()}/command`, {
                 method: 'POST',

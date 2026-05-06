@@ -24,6 +24,28 @@
         return [item?.artist, item?.album].map((part) => String(part || '').trim()).filter(Boolean).join(' - ');
     }
 
+    function selectedItem() {
+        return items[selectedIndex] || items[currentIndex] || null;
+    }
+
+    function buildSelectionContext(item) {
+        if (!item) return null;
+        const title = String(item.name || item.title || '').trim();
+        const artist = String(item.artist || '').trim();
+        const album = String(item.album || '').trim();
+        if (!title && !artist && !album) return null;
+        return {
+            source: 'queue',
+            ts: Date.now(),
+            title,
+            artist,
+            album,
+            id: item.id || '',
+            item_id: item.item_id || '',
+            queue_item_id: item.queue_item_id || '',
+        };
+    }
+
     function payloadForSelected() {
         const item = items[selectedIndex] || {};
         return {
@@ -240,5 +262,9 @@
         container = null;
     }
 
-    window.QueueView = { onMount, onRemove, handleNavEvent, handleButton, refresh };
+    function getSelectionContext() {
+        return buildSelectionContext(selectedItem());
+    }
+
+    window.QueueView = { onMount, onRemove, handleNavEvent, handleButton, refresh, getSelectionContext };
 })();

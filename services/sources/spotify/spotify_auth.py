@@ -32,6 +32,18 @@ from spotify_tokens import (
 log = logging.getLogger('beo-source-spotify')
 
 
+def missing_scopes(granted, required):
+    """Return scopes in ``required`` that aren't in ``granted``.
+
+    Both args are space-separated strings (Spotify's wire format) or None.
+    A missing/empty granted set returns the full required set.  Treats
+    scope sets case-insensitively per RFC 6749 (Spotify's are lowercase).
+    """
+    granted_set = set((granted or "").lower().split())
+    required_set = set((required or "").lower().split())
+    return sorted(required_set - granted_set)
+
+
 def _refresh_under_file_lock(config_client_id=None, known_refresh_token=None):
     """Sync refresh path, serialised across processes via ``refresh_lock``.
 
@@ -70,7 +82,9 @@ def _refresh_under_file_lock(config_client_id=None, known_refresh_token=None):
         refresh_token = tokens['refresh_token']
         result = refresh_access_token(client_id, refresh_token)
         new_rt = result.get('refresh_token') or refresh_token
-        save_tokens(client_id, new_rt)
+        # Spotify returns ``scope`` on every refresh — persist it so the
+        # service can flag scope drift even after a clean restart.
+        save_tokens(client_id, new_rt, scope=result.get('scope'))
         if known_refresh_token and known_refresh_token != new_rt:
             log.info("Refresh token rotated by another process")
         return client_id, new_rt, result
@@ -100,6 +114,7 @@ class SpotifyAuth:
         self._token_expiry = 0
         self._client_id = None
         self._refresh_token = None
+        self._scope = None  # space-separated, mirrors what Spotify granted
         self.revoked = False
         self._refresh_lock = asyncio.Lock()
 
@@ -120,7 +135,14 @@ class SpotifyAuth:
                 return False
             self._client_id = stored_id
             self._refresh_token = tokens['refresh_token']
-            log.info("Spotify credentials loaded (client_id: %s...)", self._client_id[:8])
+            self._scope = tokens.get('scope')
+            log.info("Spotify credentials loaded (client_id: %s...)",
+                     self._client_id[:8])
+            if self._scope:
+                log.info("Granted scopes: %s", self._scope)
+            else:
+                log.info("Granted scopes: unknown (token predates scope "
+                         "tracking — will be captured on next refresh)")
             return True
         if tokens is not None:
             log.info("Token file exists but incomplete — waiting for setup")
@@ -128,12 +150,15 @@ class SpotifyAuth:
             log.warning("No Spotify tokens found — use the /setup page to connect")
         return False
 
-    def set_credentials(self, client_id, refresh_token, access_token=None, expires_in=3600):
+    def set_credentials(self, client_id, refresh_token, access_token=None,
+                        expires_in=3600, scope=None):
         """Set credentials directly (used after OAuth callback)."""
         self._client_id = client_id
         self._refresh_token = refresh_token
         self._access_token = access_token
         self._token_expiry = time.monotonic() + expires_in - 300 if access_token else 0
+        if scope is not None:
+            self._scope = scope
         self.revoked = False
 
     def clear(self):
@@ -141,7 +166,13 @@ class SpotifyAuth:
         self._client_id = None
         self._refresh_token = None
         self._access_token = None
+        self._scope = None
         self._token_expiry = 0
+
+    @property
+    def granted_scope(self):
+        """Space-separated scope string Spotify granted, or None if unknown."""
+        return self._scope
 
     async def get_token(self):
         """Get a valid access token, refreshing if needed."""
@@ -188,6 +219,14 @@ class SpotifyAuth:
             rotated = new_rt != self._refresh_token
             self._refresh_token = new_rt
             self._client_id = client_id
+            new_scope = result.get('scope')
+            if new_scope and new_scope != self._scope:
+                if self._scope is None:
+                    log.info("Granted scopes (first refresh): %s", new_scope)
+                else:
+                    log.warning("Granted scopes changed: %r -> %r",
+                                self._scope, new_scope)
+                self._scope = new_scope
             if rotated:
                 log.info("Refresh token rotated")
 

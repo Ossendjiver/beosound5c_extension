@@ -17,12 +17,19 @@ def load_tokens():
     return _store.load()
 
 
-def save_tokens(client_id, refresh_token):
-    """Merge client_id + refresh_token into the store (preserves other fields)."""
-    return _store.save_merge({
-        "client_id": client_id,
-        "refresh_token": refresh_token,
-    })
+def save_tokens(client_id, refresh_token, scope=None):
+    """Merge client_id + refresh_token (+ optional scope) into the store.
+
+    Spotify returns ``scope`` in token-exchange and refresh responses;
+    persisting it lets callers detect when a stored token was issued
+    against a narrower scope set than the app currently asks for —
+    a refresh won't re-grant scopes the user never approved, so missing
+    scopes can only be fixed by a full re-auth.
+    """
+    update = {"client_id": client_id, "refresh_token": refresh_token}
+    if scope is not None:
+        update["scope"] = scope
+    return _store.save_merge(update)
 
 
 def delete_tokens():

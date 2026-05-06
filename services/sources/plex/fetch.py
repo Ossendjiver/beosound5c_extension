@@ -183,6 +183,21 @@ def main():
                     'tracks': cp.get('tracks', []),
                 }
             log(f"Loaded cache with {len(cache)} playlists")
+            # Stream URLs embed X-Plex-Token; if the token has rotated the
+            # cached URLs return 401 and mpv exits immediately. Drop the
+            # cache when the first URL we find no longer carries the
+            # current token, forcing a full refresh.
+            cur_tok = tokens['auth_token']
+            for _pc in cache.values():
+                for _tr in _pc.get('tracks', []):
+                    _u = _tr.get('url', '')
+                    if _u and cur_tok not in _u:
+                        log("Auth token changed - invalidating cache for full refresh")
+                        cache = {}
+                        break
+                else:
+                    continue
+                break
         except Exception as e:
             log(f"Could not load cache: {e}")
 

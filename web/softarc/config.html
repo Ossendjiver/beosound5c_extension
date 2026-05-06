@@ -127,6 +127,138 @@
         .cfg-instructions { font-size: 13px; color: #666; background: #0d0d0d; border: 1px solid #1a2a3a; border-radius: 6px; padding: 10px 12px; margin: 0 0 10px; line-height: 1.6; }
         .cfg-instructions a { color: #0af; text-decoration: none; }
         .cfg-instructions code { font-family: monospace; font-size: 12px; background: #000; border: 1px solid #1e1e1e; border-radius: 3px; padding: 1px 5px; color: #88c0d0; word-break: break-all; }
+
+        /* Radio favourites — fixed slot rows (digits 0-9 + colour buttons) */
+        .cfg-rf-slot-row {
+            display: grid;
+            grid-template-columns: 56px minmax(0, 1fr) 130px 32px;
+            gap: 10px; align-items: center;
+            padding: 5px 0; border-bottom: 1px solid #111;
+        }
+        .cfg-rf-slot-row:last-child { border-bottom: none; }
+        .cfg-rf-slot-label {
+            font-family: monospace; font-size: 12px; letter-spacing: 0.05em;
+            text-align: center; padding: 7px 0;
+            background: #111; border: 1px solid #252525; border-radius: 6px;
+            color: #aaa;
+        }
+        .cfg-rf-slot-label-red    { color: #d55; border-color: #5a1f1f; }
+        .cfg-rf-slot-label-green  { color: #5a5; border-color: #1f4a1f; }
+        .cfg-rf-slot-label-yellow { color: #cb3; border-color: #4a4a1f; }
+        .cfg-rf-slot-label-blue   { color: #4af; border-color: #1f3f5a; }
+        .cfg-rf-slot-station {
+            background: #111; border: 1px solid #252525; border-radius: 6px;
+            padding: 6px 10px; font-size: 13px; color: #ddd;
+            font-family: inherit; cursor: pointer; min-width: 0;
+            display: flex; align-items: center; justify-content: space-between;
+            gap: 8px; text-align: left;
+        }
+        .cfg-rf-slot-station:hover { border-color: #3a3a3a; }
+        .cfg-rf-slot-station:focus { outline: none; border-color: #3a3a3a; }
+        .cfg-rf-slot-station-text {
+            flex: 1; min-width: 0;
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        }
+        .cfg-rf-slot-station-text-empty { color: #555; }
+        .cfg-rf-slot-station-arrow { color: #555; font-size: 10px; flex-shrink: 0; }
+
+        /* Searchable station picker popup (anchored under a slot row) */
+        #cfg-rf-station-popup {
+            display: none; position: absolute;
+            background: #0a0a0a; border: 1px solid #1e1e1e; border-radius: 8px;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.7);
+            z-index: 60; flex-direction: column;
+            max-height: 360px; min-width: 260px;
+        }
+        #cfg-rf-station-popup.active { display: flex; }
+        .cfg-rf-station-search {
+            background: #111; border: none; border-bottom: 1px solid #1e1e1e;
+            padding: 10px 12px; font-size: 13px; color: #ddd;
+            font-family: inherit; outline: none; border-radius: 8px 8px 0 0;
+        }
+        .cfg-rf-station-list { overflow-y: auto; flex: 1; min-height: 0; }
+        .cfg-rf-station-opt {
+            padding: 9px 12px; font-size: 13px; color: #ccc; cursor: pointer;
+            border-bottom: 1px solid #111;
+            display: flex; align-items: center; gap: 8px;
+        }
+        .cfg-rf-station-opt:last-child { border-bottom: none; }
+        .cfg-rf-station-opt:hover, .cfg-rf-station-opt.active { background: #111; color: #fff; }
+        .cfg-rf-station-opt-name { flex: 1; min-width: 0;
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .cfg-rf-station-opt-alias {
+            font-family: monospace; font-size: 11px; color: #666;
+            background: #111; padding: 2px 6px; border-radius: 3px; flex-shrink: 0;
+        }
+        .cfg-rf-station-opt-special { color: #888; font-style: italic; }
+        .cfg-rf-station-opt-add { color: #0af; font-style: italic; }
+        .cfg-rf-station-empty {
+            padding: 16px 12px; font-size: 12px; color: #555; text-align: center;
+        }
+        .cfg-rf-slot-alias {
+            background: #111; border: 1px solid #252525; border-radius: 6px;
+            padding: 6px 10px; font-size: 13px; color: #ddd;
+            font-family: monospace;
+        }
+        .cfg-rf-slot-alias:focus { outline: none; border-color: #3a3a3a; }
+        .cfg-rf-slot-alias:disabled { opacity: 0.4; }
+        .cfg-rf-slot-alias.saving { border-color: #2980b9; }
+        .cfg-rf-slot-alias.saved  { border-color: #27ae60; }
+        .cfg-rf-slot-alias.error  { border-color: #c0392b; }
+        .cfg-rf-slot-test {
+            width: 32px; height: 32px;
+            background: #111; border: 1px solid #252525; border-radius: 6px;
+            color: #888; font-size: 13px; cursor: pointer;
+            font-family: inherit; padding: 0; line-height: 1;
+            display: inline-flex; align-items: center; justify-content: center;
+        }
+        .cfg-rf-slot-test:hover:not(:disabled) { color: #0af; border-color: #0af; }
+        .cfg-rf-slot-test.playing { color: #4a4; border-color: #4a4; }
+        .cfg-rf-slot-test.error   { color: #c0392b; border-color: #c0392b; }
+        .cfg-rf-slot-test:disabled { cursor: default; opacity: 0.4; }
+        .cfg-rf-empty-hint { font-size: 12px; color: #444; padding: 8px 0; }
+
+        /* Station picker modal */
+        #cfg-rf-modal { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.85); z-index: 90; align-items: center; justify-content: center; padding: 16px; }
+        #cfg-rf-modal.active { display: flex; }
+        .cfg-rf-modal-box {
+            background: #0a0a0a; border: 1px solid #1e1e1e; border-radius: 12px;
+            width: 100%; max-width: 460px; max-height: 80vh; display: flex; flex-direction: column;
+        }
+        .cfg-rf-modal-head { padding: 14px 16px; border-bottom: 1px solid #181818; display: flex; align-items: center; justify-content: space-between; }
+        .cfg-rf-modal-title { font-size: 13px; font-weight: 600; color: #888; letter-spacing: 0.1em; text-transform: uppercase; }
+        .cfg-rf-modal-close { background: none; border: none; color: #666; font-size: 22px; cursor: pointer; line-height: 1; padding: 0 4px; font-family: inherit; }
+        .cfg-rf-modal-list { overflow-y: auto; flex: 1; }
+        .cfg-rf-modal-item {
+            display: flex; align-items: center; gap: 12px;
+            padding: 12px 16px; border-bottom: 1px solid #111;
+            cursor: pointer;
+        }
+        .cfg-rf-modal-item:last-child { border-bottom: none; }
+        .cfg-rf-modal-item:hover, .cfg-rf-modal-item:active { background: #111; }
+        .cfg-rf-modal-item.selected { background: #0d1d2a; }
+        .cfg-rf-modal-item img {
+            width: 32px; height: 32px; border-radius: 4px;
+            object-fit: cover; background: #1a1a1a; flex-shrink: 0;
+        }
+        .cfg-rf-modal-text { min-width: 0; flex: 1; }
+        .cfg-rf-modal-name { font-size: 14px; color: #ccc; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .cfg-rf-modal-sub  { font-size: 11px; color: #555; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .cfg-rf-modal-clear {
+            display: flex; align-items: center; gap: 12px;
+            padding: 12px 16px; cursor: pointer; color: #666;
+            border-bottom: 1px solid #181818; font-style: italic;
+        }
+        .cfg-rf-modal-clear:hover { background: #111; color: #aaa; }
+        .cfg-rf-custom-form { padding: 16px; display: flex; flex-direction: column; gap: 4px; }
+        .cfg-rf-custom-form label {
+            color: #888; font-size: 11px; text-transform: uppercase;
+            letter-spacing: 0.1em; margin: 8px 0 4px;
+        }
+        .cfg-rf-custom-form input[type=text] { width: 100%; }
+        .cfg-rf-custom-err { color: #c0392b; font-size: 12px; min-height: 16px; margin-top: 6px; }
+        .cfg-rf-custom-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
+
     </style>
 </head>
 <body>
@@ -140,6 +272,22 @@
     <div id="cfg-content">
         <div style="padding:40px 0; text-align:center; color:#333; font-size:14px">Loading...</div>
     </div>
+</div>
+
+<div id="cfg-rf-modal">
+    <div class="cfg-rf-modal-box">
+        <div class="cfg-rf-modal-head">
+            <div class="cfg-rf-modal-title" id="cfg-rf-modal-title">Pick a station</div>
+            <button class="cfg-rf-modal-close" id="cfg-rf-modal-close" type="button" aria-label="Close">×</button>
+        </div>
+        <div class="cfg-rf-modal-list" id="cfg-rf-modal-list"></div>
+    </div>
+</div>
+
+<div id="cfg-rf-station-popup">
+    <input type="text" class="cfg-rf-station-search" id="cfg-rf-station-search"
+           placeholder="Search favourites…" autocomplete="off">
+    <div class="cfg-rf-station-list" id="cfg-rf-station-list"></div>
 </div>
 
 <div id="restart-popup">
@@ -295,11 +443,14 @@ function render(cfg) {
         renderVolume(cfg) +
         renderHA(cfg) +
         renderSystemSettings(cfg) +
+        renderMasterlink(cfg) +
+        renderRadioFavorites(cfg) +
         renderSources(cfg) +
         `<div class="cfg-save-bar"><button class="btn-save" id="cfg-save">Save &amp; Restart Services</button></div>`;
     setupListeners();
     updateIrDropdowns();
     updateVolumeOptions();
+    loadRadioFavourites();
 }
 
 function renderDevice(cfg) {
@@ -521,6 +672,95 @@ function renderHA(cfg) {
     </div>`;
 }
 
+// Sources we let the user pick as the N.MUSIC / N.RADIO feed when the
+// BS5c is acting as a SourceCenter for another audio master.  Restricted
+// to keys that produce a continuous music stream.
+const ML_PROVIDER_SOURCE_KEYS = ['SPOTIFY','TIDAL','APPLE MUSIC','PLEX','RADIO','NEWS','USB','CD'];
+
+// Sources we expose in the LINK view when the BS5c is a link room and
+// the audio master lives elsewhere (e.g. BS9000).  Beo4 source keys that
+// a typical ML audio master can serve.
+const ML_LINK_SOURCE_OPTIONS = [
+    { value: 'radio',   label: 'Radio' },
+    { value: 'cd',      label: 'CD' },
+    { value: 'amem',    label: 'A.MEM (tape)' },
+    { value: 'a.aux',   label: 'A.Aux' },
+    { value: 'n.radio', label: 'N.Radio' },
+    { value: 'n.music', label: 'N.Music' },
+];
+
+function renderMasterlink(cfg) {
+    const ml = cfg.masterlink || {};
+    const role = ml.role || 'master';
+    const ir = ml.ir || {};
+    const audioIr = ir.audio !== false;
+    const videoIr = ir.video !== false;
+    const prov = ml.provider || {};
+    const link = ml.link || {};
+    const linkSources = Array.isArray(link.sources) ? link.sources : [];
+    const enabledMenu = cfg.menu || {};
+
+    const providerKeys = ML_PROVIDER_SOURCE_KEYS.filter(k => k in enabledMenu);
+    const buildProviderOpts = (selected) => {
+        const sel = selected || '';
+        // Keep an out-of-list saved value visible so a Source-disabled-then-saved
+        // round trip doesn't silently lose it.
+        const allKeys = sel && !providerKeys.includes(sel) ? [sel, ...providerKeys] : providerKeys;
+        return ['<option value=""' + (sel===''?' selected':'') + '>— none —</option>']
+            .concat(allKeys.map(k =>
+                `<option value="${esc(k)}"${k===sel?' selected':''}>${esc(k)}</option>`))
+            .join('');
+    };
+
+    const linkChecks = ML_LINK_SOURCE_OPTIONS.map(s =>
+        `<label class="cfg-link-src" style="display:flex;align-items:center;gap:8px;font-weight:400;cursor:pointer">
+            <input type="checkbox" class="cfg-ml-link-src" value="${s.value}" ${linkSources.includes(s.value)?'checked':''}>
+            ${esc(s.label)}
+        </label>`).join('');
+
+    return `<div class="cfg-card">
+        <h2>Master Link</h2>
+        <label for="cfg-ml-role">Role</label>
+        <select id="cfg-ml-role">
+            <option value="master"   ${role==='master'?'selected':''}>Audio master (default)</option>
+            <option value="provider" ${role==='provider'?'selected':''}>N.MUSIC / N.RADIO provider</option>
+            <option value="link"     ${role==='link'?'selected':''}>Link room</option>
+        </select>
+
+        <div id="cfg-ml-provider-cond" class="cfg-cond${role==='provider'?' show':''}">
+            <label for="cfg-ml-nmusic">Source for N.MUSIC</label>
+            <select id="cfg-ml-nmusic">${buildProviderOpts(prov.nmusic_source)}</select>
+            <label for="cfg-ml-nradio">Source for N.RADIO</label>
+            <select id="cfg-ml-nradio">${buildProviderOpts(prov.nradio_source)}</select>
+            <div class="hint">Only sources enabled above appear here. Selecting a source means: when another audio master (BS9000, BC2, …) requests N.MUSIC or N.RADIO on the bus, this BS5c streams that source's audio plus its track metadata.</div>
+        </div>
+
+        <div id="cfg-ml-link-cond" class="cfg-cond${role==='link'?' show':''}">
+            <label>Sources from master</label>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px 18px;margin:4px 0 8px">
+                ${linkChecks}
+            </div>
+            <div class="hint">A LINK page in the main menu (TBD) will show whichever of these the master currently provides, plus its track metadata.</div>
+        </div>
+
+        <div style="margin-top:18px; padding-top:14px; border-top:1px solid #1a1a1a">
+            <div style="font-size:11px; font-weight:600; color:#666; letter-spacing:0.1em; text-transform:uppercase; margin-bottom:12px">IR filtering</div>
+            <div style="display:flex;gap:24px">
+                <label style="display:flex;align-items:center;gap:8px;margin:0;font-weight:400;cursor:pointer">
+                    <input id="cfg-ml-ir-audio" type="checkbox" ${audioIr?'checked':''}>
+                    Listen to audio IR commands
+                </label>
+                <label style="display:flex;align-items:center;gap:8px;margin:0;font-weight:400;cursor:pointer">
+                    <input id="cfg-ml-ir-video" type="checkbox" ${videoIr?'checked':''}>
+                    Listen to video IR commands
+                </label>
+            </div>
+        </div>
+
+        <div class="hint" style="margin-top:14px">Audio over Master Link physically rides the bus only when the Volume output is PowerLink. With Sonos/BlueSound players the BS5c can still exchange control telegrams (source requests, IR forwarding, track metadata) but cannot bridge audio onto the ML bus.</div>
+    </div>`;
+}
+
 function renderSources(cfg) {
     const menu = cfg.menu || {};
     const usedIr = {};
@@ -590,6 +830,591 @@ function renderSources(cfg) {
     return `<div class="cfg-card"><h2>Sources</h2><div id="cfg-sources-list">${rows}</div></div>`;
 }
 
+// ── Radio favourites: bind buttons (1-9, 0, RED, GREEN, YELLOW, BLUE) ──
+
+const RADIO_BUTTON_SLOTS = [
+    { key: '1', label: '1' }, { key: '2', label: '2' },
+    { key: '3', label: '3' }, { key: '4', label: '4' },
+    { key: '5', label: '5' }, { key: '6', label: '6' },
+    { key: '7', label: '7' }, { key: '8', label: '8' },
+    { key: '9', label: '9' }, { key: '0', label: '0' },
+    { key: 'red',    label: 'RED',    color: true },
+    { key: 'green',  label: 'GREEN',  color: true },
+    { key: 'yellow', label: 'YELLOW', color: true },
+    { key: 'blue',   label: 'BLUE',   color: true },
+];
+
+let _radioFavourites = [];      // [{stationuuid, name, favicon, country, ...}]
+let _radioBindings = {};        // { "1": "uuid", "red": "uuid", ... } — what user has chosen in this session
+let _radioPickerSlot = null;    // currently-picked slot key when modal is open
+
+function renderRadioFavorites(cfg) {
+    // Seed _radioBindings from config so unsaved edits survive a re-render.
+    _radioBindings = { ...((cfg.radio && cfg.radio.station_buttons) || {}) };
+
+    return `<div class="cfg-card">
+        <h2>Radio Favourites</h2>
+        <div class="hint" style="margin:0 0 12px">
+            Map BeoRemote digit (0–9) and colour buttons to stations.
+            The optional alias is what the API matches by name (e.g. "SR P3").
+            Colour buttons override their global behaviour (GREEN/YELLOW
+            balance, BLUE→Join, RED→HA) only when radio is the active source.
+        </div>
+        <div id="cfg-rf-list"></div>
+    </div>`;
+}
+
+async function loadRadioFavourites() {
+    try {
+        const resp = await fetch(`http://${location.hostname}:8779/favourites`,
+            { signal: AbortSignal.timeout(3000) });
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const data = await resp.json();
+        _radioFavourites = Array.isArray(data.favourites) ? data.favourites : [];
+        // Trust server's bindings if config didn't have them yet.
+        if (!Object.keys(_radioBindings).length && data.station_buttons) {
+            _radioBindings = { ...data.station_buttons };
+        }
+    } catch (e) {
+        _radioFavourites = [];
+    }
+    refreshRadioFavouritesList();
+}
+
+// Render 14 fixed rows — one per remote-control slot (digits 1-9, 0,
+// then RED/GREEN/YELLOW/BLUE). Each row picks a station from a dropdown
+// of current favourites (with "+ Add new…" to open the browse picker),
+// edits the station's short_name alias inline, and tests playback.
+// Bindings live in `_radioBindings` (slotKey → uuid); aliases live on
+// the station record (saved via /favourites/short_name).
+function refreshRadioFavouritesList() {
+    const list = document.getElementById('cfg-rf-list');
+    if (!list) return;
+
+    const stationByUuid = new Map(_radioFavourites.map(f => [f.stationuuid, f]));
+
+    const renderRow = (slot) => {
+        const uuid = _radioBindings[slot.key] || '';
+        const station = uuid ? stationByUuid.get(uuid) : null;
+        const dangling = uuid && !station;
+        const alias = station ? (station.short_name || '') : '';
+
+        const labelClass = slot.color
+            ? `cfg-rf-slot-label cfg-rf-slot-label-${esc(slot.key)}`
+            : `cfg-rf-slot-label`;
+        const aliasAttrs = station
+            ? `data-uuid="${esc(uuid)}"`
+            : `disabled`;
+        const testAttrs = (station || dangling) ? '' : 'disabled';
+
+        const stationLabel = station ? station.name
+            : (dangling ? `(missing — ${uuid.slice(0, 12)})` : '— none —');
+        const stationTextClass = station
+            ? 'cfg-rf-slot-station-text'
+            : 'cfg-rf-slot-station-text cfg-rf-slot-station-text-empty';
+
+        return `<div class="cfg-rf-slot-row">
+            <div class="${labelClass}">${esc(slot.label)}</div>
+            <button type="button" class="cfg-rf-slot-station" data-slot="${esc(slot.key)}">
+                <span class="${stationTextClass}">${esc(stationLabel)}</span>
+                <span class="cfg-rf-slot-station-arrow">▾</span>
+            </button>
+            <input type="text" class="cfg-rf-slot-alias"
+                   ${aliasAttrs}
+                   placeholder="alias…"
+                   value="${esc(alias)}"
+                   maxlength="40">
+            <button type="button" class="cfg-rf-slot-test"
+                    data-slot="${esc(slot.key)}"
+                    title="Test — play this station now"
+                    ${testAttrs}>▶</button>
+        </div>`;
+    };
+
+    list.innerHTML = RADIO_BUTTON_SLOTS.map(renderRow).join('');
+}
+
+// Picker state: stack of {path, name, items} so back-navigation has the
+// full breadcrumb. Top of stack is the currently rendered level.
+let _radioPickerStack = [];
+const _radioPickerCache = {};   // path -> {items, name}
+const RADIO_URL_PREFIX = () => `http://${location.hostname}:8779`;
+
+// slotKey: button slot to bind, or null to just add to favourites without
+// binding (the merged Config UI uses null — bindings are set via the
+// dropdown next to each favourite row).
+async function openRadioPicker(slotKey) {
+    _radioPickerSlot = slotKey || null;
+    _radioPickerStack = [];
+    document.getElementById('cfg-rf-modal').classList.add('active');
+    await navigateRadioPicker('', /*push=*/true);
+}
+
+async function navigateRadioPicker(path, push) {
+    const list = document.getElementById('cfg-rf-modal-list');
+    list.innerHTML = `<div class="cfg-rf-empty-hint" style="padding:24px 16px;text-align:center">Loading…</div>`;
+    let data = _radioPickerCache[path];
+    if (!data) {
+        try {
+            const resp = await fetch(`${RADIO_URL_PREFIX()}/browse?path=${encodeURIComponent(path)}`,
+                { signal: AbortSignal.timeout(8000) });
+            if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+            data = await resp.json();
+            _radioPickerCache[path] = data;
+        } catch (e) {
+            list.innerHTML = `<div class="cfg-rf-empty-hint" style="padding:24px 16px;text-align:center;color:#a44">
+                Could not reach radio service (${esc(e.message)}).
+            </div>`;
+            return;
+        }
+    }
+    if (push) _radioPickerStack.push({ path, name: data.name || 'Radio' });
+    renderRadioPickerLevel(data);
+}
+
+function renderRadioPickerLevel(data) {
+    const slot = RADIO_BUTTON_SLOTS.find(s => s.key === _radioPickerSlot);
+    const titleEl = document.getElementById('cfg-rf-modal-title');
+    const crumb = _radioPickerStack.map(s => s.name).join(' › ');
+    const prefix = slot ? `${slot.label} → ` : 'Add favourite → ';
+    titleEl.textContent = prefix + crumb;
+
+    const list = document.getElementById('cfg-rf-modal-list');
+    const currentUuid = _radioPickerSlot
+        ? (_radioBindings[_radioPickerSlot] || '') : '';
+    const atRoot = _radioPickerStack.length <= 1;
+
+    const back = !atRoot
+        ? `<div class="cfg-rf-modal-clear" data-back="1">
+              <span style="font-size:18px;width:32px;text-align:center">‹</span>
+              <span>Back</span>
+           </div>`
+        : '';
+    // Only show "Clear binding" when we opened the picker for a specific
+    // slot (legacy flow). The merged Config UI clears bindings via the
+    // dropdown next to each favourite row, so no slot, no clear option.
+    const clear = (atRoot && _radioPickerSlot)
+        ? `<div class="cfg-rf-modal-clear" data-uuid="">
+              <span style="font-size:18px;width:32px;text-align:center">×</span>
+              <span>Clear binding</span>
+           </div>`
+        : '';
+    // Custom stream URL — only at the root level. For stations not in
+    // the Radio Browser catalog (corp/private streams, niche feeds).
+    const custom = atRoot
+        ? `<div class="cfg-rf-modal-clear" data-custom="1">
+              <span style="font-size:18px;width:32px;text-align:center">+</span>
+              <span>Custom stream URL…</span>
+           </div>`
+        : '';
+
+    const items = (data.items || []).map(item => {
+        if (item.type === 'category') {
+            const visual = item.image
+                ? `<img src="${esc(item.image)}" alt="">`
+                : `<div style="width:32px;height:32px;border-radius:4px;flex-shrink:0;background:${esc(item.color || '#1a1a1a')};display:flex;align-items:center;justify-content:center;font-size:18px;color:#000">▸</div>`;
+            const sub = item.count ? `${item.count} stations` : '';
+            return `<div class="cfg-rf-modal-item" data-path="${esc(item.path)}">
+                ${visual}
+                <div class="cfg-rf-modal-text">
+                    <div class="cfg-rf-modal-name">${esc(item.name)}</div>
+                    <div class="cfg-rf-modal-sub">${esc(sub)}</div>
+                </div>
+                <span style="color:#444;font-size:18px">›</span>
+            </div>`;
+        }
+        // station
+        const sub = [item.country, item.codec && item.bitrate ? `${item.codec} ${item.bitrate}k` : (item.codec || '')]
+            .filter(Boolean).join(' · ');
+        const sel = item.stationuuid === currentUuid ? ' selected' : '';
+        const favUrl = item.image || (item.favicon
+            ? `${RADIO_URL_PREFIX()}/favicon?url=${encodeURIComponent(item.favicon)}`
+            : '');
+        const fav = favUrl
+            ? `<img src="${esc(favUrl)}" alt="" onerror="this.style.visibility='hidden'">`
+            : `<div style="width:32px;height:32px;background:#1a1a1a;border-radius:4px;flex-shrink:0"></div>`;
+        return `<div class="cfg-rf-modal-item${sel}" data-uuid="${esc(item.stationuuid)}"
+                     data-name="${esc(item.name)}"
+                     data-favicon="${esc(item.favicon || '')}"
+                     data-url="${esc(item.url_resolved || item.url || '')}"
+                     data-country="${esc(item.country || '')}"
+                     data-tags="${esc(item.tags || '')}"
+                     data-codec="${esc(item.codec || '')}"
+                     data-bitrate="${esc(item.bitrate || 0)}">
+            ${fav}
+            <div class="cfg-rf-modal-text">
+                <div class="cfg-rf-modal-name">${esc(item.name)}</div>
+                <div class="cfg-rf-modal-sub">${esc(sub)}</div>
+            </div>
+        </div>`;
+    }).join('');
+
+    list.innerHTML = back + clear + custom + items;
+    list.scrollTop = 0;
+}
+
+// Inline form within the picker modal: name + URL inputs and Add /
+// Cancel buttons. Generates a synthetic stationuuid prefixed with
+// "custom-" so it's distinguishable from Radio Browser uuids and
+// won't collide with future entries.
+function showCustomUrlForm() {
+    const titleEl = document.getElementById('cfg-rf-modal-title');
+    titleEl.textContent = 'Custom stream URL';
+    const list = document.getElementById('cfg-rf-modal-list');
+    list.innerHTML = `
+      <div class="cfg-rf-custom-form">
+        <label>Station name</label>
+        <input type="text" id="cfg-rf-custom-name" placeholder="My Station" maxlength="80">
+        <label>Stream URL</label>
+        <input type="text" id="cfg-rf-custom-url" placeholder="https://example.com/stream.mp3">
+        <div class="cfg-rf-custom-err" id="cfg-rf-custom-err"></div>
+        <div class="cfg-rf-custom-actions">
+          <button type="button" class="btn-subtle" data-custom-cancel="1">Cancel</button>
+          <button type="button" class="btn-subtle" data-custom-add="1">Add favourite</button>
+        </div>
+      </div>`;
+    document.getElementById('cfg-rf-custom-name').focus();
+}
+
+async function submitCustomUrl() {
+    const name = document.getElementById('cfg-rf-custom-name').value.trim();
+    const url = document.getElementById('cfg-rf-custom-url').value.trim();
+    const err = document.getElementById('cfg-rf-custom-err');
+    err.textContent = '';
+    if (!name) { err.textContent = 'Name is required.'; return; }
+    if (!/^https?:\/\//i.test(url)) {
+        err.textContent = 'URL must start with http:// or https://';
+        return;
+    }
+    // Synthetic uuid — namespaced so future migrations can spot custom
+    // entries. Random suffix avoids collisions on rapid entry.
+    const uuid = `custom-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    const station = {
+        stationuuid: uuid, name, url_resolved: url,
+        favicon: '', country: '', tags: 'custom', codec: '', bitrate: 0,
+    };
+    try {
+        const resp = await fetch(`${RADIO_URL_PREFIX()}/command`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ command: 'add_favourite', station }),
+            signal: AbortSignal.timeout(5000),
+        });
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    } catch (e) {
+        err.textContent = `Save failed: ${e.message}`;
+        return;
+    }
+    _radioFavourites.push(station);
+    if (_radioPickerSlot) _radioBindings[_radioPickerSlot] = uuid;
+    refreshRadioFavouritesList();
+    closeRadioPicker();
+}
+
+async function pickRadioStation(itemEl) {
+    const uuid = itemEl.dataset.uuid;
+    if (!uuid && _radioPickerSlot) {        // "Clear binding" (legacy slot flow)
+        delete _radioBindings[_radioPickerSlot];
+        refreshRadioFavouritesList();
+        closeRadioPicker();
+        return;
+    }
+    if (!uuid) { closeRadioPicker(); return; }
+    // Ensure the station is in the favourites list — the radio service
+    // resolves bindings via favourites at runtime. If we picked from a
+    // non-favourites view, persist the station first.
+    const known = _radioFavourites.find(s => s.stationuuid === uuid);
+    if (!known) {
+        const station = {
+            stationuuid: uuid,
+            name: itemEl.dataset.name,
+            url_resolved: itemEl.dataset.url,
+            favicon: itemEl.dataset.favicon,
+            country: itemEl.dataset.country,
+            tags: itemEl.dataset.tags,
+            codec: itemEl.dataset.codec,
+            bitrate: parseInt(itemEl.dataset.bitrate) || 0,
+        };
+        try {
+            await fetch(`${RADIO_URL_PREFIX()}/command`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ command: 'add_favourite', station }),
+                signal: AbortSignal.timeout(5000),
+            });
+        } catch (e) { /* still bind — service will log a warning */ }
+        _radioFavourites.push({
+            stationuuid: uuid,
+            name: station.name,
+            favicon: station.favicon,
+            country: station.country,
+            tags: station.tags,
+            codec: station.codec,
+            bitrate: station.bitrate,
+        });
+    }
+    if (_radioPickerSlot) _radioBindings[_radioPickerSlot] = uuid;
+    refreshRadioFavouritesList();
+    closeRadioPicker();
+}
+
+function closeRadioPicker() {
+    document.getElementById('cfg-rf-modal').classList.remove('active');
+    _radioPickerSlot = null;
+    _radioPickerStack = [];
+}
+
+// ── Radio favourite short_name aliases ──
+//
+// A short alias per station, used by the radio service's play_by_name to
+// match BeoRemote menu labels (e.g. "SR P3") to the longer favourite name
+// ("Sveriges Radio - P3"). Stored in the favourites file alongside each
+// station, NOT in config.json — saves immediately on input change rather
+// than waiting for the global Save button.
+
+const _aliasSaveTimers = new Map();
+function scheduleAliasSave(uuid, value, inputEl) {
+    if (_aliasSaveTimers.has(uuid)) clearTimeout(_aliasSaveTimers.get(uuid));
+    _aliasSaveTimers.set(uuid, setTimeout(async () => {
+        _aliasSaveTimers.delete(uuid);
+        inputEl.classList.remove('saved', 'error');
+        inputEl.classList.add('saving');
+        try {
+            const resp = await fetch(
+                `http://${location.hostname}:8779/favourites/short_name`,
+                {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ stationuuid: uuid, short_name: value }),
+                    signal: AbortSignal.timeout(3000),
+                });
+            inputEl.classList.remove('saving');
+            if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+            // Update in-memory cache so picker labels stay in sync
+            const fav = _radioFavourites.find(s => s.stationuuid === uuid);
+            if (fav) fav.short_name = value;
+            inputEl.classList.add('saved');
+            setTimeout(() => inputEl.classList.remove('saved'), 1200);
+        } catch (e) {
+            inputEl.classList.remove('saving');
+            inputEl.classList.add('error');
+        }
+    }, 600));
+}
+
+function setupRadioFavoritesListeners() {
+    const list = document.getElementById('cfg-rf-list');
+    if (list) {
+        list.addEventListener('input', e => {
+            const inp = e.target.closest('.cfg-rf-slot-alias');
+            if (inp && inp.tagName === 'INPUT' && !inp.disabled) {
+                scheduleAliasSave(inp.dataset.uuid, inp.value.trim(), inp);
+            }
+        });
+        list.addEventListener('click', e => {
+            const stationBtn = e.target.closest('.cfg-rf-slot-station');
+            if (stationBtn) {
+                openStationPicker(stationBtn.dataset.slot, stationBtn);
+                return;
+            }
+            const test = e.target.closest('.cfg-rf-slot-test');
+            if (test && !test.disabled) testPlayBySlot(test.dataset.slot);
+        });
+    }
+    setupStationPickerListeners();
+
+    document.getElementById('cfg-rf-modal-close')?.addEventListener('click', closeRadioPicker);
+    document.getElementById('cfg-rf-modal')?.addEventListener('click', e => {
+        if (e.target.id === 'cfg-rf-modal') closeRadioPicker();
+    });
+    document.getElementById('cfg-rf-modal-list')?.addEventListener('click', e => {
+        if (e.target.closest('[data-custom-cancel]')) {
+            navigateRadioPicker('', /*push=*/false);  // back to root list
+            return;
+        }
+        if (e.target.closest('[data-custom-add]')) {
+            submitCustomUrl();
+            return;
+        }
+        if (e.target.closest('[data-custom]')) {
+            showCustomUrlForm();
+            return;
+        }
+        const back = e.target.closest('[data-back]');
+        if (back) {
+            _radioPickerStack.pop();          // current
+            const prev = _radioPickerStack.pop(); // parent (re-pushed by navigate)
+            navigateRadioPicker(prev ? prev.path : '', /*push=*/true);
+            return;
+        }
+        const cat = e.target.closest('[data-path]');
+        if (cat) {
+            navigateRadioPicker(cat.dataset.path, /*push=*/true);
+            return;
+        }
+        const item = e.target.closest('[data-uuid]');
+        if (item) pickRadioStation(item);
+    });
+}
+
+// ── Searchable station picker (per-slot popup with filter input) ──
+//
+// Anchored under the slot's station button. Lists current favourites
+// filtered by name + short_name substring match. "— none —" unbinds,
+// "+ Add new station…" opens the browse picker (same flow as before).
+
+let _radioStationPickerSlot = null;
+let _radioStationPickerActiveIndex = -1;
+
+function openStationPicker(slotKey, anchorBtn) {
+    _radioStationPickerSlot = slotKey;
+    _radioStationPickerActiveIndex = -1;
+    const popup = document.getElementById('cfg-rf-station-popup');
+    const rect = anchorBtn.getBoundingClientRect();
+    const width = Math.max(rect.width, 280);
+    let left = rect.left + window.scrollX;
+    if (left + width > window.scrollX + document.documentElement.clientWidth - 12) {
+        left = window.scrollX + document.documentElement.clientWidth - 12 - width;
+    }
+    popup.style.left = `${Math.max(left, window.scrollX + 12)}px`;
+    popup.style.top = `${rect.bottom + window.scrollY + 4}px`;
+    popup.style.width = `${width}px`;
+    popup.classList.add('active');
+    const search = document.getElementById('cfg-rf-station-search');
+    search.value = '';
+    renderStationPickerList('');
+    setTimeout(() => search.focus(), 0);
+}
+
+function closeStationPicker() {
+    document.getElementById('cfg-rf-station-popup').classList.remove('active');
+    _radioStationPickerSlot = null;
+    _radioStationPickerActiveIndex = -1;
+}
+
+function renderStationPickerList(query) {
+    const list = document.getElementById('cfg-rf-station-list');
+    if (!list) return;
+    const q = query.toLowerCase().trim();
+    const currentUuid = _radioStationPickerSlot
+        ? (_radioBindings[_radioStationPickerSlot] || '') : '';
+
+    const filtered = q
+        ? _radioFavourites.filter(f =>
+            (f.name || '').toLowerCase().includes(q) ||
+            (f.short_name || '').toLowerCase().includes(q))
+        : _radioFavourites.slice();
+
+    const rows = [];
+    if (!q) {
+        rows.push(`<div class="cfg-rf-station-opt cfg-rf-station-opt-special" data-uuid="">
+            — none —
+        </div>`);
+    }
+    if (filtered.length === 0 && q) {
+        rows.push(`<div class="cfg-rf-station-empty">No favourites match "${esc(query)}"</div>`);
+    } else {
+        for (const f of filtered) {
+            const sel = f.stationuuid === currentUuid ? ' active' : '';
+            rows.push(`<div class="cfg-rf-station-opt${sel}" data-uuid="${esc(f.stationuuid)}">
+                <span class="cfg-rf-station-opt-name">${esc(f.name)}</span>
+                ${f.short_name ? `<span class="cfg-rf-station-opt-alias">${esc(f.short_name)}</span>` : ''}
+            </div>`);
+        }
+    }
+    rows.push(`<div class="cfg-rf-station-opt cfg-rf-station-opt-add" data-uuid="__ADD__">
+        + Add new station…
+    </div>`);
+    list.innerHTML = rows.join('');
+}
+
+function pickStationForSlot(uuid) {
+    const slot = _radioStationPickerSlot;
+    closeStationPicker();
+    if (!slot) return;
+    if (uuid === '__ADD__') {
+        openRadioPicker(slot);
+        return;
+    }
+    onSlotStationChange(slot, uuid);
+}
+
+function setupStationPickerListeners() {
+    const search = document.getElementById('cfg-rf-station-search');
+    const list = document.getElementById('cfg-rf-station-list');
+    if (!search || !list) return;
+
+    search.addEventListener('input', () => renderStationPickerList(search.value));
+    search.addEventListener('keydown', e => {
+        if (e.key === 'Escape') { closeStationPicker(); return; }
+        if (e.key === 'Enter') {
+            // Pick first non-special row matching the query
+            const first = list.querySelector('.cfg-rf-station-opt:not(.cfg-rf-station-opt-special):not(.cfg-rf-station-opt-add)');
+            if (first) pickStationForSlot(first.dataset.uuid);
+            e.preventDefault();
+        }
+    });
+    list.addEventListener('click', e => {
+        const opt = e.target.closest('.cfg-rf-station-opt');
+        if (opt) pickStationForSlot(opt.dataset.uuid);
+    });
+    // Close on outside click
+    document.addEventListener('mousedown', e => {
+        const popup = document.getElementById('cfg-rf-station-popup');
+        if (!popup.classList.contains('active')) return;
+        if (popup.contains(e.target)) return;
+        if (e.target.closest('.cfg-rf-slot-station')) return;  // anchor handles toggle
+        closeStationPicker();
+    });
+}
+
+// Test-play the station bound to a slot. Always plays directly by uuid
+// (play_station) rather than via digit/play_button — that path depends
+// on the binding existing in the radio service's loaded config.json,
+// which only happens after Save & Restart. play_station works against
+// the in-memory dropdown choice immediately.
+async function testPlayBySlot(slotKey) {
+    const uuid = _radioBindings[slotKey];
+    if (!uuid) return;
+    const btn = document.querySelector(
+        `.cfg-rf-slot-test[data-slot="${CSS.escape(slotKey)}"]`);
+    if (!btn) return;
+    btn.classList.remove('error', 'playing');
+    btn.disabled = true;
+    try {
+        const resp = await fetch(`${RADIO_URL_PREFIX()}/command`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ command: 'play_station', stationuuid: uuid }),
+            signal: AbortSignal.timeout(15000),
+        });
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const data = await resp.json().catch(() => ({}));
+        if (data.status && data.status !== 'ok') throw new Error(data.message || 'failed');
+        btn.classList.add('playing');
+        setTimeout(() => btn.classList.remove('playing'), 2000);
+    } catch (e) {
+        btn.classList.add('error');
+        setTimeout(() => btn.classList.remove('error'), 2000);
+    } finally {
+        btn.disabled = false;
+    }
+}
+
+// Slot dropdown changed: bind/unbind. Each station can only sit in one
+// slot — reassigning a station to a new slot clears its previous slot.
+function onSlotStationChange(slotKey, uuid) {
+    if (!uuid) {
+        delete _radioBindings[slotKey];
+    } else {
+        for (const [k, v] of Object.entries(_radioBindings)) {
+            if (v === uuid && k !== slotKey) delete _radioBindings[k];
+        }
+        _radioBindings[slotKey] = uuid;
+    }
+    refreshRadioFavouritesList();
+}
+
 function setupListeners() {
     document.getElementById('cfg-ha-url')?.addEventListener('input', e => {
         const link = document.getElementById('cfg-ha-token-link');
@@ -613,6 +1438,11 @@ function setupListeners() {
         const show = ['mqtt','both'].includes(e.target.value);
         document.getElementById('cfg-mqtt-cond').classList.toggle('show', show);
     });
+    document.getElementById('cfg-ml-role')?.addEventListener('change', e => {
+        const r = e.target.value;
+        document.getElementById('cfg-ml-provider-cond')?.classList.toggle('show', r === 'provider');
+        document.getElementById('cfg-ml-link-cond')?.classList.toggle('show', r === 'link');
+    });
     document.querySelectorAll('.cfg-src-toggle').forEach(toggle => {
         const kn = toggle.dataset.key.replace(/ /g,'_').toLowerCase();
         const body = document.getElementById(`cfg-src-${kn}-body`);
@@ -622,6 +1452,7 @@ function setupListeners() {
         if (e.target.classList.contains('cfg-ir-select')) updateIrDropdowns();
     });
     document.getElementById('cfg-save')?.addEventListener('click', saveConfig);
+    setupRadioFavoritesListeners();
 }
 
 // ── Tone controls (bass / treble / balance / loudness) ──────────────
@@ -1001,6 +1832,35 @@ function buildConfig() {
     collectSecretField('cfg-mlgw-user', 'mlgw_user', _secrets);
     collectSecretField('cfg-mlgw-password', 'mlgw_password', _secrets);
     collectSecretField('cfg-mlgw-entity-map', 'mlgw_entity_to_mln', _secrets);
+
+    const role = document.getElementById('cfg-ml-role')?.value || 'master';
+    cfg.masterlink = cfg.masterlink || {};
+    cfg.masterlink.role = role;
+    cfg.masterlink.ir = {
+        audio: !!document.getElementById('cfg-ml-ir-audio')?.checked,
+        video: !!document.getElementById('cfg-ml-ir-video')?.checked,
+    };
+    cfg.masterlink.provider = {
+        nmusic_source: document.getElementById('cfg-ml-nmusic')?.value || '',
+        nradio_source: document.getElementById('cfg-ml-nradio')?.value || '',
+    };
+    cfg.masterlink.link = {
+        sources: Array.from(document.querySelectorAll('.cfg-ml-link-src:checked'))
+                      .map(el => el.value),
+    };
+
+    // Radio button bindings — only persist non-empty entries.
+    const radioButtons = {};
+    for (const [k, v] of Object.entries(_radioBindings || {})) {
+        if (v) radioButtons[k] = v;
+    }
+    if (Object.keys(radioButtons).length) {
+        cfg.radio = cfg.radio || {};
+        cfg.radio.station_buttons = radioButtons;
+    } else if (cfg.radio) {
+        delete cfg.radio.station_buttons;
+        if (!Object.keys(cfg.radio).length) delete cfg.radio;
+    }
     if (Object.keys(_secrets).length) cfg._secrets = _secrets;
     return cfg;
 }

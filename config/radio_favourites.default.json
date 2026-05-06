@@ -2,6 +2,7 @@
   {
     "stationuuid": "960c660b-0601-11e8-ae97-52543be04c81",
     "name": "Sveriges Radio - P1",
+    "short_name": "SR P1",
     "url_resolved": "https://live1.sr.se/p1-aac-320",
     "favicon": "https://sverigesradio.se/dist/images/apple-touch-icon-default.png",
     "country": "Sweden",
@@ -13,6 +14,7 @@
   {
     "stationuuid": "960c62c1-0601-11e8-ae97-52543be04c81",
     "name": "Sveriges Radio - P2",
+    "short_name": "SR P2",
     "url_resolved": "https://live1.sr.se/p2-aac-320",
     "favicon": "https://sverigesradio.se/dist/images/apple-touch-icon-default.png",
     "country": "Sweden",
@@ -24,6 +26,7 @@
   {
     "stationuuid": "960c4e01-0601-11e8-ae97-52543be04c81",
     "name": "Sveriges Radio - P3",
+    "short_name": "SR P3",
     "url_resolved": "https://live1.sr.se/p3-aac-320",
     "favicon": "https://sverigesradio.se/dist/images/apple-touch-icon-default.png",
     "country": "Sweden",
@@ -35,6 +38,7 @@
   {
     "stationuuid": "962c1da9-0601-11e8-ae97-52543be04c81",
     "name": "Sveriges Radio - P4 Plus",
+    "short_name": "SR P4",
     "url_resolved": "https://live1.sr.se/p4plus-aac-320",
     "favicon": "https://sverigesradio.se/dist/images/apple-touch-icon-default.png",
     "country": "Sweden",
@@ -42,6 +46,42 @@
     "codec": "AAC",
     "bitrate": 320,
     "votes": 500
+  },
+  {
+    "stationuuid": "96342772-0601-11e8-ae97-52543be04c81",
+    "name": "Mix Megapol",
+    "short_name": "Mix Megapol",
+    "url_resolved": "http://tx-bauerse.sharp-stream.com/http_live.php?ua=WEB&i=mixmegapol_instream_se_mp3",
+    "favicon": "https://assets.planetradio.co.uk/img/ConfigWebListenBarLogoImageUrl/451.jpg",
+    "country": "Sweden",
+    "tags": "pop,sweden",
+    "codec": "MP3",
+    "bitrate": 128,
+    "votes": 0
+  },
+  {
+    "stationuuid": "962aa032-0601-11e8-ae97-52543be04c81",
+    "name": "SomaFM Groove Salad",
+    "short_name": "Lofi",
+    "url_resolved": "https://ice5.somafm.com/groovesalad-128-aac",
+    "favicon": "https://somafm.com/img3/groovesalad-400.png",
+    "country": "United States Of America",
+    "tags": "groove,chillout,electronica,downtempo,ambient,jazz",
+    "codec": "AAC",
+    "bitrate": 128,
+    "votes": 0
+  },
+  {
+    "stationuuid": "9614eb15-0601-11e8-ae97-52543be04c81",
+    "name": "SomaFM Mission Control",
+    "short_name": "Space",
+    "url_resolved": "https://ice4.somafm.com/missioncontrol-128-mp3",
+    "favicon": "https://somafm.com/img3/missioncontrol-400.jpg",
+    "country": "United States Of America",
+    "tags": "ambient,experimental,sounds,space program",
+    "codec": "MP3",
+    "bitrate": 128,
+    "votes": 0
   },
   {
     "stationuuid": "9617a958-0601-11e8-ae97-52543be04c81",

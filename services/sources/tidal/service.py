@@ -115,6 +115,12 @@ class TidalService(DigitPlaylistMixin, SourceBase):
             self._load_playlists()
             self._detect_player()
 
+            if self.player == "local":
+                log.warning(
+                    "TIDAL is configured but the local player cannot decrypt "
+                    "TIDAL streams. Playback will fail. Use a Sonos (ShareLink) "
+                    "or BlueSound player to play TIDAL.")
+
             caps = await self.player_capabilities()
             if caps:
                 # "spotify" capability = ShareLink support (Sonos).

@@ -382,6 +382,8 @@ class ArcList {
                 this.handleKeyboardFromParent(event.data);
             } else if (event.data && event.data.type === 'reload-data') {
                 this.reloadData();
+            } else if (event.data && event.data.type === 'browse-context') {
+                this.handleBrowseContextFromParent?.(event.data.context || null);
             }
         };
         window.addEventListener('message', this._messageHandler);
@@ -931,9 +933,11 @@ class ArcList {
     destroy() {
         if (this.animationFrame) {
             cancelAnimationFrame(this.animationFrame);
+            this.animationFrame = null;
         }
         if (this.snapTimer) {
             clearTimeout(this.snapTimer);
+            this.snapTimer = null;
         }
         if (this._saveInterval) {
             clearInterval(this._saveInterval);
@@ -947,6 +951,32 @@ class ArcList {
             this.ws.close();
             this.ws = null;
         }
+    }
+
+    revive() {
+        if (!this.animationFrame) {
+            this.startAnimation();
+        }
+        if (!this._saveInterval) {
+            this._saveInterval = setInterval(() => this.saveState(), 1000);
+        }
+        if (!this._messageHandler) {
+            this._messageHandler = (event) => {
+                if (event.data && event.data.type === 'button') {
+                    this.handleButtonFromParent(event.data.button);
+                } else if (event.data && event.data.type === 'nav') {
+                    this.handleNavFromParent(event.data.data);
+                } else if (event.data && event.data.type === 'keyboard') {
+                    this.handleKeyboardFromParent(event.data);
+                } else if (event.data && event.data.type === 'reload-data') {
+                    this.reloadData();
+                } else if (event.data && event.data.type === 'browse-context') {
+                    this.handleBrowseContextFromParent?.(event.data.context || null);
+                }
+            };
+            window.addEventListener('message', this._messageHandler);
+        }
+        this.render();
     }
     
     /**

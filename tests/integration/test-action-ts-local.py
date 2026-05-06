@@ -183,11 +183,23 @@ def main():
         else:
             skip("03. CD disc insert", "need cd")
 
-        if has_plex:
+        # Cross-player-type test requires plex AND a remote-capable
+        # player config. On a device that runs only local mpv, plex
+        # plays through local mpv too, so the local→remote switch
+        # this test asserts is impossible.
+        try:
+            player_type = get("http://localhost:8766/player/status",
+                              timeout=2).get("type", "local")
+        except Exception:
+            player_type = "local"
+        if has_plex and player_type != "local":
             test("04. Cross-player-type switch (local -> remote)",
                  lambda: test_04_cross_player_type(sources))
-        else:
+        elif not has_plex:
             skip("04. Cross-player-type switch", "need plex")
+        else:
+            skip("04. Cross-player-type switch",
+                 f"player.type={player_type} — all sources are local")
 
         test("05. Radio metadata dropped after switch to USB",
              lambda: test_05_radio_metadata_after_switch(sources))

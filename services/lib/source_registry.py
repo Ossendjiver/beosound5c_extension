@@ -28,7 +28,7 @@ DEFAULT_SOURCE_HANDLES = {
             "up", "down"},
     "news": {"go", "left", "right", "up", "down"},
     "radio": {"play", "pause", "next", "prev", "stop", "go", "left", "right",
-              "up", "down", "red", "blue"} | _DIGITS,
+              "up", "down"} | _DIGITS,
 }
 
 # Known source ports — used on startup to probe running sources
@@ -121,6 +121,15 @@ class SourceRegistry:
         self._sources: dict[str, Source] = {}
         self._active_id: str | None = None
         self._persisted_active_id: str | None = self._load_persisted_active()
+        # Sticky "last source that was active in this process".  Unlike
+        # _active_id, never clears on deactivate — used by the router's
+        # GO fallback so PLAY-on-an-idle-system resumes the last thing
+        # the user was listening to instead of jumping to the configured
+        # default.  Seeded at startup from the persisted active-source
+        # file (so a clean restart while something was playing keeps the
+        # resume target); a clean restart while idle leaves it None and
+        # the router falls through to the default-source path.
+        self._last_active_id: str | None = self._persisted_active_id
         self._resync_in_progress: bool = False
 
     # ── Persistence ──
@@ -160,6 +169,12 @@ class SourceRegistry:
     @property
     def active_id(self) -> str | None:
         return self._active_id
+
+    @property
+    def last_active_id(self) -> str | None:
+        """Most-recently-active source id, including the persisted value
+        from before this process started.  Stays set after deactivate."""
+        return self._last_active_id
 
     def get(self, id: str) -> Source | None:
         return self._sources.get(id)
@@ -201,7 +216,10 @@ class SourceRegistry:
                 setattr(source, key, fields[key])
         if "manages_queue" in fields:
             source.manages_queue = fields["manages_queue"]
-        if "handles" in fields and not source.handles:
+        if "handles" in fields:
+            # Always honour the source's freshly-registered handles —
+            # they reflect the current action_map (e.g. radio's
+            # config-driven color-button bindings).
             source.handles = set(fields["handles"])
 
         old_state = source.state
@@ -261,6 +279,7 @@ class SourceRegistry:
                         logger.warning("Timeout stopping old source %s — proceeding",
                                        old_source.id)
                 self._active_id = id
+                self._last_active_id = id
                 self._persist_active()
                 await router.media.broadcast("source_change", {
                     "active_source": id, "source_name": source.name,
@@ -287,6 +306,7 @@ class SourceRegistry:
                 current = self._sources.get(self._active_id) if self._active_id else None
                 if not current or current.state not in ("playing", "paused"):
                     self._active_id = id
+                    self._last_active_id = id
                     self._persist_active()
                     await router.media.broadcast("source_change", {
                         "active_source": id, "source_name": source.name,
@@ -379,6 +399,7 @@ class SourceRegistry:
         if self._active_id == persisted_id:
             return True
         self._active_id = persisted_id
+        self._last_active_id = persisted_id
         self._persist_active()
         await router.media.broadcast("source_change", {
             "active_source": persisted_id,

@@ -67,14 +67,21 @@ else
 fi
 
 # ── Test 3: GET /router/ws connects and receives cached state ──
+# Router replays multiple messages on connect (source_change if active,
+# volume_update always, media_update if cached). Loop until we see the
+# media_update or time out.
 echo "Test 3: WebSocket connect receives cached media state"
-WS_MSG=$(run_on 'timeout 3 python3 -c "
+WS_MSG=$(run_on 'timeout 5 python3 -c "
 import asyncio, websockets, json
 async def test():
     async with websockets.connect(\"ws://localhost:8770/router/ws\") as ws:
-        msg = await asyncio.wait_for(ws.recv(), timeout=2)
-        data = json.loads(msg)
-        print(json.dumps({\"type\": data.get(\"type\",\"\"), \"reason\": data.get(\"reason\",\"\"), \"title\": data.get(\"data\",{}).get(\"title\",\"\")}))
+        for _ in range(8):
+            msg = await asyncio.wait_for(ws.recv(), timeout=2)
+            data = json.loads(msg)
+            if data.get(\"type\") == \"media_update\":
+                print(json.dumps({\"type\": data[\"type\"], \"reason\": data.get(\"reason\",\"\"), \"title\": data.get(\"data\",{}).get(\"title\",\"\")}))
+                return
+        print(json.dumps({\"type\":\"\",\"reason\":\"\",\"title\":\"\"}))
 asyncio.run(test())
 "' || echo '{}')
 WS_TYPE=$(echo "$WS_MSG" | python3 -c "import sys,json;print(json.load(sys.stdin).get('type',''))" 2>/dev/null || echo "")
@@ -96,14 +103,15 @@ fi
 
 # ── Test 5: WS push — POST media and verify WS client receives it ──
 echo "Test 5: POST media pushes to connected WS clients"
-PUSH_RESULT=$(run_on 'timeout 5 python3 -c "
+PUSH_RESULT=$(run_on 'timeout 6 python3 -c "
 import asyncio, websockets, json, aiohttp
 async def test():
     async with websockets.connect(\"ws://localhost:8770/router/ws\") as ws:
-        # Consume the cached state first
+        # Drain replay messages (source_change/volume_update/media_update)
         try:
-            await asyncio.wait_for(ws.recv(), timeout=1)
-        except:
+            while True:
+                await asyncio.wait_for(ws.recv(), timeout=0.5)
+        except asyncio.TimeoutError:
             pass
         # Now POST new media
         async with aiohttp.ClientSession() as s:
@@ -111,10 +119,14 @@ async def test():
                 \"title\": \"Push Test\", \"artist\": \"Push Artist\", \"album\": \"Push Album\",
                 \"artwork\": \"\", \"state\": \"playing\", \"_reason\": \"push_test\"
             })
-        # Should receive the push
-        msg = await asyncio.wait_for(ws.recv(), timeout=2)
-        data = json.loads(msg)
-        print(data.get(\"data\",{}).get(\"title\",\"\"))
+        # Wait for the matching media_update push
+        for _ in range(8):
+            msg = await asyncio.wait_for(ws.recv(), timeout=2)
+            data = json.loads(msg)
+            if data.get(\"type\") == \"media_update\":
+                print(data.get(\"data\",{}).get(\"title\",\"\"))
+                return
+        print(\"\")
 asyncio.run(test())
 "' || echo "")
 if [ "$PUSH_RESULT" = "Push Test" ]; then
@@ -123,23 +135,28 @@ else
     test_result "WS push received with correct title" "false" "title=$PUSH_RESULT"
 fi
 
-# ── Test 6: Suppression — register local source, POST media → suppressed ──
-echo "Test 6: Media suppressed when local source is active"
-# Register a fake local source as playing
+# ── Test 6: Inactive-source media is dropped ──
+# The router rejects media tagged with a _source_id that isn't the
+# currently active source. Player-originated media (_source_id absent)
+# is always accepted — the player owns metadata once external playback
+# starts. So we test the inactive-source case explicitly.
+echo "Test 6: Media tagged with non-active _source_id is dropped"
+# Register a fake local source as playing — it becomes the active source
 run_on "curl -s -X POST $ROUTER/router/source \
   -H 'Content-Type: application/json' \
   -d '{\"id\":\"test_local\",\"state\":\"playing\",\"name\":\"Test Local\",\"command_url\":\"http://localhost:9999/cmd\",\"player\":\"local\",\"handles\":[\"play\",\"pause\"]}'" > /dev/null
 SUPP_RESP=$(run_on "curl -s -X POST $ROUTER/router/media \
   -H 'Content-Type: application/json' \
-  -d '{\"title\":\"Should Suppress\",\"artist\":\"X\",\"_reason\":\"test\"}'")
-SUPP_STATUS=$(echo "$SUPP_RESP" | python3 -c "import sys,json;print(json.load(sys.stdin).get('status',''))" 2>/dev/null || echo "")
-if [ "$SUPP_STATUS" = "suppressed" ]; then
-    test_result "POST returns suppressed with local source" "true" ""
+  -d '{\"title\":\"Should Drop\",\"artist\":\"X\",\"_reason\":\"test\",\"_source_id\":\"some_other_source\"}'")
+SUPP_DROPPED=$(echo "$SUPP_RESP" | python3 -c "import sys,json;print(json.load(sys.stdin).get('dropped',''))" 2>/dev/null || echo "")
+SUPP_REASON=$(echo "$SUPP_RESP" | python3 -c "import sys,json;print(json.load(sys.stdin).get('reason',''))" 2>/dev/null || echo "")
+if [ "$SUPP_DROPPED" = "True" ] && [ "$SUPP_REASON" = "inactive_source" ]; then
+    test_result "POST with non-active _source_id is dropped" "true" ""
 else
-    test_result "POST returns suppressed with local source" "false" "status=$SUPP_STATUS"
+    test_result "POST with non-active _source_id is dropped" "false" "dropped=$SUPP_DROPPED reason=$SUPP_REASON"
 fi
 
-# ── Test 7: Un-suppress — deactivate local source, POST media → ok ──
+# ── Test 7: After local source deactivates, POST without _source_id is accepted ──
 echo "Test 7: Media flows after local source deactivated"
 run_on "curl -s -X POST $ROUTER/router/source \
   -H 'Content-Type: application/json' \
@@ -167,13 +184,18 @@ fi
 # ── Test 9: Frontend has no src="" in DOM (broken image fix) ──
 echo "Test 9: No src=\"\" in playing view DOM"
 CDP_TARGETS=$(run_on "curl -s http://localhost:9222/json" 2>/dev/null || echo "[]")
+# Find the main UI page — it loads softarc/index.html (or root /). Skip
+# config/system pages which don't carry the media WS. Fall back to the
+# first page target if nothing better matches.
 MAIN_WS_URL=$(echo "$CDP_TARGETS" | python3 -c "
 import sys, json
-targets = json.load(sys.stdin)
-for t in targets:
-    if t.get('type') == 'page' and ':8000' in t.get('url',''):
-        print(t['webSocketDebuggerUrl'])
-        break
+targets = [t for t in json.load(sys.stdin) if t.get('type') == 'page']
+def is_main(t):
+    u = t.get('url','')
+    return ('localhost/' in u or 'localhost:' in u) and not (
+        'config.html' in u or 'system.html' in u or '/devtools/' in u)
+main = next((t for t in targets if is_main(t)), None) or (targets[0] if targets else None)
+if main: print(main['webSocketDebuggerUrl'])
 " 2>/dev/null || echo "")
 
 if [ -n "$MAIN_WS_URL" ]; then

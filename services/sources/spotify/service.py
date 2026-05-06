@@ -25,7 +25,7 @@ from aiohttp import web
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 # Sibling imports (this directory)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from spotify_auth import SpotifyAuth, RemoteSpotifyAuth
+from spotify_auth import SpotifyAuth, RemoteSpotifyAuth, missing_scopes
 from spotify_tokens import load_tokens, save_tokens, delete_tokens
 from pkce import (
     generate_code_verifier,
@@ -1159,9 +1159,19 @@ label{{display:block;margin-top:12px;color:#666;font-size:13px;text-transform:up
             if not rt:
                 return web.Response(text='No refresh token received', status=500)
 
+            granted_scope = token_data.get('scope')
+            if granted_scope:
+                log.info("OAuth: Spotify granted scopes: %s", granted_scope)
+                missing = missing_scopes(granted_scope, SPOTIFY_SCOPES)
+                if missing:
+                    log.warning("OAuth: user did not grant %s — some "
+                                "features will be unavailable until re-auth",
+                                missing)
+
             # Save tokens — try file first, fall back to in-memory only
             try:
-                await loop.run_in_executor(None, save_tokens, client_id, rt)
+                await loop.run_in_executor(
+                    None, save_tokens, client_id, rt, granted_scope)
                 log.info("OAuth: tokens saved to disk")
             except Exception as e:
                 log.warning("OAuth: could not save tokens to disk (%s) — using in-memory", e)
@@ -1170,7 +1180,8 @@ label{{display:block;margin-top:12px;color:#666;font-size:13px;text-transform:up
             self.auth.set_credentials(
                 client_id, rt,
                 access_token=token_data.get('access_token'),
-                expires_in=token_data.get('expires_in', 3600))
+                expires_in=token_data.get('expires_in', 3600),
+                scope=granted_scope)
             self._detect_player()
 
             # Register as available now that we have credentials
