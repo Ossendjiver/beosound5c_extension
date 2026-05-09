@@ -160,3 +160,83 @@ async def test_handle_appletv_command_forwards_transport_to_home_assistant(monke
         "command": "toggle",
         "service": "media_play_pause",
     }
+
+
+def test_showing_relay_takes_over_when_router_is_idle(monkeypatch):
+    input_mod = _load_input_module(monkeypatch)
+
+    showing_media = {
+        "entity_id": "media_player.beosound_global_showing",
+        "title": "The Walk",
+        "artist": "Christine & the Queens",
+        "album": "BeoSound Global Showing",
+        "app_name": "Plex",
+        "friendly_name": "BeoSound Global Showing",
+        "artwork": "http://ha.local/art.jpg",
+        "state": "playing",
+    }
+
+    action, payload = input_mod._decide_showing_relay_action(
+        None,
+        {"state": "idle", "title": "", "artist": "", "album": ""},
+        showing_media,
+    )
+
+    assert action == "takeover_idle_router"
+    assert payload["relay_id"] == "showing"
+    assert payload["title"] == "The Walk"
+    assert payload["artwork"] == "http://ha.local/art.jpg"
+    assert payload["state"] == "playing"
+
+
+def test_showing_relay_yields_to_existing_nonrelay_media(monkeypatch):
+    input_mod = _load_input_module(monkeypatch)
+
+    action, payload = input_mod._decide_showing_relay_action(
+        None,
+        {
+            "state": "playing",
+            "title": "Local Track",
+            "artist": "MASS",
+            "album": "Library",
+            "relay_id": "",
+        },
+        {
+            "title": "TV Show",
+            "artist": "Apple TV",
+            "album": "Cinema",
+            "artwork": "http://ha.local/show.jpg",
+            "state": "playing",
+        },
+    )
+
+    assert action == "blocked_existing_media"
+    assert payload is None
+
+
+def test_showing_relay_clears_stale_relay_when_showing_stops(monkeypatch):
+    input_mod = _load_input_module(monkeypatch)
+
+    action, payload = input_mod._decide_showing_relay_action(
+        None,
+        {
+            "relay_id": "showing",
+            "state": "paused",
+            "title": "TV Show",
+            "artist": "Apple TV",
+            "album": "Cinema",
+            "artwork": "http://ha.local/show.jpg",
+        },
+        {
+            "state": "idle",
+            "title": "",
+            "artist": "",
+            "album": "",
+            "artwork": "",
+        },
+    )
+
+    assert action == "clear_relay"
+    assert payload["relay_id"] == "showing"
+    assert payload["state"] == "idle"
+    assert payload["title"] == ""

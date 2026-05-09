@@ -30,6 +30,7 @@ function crossfadeText(el, newText) {
 window.crossfadeText = crossfadeText;
 
 const SHARED_MEDIA_STYLE_ID = 'bs5c-shared-media-style';
+const SHOWING_INPUT_URL = 'http://localhost:8767';
 
 function isPausedPlaybackState(state) {
     return String(state || '').trim().toLowerCase() === 'paused';
@@ -162,6 +163,7 @@ class MediaManager {
             artwork: '',
             canvas_url: '',
             track_id: '',
+            relay_id: '',
             state: 'idle'
         };
 
@@ -244,6 +246,7 @@ class MediaManager {
             canvas_url: keepCanvas ? (this.mediaInfo.canvas_url || '') : (data.canvas_url || ''),
             music_video_url: keepMusicVideo ? (this.mediaInfo.music_video_url || '') : (data.music_video_url || ''),
             track_id: keepTrackId ? (this.mediaInfo.track_id || '') : (data.track_id || ''),
+            relay_id: data.relay_id || '',
             source_id: sourceId,
             state: data.state || 'unknown',
             position: data.position || '0:00',
@@ -267,6 +270,61 @@ class MediaManager {
             this.activePlayingPreset === DEFAULT_PLAYING_PRESET
                 && isPausedPlaybackState(this.mediaInfo.state)
         );
+    }
+
+    shouldUseShowingAsPlaying() {
+        const state = String(this.mediaInfo?.state || '').trim().toLowerCase();
+        return !this.activeSource
+            && this.mediaInfo?.relay_id === 'showing'
+            && !!state
+            && !['idle', 'unknown', 'off', 'standby', 'unavailable'].includes(state);
+    }
+
+    _hasShowingTransportTarget() {
+        if (this.shouldUseShowingAsPlaying()) return true;
+        const state = String(this.appleTVMediaInfo?.state || '').trim().toLowerCase();
+        return !!state && !['error', 'unknown', 'unavailable'].includes(state);
+    }
+
+    async sendShowingTransport(command) {
+        try {
+            const response = await fetch(`${SHOWING_INPUT_URL}/appletv/command`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ command }),
+            });
+            if (!response.ok) {
+                console.warn('[SHOWING UI] Transport command failed:', command, response.status);
+                return false;
+            }
+            return true;
+        } catch (error) {
+            console.warn('[SHOWING UI] Transport command error:', command, error);
+            return false;
+        }
+    }
+
+    handleShowingButton(button) {
+        const normalized = String(button || '').toLowerCase();
+        if (!this._hasShowingTransportTarget()) return false;
+
+        if (normalized === 'left') {
+            void this.sendShowingTransport('previous');
+            return true;
+        }
+        if (normalized === 'right') {
+            void this.sendShowingTransport('next');
+            return true;
+        }
+        if (normalized === 'go_long' || normalized === 'go_hold') {
+            void this.sendShowingTransport('stop');
+            return true;
+        }
+        if (normalized === 'go') {
+            void this.sendShowingTransport('toggle');
+            return true;
+        }
+        return false;
     }
 
     /**

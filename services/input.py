@@ -12,8 +12,10 @@ from lib.config import cfg
 from lib.correlation import install_logging
 from lib.endpoints import (
     ROUTER_BROADCAST,
+    ROUTER_MEDIA,
     ROUTER_OUTPUT_OFF,
     ROUTER_RESYNC,
+    router_url,
 )
 from lib.loop_monitor import LoopMonitor
 from lib.watchdog import watchdog_loop
@@ -37,6 +39,12 @@ transport = Transport()
 BS5C_BASE_PATH = os.getenv('BS5C_BASE_PATH', os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 ROUTER_BROADCAST_URL = ROUTER_BROADCAST
+ROUTER_MEDIA_URL = ROUTER_MEDIA
+ROUTER_STATUS_URL = router_url('/status')
+
+SHOWING_RELAY_ID = 'showing'
+SHOWING_RELAY_ACTIVE_STATES = {'playing', 'paused', 'buffering'}
+SHOWING_RELAY_IDLE_STATES = {'', 'idle', 'unknown', 'off', 'standby', 'unavailable'}
 
 # ——— Update management ———
 
@@ -1515,6 +1523,262 @@ def _showing_command_service(command: str) -> str | None:
     }.get(normalized)
 
 
+def _showing_error_payload(entity_id: str, *, error: str, state: str) -> dict:
+    return {
+        'error': error,
+        'entity_id': entity_id,
+        'title': '—',
+        'artist': '—',
+        'album': '—',
+        'app_name': '—',
+        'friendly_name': '—',
+        'artwork': '',
+        'state': state,
+        'supported_features': 0,
+    }
+
+
+async def _fetch_showing_media_payload() -> tuple[dict | None, int, str | None]:
+    ha_url = cfg("home_assistant", "url", default="http://homeassistant.local:8123")
+    entity_id = cfg("showing", "entity_id")
+    if not entity_id:
+        return None, 400, 'showing.entity_id not configured'
+
+    session = await get_http_session()
+    headers = _showing_ha_headers()
+    async with session.get(f'{ha_url}/api/states/{entity_id}', headers=headers) as resp:
+        if resp.status != 200:
+            return None, resp.status, 'Failed to fetch'
+        data = await resp.json()
+        return _showing_payload(data, ha_url, entity_id), 200, None
+
+
+def _showing_relay_enabled() -> bool:
+    return bool(cfg("showing", "relay_to_playing", default=True))
+
+
+def _showing_relay_interval_seconds() -> float:
+    try:
+        return max(1.0, float(cfg("showing", "relay_interval", default=5)))
+    except (TypeError, ValueError):
+        return 5.0
+
+
+def _showing_relay_normalize_state(state) -> str:
+    return str(state or '').strip().lower()
+
+
+def _showing_relay_owns_router_media(router_media: dict | None) -> bool:
+    return str((router_media or {}).get('relay_id') or '').strip().lower() == SHOWING_RELAY_ID
+
+
+def _showing_relay_router_is_idle(router_media: dict | None) -> bool:
+    if not router_media:
+        return True
+    state = _showing_relay_normalize_state((router_media or {}).get('state'))
+    has_content = any(
+        str((router_media or {}).get(key) or '').strip()
+        for key in ('title', 'artist', 'album', 'artwork', 'canvas_url', 'music_video_url')
+    )
+    return not has_content and state in SHOWING_RELAY_IDLE_STATES
+
+
+def _showing_relay_media_is_active(showing_media: dict | None) -> bool:
+    return _showing_relay_normalize_state((showing_media or {}).get('state')) in SHOWING_RELAY_ACTIVE_STATES
+
+
+def _showing_relay_signature(media: dict | None) -> tuple[str, ...]:
+    media = media or {}
+    keys = (
+        'relay_id', 'state', 'title', 'artist', 'album', 'artwork',
+        'back_artwork', 'canvas_url', 'music_video_url', 'track_id',
+    )
+    return tuple(str(media.get(key) or '') for key in keys)
+
+
+def _showing_router_media_payload(showing_media: dict | None) -> dict:
+    if not _showing_relay_media_is_active(showing_media):
+        return {
+            'relay_id': SHOWING_RELAY_ID,
+            'title': '',
+            'artist': '',
+            'album': '',
+            'artwork': '',
+            'back_artwork': '',
+            'canvas_url': '',
+            'music_video_url': '',
+            'track_id': '',
+            'state': 'idle',
+            'position': '0:00',
+            'duration': '0:00',
+            'app_name': '',
+            'friendly_name': '',
+            'entity_id': '',
+        }
+
+    return {
+        'relay_id': SHOWING_RELAY_ID,
+        'title': showing_media.get('title') or '—',
+        'artist': showing_media.get('artist') or showing_media.get('app_name') or '—',
+        'album': showing_media.get('album') or showing_media.get('friendly_name') or '—',
+        'artwork': showing_media.get('artwork') or '',
+        'back_artwork': '',
+        'canvas_url': '',
+        'music_video_url': '',
+        'track_id': '',
+        'state': _showing_relay_normalize_state(showing_media.get('state')) or 'playing',
+        'position': '0:00',
+        'duration': '0:00',
+        'app_name': showing_media.get('app_name') or '',
+        'friendly_name': showing_media.get('friendly_name') or '',
+        'entity_id': showing_media.get('entity_id') or '',
+    }
+
+
+def _decide_showing_relay_action(
+    active_source_id: str | None,
+    router_media: dict | None,
+    showing_media: dict | None,
+) -> tuple[str, dict | None]:
+    if active_source_id:
+        return 'blocked_active_source', None
+
+    relay_owns_router_media = _showing_relay_owns_router_media(router_media)
+    if not relay_owns_router_media and not _showing_relay_router_is_idle(router_media):
+        return 'blocked_existing_media', None
+
+    next_payload = _showing_router_media_payload(showing_media)
+    if next_payload.get('state') == 'idle':
+        if relay_owns_router_media and not _showing_relay_router_is_idle(router_media):
+            return 'clear_relay', next_payload
+        return 'idle', None
+
+    if relay_owns_router_media and _showing_relay_signature(router_media) == _showing_relay_signature(next_payload):
+        return 'unchanged', None
+
+    return ('update_relay' if relay_owns_router_media else 'takeover_idle_router', next_payload)
+
+
+async def _fetch_router_status_snapshot() -> dict | None:
+    session = await get_http_session()
+    async with session.get(
+        ROUTER_STATUS_URL,
+        timeout=aiohttp.ClientTimeout(total=2.0),
+    ) as resp:
+        if resp.status != 200:
+            return None
+        return await resp.json()
+
+
+async def _fetch_router_media_snapshot() -> dict | None:
+    session = await get_http_session()
+    async with session.get(
+        ROUTER_MEDIA_URL,
+        timeout=aiohttp.ClientTimeout(total=2.0),
+    ) as resp:
+        if resp.status != 200:
+            return None
+        return await resp.json()
+
+
+async def _post_showing_router_media(payload: dict) -> dict | None:
+    session = await get_http_session()
+    body = dict(payload)
+    body["_reason"] = "showing_relay"
+    async with session.post(
+        ROUTER_MEDIA_URL,
+        json=body,
+        timeout=aiohttp.ClientTimeout(total=3.0),
+    ) as resp:
+        if resp.status != 200:
+            logger.warning('Showing relay media post failed (HTTP %d)', resp.status)
+            return None
+        return await resp.json()
+
+
+async def _showing_relay_tick() -> str:
+    if not _showing_relay_enabled():
+        return 'disabled'
+
+    entity_id = cfg("showing", "entity_id")
+    if not entity_id:
+        return 'unconfigured'
+
+    status = await _fetch_router_status_snapshot()
+    if status is None:
+        return 'router_status_unavailable'
+    active_source_id = status.get('active_source')
+    if active_source_id:
+        return 'blocked_active_source'
+
+    router_media = await _fetch_router_media_snapshot()
+    if not _showing_relay_owns_router_media(router_media) and not _showing_relay_router_is_idle(router_media):
+        return 'blocked_existing_media'
+
+    showing_media, fetch_status, fetch_error = await _fetch_showing_media_payload()
+    if showing_media is None:
+        if fetch_status == 400:
+            return 'unconfigured'
+        logger.debug('Showing relay fetch skipped: %s', fetch_error or fetch_status)
+        return 'showing_unavailable'
+
+    action, relay_payload = _decide_showing_relay_action(active_source_id, router_media, showing_media)
+    if relay_payload is None:
+        return action
+
+    response = await _post_showing_router_media(relay_payload)
+    if response and response.get('dropped'):
+        return f'dropped:{response.get("reason", "unknown")}'
+    return action
+
+
+async def _showing_relay_loop():
+    last_state = None
+    while True:
+        try:
+            state = await _showing_relay_tick()
+            if state != last_state:
+                logger.info('Showing relay: %s', state)
+                last_state = state
+        except Exception as e:
+            logger.warning('Showing relay error: %s', e)
+            last_state = 'error'
+        await asyncio.sleep(_showing_relay_interval_seconds())
+
+
+async def _handle_appletv_impl(request):
+    entity_id = cfg("showing", "entity_id") or ''
+    if not entity_id:
+        response = web.json_response(
+            _showing_error_payload('', error='showing.entity_id not configured', state='error')
+        )
+        response.headers['Access-Control-Allow-Origin'] = '*'
+        return response
+
+    try:
+        payload, status, error = await _fetch_showing_media_payload()
+        if payload is not None:
+            response = web.json_response(payload)
+        else:
+            response = web.json_response(
+                _showing_error_payload(
+                    entity_id,
+                    error=error or 'Failed to fetch',
+                    state='unavailable',
+                ),
+                status=status,
+            )
+        response.headers['Access-Control-Allow-Origin'] = '*'
+        return response
+    except Exception as e:
+        logger.error('Apple TV error: %s', e)
+        response = web.json_response(
+            _showing_error_payload(entity_id, error=str(e), state='error')
+        )
+        response.headers['Access-Control-Allow-Origin'] = '*'
+        return response
+
+
 async def handle_appletv(request):
     """Fetch Apple TV media info from Home Assistant."""
     # Handle CORS preflight
@@ -1524,63 +1788,7 @@ async def handle_appletv(request):
             'Access-Control-Allow-Methods': 'GET, OPTIONS',
             'Access-Control-Allow-Headers': 'Content-Type',
         })
-
-    ha_url = cfg("home_assistant", "url", default="http://homeassistant.local:8123")
-    entity_id = cfg("showing", "entity_id")
-    if not entity_id:
-        response = web.json_response({
-            'error': 'showing.entity_id not configured',
-            'entity_id': '',
-            'title': '—',
-            'artist': '—',
-            'album': '—',
-            'app_name': '—',
-            'friendly_name': '—',
-            'artwork': '',
-            'state': 'error',
-            'supported_features': 0,
-        })
-        response.headers['Access-Control-Allow-Origin'] = '*'
-        return response
-
-    try:
-        session = await get_http_session()
-        headers = _showing_ha_headers()
-        async with session.get(f'{ha_url}/api/states/{entity_id}', headers=headers) as resp:
-            if resp.status == 200:
-                data = await resp.json()
-                response = web.json_response(_showing_payload(data, ha_url, entity_id))
-            else:
-                response = web.json_response({
-                    'error': 'Failed to fetch',
-                    'entity_id': entity_id,
-                    'title': '—',
-                    'artist': '—',
-                    'album': '—',
-                    'app_name': '—',
-                    'friendly_name': '—',
-                    'artwork': '',
-                    'state': 'unavailable',
-                    'supported_features': 0,
-                }, status=resp.status)
-            response.headers['Access-Control-Allow-Origin'] = '*'
-            return response
-    except Exception as e:
-        logger.error('Apple TV error: %s', e)
-        response = web.json_response({
-            'error': str(e),
-            'entity_id': entity_id,
-            'title': '—',
-            'artist': '—',
-            'album': '—',
-            'app_name': '—',
-            'friendly_name': '—',
-            'artwork': '',
-            'state': 'error',
-            'supported_features': 0,
-        })
-        response.headers['Access-Control-Allow-Origin'] = '*'
-        return response
+    return await _handle_appletv_impl(request)
 
 async def handle_appletv_command(request):
     """Forward basic transport commands to the configured showing entity."""
@@ -2023,6 +2231,9 @@ async def main():
 
     # Startup beacon (fire-and-forget, opt-out via NO_TELEMETRY file)
     asyncio.create_task(send_beacon(BS5C_BASE_PATH))
+
+    # Backend SHOWING relay: feed idle PLAYING/immersive from the configured entity.
+    _background_tasks.spawn(_showing_relay_loop(), name="showing_relay")
 
     # Start systemd watchdog heartbeat
     asyncio.create_task(watchdog_loop())
