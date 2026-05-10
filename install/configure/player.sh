@@ -7,9 +7,14 @@ configure_player() {
     echo ""
     log_section "Player Configuration"
 
-    local current_type current_ip
+    local current_type current_ip current_mass_playback_mode
     current_type=$(cfg_read '.player.type')
     current_ip=$(cfg_read '.player.ip')
+    current_mass_playback_mode=$(cfg_read '.mass.playback_mode')
+    case "$current_mass_playback_mode" in
+        auto|remote|local) ;;
+        *) current_mass_playback_mode="auto" ;;
+    esac
 
     if [ -n "$current_type" ] && [ "$current_type" != "" ]; then
         log_info "Current player: $current_type${current_ip:+ @ $current_ip}"
@@ -37,6 +42,7 @@ configure_player() {
 
     local PLAYER_TYPE=""
     local PLAYER_IP=""
+    local MASS_PLAYBACK_MODE="$current_mass_playback_mode"
 
     while true; do
         read -p "Select player type [1-5, default $default_choice]: " PLAYER_CHOICE
@@ -115,17 +121,52 @@ configure_player() {
         PLAYER_IP="${PLAYER_IP:-$default_ip}"
     fi
 
+    if [[ "$PLAYER_TYPE" == "mass" || "$PLAYER_TYPE" == "local" ]]; then
+        echo ""
+        echo "MASS source playback mode:"
+        echo ""
+        echo "  1) Auto       - Prefer local playback on BS5c-local outputs, remote playback on HASS/network outputs (Recommended)"
+        echo "  2) Remote     - MASS controls a Music Assistant queue/player remotely"
+        echo "  3) Local      - MASS resolves stream URLs and plays them on the BeoSound 5c"
+        echo ""
+
+        local default_mass_choice="1"
+        case "$MASS_PLAYBACK_MODE" in
+            remote) default_mass_choice="2" ;;
+            local)  default_mass_choice="3" ;;
+        esac
+
+        while true; do
+            read -p "Select MASS playback mode [1-3, default $default_mass_choice]: " MASS_CHOICE
+            MASS_CHOICE="${MASS_CHOICE:-$default_mass_choice}"
+            case "$MASS_CHOICE" in
+                1) MASS_PLAYBACK_MODE="auto"; break ;;
+                2) MASS_PLAYBACK_MODE="remote"; break ;;
+                3) MASS_PLAYBACK_MODE="local"; break ;;
+                *) echo "Invalid selection. Please enter 1, 2, or 3." ;;
+            esac
+        done
+
+        if [[ "$PLAYER_TYPE" != "local" && "$MASS_PLAYBACK_MODE" == "local" ]]; then
+            log_warn "MASS local playback requires Player = Local. This mode will stay unavailable until the local player is selected."
+        fi
+    fi
+
     local tmp
     tmp=$(mktemp)
-    if jq --arg t "$PLAYER_TYPE" --arg ip "$PLAYER_IP" \
-        '.player.type = $t | .player.ip = $ip' "$CONFIG_FILE" > "$tmp"; then
+    if jq --arg t "$PLAYER_TYPE" --arg ip "$PLAYER_IP" --arg mass_mode "$MASS_PLAYBACK_MODE" \
+        '.player.type = $t | .player.ip = $ip | .mass.playback_mode = $mass_mode' "$CONFIG_FILE" > "$tmp"; then
         mv "$tmp" "$CONFIG_FILE"; chmod 644 "$CONFIG_FILE"
     else
         rm -f "$tmp"; log_error "Failed to update config.json"
     fi
     log_success "Player: $PLAYER_TYPE${PLAYER_IP:+ @ $PLAYER_IP}"
+    if [[ "$PLAYER_TYPE" == "mass" || "$PLAYER_TYPE" == "local" ]]; then
+        log_success "MASS playback mode: $MASS_PLAYBACK_MODE"
+    fi
 
     # Export for use by other configure steps in full-wizard mode
     _PLAYER_TYPE="$PLAYER_TYPE"
     _PLAYER_IP="$PLAYER_IP"
+    _MASS_PLAYBACK_MODE="$MASS_PLAYBACK_MODE"
 }

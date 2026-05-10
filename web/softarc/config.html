@@ -334,6 +334,11 @@ const PLAYER_TYPES = [
 
 const PLAYER_HOST_TYPES = ['sonos', 'bluesound', 'mass'];
 const PLAYER_DISCOVERY_TYPES = ['sonos', 'bluesound'];
+const MASS_PLAYBACK_MODE_OPTIONS = [
+    { value: 'auto', label: 'Auto (follow output type)' },
+    { value: 'remote', label: 'Remote (control Music Assistant player)' },
+    { value: 'local', label: 'Local (play on BS5c / PowerLink path)' },
+];
 
 const CFG_SOURCE_DEFS = [
     { key: 'PLAYING', label: 'Playing', fixed: true },
@@ -370,6 +375,7 @@ const CFG_SOURCE_DEFS = [
     ]},
     { key: 'MUSIC', label: 'Music Assistant', fields: [
         { fid: 'ir_source', label: 'IR trigger', path: ['mass','source'], isIr: true, optional: true },
+        { fid: 'playback_mode', label: 'Playback mode', path: ['mass','playback_mode'], options: MASS_PLAYBACK_MODE_OPTIONS, hint: 'Auto prefers local playback on PowerLink/HDMI/SPDIF/RCA-style outputs and remote playback on Sonos, BlueSound, or hass. Forced local mode needs player.type = local.' },
         { fid: 'ws_url', label: 'WebSocket URL', secretKey: 'mass_ws_url', placeholder: 'ws://musicassistant.local:8095/ws', optional: true, hint: 'Leave blank to keep the current MASS_WS_URL in /etc/beosound5c/secrets.env.' },
         { fid: 'token', label: 'Access token', secretKey: 'mass_token', type: 'password', placeholder: 'Leave blank to keep existing token', optional: true },
         { fid: 'queue_id', label: 'Queue ID pin', secretKey: 'mass_queue_id', placeholder: 'Optional queue id override', optional: true, hint: 'Optional: pin the queue when auto-discovery picks the wrong target.' },
@@ -810,6 +816,16 @@ function renderSources(cfg) {
                     val = '';
                 } else {
                     val = esc(cfgGet(cfg, f.path) || '');
+                }
+                if (Array.isArray(f.options) && f.options.length) {
+                    const opts = f.options.map(opt => {
+                        const value = esc(opt.value || '');
+                        const label = esc(opt.label || opt.value || '');
+                        return `<option value="${value}" ${value===val?'selected':''}>${label}</option>`;
+                    }).join('');
+                    return `<label>${f.label}${f.optional?' <span style="color:#333;font-weight:400">(optional)</span>':''}</label>
+                        <select id="cfg-src-${kn}-${f.fid}">${opts}</select>
+                        ${f.hint ? `<div class="hint">${f.hint}</div>` : ''}`;
                 }
                 const inputType = f.type === 'password' ? 'password' : 'text';
                 const placeholder = esc(f.placeholder || (isSecret ? 'Leave blank to keep existing' : ''));

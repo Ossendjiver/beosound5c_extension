@@ -8,10 +8,16 @@ configure_audio() {
     log_section "Audio Output Configuration"
 
     local current_output current_vol_type current_vol_host current_vol_max
+    local current_mass_playback_mode
     current_output=$(cfg_read '.volume.output_name')
     current_vol_type=$(cfg_read '.volume.type')
     current_vol_host=$(cfg_read '.volume.host')
     current_vol_max=$(cfg_read '.volume.max')
+    current_mass_playback_mode=$(cfg_read '.mass.playback_mode')
+    case "$current_mass_playback_mode" in
+        auto|remote|local) ;;
+        *) current_mass_playback_mode="auto" ;;
+    esac
 
     if [ -n "$current_vol_type" ] && [ "$current_vol_type" != "" ]; then
         log_info "Current: $current_output, volume: $current_vol_type @ ${current_vol_host:-local} (max ${current_vol_max:-70}%)"
@@ -34,6 +40,13 @@ configure_audio() {
     player_type="${_PLAYER_TYPE:-$(cfg_read '.player.type')}"
     local player_ip
     player_ip="${_PLAYER_IP:-$(cfg_read '.player.ip')}"
+
+    if [[ "$player_type" == "mass" || "$player_type" == "local" ]]; then
+        log_info "MASS source playback mode: $current_mass_playback_mode"
+        if [[ "$current_mass_playback_mode" == "auto" ]]; then
+            log_info "Auto mode uses local MASS playback on PowerLink, BeoLab 5, C4 Amp, HDMI, S/PDIF, and RCA outputs."
+        fi
+    fi
 
     local VOLUME_TYPE=""
     local VOLUME_HOST=""

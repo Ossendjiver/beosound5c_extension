@@ -42,6 +42,12 @@ if 'lib' in os.listdir(current_dir):
     sys.path.insert(0, current_dir)
 
 from lib.config import cfg
+from lib.mass_playback import (
+    get_configured_mass_playback_mode,
+    mass_local_backend_ready,
+    mass_prefers_local_playback,
+    mass_runtime_playback_path,
+)
 from lib.playback_targets import get_audio_targets
 from lib.source_base import SourceBase
 
@@ -92,6 +98,74 @@ MASS_PODCASTS_ROOT_ID = "podcasts"
 MASS_PODCASTS_ROOT_TITLE = "Podcasts"
 MASS_RADIO_ROOT_ID = "mixes"
 MASS_RADIO_ROOT_TITLE = "Radio"
+ROOT_CATEGORY_IDS = {
+    "queue",
+    "artists",
+    "albums",
+    "songs",
+    "playlists",
+    MASS_MIXES_PLAYLIST_ROOT_ID,
+    MASS_PODCASTS_ROOT_ID,
+    MASS_RADIO_ROOT_ID,
+}
+LOCAL_QUEUE_ITEM_PREFIX = "local_queue_item_"
+LOCAL_QUEUE_POLL_INTERVAL = 0.5
+LOCAL_QUEUE_TRANSITION_GRACE = 2.5
+LOCAL_STREAM_HINT_KEYS = {
+    "stream_url",
+    "path",
+    "content_url",
+    "audio_url",
+    "file_url",
+    "stream_source",
+    "streamsource",
+}
+LOCAL_STREAM_CONTAINER_HINTS = {
+    "details",
+    "media_item",
+    "provider_mappings",
+    "stream",
+    "streams",
+    "playback",
+    "audio",
+    "source",
+    "sources",
+    "variant",
+    "variants",
+}
+LOCAL_STREAMISH_MARKERS = {
+    "content_type",
+    "mime_type",
+    "audio_format",
+    "codec",
+    "sample_rate",
+    "bit_depth",
+    "bitrate",
+    "expires",
+}
+LOCAL_ARTWORK_HINTS = (
+    "image",
+    "artwork",
+    "cover",
+    "thumb",
+    "icon",
+    "logo",
+    "poster",
+    "fanart",
+    "backdrop",
+)
+LOCAL_IMAGE_SUFFIXES = (
+    ".jpg",
+    ".jpeg",
+    ".png",
+    ".gif",
+    ".webp",
+    ".bmp",
+    ".svg",
+    ".ico",
+    ".avif",
+    ".tiff",
+)
 
 FALLBACK_IMAGE = (
     "data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNjQiIGhlaWdodD0iNjQiIHZpZXdCb3g9IjAgMCA2NCA2NCIg"
@@ -123,6 +197,7 @@ class MassSource(SourceBase):
 
     def __init__(self):
         super().__init__()
+        self._detect_player()
         self.websocket    = None
         self._connected   = False
         self._futures     = {}
@@ -130,7 +205,35 @@ class MassSource(SourceBase):
         self._is_syncing  = False
         self._http_session = None
         self._preferred_player_id = ""
+        self._local_queue_entries = []
+        self._local_queue_index = -1
+        self._local_queue_active = False
+        self._local_stream_cache = {}
+        self._local_queue_monitor_task = None
+        self._local_queue_transition_deadline = 0.0
+        self._local_queue_last_player_state = "stopped"
         self.has_cache    = self._load_local_cache()
+
+    def _detect_player(self):
+        self.player = self._runtime_playback_path()
+
+    def _configured_playback_mode(self):
+        return get_configured_mass_playback_mode()
+
+    def _prefers_local_playback(self):
+        return mass_prefers_local_playback()
+
+    def _local_player_ready(self):
+        return mass_local_backend_ready()
+
+    def _runtime_playback_path(self):
+        return mass_runtime_playback_path()
+
+    def _forced_local_playback(self):
+        return self._configured_playback_mode() == "local"
+
+    def _should_try_local_playback(self):
+        return self._runtime_playback_path() == "local"
 
     # ── Cache ─────────────────────────────────────────────────────────────────
 
@@ -169,6 +272,7 @@ class MassSource(SourceBase):
         self._spawn(self._schedule_sync_loop(), name="mass_sync_loop")
 
     async def on_stop(self):
+        await self._stop_local_queue_monitor()
         if self._http_session and not self._http_session.closed:
             await self._http_session.close()
         self._http_session = None
@@ -941,12 +1045,673 @@ class MassSource(SourceBase):
                 "art_cache_dir": ART_CACHE_DIR,
                 "player_id": str(TARGET_PLAYER_ID or "").strip(),
                 "queue_id": str(TARGET_QUEUE_ID or "").strip(),
+                "playback_mode": {
+                    "configured": self._configured_playback_mode(),
+                    "prefers_local": self._prefers_local_playback(),
+                    "local_backend_ready": self._local_player_ready(),
+                    "runtime_path": self._runtime_playback_path(),
+                    "local_queue_active": self._local_queue_active,
+                },
                 "library": self._build_library_status(),
                 "queue": await self._build_queue_status(),
                 "transfer_targets": self._configured_transfer_targets(),
             }
         )
         return status
+
+    def _base_http_url(self):
+        return MASS_URI.replace("/ws", "").replace("ws://", "http://").replace("wss://", "https://")
+
+    @staticmethod
+    def _is_local_queue_item_id(value):
+        return str(value or "").strip().startswith(LOCAL_QUEUE_ITEM_PREFIX)
+
+    @staticmethod
+    def _parse_local_queue_index(value):
+        text = str(value or "").strip()
+        if not text.startswith(LOCAL_QUEUE_ITEM_PREFIX):
+            return -1
+        try:
+            return int(text[len(LOCAL_QUEUE_ITEM_PREFIX):])
+        except ValueError:
+            return -1
+
+    def _reset_local_queue(self):
+        task = self._local_queue_monitor_task
+        if task and not task.done():
+            task.cancel()
+        self._local_queue_entries = []
+        self._local_queue_index = -1
+        self._local_queue_active = False
+        self._local_queue_monitor_task = None
+        self._local_queue_transition_deadline = 0.0
+        self._local_queue_last_player_state = "stopped"
+
+    def _find_node_by_uri(self, uri):
+        target = str(uri or "").strip()
+        if not target:
+            return None
+        stack = list(self._library_data or [])
+        while stack:
+            node = stack.pop()
+            if not isinstance(node, dict):
+                continue
+            if str(node.get("url") or node.get("play_url") or "").strip() == target:
+                return node
+            children = node.get("tracks")
+            if isinstance(children, list):
+                stack.extend(reversed(children))
+        return None
+
+    def _find_command_node(self, data, uri=""):
+        node = self._find_node_by_id(self._command_node_id(data))
+        if isinstance(node, dict):
+            return node
+        return self._find_node_by_uri(uri)
+
+    def _build_fallback_local_entry(self, data, uri):
+        payload = self._build_command_media_payload(data, uri, state="playing") or {}
+        return {
+            "id": self._command_node_id(data) or uri,
+            "source_uri": str(uri or "").strip(),
+            "title": str(payload.get("title") or "Music Assistant").strip(),
+            "artist": str(payload.get("artist") or "").strip(),
+            "album": str(payload.get("album") or "").strip(),
+            "artwork": str(payload.get("artwork") or "").strip(),
+            "radio": self._uri_looks_like_radio(uri),
+        }
+
+    @staticmethod
+    def _uri_looks_like_radio(uri):
+        uri_text = str(uri or "").strip().lower()
+        return any(token in uri_text for token in ("radio://", "/radio/", "radios/"))
+
+    @staticmethod
+    def _item_looks_like_radio(item, fallback_uri=""):
+        if MassSource._uri_looks_like_radio(fallback_uri):
+            return True
+        if not isinstance(item, dict):
+            return False
+        media_type = str(item.get("media_type") or item.get("type") or "").strip().lower()
+        return "radio" in media_type
+
+    def _collect_local_entries(self, node, *, album="", artwork="", root_id=""):
+        if not isinstance(node, dict):
+            return []
+        node_id = str(node.get("id") or "").strip()
+        node_name = str(node.get("name") or "").strip()
+        node_artwork = str(node.get("image") or artwork or "").strip()
+        children = node.get("tracks")
+        effective_root = root_id or node_id
+        if isinstance(children, list) and children:
+            next_album = album
+            contains_leaves = any(
+                isinstance(child, dict) and not (isinstance(child.get("tracks"), list) and child.get("tracks"))
+                for child in children
+            )
+            if node_id not in ROOT_CATEGORY_IDS and contains_leaves:
+                next_album = node_name or album
+            entries = []
+            for child in children:
+                entries.extend(
+                    self._collect_local_entries(
+                        child,
+                        album=next_album,
+                        artwork=node_artwork,
+                        root_id=effective_root,
+                    )
+                )
+            return entries
+
+        uri = str(node.get("url") or node.get("play_url") or "").strip()
+        if not uri:
+            return []
+        return [{
+            "id": str(node.get("id") or uri).strip(),
+            "source_uri": uri,
+            "title": node_name or "Music Assistant",
+            "artist": str(node.get("artist") or "").strip(),
+            "album": str(node.get("album") or album or "").strip(),
+            "artwork": node_artwork,
+            "radio": effective_root == MASS_RADIO_ROOT_ID or self._uri_looks_like_radio(uri),
+        }]
+
+    def _build_local_entries_for_request(self, data, uri):
+        node = self._find_command_node(data, uri)
+        if isinstance(node, dict):
+            entries = self._collect_local_entries(node, root_id=str(node.get("id") or "").strip())
+            if entries:
+                return entries
+        return [self._build_fallback_local_entry(data, uri)]
+
+    @staticmethod
+    def _normalize_local_stream_url(value):
+        text = str(value or "").strip()
+        if not text:
+            return ""
+        lower = text.lower()
+        if lower.startswith(("http://", "https://", "file://")):
+            return text
+        if os.path.isabs(text) and os.path.exists(text):
+            return text
+        return ""
+
+    @staticmethod
+    def _load_embedded_json(value):
+        if not isinstance(value, str):
+            return None
+        text = value.strip()
+        if not text or text[0] not in "{[":
+            return None
+        try:
+            return json.loads(text)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _hint_looks_like_artwork(value):
+        hint = str(value or "").strip().lower()
+        if not hint:
+            return False
+        return any(token in hint for token in LOCAL_ARTWORK_HINTS)
+
+    @staticmethod
+    def _url_looks_like_image(value):
+        text = str(value or "").strip()
+        if not text:
+            return False
+        parsed = urllib.parse.urlparse(text)
+        path = str(parsed.path or "").strip().lower()
+        return any(path.endswith(suffix) for suffix in LOCAL_IMAGE_SUFFIXES)
+
+    @staticmethod
+    def _mapping_looks_streamish(mapping):
+        if not isinstance(mapping, dict):
+            return False
+        keys = {str(key or "").strip().lower() for key in mapping.keys()}
+        return bool(
+            keys.intersection(LOCAL_STREAM_HINT_KEYS)
+            or keys.intersection(LOCAL_STREAMISH_MARKERS)
+        )
+
+    def _extract_local_stream_candidates(self, item):
+        candidates = []
+
+        def add(value, *, hint=""):
+            if self._hint_looks_like_artwork(hint):
+                return
+            normalized = self._normalize_local_stream_url(value)
+            if normalized and not self._url_looks_like_image(normalized) and normalized not in candidates:
+                candidates.append(normalized)
+
+        def scan_value(value, *, hint="", allow_generic_url=False):
+            if self._hint_looks_like_artwork(hint):
+                return
+            parsed = self._load_embedded_json(value)
+            if parsed is not None:
+                scan_value(parsed, hint=hint, allow_generic_url=allow_generic_url)
+                return
+            if isinstance(value, list):
+                for entry in value:
+                    scan_value(entry, hint=hint, allow_generic_url=allow_generic_url)
+                return
+            if not isinstance(value, dict):
+                return
+
+            streamish = allow_generic_url or self._mapping_looks_streamish(value)
+            if streamish:
+                add(value.get("url"), hint="url")
+            for key in LOCAL_STREAM_HINT_KEYS:
+                add(value.get(key), hint=key)
+            add(value.get("external_url"), hint="external_url")
+
+            for key, nested in value.items():
+                next_hint = str(key or "").strip().lower()
+                next_allow = streamish or next_hint in LOCAL_STREAM_CONTAINER_HINTS
+                scan_value(nested, hint=next_hint, allow_generic_url=next_allow)
+
+        if not isinstance(item, dict):
+            return candidates
+
+        for key in ("stream_url", "url", "path", "content_url", "audio_url"):
+            add(item.get(key), hint=key)
+
+        metadata = item.get("metadata")
+        if isinstance(metadata, dict):
+            for key in ("stream_url", "url", "path", "content_url", "audio_url", "external_url"):
+                add(metadata.get(key), hint=key)
+            scan_value(metadata, hint="metadata", allow_generic_url=False)
+
+        provider_mappings = item.get("provider_mappings")
+        if isinstance(provider_mappings, list):
+            for mapping in provider_mappings:
+                if not isinstance(mapping, dict):
+                    continue
+                for key in ("stream_url", "url", "path", "content_url", "audio_url"):
+                    add(mapping.get(key), hint=key)
+                details = mapping.get("details")
+                if isinstance(details, dict):
+                    for key in ("stream_url", "url", "path", "content_url", "audio_url"):
+                        add(details.get(key), hint=key)
+                elif isinstance(details, str):
+                    parsed = self._load_embedded_json(details)
+                    if parsed is not None:
+                        scan_value(parsed, hint="details", allow_generic_url=True)
+                scan_value(mapping, hint="provider_mappings", allow_generic_url=True)
+
+        media_item = item.get("media_item")
+        if isinstance(media_item, dict):
+            for key in ("stream_url", "url", "path", "content_url", "audio_url"):
+                add(media_item.get(key), hint=key)
+            scan_value(media_item, hint="media_item", allow_generic_url=True)
+
+        scan_value(item, hint="item", allow_generic_url=False)
+
+        return candidates
+
+    def _extract_item_title(self, item, fallback="Music Assistant"):
+        if not isinstance(item, dict):
+            return fallback
+        for key in ("name", "sort_name"):
+            value = item.get(key)
+            if value:
+                return str(value)
+        media_item = item.get("media_item")
+        if isinstance(media_item, dict):
+            for key in ("name", "sort_name"):
+                value = media_item.get(key)
+                if value:
+                    return str(value)
+        return fallback
+
+    def _extract_item_artist(self, item, fallback=""):
+        if not isinstance(item, dict):
+            return fallback
+        artist = item.get("artist_str")
+        if artist:
+            return str(artist)
+        artist = self._get_artist_name(item, "")
+        if artist:
+            return str(artist)
+        media_item = item.get("media_item")
+        if isinstance(media_item, dict):
+            artist = media_item.get("artist_str")
+            if artist:
+                return str(artist)
+            artist = self._get_artist_name(media_item, "")
+            if artist:
+                return str(artist)
+        return fallback
+
+    def _extract_item_album(self, item, fallback=""):
+        if not isinstance(item, dict):
+            return fallback
+        for key in ("album_name",):
+            value = item.get(key)
+            if value:
+                return str(value)
+        album = item.get("album")
+        if isinstance(album, dict):
+            name = album.get("name")
+            if name:
+                return str(name)
+        media_item = item.get("media_item")
+        if isinstance(media_item, dict):
+            album = media_item.get("album")
+            if isinstance(album, dict):
+                name = album.get("name")
+                if name:
+                    return str(name)
+            album_name = media_item.get("album_name")
+            if album_name:
+                return str(album_name)
+        return fallback
+
+    async def _extract_item_artwork(self, item, fallback=""):
+        if not isinstance(item, dict):
+            return fallback
+        artwork = self._get_img(item, self._base_http_url()) or ""
+        if not artwork:
+            album = item.get("album")
+            if isinstance(album, dict):
+                artwork = self._get_img(album, self._base_http_url()) or ""
+        if not artwork:
+            media_item = item.get("media_item")
+            if isinstance(media_item, dict):
+                artwork = self._get_img(media_item, self._base_http_url()) or ""
+        if artwork:
+            artwork = await self._cache_image_locally(artwork)
+        return artwork or fallback
+
+    async def _resolve_local_entry(self, entry):
+        if not isinstance(entry, dict):
+            return None
+        source_uri = str(entry.get("source_uri") or "").strip()
+        if not source_uri:
+            return None
+        cached = self._local_stream_cache.get(source_uri)
+        if isinstance(cached, dict) and cached.get("stream_url"):
+            merged = dict(entry)
+            merged.update(cached)
+            return merged
+
+        item = await self.send_command("music/item_by_uri", uri=source_uri)
+        if not isinstance(item, dict):
+            return None
+
+        candidates = self._extract_local_stream_candidates(item)
+        if not candidates:
+            return None
+
+        resolved = dict(entry)
+        resolved["stream_url"] = candidates[0]
+        resolved["title"] = self._extract_item_title(item, resolved.get("title", "Music Assistant"))
+        resolved["artist"] = self._extract_item_artist(item, resolved.get("artist", ""))
+        resolved["album"] = self._extract_item_album(item, resolved.get("album", ""))
+        resolved["artwork"] = await self._extract_item_artwork(item, resolved.get("artwork", ""))
+        resolved["radio"] = bool(resolved.get("radio")) or self._item_looks_like_radio(item, source_uri)
+        self._local_stream_cache[source_uri] = dict(resolved)
+        return resolved
+
+    async def _resolve_local_queue_entry(self, index):
+        if index < 0 or index >= len(self._local_queue_entries):
+            return None
+        entry = self._local_queue_entries[index]
+        if entry.get("stream_url"):
+            return entry
+        resolved = await self._resolve_local_entry(entry)
+        if resolved:
+            self._local_queue_entries[index] = resolved
+        return resolved
+
+    async def _publish_local_entry(self, entry, *, state="playing", reason="track_change"):
+        register_state = "paused" if str(state or "").strip().lower() == "paused" else "playing"
+        source_uri = str(entry.get("source_uri") or entry.get("uri") or "").strip()
+        if register_state == "paused":
+            await self.register("paused")
+        else:
+            await self.register("playing", auto_power=True)
+        await self.post_media_update(
+            title=str(entry.get("title") or "Music Assistant").strip(),
+            artist=str(entry.get("artist") or "").strip(),
+            album=str(entry.get("album") or "").strip(),
+            artwork=str(entry.get("artwork") or "").strip(),
+            state=register_state,
+            reason=reason,
+            track_uri=source_uri,
+        )
+        return {
+            "state": register_state,
+            "queue_id": "local",
+            "player_id": "local",
+            "title": str(entry.get("title") or "Music Assistant").strip(),
+            "artist": str(entry.get("artist") or "").strip(),
+            "album": str(entry.get("album") or "").strip(),
+            "artwork": str(entry.get("artwork") or "").strip(),
+            "uri": source_uri,
+        }
+
+    def _mark_local_queue_transition(self, seconds=LOCAL_QUEUE_TRANSITION_GRACE):
+        try:
+            now = asyncio.get_running_loop().time()
+        except RuntimeError:
+            return
+        self._local_queue_transition_deadline = max(
+            self._local_queue_transition_deadline,
+            now + max(0.5, float(seconds or LOCAL_QUEUE_TRANSITION_GRACE)),
+        )
+
+    def _local_queue_transition_pending(self):
+        try:
+            now = asyncio.get_running_loop().time()
+        except RuntimeError:
+            return False
+        return now < self._local_queue_transition_deadline
+
+    def _ensure_local_queue_monitor(self):
+        task = self._local_queue_monitor_task
+        if task and not task.done():
+            return
+        self._local_queue_monitor_task = self._spawn(
+            self._watch_local_queue_playback(),
+            name="mass_local_queue",
+        )
+
+    async def _stop_local_queue_monitor(self):
+        task = self._local_queue_monitor_task
+        self._local_queue_monitor_task = None
+        if not task or task.done():
+            return
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        except Exception as exc:
+            logger.debug("Local MASS queue monitor shutdown raised: %s", exc)
+
+    async def _advance_local_queue_after_track_end(self):
+        payload = await self._play_local_queue_from(
+            self._local_queue_index + 1,
+            step=1,
+            reason="track_change",
+        )
+        if payload:
+            self._local_queue_last_player_state = "playing"
+            return payload
+        self._local_queue_active = False
+        self._local_queue_last_player_state = "stopped"
+        await self.register("available")
+        return None
+
+    async def _watch_local_queue_playback(self):
+        try:
+            self._local_queue_last_player_state = await self.player_state()
+            while self._local_queue_active and self._local_queue_entries:
+                state = str(await self.player_state() or "unknown").strip().lower()
+                if state == "playing":
+                    self._local_queue_last_player_state = "playing"
+                elif state == "paused":
+                    self._local_queue_last_player_state = "paused"
+                elif state == "stopped":
+                    if (
+                        self._local_queue_last_player_state == "playing"
+                        and not self._local_queue_transition_pending()
+                    ):
+                        advanced = await self._advance_local_queue_after_track_end()
+                        if advanced:
+                            await asyncio.sleep(LOCAL_QUEUE_POLL_INTERVAL)
+                            continue
+                        break
+                    self._local_queue_last_player_state = "stopped"
+                elif state and state != "unknown":
+                    self._local_queue_last_player_state = state
+                await asyncio.sleep(LOCAL_QUEUE_POLL_INTERVAL)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning("Local MASS queue monitor failed: %s", exc)
+        finally:
+            self._local_queue_monitor_task = None
+
+    async def _play_local_queue_index(self, index, *, reason="track_change"):
+        entry = await self._resolve_local_queue_entry(index)
+        if not isinstance(entry, dict):
+            return None
+        self._mark_local_queue_transition()
+        ok = await self.player_play(
+            url=str(entry.get("stream_url") or "").strip(),
+            radio=bool(entry.get("radio")),
+        )
+        if not ok:
+            return None
+        self._local_queue_entries[index] = entry
+        self._local_queue_index = index
+        self._local_queue_active = True
+        self._local_queue_last_player_state = "playing"
+        self._mark_local_queue_transition()
+        self._ensure_local_queue_monitor()
+        return await self._publish_local_entry(entry, state="playing", reason=reason)
+
+    async def _play_local_queue_from(self, start_index, *, step=1, reason="track_change"):
+        if not self._local_queue_entries:
+            return None
+        if step == 0:
+            step = 1
+        index = int(start_index)
+        while 0 <= index < len(self._local_queue_entries):
+            payload = await self._play_local_queue_index(index, reason=reason)
+            if payload:
+                return payload
+            index += step
+        return None
+
+    async def _handle_local_play_selection(self, cmd, data, uri):
+        local_queue_item_index = self._parse_local_queue_index(self._command_node_id(data))
+        if local_queue_item_index >= 0 and cmd in {"play_now", "play_item"} and self._local_queue_entries:
+            payload = await self._play_local_queue_index(local_queue_item_index, reason="queue_play")
+            if payload:
+                return {
+                    "state": payload["state"],
+                    "queue_id": "local",
+                    "index": local_queue_item_index,
+                    "uri": payload["uri"],
+                    "player_id": "local",
+                }
+            return None
+
+        entries = self._build_local_entries_for_request(data, uri)
+        if not entries:
+            return None
+
+        if cmd != "play_now" and self._local_queue_active and self._local_queue_entries:
+            self._local_queue_entries.extend(entries)
+            return {
+                "state": "queued",
+                "queue_id": "local",
+                "uri": uri,
+                "queued": len(entries),
+                "total": len(self._local_queue_entries),
+            }
+
+        self._local_queue_entries = entries
+        self._local_queue_index = -1
+        self._local_queue_active = True
+        payload = await self._play_local_queue_from(0, reason="track_change")
+        if payload:
+            return {
+                "state": payload["state"],
+                "queue_id": "local",
+                "uri": payload["uri"],
+                "player_id": "local",
+            }
+        self._local_queue_active = False
+        self._local_queue_last_player_state = "stopped"
+        return None
+
+    async def _handle_local_transport_command(self, cmd):
+        if cmd == "transport_stop":
+            self._mark_local_queue_transition()
+            await self.player_stop()
+            self._local_queue_active = False
+            self._local_queue_last_player_state = "stopped"
+            await self._stop_local_queue_monitor()
+            await self.register("available")
+            return {"state": "available", "player_id": "local", "command": cmd}
+
+        if cmd == "transport_toggle":
+            if self._registered_state == "playing":
+                ok = await self.player_pause()
+                if not ok:
+                    return {"state": "error", "reason": "transport_command_failed", "command": cmd}
+                self._local_queue_last_player_state = "paused"
+                payload = await self._build_local_now_playing_payload()
+                if payload:
+                    await self._publish_local_entry(payload, state="paused", reason=cmd)
+                else:
+                    await self.register("paused")
+                return {"state": "paused", "player_id": "local", "command": cmd}
+            ok = await self.player_resume()
+            if not ok:
+                return {"state": "error", "reason": "transport_command_failed", "command": cmd}
+            self._local_queue_last_player_state = "playing"
+            payload = await self._build_local_now_playing_payload()
+            if payload:
+                await self._publish_local_entry(payload, state="playing", reason=cmd)
+            else:
+                await self.register("playing", auto_power=True)
+            return {"state": "playing", "player_id": "local", "command": cmd}
+
+        if not self._local_queue_entries:
+            return {"state": "error", "reason": "transport_command_failed", "command": cmd}
+
+        if cmd == "transport_next":
+            start_index = self._local_queue_index + 1
+            payload = await self._play_local_queue_from(start_index, step=1, reason=cmd)
+        elif cmd == "transport_previous":
+            start_index = (self._local_queue_index - 1) if self._local_queue_index >= 0 else 0
+            payload = await self._play_local_queue_from(start_index, step=-1, reason=cmd)
+        else:
+            payload = None
+        if not payload:
+            return {"state": "error", "reason": "transport_command_failed", "command": cmd}
+        return {
+            "state": payload["state"],
+            "player_id": "local",
+            "command": cmd,
+            "uri": payload["uri"],
+            "index": self._local_queue_index,
+        }
+
+    async def _build_local_now_playing_payload(self):
+        if not self._local_queue_entries:
+            return None
+        if self._local_queue_index < 0 or self._local_queue_index >= len(self._local_queue_entries):
+            return None
+        entry = await self._resolve_local_queue_entry(self._local_queue_index)
+        if not isinstance(entry, dict):
+            return None
+        return {
+            "state": self._registered_state if self._registered_state in {"playing", "paused"} else "playing",
+            "queue_id": "local",
+            "player_id": "local",
+            "title": str(entry.get("title") or "Music Assistant").strip(),
+            "artist": str(entry.get("artist") or "").strip(),
+            "album": str(entry.get("album") or "").strip(),
+            "artwork": str(entry.get("artwork") or "").strip(),
+            "uri": str(entry.get("source_uri") or "").strip(),
+            "source_uri": str(entry.get("source_uri") or "").strip(),
+        }
+
+    def _build_local_queue_root(self):
+        if not self._local_queue_entries:
+            return None
+
+        queue_node = self._make_folder_node(
+            id_="queue",
+            name="Queue",
+            artist="Now Playing",
+            image="",
+        )
+        for index, entry in enumerate(self._local_queue_entries):
+            artist = str(entry.get("artist") or "").strip()
+            if index == self._local_queue_index:
+                artist = "Now Playing" if not artist else f"Now Playing - {artist}"
+            queue_node["tracks"].append(
+                self._make_leaf_node(
+                    id_=f"{LOCAL_QUEUE_ITEM_PREFIX}{index}",
+                    name=str(entry.get("title") or f"Queue Item {index + 1}"),
+                    artist=artist,
+                    url=str(entry.get("source_uri") or "").strip(),
+                    image=str(entry.get("artwork") or "").strip(),
+                )
+            )
+        if not queue_node["tracks"]:
+            return None
+        self._finalize_node(queue_node)
+        queue_node["queue_id"] = "local"
+        queue_node["current_index"] = self._local_queue_index
+        return queue_node
 
     def _command_node_id(self, data):
         if not isinstance(data, dict):
@@ -973,6 +1738,15 @@ class MassSource(SourceBase):
         }
 
     async def _publish_now_playing(self, queue_id, *, data=None, requested_uri="", reason="track_change", force_state=""):
+        if self._local_queue_active:
+            payload = await self._build_local_now_playing_payload()
+            if payload:
+                await self._publish_local_entry(
+                    payload,
+                    state=force_state or payload.get("state") or "playing",
+                    reason=reason,
+                )
+                return payload
         payload = await self._build_now_playing_payload(queue_id)
         requested = str(requested_uri or "").strip()
         payload_uri = str(payload.get("uri") or "").strip() if isinstance(payload, dict) else ""
@@ -1006,6 +1780,17 @@ class MassSource(SourceBase):
         return payload
 
     async def handle_resync(self) -> dict:
+        if self._local_queue_active:
+            payload = await self._build_local_now_playing_payload()
+            if payload:
+                await self._publish_local_entry(
+                    payload,
+                    state=payload.get("state") or "playing",
+                    reason="resync",
+                )
+                return {"status": "ok", "resynced": True, "state": payload.get("state", "playing")}
+            await self.register("available")
+            return {"status": "ok", "resynced": False}
         for queue_id in await self._resolve_queue_candidates():
             payload = await self._build_now_playing_payload(queue_id)
             if not isinstance(payload, dict):
@@ -1622,6 +2407,8 @@ class MassSource(SourceBase):
         return artwork
 
     async def _build_now_playing_payload(self, queue_id):
+        if self._local_queue_active:
+            return await self._build_local_now_playing_payload()
         snapshot = await self._get_queue_snapshot(queue_id)
         if not snapshot:
             return None
@@ -1679,6 +2466,10 @@ class MassSource(SourceBase):
         }
 
     async def _build_queue_root(self):
+        if self._local_queue_active or self._local_queue_entries:
+            local_queue = self._build_local_queue_root()
+            if local_queue:
+                return local_queue
         base = MASS_URI.replace("/ws", "").replace("ws://", "http://").replace("wss://", "https://")
         queue_ids = await self._resolve_queue_candidates()
         if not queue_ids:
@@ -1943,6 +2734,8 @@ class MassSource(SourceBase):
         return ("replace",)
 
     async def _handle_transport_command(self, cmd, *, preferred_player=None):
+        if self._local_queue_active:
+            return await self._handle_local_transport_command(cmd)
         command_map = {
             "transport_toggle": "players/cmd/play_pause",
             "transport_stop": "players/cmd/stop",
@@ -2113,6 +2906,23 @@ class MassSource(SourceBase):
         return {"state": "error", "reason": "move_failed", "queue_item_id": queue_item_id}
 
     async def _handle_queue_play_index_command(self, data):
+        local_queue_item_index = self._parse_local_queue_index(
+            self._clean_queue_item_id(
+                data.get("queue_item_id") or data.get("id") or data.get("item_id")
+            )
+        )
+        if local_queue_item_index >= 0 and self._local_queue_entries:
+            payload = await self._play_local_queue_index(local_queue_item_index, reason="queue_play")
+            if payload:
+                return {
+                    "state": "playing",
+                    "queue_id": "local",
+                    "index": local_queue_item_index,
+                    "queue_item_id": f"{LOCAL_QUEUE_ITEM_PREFIX}{local_queue_item_index}",
+                    "command": "local_queue_play",
+                }
+            return {"state": "error", "reason": "play_index_failed", "queue_item_id": local_queue_item_index}
+
         queue_id, item, index, _snapshot = await self._resolve_queue_command_item(data)
         if not queue_id or not item:
             return {"state": "error", "reason": "queue_item_not_found"}
@@ -2321,6 +3131,19 @@ class MassSource(SourceBase):
         if not uri:
             logger.warning("Unable to resolve URI for cmd=%s payload=%s", cmd, data)
             return {"state": "error", "reason": "unresolved_uri"}
+
+        if self._forced_local_playback() and not self._local_player_ready():
+            logger.warning("MASS local playback requested but player.type is not local.")
+            return {"state": "error", "reason": "local_player_unavailable"}
+
+        if self._should_try_local_playback():
+            local_result = await self._handle_local_play_selection(cmd, data, uri)
+            if local_result is not None:
+                return local_result
+            if self._forced_local_playback():
+                return {"state": "error", "reason": "local_playback_unavailable", "uri": uri}
+
+        self._reset_local_queue()
 
         queue_ids = await self._resolve_queue_candidates()
         if not queue_ids:

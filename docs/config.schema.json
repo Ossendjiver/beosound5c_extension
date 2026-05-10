@@ -288,6 +288,11 @@
       "type": "object",
       "description": "Music Assistant source settings. Connection credentials and target queue/player pins live in /etc/beosound5c/secrets.env.",
       "properties": {
+        "playback_mode": {
+          "type": "string",
+          "enum": ["auto", "remote", "local"],
+          "description": "Choose how MASS starts playback. 'remote' keeps today's MA queue/player handoff. 'local' resolves directly playable library/radio streams and sends them to the BS5c local player. 'auto' prefers local playback on wired/local outputs (PowerLink, HDMI, SPDIF, RCA, etc.) and remote playback on network outputs such as Sonos, BlueSound, or hass."
+        },
         "source": {
           "type": "string",
           "description": "Optional IR/B&O source button mapping for Music Assistant, for example n.music."

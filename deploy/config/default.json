@@ -56,6 +56,7 @@
   "join": {},
   "spotify": { "client_id": "" },
   "mass": {
+    "playback_mode": "auto",
     "transfer_targets": [
       { "id": "08a2eca2-247c-96fe-7998-7baddf01b2b1", "name": "Cuisine" },
       { "id": "64ad9554-d5e6-116c-8b0b-069c1f0b7885", "name": "Bedroom Mini" },
@@ -64,5 +65,11 @@
   },
   "kodi": { "transfer_targets": [] },
   "radio": { "source": "radio" },
-  "news": { "guardian_api_key": "test" }
+  "news": { "guardian_api_key": "test" },
+  "masterlink": {
+    "role": "master",
+    "ir": { "audio": true, "video": true },
+    "provider": { "nmusic_source": "", "nradio_source": "" },
+    "link": { "sources": [] }
+  }
 }

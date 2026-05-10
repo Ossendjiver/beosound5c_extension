@@ -50,10 +50,24 @@ Sources check the player's capabilities at startup to determine how to play cont
 
 Music Assistant can also be the configured `player.type`. In that mode BS5c monitors a target MASS player directly, exposes transport controls through the MASS websocket API, and can use the `hass` volume adapter for Home Assistant-driven zone volume.
 
+The MASS source now also has its own `mass.playback_mode` switch:
+- `remote`: keep the existing Music Assistant queue/player handoff
+- `local`: resolve directly playable MASS items and send them to the BS5c local player
+- `auto`: prefer local playback on wired/local outputs such as PowerLink, HDMI, SPDIF, and RCA; otherwise stay remote
+
+For `local` or local-leaning `auto` mode, `player.type` must still be `"local"` because only one player backend can own the shared player port at a time.
+
 **Config:**
 ```json
 "player": { "type": "mass", "ip": "musicassistant.local" },
-"volume": { "type": "hass", "output_name": "Music Assistant", "mlgw_step_multiplier": 2.0 }
+"volume": { "type": "hass", "output_name": "Music Assistant", "mlgw_step_multiplier": 2.0 },
+"mass": { "playback_mode": "remote" }
+```
+
+```json
+"player": { "type": "local" },
+"volume": { "type": "powerlink", "max": 70 },
+"mass": { "playback_mode": "local" }
 ```
 
 **Secrets / env:**
@@ -155,7 +169,7 @@ Sources provide content to the BS5c. Each source registers with the router and a
 | Apple Music | Sends Apple Music share URLs to player via `player_play(uri=...)`. Sonos uses patched ShareLink. Sonos only. | Player manages queue |
 | TIDAL | Sonos: sends TIDAL share URLs via `player_play(uri=...)` (ShareLink). BlueSound: resolves direct stream URLs via tidalapi `track.get_url()`, sends via `player_play(url=...)`. | Sonos: player manages queue. BlueSound: source manages queue (next/prev play new stream URLs) |
 | Plex | Builds direct stream URLs from Plex server. Sends to player via `player_play(url=...)`. Works with Sonos and BlueSound. | Source manages queue (next/prev build new URLs) |
-| MASS | Browses Music Assistant library data and sends play commands directly to the configured MASS queue/player. | Source manages queue and now-playing handoff |
+| MASS | Browses Music Assistant library data. In `remote` mode it sends play commands directly to the configured MASS queue/player. In `local` mode it resolves directly playable items and hands their stream URLs to the BS5c local player. | Source manages queue and now-playing handoff |
 | Kodi | Browses Kodi / LibreELEC video and live-TV libraries via JSON-RPC and opens items directly in Kodi. | Kodi manages queue / playlist playback |
 | CD | Local mpv playback from USB CD/DVD drive. Metadata from MusicBrainz. No player service needed. | Source manages tracks (mpv chapters) |
 | USB | Auto-detects: streams track URLs to player if `url_stream` available, otherwise local mpv. Supports BeoMaster 5 library databases and plain USB drives. Works with both players or standalone. | Source manages queue |
