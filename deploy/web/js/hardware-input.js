@@ -348,7 +348,8 @@ function getWebhookContext(page) {
 function handleButtonEvent(uiStore, data) {
     if (!data.button) return;
     const page = uiStore.currentRoute || 'unknown';
-    const button = data.button.toLowerCase();
+    const rawButton = data.button.toLowerCase();
+    const button = rawButton === 'go_hold' ? 'go_long' : rawButton;
     console.log(`[BUTTON] ${button} on ${page}`);
 
     // Global overlay intercept — camera overlay captures all buttons when active

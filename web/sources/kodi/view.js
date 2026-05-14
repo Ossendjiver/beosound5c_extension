@@ -58,68 +58,70 @@ const _kodiPlayingPreset = (() => {
             #now-playing.kodi-playing-active { position: relative; overflow: hidden; }
             #now-playing.kodi-playing-active.immersive-active { overflow: visible; }
             #now-playing.kodi-playing-active .kodi-playing-overlay {
-                position: absolute; inset: 0; display: flex; justify-content: flex-end;
+                position: absolute; inset: 0; display: flex; align-items: flex-start; justify-content: flex-end;
                 pointer-events: none; z-index: 3;
             }
             #now-playing.kodi-playing-active .kodi-playing-panel {
-                width: min(44%, 390px); height: 100%; margin-left: auto;
-                padding: 48px 42px 42px; display: flex; flex-direction: column;
-                justify-content: center;
-                background: linear-gradient(90deg, rgba(8, 10, 16, 0) 0%, rgba(8, 10, 16, 0.56) 20%, rgba(8, 10, 16, 0.9) 100%);
-                opacity: 0; transform: translateX(18px);
-                transition: opacity 180ms ease, transform 180ms ease;
+                width: min(500px, calc(100vw - 500px)); max-height: 72vh; margin: 8vh 54px 0 auto;
+                padding: 16px 18px 14px; display: flex; flex-direction: column;
+                justify-content: flex-start;
+                background: rgba(10, 10, 10, 0.84);
+                border: 1px solid rgba(255, 255, 255, 0.14);
+                border-radius: 24px;
+                box-shadow: 0 22px 48px rgba(0, 0, 0, 0.42);
+                backdrop-filter: blur(16px);
+                opacity: 0; transform: translateY(-8px);
+                transition: opacity 160ms ease, transform 160ms ease;
+                overflow: hidden; pointer-events: auto;
             }
             #now-playing.kodi-playing-active[data-kodi-page="transfer"] .kodi-playing-panel {
-                opacity: 1; transform: translateX(0);
+                opacity: 1; transform: translateY(0);
             }
             #now-playing.kodi-playing-active .kodi-playing-kicker {
-                font: 600 11px/1.2 Arial, sans-serif; letter-spacing: 2.8px;
-                text-transform: uppercase; color: rgba(160, 184, 222, 0.8);
-                margin-bottom: 14px;
+                font: 600 11px/1.2 Arial, sans-serif; letter-spacing: 1.8px;
+                text-transform: uppercase; color: rgba(255, 255, 255, 0.58);
+                margin-bottom: 6px;
             }
             #now-playing.kodi-playing-active .kodi-playing-heading {
-                font: 300 30px/1.08 Arial, sans-serif; color: #fff; margin-bottom: 14px;
+                font: 300 22px/1.12 Arial, sans-serif; color: #fff; margin-bottom: 8px;
             }
             #now-playing.kodi-playing-active .kodi-playing-copy {
-                min-height: 20px; font: 400 16px/1.55 Arial, sans-serif;
-                color: rgba(223, 232, 247, 0.82);
+                min-height: 0; margin-bottom: 6px; font: 400 11px/1.35 Arial, sans-serif;
+                color: rgba(255, 255, 255, 0.56);
+                white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
             }
             #now-playing.kodi-playing-active .kodi-playing-meta {
-                margin-top: 18px; font: 500 13px/1.5 Arial, sans-serif;
-                color: rgba(160, 184, 222, 0.78);
+                margin-bottom: 10px; font: 500 11px/1.25 Arial, sans-serif;
+                color: rgba(255, 255, 255, 0.45);
+                letter-spacing: 1.2px; text-transform: uppercase;
             }
             #now-playing.kodi-playing-active .kodi-transfer-options {
-                margin-top: 18px; display: flex; flex-direction: column; gap: 10px;
-                pointer-events: auto;
+                display: flex; flex-direction: column; gap: 4px;
+                max-height: 52vh; overflow-y: auto; padding-right: 2px; pointer-events: auto;
             }
+            #now-playing.kodi-playing-active .kodi-transfer-options::-webkit-scrollbar { display: none; }
             #now-playing.kodi-playing-active .kodi-transfer-option,
-            #now-playing.kodi-playing-active .kodi-transfer-action,
             #now-playing.kodi-playing-active .kodi-youtube-toggle {
-                width: 100%; min-height: 42px; border: 1px solid rgba(148, 199, 255, 0.26);
-                border-radius: 6px; background: rgba(255, 255, 255, 0.08);
+                width: 100%; min-height: 38px; border: 1px solid transparent;
+                border-radius: 12px; background: transparent;
                 color: #fff; font: 500 14px/1.2 Arial, sans-serif; text-align: left;
-                padding: 0 14px; touch-action: manipulation;
+                padding: 8px 10px; touch-action: manipulation;
             }
             #now-playing.kodi-playing-active .kodi-transfer-option.active {
-                background: rgba(148, 199, 255, 0.22);
-                border-color: rgba(158, 209, 255, 0.74);
+                box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.18);
             }
             #now-playing.kodi-playing-active .kodi-transfer-option.focused,
-            #now-playing.kodi-playing-active .kodi-transfer-action.focused,
             #now-playing.kodi-playing-active .kodi-youtube-toggle.focused {
-                border-color: rgba(255, 255, 255, 0.86);
-                box-shadow: 0 0 0 2px rgba(158, 209, 255, 0.34);
-            }
-            #now-playing.kodi-playing-active .kodi-transfer-action {
-                text-align: center; background: rgba(158, 209, 255, 0.18);
+                background: rgba(255, 255, 255, 0.14);
+                border-color: rgba(255, 255, 255, 0.28);
+                box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.28);
             }
             #now-playing.kodi-playing-active .kodi-youtube-toggle {
-                min-height: 46px; border-color: rgba(255, 255, 255, 0.16);
                 display: grid; grid-template-columns: 1fr 52px; gap: 12px; align-items: center;
             }
             #now-playing.kodi-playing-active .kodi-youtube-switch {
                 position: relative; width: 44px; height: 24px; border-radius: 999px;
-                background: rgba(255, 255, 255, 0.22); justify-self: end;
+                background: rgba(255, 255, 255, 0.18); justify-self: end;
             }
             #now-playing.kodi-playing-active .kodi-youtube-switch::after {
                 content: ""; position: absolute; left: 3px; top: 3px; width: 18px; height: 18px;
@@ -127,24 +129,13 @@ const _kodiPlayingPreset = (() => {
                 transition: transform 160ms ease;
             }
             #now-playing.kodi-playing-active .kodi-youtube-toggle.active .kodi-youtube-switch {
-                background: rgba(158, 209, 255, 0.72);
+                background: rgba(255, 255, 255, 0.36);
             }
             #now-playing.kodi-playing-active .kodi-youtube-toggle.active .kodi-youtube-switch::after {
                 transform: translateX(20px);
             }
             #now-playing.kodi-playing-active .kodi-playing-indicators {
-                position: absolute; left: 50%; bottom: 26px; transform: translateX(-50%);
-                display: flex; gap: 10px; z-index: 4; opacity: 0;
-                transition: opacity 180ms ease;
-            }
-            #now-playing.kodi-playing-active[data-kodi-page="transfer"] .kodi-playing-indicators {
-                opacity: 1;
-            }
-            #now-playing.kodi-playing-active .kodi-playing-indicator {
-                width: 8px; height: 8px; border-radius: 999px; background: rgba(255, 255, 255, 0.22);
-            }
-            #now-playing.kodi-playing-active .kodi-playing-indicator.active {
-                background: rgba(148, 199, 255, 0.95); transform: scale(1.45);
+                display: none;
             }
             #now-playing.kodi-playing-active .kodi-paused-overlay {
                 position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
@@ -196,33 +187,36 @@ const _kodiPlayingPreset = (() => {
         return targets[transferState.selectedIndex] || targets[0] || null;
     }
 
+    function openTransferMenu() {
+        if (!canShowTransferOverlay()) return false;
+        currentPageIndex = 1;
+        clampTransferFocus();
+        transferState.focusIndex = Math.min(
+            Math.max(0, transferState.selectedIndex || 0),
+            youtubeFocusIndex(),
+        );
+        transferState.message = '';
+        transferState.error = '';
+        if (mountedContainer) renderOverlay(mountedContainer);
+        return true;
+    }
+
+    function closeTransferMenu() {
+        currentPageIndex = 0;
+        if (mountedContainer) renderOverlay(mountedContainer);
+        return true;
+    }
+
     function stepTransferFocus(delta) {
-        if (!canShowTransferOverlay()) {
-            currentPageIndex = 0;
-            if (mountedContainer) renderOverlay(mountedContainer);
-            return;
-        }
+        if (currentPageIndex !== 1 || !canShowTransferOverlay()) return;
 
         const targets = transferTargets();
         const count = targets.length + 1;
-        if (!count) {
-            currentPageIndex = 1;
-            if (mountedContainer) renderOverlay(mountedContainer);
-            return;
-        }
-
-        if (currentPageIndex !== 1) {
-            currentPageIndex = 1;
-            transferState.focusIndex = delta < 0 ? count - 1 : 0;
-        } else {
-            const nextFocus = (transferState.focusIndex || 0) + delta;
-            if (nextFocus < 0 || nextFocus >= count) {
-                currentPageIndex = 0;
-                if (mountedContainer) renderOverlay(mountedContainer);
-                return;
-            }
-            transferState.focusIndex = nextFocus;
-        }
+        if (!count) return;
+        transferState.focusIndex = Math.max(
+            0,
+            Math.min(count - 1, (transferState.focusIndex || 0) + delta),
+        );
         if (transferState.focusIndex < targets.length) {
             transferState.selectedIndex = transferState.focusIndex;
         }
@@ -251,7 +245,6 @@ const _kodiPlayingPreset = (() => {
             return true;
         }
         const handled = toggleYoutubeVideos();
-        currentPageIndex = 0;
         if (mountedContainer) renderOverlay(mountedContainer);
         return handled;
     }
@@ -288,7 +281,6 @@ const _kodiPlayingPreset = (() => {
             if (event.target.closest('[data-youtube-toggle]')) {
                 transferState.focusIndex = youtubeFocusIndex();
                 toggleYoutubeVideos();
-                currentPageIndex = 0;
                 if (mountedContainer) renderOverlay(mountedContainer);
             }
         });
@@ -353,6 +345,11 @@ const _kodiPlayingPreset = (() => {
             <span class="kodi-youtube-switch"></span>
         `;
         targetsEl.appendChild(youtube);
+        requestAnimationFrame(() => {
+            targetsEl.querySelector('.focused')?.scrollIntoView({
+                block: 'nearest',
+            });
+        });
     }
 
     function renderOverlay(container) {
@@ -378,11 +375,12 @@ const _kodiPlayingPreset = (() => {
             metaEl.textContent = lastMedia.state ? `State: ${String(lastMedia.state).toUpperCase()}` : '';
             return;
         }
-        const selected = currentTransferTarget();
         copyEl.textContent = transferState.error || transferState.message || '';
-        metaEl.textContent = selected
-            ? `Selected: ${selected.name} - YouTube: ${youtubeVideosEnabled() ? 'On' : 'Off'}`
+        copyEl.hidden = !copyEl.textContent;
+        metaEl.textContent = transferTargets().length
+            ? 'GO Select   RIGHT Back'
             : 'Populate kodi.transfer_targets in config';
+        metaEl.hidden = !metaEl.textContent;
         renderTransferOptions(targetsEl);
     }
 
@@ -436,6 +434,7 @@ const _kodiPlayingPreset = (() => {
     }
 
     function cyclePage(data) {
+        if (currentPageIndex !== 1) return true;
         const now = Date.now();
         if (now - lastPageCycleAt < PAGE_CYCLE_COOLDOWN_MS) return true;
         lastPageCycleAt = now;
@@ -449,25 +448,29 @@ const _kodiPlayingPreset = (() => {
     function handleButton(button) {
         const normalized = String(button || '').toLowerCase();
         if (normalized === '__close_transfer_overlay__') {
-            currentPageIndex = 0;
-            if (mountedContainer) renderOverlay(mountedContainer);
-            return true;
+            return closeTransferMenu();
         }
-        if (currentPageIndex !== 1 || !canShowTransferOverlay()) return false;
-        if (normalized === 'left') {
+        if (currentPageIndex !== 1 || !canShowTransferOverlay()) {
+            if (normalized === 'left') {
+                return openTransferMenu();
+            }
+            return false;
+        }
+        if (normalized === 'right') {
+            return closeTransferMenu();
+        }
+        if (normalized === 'up') {
             stepTransferFocus(-1);
             return true;
         }
-        if (normalized === 'right') {
+        if (normalized === 'down') {
             stepTransferFocus(1);
             return true;
         }
         if (normalized === 'go') {
             return activateTransferFocus();
         }
-        if (normalized === 'up' || normalized === 'down') {
-            return toggleYoutubeVideos();
-        }
+        if (normalized === 'left') return true;
         return false;
     }
 

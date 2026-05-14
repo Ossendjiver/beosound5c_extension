@@ -82,6 +82,235 @@
             opacity: 1;
             transform: translateX(-50%) translateY(0);
         }
+
+        .options-view {
+            position: absolute;
+            inset: 0;
+            display: flex;
+            align-items: flex-start;
+            justify-content: center;
+            padding-top: 8vh;
+            z-index: 6;
+        }
+
+        .options-panel {
+            width: min(500px, calc(100vw - 500px));
+            max-height: 72vh;
+            padding: 16px 18px 14px;
+            border-radius: 24px;
+            background: rgba(10, 10, 10, 0.84);
+            border: 1px solid rgba(255, 255, 255, 0.14);
+            box-shadow: 0 22px 48px rgba(0, 0, 0, 0.42);
+            backdrop-filter: blur(16px);
+            color: #f4f4f4;
+            overflow: hidden;
+        }
+
+        .options-header {
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            gap: 18px;
+            margin-bottom: 10px;
+        }
+
+        .options-kicker {
+            color: rgba(255, 255, 255, 0.58);
+            font: 600 11px/1.2 Arial, sans-serif;
+            letter-spacing: 1.8px;
+            text-transform: uppercase;
+            margin-bottom: 6px;
+        }
+
+        .options-title {
+            color: #fff;
+            font: 300 22px/1.12 Arial, sans-serif;
+            letter-spacing: 0.4px;
+            margin: 0;
+        }
+
+        .options-subtitle {
+            color: rgba(255, 255, 255, 0.56);
+            font: 400 11px/1.35 Arial, sans-serif;
+            margin-top: 4px;
+            max-width: 280px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .options-hint {
+            flex: 0 0 auto;
+            color: rgba(255, 255, 255, 0.42);
+            font: 500 11px/1.25 Arial, sans-serif;
+            letter-spacing: 1.2px;
+            text-align: right;
+            text-transform: uppercase;
+        }
+
+        .options-list {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            max-height: 54vh;
+            overflow-y: auto;
+            padding-right: 2px;
+            scrollbar-width: none;
+        }
+
+        .options-list::-webkit-scrollbar {
+            display: none;
+        }
+
+        .options-entry {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            min-height: 36px;
+            padding: 8px 10px;
+            border-radius: 12px;
+            color: rgba(245, 245, 245, 0.92);
+            transition: background 120ms ease, box-shadow 120ms ease, color 120ms ease;
+        }
+
+        .options-entry.is-selected {
+            background: rgba(255, 255, 255, 0.14);
+            color: #ffffff;
+            box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.28);
+        }
+
+        .options-entry-icon {
+            width: 24px;
+            color: rgba(255, 255, 255, 0.68);
+            font-size: 18px;
+            text-align: center;
+            flex: 0 0 auto;
+        }
+
+        .options-entry-copy {
+            flex: 1 1 auto;
+            min-width: 0;
+        }
+
+        .options-entry-title {
+            color: inherit;
+            font: 500 14px/1.2 Arial, sans-serif;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .options-entry-subtitle {
+            display: none;
+        }
+
+        .options-entry-arrow {
+            color: rgba(255, 255, 255, 0.5);
+            font-size: 16px;
+            flex: 0 0 auto;
+        }
+
+        .page-view {
+            position: absolute;
+            inset: 0;
+            display: flex;
+            align-items: flex-start;
+            opacity: 0;
+            transition: opacity 300ms ease;
+            z-index: 5;
+        }
+
+        .page-view-scroll {
+            margin-left: 350px;
+            margin-right: 180px;
+            max-height: 80vh;
+            overflow-y: auto;
+            padding: 40px 0 52px;
+            scrollbar-width: none;
+        }
+
+        .page-view-scroll::-webkit-scrollbar {
+            display: none;
+        }
+
+        .page-view-title {
+            font-size: 1.5rem;
+            font-weight: 300;
+            letter-spacing: 1px;
+            color: #fff;
+            margin-bottom: 1.5rem;
+            line-height: 1.3;
+        }
+
+        .page-view-body {
+            font-size: 0.95rem;
+            line-height: 1.7;
+            color: rgba(255, 255, 255, 0.82);
+        }
+
+        .page-view.page-view-mass {
+            padding-top: 6vh;
+        }
+
+        .page-view.page-view-mass .page-view-scroll {
+            width: min(470px, calc(100vw - 560px));
+        }
+
+        .page-view.page-view-mass .page-view-body img {
+            width: 100%;
+            display: block;
+            margin-bottom: 1.25rem;
+            border-radius: 0.85rem;
+            box-shadow: 0 22px 44px rgba(0, 0, 0, 0.35);
+        }
+
+        .mass-detail-subtitle {
+            margin-bottom: 1.1rem;
+            color: #ffffff;
+            font-size: 1rem;
+            line-height: 1.45;
+        }
+
+        .mass-detail-section-label {
+            margin: 1.3rem 0 0.65rem;
+            color: rgba(160, 205, 255, 0.92);
+            font-size: 0.78rem;
+            letter-spacing: 1.6px;
+            text-transform: uppercase;
+        }
+
+        .mass-detail-empty {
+            color: rgba(255, 255, 255, 0.7);
+        }
+
+        .mass-detail-facts {
+            display: grid;
+            gap: 0.5rem;
+            margin: 0 0 1.2rem;
+        }
+
+        .mass-detail-fact {
+            display: grid;
+            grid-template-columns: 92px 1fr;
+            gap: 0.7rem;
+            align-items: start;
+        }
+
+        .mass-detail-fact-label {
+            color: rgba(160, 205, 255, 0.9);
+            text-transform: uppercase;
+            letter-spacing: 1.2px;
+            font-size: 0.74rem;
+        }
+
+        .mass-detail-fact-value {
+            color: rgba(255, 255, 255, 0.9);
+            line-height: 1.45;
+        }
+
+        .page-view.page-view-mass .page-view-body p {
+            margin-bottom: 0.95rem;
+        }
     </style>
 </head>
 <body>
@@ -457,6 +686,7 @@
             const serviceBaseUrl = massUrl || getServiceUrl('massServiceUrl', 8783);
             const sourceCommandUrl = serviceBaseUrl + '/command';
             const queueUrl = serviceBaseUrl + '/queue';
+            const itemInfoUrl = serviceBaseUrl + '/item_info';
             const FALLBACK_CARD_IMAGE = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNjQiIGhlaWdodD0iNjQiIHZpZXdCb3g9IjAgMCA2NCA2NCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPHJlY3Qgd2lkdGg9IjY0IiBoZWlnaHQ9IjY0IiBmaWxsPSIjMzMzMzMzIi8+Cjx0ZXh0IHg9IjMyIiB5PSI0MCIgZm9udC1mYW1pbHk9IkFyaWFsLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjI0IiBmaWxsPSIjZmZmZmZmIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIj7imqo8L3RleHQ+Cjwvc3ZnPgo=';
             const ROOT_ICON_STYLE = {
                 artists:   { icon: 'users-three', color: '#e05618' },
@@ -467,12 +697,20 @@
                 podcasts:  { icon: 'microphone', color: '#ff6b6b' },
                 mixes:     { icon: 'radio', color: '#e6ca19' },
             };
+            const ROOT_SECTION_IDS = new Set(['queue', 'artists', 'albums', 'songs', 'playlists', 'playlist_mixes', 'podcasts', 'mixes']);
+            const CROSS_SECTION_TARGET_IDS = new Set(['artists', 'albums', 'songs']);
             const cleanTitle = (value) => String(value || '').split('\n')[0].trim();
             const normalizeServiceImageUrl = (value) => {
                 const raw = String(value || '').trim();
                 if (!raw) return '';
                 return raw.startsWith('/art/') ? `${serviceBaseUrl}${raw}` : raw;
             };
+            const escapeHtml = (value) => String(value || '')
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
             const trackMetaByKey = new Map();
             let queueRootNode = null;
 
@@ -631,14 +869,9 @@
                 });
             };
 
-            // â”€â”€ Create ArcList with preloaded data via blob URL â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-            // We convert the preloaded data to a blob URL so ArcList's normal
-            // fetch path is used, but resolution is instant (no network round-trip).
-            const blob    = new Blob([JSON.stringify(preloadedData)], { type: 'application/json' });
-            const blobUrl = URL.createObjectURL(blob);
-
             const massConfig = {
-                dataSource:      blobUrl,
+                inlineData:      Array.isArray(preloadedData) ? preloadedData : [],
+                dataSource:      STATIC_CACHE_URL,
                 dataType:        'parent_child',
                 viewMode:        'hierarchical',
                 parentKey:       'tracks',
@@ -662,7 +895,9 @@
             const originalSaveState              = arcList.saveState?.bind(arcList);
             const originalDestroy                = arcList.destroy?.bind(arcList);
             const MASS_BROWSE_STATE_KEY          = `${massConfig.storagePrefix}_browse_state_v1`;
+            const MASS_SECTION_CONTEXT_KEY       = `${massConfig.storagePrefix}_section_context_v1`;
             let lastBrowseContextStamp           = 0;
+            let lastSectionBrowseContext         = null;
 
             arcList.createImageElement = function (item) {
                 if (item?.icon) {
@@ -718,8 +953,91 @@
                 .replace(/[^a-z0-9]+/g, ' ')
                 .trim();
 
+            const normalizeSectionContext = (context = {}) => {
+                const sourceContext = (context && typeof context === 'object') ? context : {};
+                const normalized = {
+                    source: String(sourceContext.source || 'mass').trim() || 'mass',
+                    ts: Number(sourceContext.ts || Date.now()) || Date.now(),
+                    root_id: String(sourceContext.root_id || '').trim(),
+                    artist: cleanTitle(sourceContext.artist || ''),
+                    album: cleanTitle(sourceContext.album || ''),
+                    title: cleanTitle(sourceContext.title || ''),
+                    selection_key: String(sourceContext.selection_key || '').trim(),
+                    selection_name: cleanTitle(sourceContext.selection_name || ''),
+                };
+                return (normalized.artist || normalized.album || normalized.title || normalized.selection_name)
+                    ? normalized
+                    : null;
+            };
+
+            const loadSectionBrowseContext = () => {
+                try {
+                    const raw = localStorage.getItem(MASS_SECTION_CONTEXT_KEY);
+                    return raw ? normalizeSectionContext(JSON.parse(raw)) : null;
+                } catch (error) {
+                    return null;
+                }
+            };
+
+            const storeSectionBrowseContext = (context) => {
+                const normalized = normalizeSectionContext(context);
+                if (!normalized) return null;
+                lastSectionBrowseContext = normalized;
+                try {
+                    localStorage.setItem(MASS_SECTION_CONTEXT_KEY, JSON.stringify(normalized));
+                } catch (error) {}
+                return normalized;
+            };
+
+            const getCurrentRootSectionId = () => {
+                if (folderStack.length) {
+                    return String(folderStack[0]?.item?.id || '').trim();
+                }
+                const currentId = String(getCurrentItem()?.id || '').trim();
+                return ROOT_SECTION_IDS.has(currentId) ? currentId : '';
+            };
+
+            const deriveSectionArtist = (item, rootId = '') => {
+                const metadata = getItemMeta(item);
+                const candidates = [];
+                if (rootId === 'artists') {
+                    candidates.push(cleanTitle(item?.name || ''));
+                }
+                candidates.push(
+                    String(item?.artist || '').trim(),
+                    String(metadata.artist || '').trim(),
+                    String(folderStack[folderStack.length - 1]?.item?.artist || '').trim(),
+                );
+                return candidates
+                    .map((value) => cleanTitle(value))
+                    .find(Boolean) || '';
+            };
+
+            const buildSectionBrowseContext = (item = getCurrentItem()) => {
+                const rootId = getCurrentRootSectionId();
+                if (!item || !rootId || !folderStack.length) return null;
+                const metadata = getItemMeta(item);
+                return normalizeSectionContext({
+                    source: 'mass',
+                    ts: Date.now(),
+                    root_id: rootId,
+                    artist: deriveSectionArtist(item, rootId),
+                    album: String(item?.album || metadata.album || '').trim(),
+                    title: cleanTitle(item?.name || item?.title || ''),
+                    selection_key: itemKey(item),
+                    selection_name: cleanTitle(item?.name || ''),
+                });
+            };
+
+            const rememberCurrentSectionBrowseContext = (item = getCurrentItem()) => {
+                const context = buildSectionBrowseContext(item);
+                if (!context) return null;
+                return storeSectionBrowseContext(context);
+            };
+
             const saveBrowseState = () => {
                 try {
+                    rememberCurrentSectionBrowseContext();
                     const current = getCurrentItem();
                     const payload = {
                         trail: folderStack.map((entry) => itemKey(entry.item)).filter(Boolean),
@@ -750,6 +1068,57 @@
                         return false;
                     }
                 });
+            };
+
+            const resolveSectionSelectionIndex = (rootId, childItems, context) => {
+                if (!Array.isArray(childItems) || !childItems.length) return -1;
+                const normalizedContext = normalizeSectionContext(context);
+                if (!normalizedContext) return -1;
+
+                const artistKey = normalizeLookup(normalizedContext.artist);
+                const albumKey = normalizeLookup(normalizedContext.album);
+                const titleKey = normalizeLookup(normalizedContext.title);
+                const sectionId = String(rootId || '').trim();
+
+                if (sectionId === 'artists') {
+                    if (!artistKey) return -1;
+                    return findItemIndex(childItems, (entry) => {
+                        const entryArtist = normalizeLookup(entry?.artist || entry?.name || getItemMeta(entry).artist);
+                        return !!entryArtist && entryArtist === artistKey;
+                    });
+                }
+
+                if (sectionId === 'albums') {
+                    if (artistKey) {
+                        const byArtist = findItemIndex(childItems, (entry) => {
+                            const entryArtist = normalizeLookup(entry?.artist || getItemMeta(entry).artist);
+                            return !!entryArtist && entryArtist === artistKey;
+                        });
+                        if (byArtist >= 0) return byArtist;
+                    }
+                    if (albumKey) {
+                        return findItemIndex(childItems, (entry) =>
+                            normalizeLookup(entry?.album || entry?.name || getItemMeta(entry).album) === albumKey);
+                    }
+                    return -1;
+                }
+
+                if (sectionId === 'songs') {
+                    if (artistKey) {
+                        const byArtist = findItemIndex(childItems, (entry) => {
+                            const entryArtist = normalizeLookup(entry?.artist || getItemMeta(entry).artist);
+                            return !!entryArtist && entryArtist === artistKey;
+                        });
+                        if (byArtist >= 0) return byArtist;
+                    }
+                    if (titleKey) {
+                        return findItemIndex(childItems, (entry) =>
+                            normalizeLookup(entry?.name || entry?.title) === titleKey);
+                    }
+                    return -1;
+                }
+
+                return -1;
             };
 
             const restoreBrowseState = (state) => {
@@ -856,6 +1225,7 @@
                 const applied = strategies.some((strategy) => focusMappedFolder(strategy.rootId, strategy.match));
                 if (applied) {
                     lastBrowseContextStamp = contextStamp || Date.now();
+                    storeSectionBrowseContext(context);
                 }
                 return applied;
             };
@@ -877,7 +1247,7 @@
                 });
             };
 
-            const buildNowPlayingPayload = (item) => {
+            const buildNowPlayingPayload = (item, pageData = null) => {
                 const ancestors = folderStack
                     .map(entry => entry.item?.name || '')
                     .filter(Boolean);
@@ -891,22 +1261,24 @@
                 const derivedAlbum = metadata.album
                     || item?.album
                     || (!isFolder ? immediateParent || '' : '');
-                const artwork = metadata.artwork || normalizeServiceImageUrl(item?.image || '');
+                const artwork = normalizeServiceImageUrl(pageData?.image || '')
+                    || metadata.artwork
+                    || normalizeServiceImageUrl(item?.image || '');
 
                 return {
-                    title: cleanTitle(item?.name),
-                    artist: derivedArtist,
-                    album: derivedAlbum,
+                    title: cleanTitle(pageData?.title || item?.name),
+                    artist: String(pageData?.artist || '').trim() || derivedArtist,
+                    album: String(pageData?.album || '').trim() || derivedAlbum,
                     artwork,
                     state: 'playing',
                 };
             };
 
-            const pushNowPlayingPayload = (item) => {
+            const pushNowPlayingPayload = (item, pageData = null) => {
                 try {
                     const parentStore = window.parent?.uiStore;
                     if (!item) return;
-                    const payload = buildNowPlayingPayload(item);
+                    const payload = buildNowPlayingPayload(item, pageData);
                     try {
                         window.sessionStorage?.setItem('bs5c_mass_now_playing', JSON.stringify(payload));
                     } catch (storageError) {}
@@ -921,6 +1293,483 @@
                 } catch (err) {
                     console.warn('[MASS] Unable to update PLAYING panel:', err);
                 }
+            };
+
+            const renderDetailParagraphs = (value) => {
+                const blocks = String(value || '')
+                    .split(/\n{2,}/)
+                    .map((entry) => entry.trim())
+                    .filter(Boolean);
+                if (!blocks.length) return '';
+                return blocks
+                    .map((entry) => `<p>${escapeHtml(entry).replace(/\n/g, '<br>')}</p>`)
+                    .join('');
+            };
+
+            const buildDetailFactsMarkup = (facts) => {
+                const rows = Array.isArray(facts) ? facts.filter((entry) =>
+                    entry && String(entry.label || '').trim() && String(entry.value || '').trim()) : [];
+                if (!rows.length) return '';
+                const body = rows.map((entry) => `
+                    <div class="mass-detail-fact">
+                        <div class="mass-detail-fact-label">${escapeHtml(entry.label)}</div>
+                        <div class="mass-detail-fact-value">${escapeHtml(entry.value)}</div>
+                    </div>
+                `).join('');
+                return `<div class="mass-detail-facts">${body}</div>`;
+            };
+
+            const buildFallbackDetailPage = (item) => {
+                const metadata = getItemMeta(item);
+                const title = cleanTitle(item?.name) || 'Info';
+                const image = normalizeServiceImageUrl(item?.image || metadata.artwork || '');
+                const artist = String(item?.artist || metadata.artist || '').trim();
+                const album = String(item?.album || metadata.album || '').trim();
+                const facts = [];
+                if (artist) facts.push({ label: 'Artist', value: artist });
+                if (album) facts.push({ label: 'Album', value: album });
+                return {
+                    title,
+                    subtitle: [artist, album].filter(Boolean).join(' • '),
+                    image,
+                    facts,
+                    description_label: '',
+                    description: 'Live item details are unavailable right now, but playback is still available from this selection.',
+                    play_uri: String(item?.url || item?.play_url || '').trim(),
+                    artist,
+                    album,
+                };
+            };
+
+            let detailState = null;
+            let detailRequestId = 0;
+            let optionsState = null;
+
+            const getDetailSpec = (item) => {
+                const isLeaf = item && (!Array.isArray(item.tracks) || item.tracks.length === 0);
+                const uri = String(item?.url || item?.play_url || '').trim();
+                if (!isLeaf || !uri) return null;
+                return {
+                    uri,
+                    loadingLabel: 'item',
+                    emptyLabel: 'item',
+                };
+            };
+
+            const clearPageView = () => {
+                arcList.container?.querySelectorAll('.page-view, .options-view').forEach((node) => node.remove());
+            };
+
+            const setDetailCounter = () => {
+                if (arcList.currentItemDisplay) arcList.currentItemDisplay.textContent = '';
+                if (arcList.totalItemsDisplay) arcList.totalItemsDisplay.textContent = '';
+            };
+
+            const renderDetailPage = () => {
+                if (!detailState || !arcList.container) return;
+                clearPageView();
+                arcList.container.querySelectorAll('.arc-item:not(.mass-breadcrumb)').forEach((node) => node.remove());
+                renderBreadcrumbs();
+
+                const page = document.createElement('div');
+                page.className = 'page-view page-view-mass';
+                page.style.opacity = '1';
+
+                const scroll = document.createElement('div');
+                scroll.className = 'page-view-scroll';
+
+                const title = document.createElement('h2');
+                title.className = 'page-view-title';
+                title.textContent = detailState.page?.title || cleanTitle(detailState.item?.name) || 'Info';
+
+                const body = document.createElement('div');
+                body.className = 'page-view-body';
+
+                if (detailState.loading) {
+                    body.innerHTML = `<p>Loading ${detailState.spec?.loadingLabel || 'item'} information from MASS...</p>`;
+                } else {
+                    const image = normalizeServiceImageUrl(detailState.page?.image || '');
+                    const subtitle = String(detailState.page?.subtitle || '').trim();
+                    const factsMarkup = buildDetailFactsMarkup(detailState.page?.facts);
+                    const description = String(detailState.page?.description || '').trim();
+                    const descriptionLabel = String(detailState.page?.description_label || '').trim();
+                    const content = [];
+                    if (image) {
+                        content.push(`<img src="${escapeHtml(image)}" alt="${escapeHtml(detailState.page?.title || detailState.item?.name || 'Artwork')}">`);
+                    }
+                    if (subtitle) {
+                        content.push(`<p class="mass-detail-subtitle">${escapeHtml(subtitle)}</p>`);
+                    }
+                    if (factsMarkup) {
+                        content.push(factsMarkup);
+                    }
+                    if (description) {
+                        if (descriptionLabel) {
+                            content.push(`<div class="mass-detail-section-label">${escapeHtml(descriptionLabel)}</div>`);
+                        }
+                        content.push(renderDetailParagraphs(description));
+                    } else {
+                        content.push('<p class="mass-detail-empty">No extra information is available for this item yet.</p>');
+                    }
+                    body.innerHTML = content.join('');
+                }
+
+                scroll.appendChild(title);
+                scroll.appendChild(body);
+                page.appendChild(scroll);
+                arcList.container.appendChild(page);
+                detailState.scrollEl = scroll;
+                detailState.pageEl = page;
+                setDetailCounter();
+            };
+
+            const closeDetailPage = () => {
+                if (!detailState) return false;
+                detailRequestId += 1;
+                detailState = null;
+                clearPageView();
+                refreshList();
+                return true;
+            };
+
+            const openDetailPage = async (item) => {
+                const spec = getDetailSpec(item);
+                if (!spec) return false;
+                const safeItem = childNameMapper(item || {}, 0, [item || {}]);
+                if (detailState?.item?.id === safeItem.id && !detailState.loading) return true;
+
+                detailRequestId += 1;
+                const requestId = detailRequestId;
+                detailState = {
+                    item: safeItem,
+                    spec,
+                    loading: true,
+                    page: buildFallbackDetailPage(safeItem),
+                    scrollEl: null,
+                    pageEl: null,
+                };
+                renderDetailPage();
+
+                try {
+                    const response = await fetch(`${itemInfoUrl}?uri=${encodeURIComponent(spec.uri)}`, { cache: 'no-store' });
+                    let payload = null;
+                    try {
+                        payload = await response.json();
+                    } catch (error) {}
+                    if (requestId !== detailRequestId || !detailState) return true;
+
+                    if (!response.ok || !payload || payload.state === 'error') {
+                        throw new Error(payload?.error || `item_info_${response.status}`);
+                    }
+
+                    detailState.loading = false;
+                    detailState.page = Object.assign({}, buildFallbackDetailPage(safeItem), {
+                        title: cleanTitle(payload.title || safeItem.name || 'Info'),
+                        subtitle: String(payload.subtitle || '').trim(),
+                        image: normalizeServiceImageUrl(payload.image || ''),
+                        facts: Array.isArray(payload.facts) ? payload.facts : [],
+                        description_label: String(payload.description_label || '').trim(),
+                        description: String(payload.description || '').trim(),
+                        play_uri: String(payload.play_uri || spec.uri || '').trim(),
+                        artist: String(payload.artist || '').trim(),
+                        album: String(payload.album || '').trim(),
+                    });
+                } catch (error) {
+                    if (requestId !== detailRequestId || !detailState) return false;
+                    detailState.loading = false;
+                    detailState.page = buildFallbackDetailPage(safeItem);
+                    console.warn('[MASS] Detail request failed:', spec.uri, error);
+                }
+
+                renderDetailPage();
+                return true;
+            };
+
+            const massUriLooksLikeRadio = (value) => /radio:\/\/|\/radio\/|radios\//i.test(String(value || '').trim());
+
+            const dismissOptionsMenu = (refresh = true) => {
+                if (!optionsState) return false;
+                optionsState = null;
+                clearPageView();
+                if (refresh) refreshList();
+                return true;
+            };
+
+            const closeOptionsMenu = () => {
+                if (!optionsState) return false;
+                if (optionsState.parent) {
+                    optionsState = optionsState.parent;
+                    renderOptionsPage();
+                    return true;
+                }
+                return dismissOptionsMenu(true);
+            };
+
+            const setOptionsSelection = (index) => {
+                if (!optionsState || !Array.isArray(optionsState.entries) || !optionsState.entries.length) return;
+                const maxIndex = optionsState.entries.length - 1;
+                const nextIndex = Math.max(0, Math.min(maxIndex, Math.round(index || 0)));
+                if (nextIndex === optionsState.currentIndex) return;
+                optionsState.currentIndex = nextIndex;
+                renderOptionsPage();
+            };
+
+            const moveOptionsSelection = (delta) => {
+                if (!optionsState || !Array.isArray(optionsState.entries) || !optionsState.entries.length) return;
+                setOptionsSelection((optionsState.currentIndex || 0) + delta);
+            };
+
+            const focusArtistFromItem = (item) => {
+                const artistKey = normalizeLookup(deriveSectionArtist(item, getCurrentRootSectionId()) || getItemMeta(item).artist || item?.artist);
+                if (!artistKey) return false;
+                return focusMappedFolder('artists', (entry) => {
+                    const entryArtist = normalizeLookup(entry?.artist || entry?.name || getItemMeta(entry).artist);
+                    return !!entryArtist && entryArtist === artistKey;
+                });
+            };
+
+            const focusAlbumFromItem = (item) => {
+                const metadata = getItemMeta(item);
+                const artistKey = normalizeLookup(deriveSectionArtist(item, getCurrentRootSectionId()) || metadata.artist || item?.artist);
+                const albumKey = normalizeLookup(item?.album || metadata.album || item?.name);
+                return focusMappedFolder('albums', (entry) => {
+                    const entryArtist = normalizeLookup(entry?.artist || getItemMeta(entry).artist);
+                    const entryAlbum = normalizeLookup(entry?.album || entry?.name || getItemMeta(entry).album);
+                    if (albumKey && entryAlbum === albumKey) {
+                        return !artistKey || !entryArtist || entryArtist === artistKey;
+                    }
+                    if (artistKey) {
+                        return !!entryArtist && entryArtist === artistKey;
+                    }
+                    return false;
+                });
+            };
+
+            const resolvePlaylistTargets = () => {
+                const playlistRoot = rootItems().find((entry) => String(entry?.id || '').trim() === 'playlists');
+                if (!playlistRoot) return [];
+                return mapChildrenForParent(playlistRoot).filter((entry) =>
+                    String(entry?.url || entry?.play_url || '').trim());
+            };
+
+            const openOptionsSubmenu = (item, title, subtitle, entries) => {
+                const safeEntries = Array.isArray(entries) ? entries.filter(Boolean) : [];
+                if (!safeEntries.length) {
+                    showActionToast('No options available', { preserveTiming: true });
+                    settleActionToast();
+                    return false;
+                }
+                optionsState = {
+                    item,
+                    title,
+                    subtitle,
+                    entries: safeEntries,
+                    currentIndex: 0,
+                    parent: optionsState,
+                };
+                renderOptionsPage();
+                return true;
+            };
+
+            const buildMassOptionsEntries = (item) => {
+                const safeItem = childNameMapper(item || {}, 0, [item || {}]);
+                const metadata = getItemMeta(safeItem);
+                const uri = String(safeItem?.url || safeItem?.play_url || '').trim();
+                const artist = cleanTitle(deriveSectionArtist(safeItem, getCurrentRootSectionId()) || metadata.artist || safeItem?.artist || '');
+                const album = cleanTitle(safeItem?.album || metadata.album || '');
+                const playlistTargets = resolvePlaylistTargets();
+                const isRadioItem = massUriLooksLikeRadio(uri);
+                const isLeaf = !Array.isArray(safeItem?.tracks) || safeItem.tracks.length === 0;
+                const canInspect = !!getDetailSpec(safeItem);
+                const entries = [
+                    {
+                        id: 'play_now',
+                        icon: 'play-circle',
+                        title: 'Play Now',
+                        onSelect: async () => {
+                            dismissOptionsMenu(false);
+                            await arcList.sendGoWebhook('play_now', safeItem);
+                            refreshList();
+                        },
+                    },
+                    !isRadioItem ? {
+                        id: 'play_radio',
+                        icon: 'broadcast',
+                        title: 'Start Radio',
+                        onSelect: async () => {
+                            dismissOptionsMenu(false);
+                            await arcList.sendGoWebhook('play_radio', safeItem);
+                            refreshList();
+                        },
+                    } : null,
+                    {
+                        id: 'play_next',
+                        icon: 'queue',
+                        title: 'Play Next',
+                        onSelect: async () => {
+                            dismissOptionsMenu(false);
+                            await arcList.sendGoWebhook('play_next', safeItem);
+                            refreshList();
+                        },
+                    },
+                    {
+                        id: 'queue_item',
+                        icon: 'list-plus',
+                        title: 'Add to Queue',
+                        onSelect: async () => {
+                            dismissOptionsMenu(false);
+                            await arcList.sendGoWebhook('queue_item', safeItem);
+                            refreshList();
+                        },
+                    },
+                    canInspect ? {
+                        id: 'info',
+                        icon: 'info',
+                        title: 'Show Information',
+                        onSelect: async () => {
+                            dismissOptionsMenu(false);
+                            await openDetailPage(safeItem);
+                        },
+                    } : null,
+                    artist ? {
+                        id: 'goto_artist',
+                        icon: 'user-circle',
+                        title: `Go to Artist`,
+                        onSelect: () => {
+                            dismissOptionsMenu(false);
+                            if (!focusArtistFromItem(safeItem)) {
+                                refreshList();
+                                showActionToast('Artist not available', { preserveTiming: true });
+                                settleActionToast();
+                                return;
+                            }
+                            refreshList();
+                        },
+                    } : null,
+                    (album || artist) ? {
+                        id: 'goto_album',
+                        icon: 'vinyl-record',
+                        title: 'Go to Album',
+                        onSelect: () => {
+                            dismissOptionsMenu(false);
+                            if (!focusAlbumFromItem(safeItem)) {
+                                refreshList();
+                                showActionToast('Album not available', { preserveTiming: true });
+                                settleActionToast();
+                                return;
+                            }
+                            refreshList();
+                        },
+                    } : null,
+                    {
+                        id: 'favorite_add',
+                        icon: 'heart',
+                        title: 'Add to Favorites',
+                        onSelect: async () => {
+                            dismissOptionsMenu(false);
+                            await arcList.sendGoWebhook('favorite_add', safeItem);
+                            refreshList();
+                        },
+                    },
+                    playlistTargets.length ? {
+                        id: 'playlist_add',
+                        icon: 'plus-circle',
+                        title: 'Add to Playlist...',
+                        submenu: true,
+                        onSelect: () => openOptionsSubmenu(
+                            safeItem,
+                            'Add to Playlist',
+                            cleanTitle(safeItem?.name || 'Music Assistant'),
+                            playlistTargets.map((playlist) => ({
+                                id: `playlist_${playlist.id || playlist.url || playlist.name}`,
+                                icon: 'music-notes-plus',
+                                title: cleanTitle(playlist.name || 'Playlist'),
+                                onSelect: async () => {
+                                    dismissOptionsMenu(false);
+                                    await arcList.sendGoWebhook('playlist_add', safeItem, {
+                                        target_playlist_uri: String(playlist.url || playlist.play_url || '').trim(),
+                                    });
+                                    refreshList();
+                                },
+                            })),
+                        ),
+                    } : null,
+                ];
+
+                return entries.filter(Boolean);
+            };
+
+            const showOptionsForItem = (item = detailState?.item || getCurrentItem()) => {
+                const safeItem = childNameMapper(item || {}, 0, [item || {}]);
+                const entries = buildMassOptionsEntries(safeItem);
+                if (!entries.length) return false;
+                optionsState = {
+                    item: safeItem,
+                    title: 'Item Options',
+                    subtitle: cleanTitle(safeItem?.name || 'Music Assistant'),
+                    entries,
+                    currentIndex: 0,
+                    parent: null,
+                };
+                renderOptionsPage();
+                return true;
+            };
+
+            const activateSelectedOption = async () => {
+                const entry = optionsState?.entries?.[optionsState?.currentIndex || 0];
+                if (!entry || typeof entry.onSelect !== 'function') return false;
+                await entry.onSelect();
+                return true;
+            };
+
+            const renderOptionsPage = () => {
+                if (!optionsState || !arcList.container) return;
+                clearPageView();
+                arcList.container.querySelectorAll('.arc-item:not(.mass-breadcrumb)').forEach((node) => node.remove());
+                renderBreadcrumbs();
+
+                const page = document.createElement('div');
+                page.className = 'options-view';
+
+                const panel = document.createElement('div');
+                panel.className = 'options-panel';
+
+                const header = document.createElement('div');
+                header.className = 'options-header';
+                header.innerHTML = `
+                    <div>
+                        <div class="options-kicker">${escapeHtml(optionsState.parent ? 'Submenu' : 'Hold GO')}</div>
+                        <h2 class="options-title">${escapeHtml(optionsState.title || 'Options')}</h2>
+                        <div class="options-subtitle">${escapeHtml(optionsState.subtitle || '')}</div>
+                    </div>
+                    <div class="options-hint">GO Select<br>RIGHT Back</div>
+                `;
+
+                const list = document.createElement('div');
+                list.className = 'options-list';
+                optionsState.entries.forEach((entry, index) => {
+                    const row = document.createElement('div');
+                    row.className = `options-entry${index === optionsState.currentIndex ? ' is-selected' : ''}`;
+                    row.innerHTML = `
+                        <div class="options-entry-icon"><i class="ph ph-${escapeHtml(entry.icon || 'dots-three')}"></i></div>
+                        <div class="options-entry-copy">
+                            <div class="options-entry-title">${escapeHtml(entry.title || 'Option')}</div>
+                        </div>
+                        <div class="options-entry-arrow">${entry.submenu ? '&#8250;' : ''}</div>
+                    `;
+                    list.appendChild(row);
+                });
+
+                panel.appendChild(header);
+                panel.appendChild(list);
+                page.appendChild(panel);
+                arcList.container.appendChild(page);
+                requestAnimationFrame(() => {
+                    list.querySelector('.options-entry.is-selected')?.scrollIntoView({
+                        block: 'nearest',
+                    });
+                });
+                setDetailCounter();
             };
 
             const getFastLetter = (value) => {
@@ -949,11 +1798,14 @@
             const renderBreadcrumbs = () => {
                 if (!arcList.container) return;
                 arcList.container.querySelectorAll('.mass-breadcrumb').forEach(n => n.remove());
-                if (!folderStack.length) return;
+                const crumbEntries = folderStack.map((entry) => ({ item: entry.item }));
+                if (detailState?.item) crumbEntries.push({ item: detailState.item });
+                else if (optionsState?.item) crumbEntries.push({ item: optionsState.item });
+                if (!crumbEntries.length) return;
 
-                const visibleAncestors = folderStack.slice(-3);
-                visibleAncestors.forEach((entry, idx) => {
-                    const depthFromCurrent  = visibleAncestors.length - 1 - idx;
+                const visibleAncestors = crumbEntries.slice(-3);
+                visibleAncestors.forEach((entry, idx, visible) => {
+                    const depthFromCurrent  = visible.length - 1 - idx;
                     const isImmediateParent = depthFromCurrent === 0;
                     const scale = isImmediateParent
                         ? 0.82
@@ -961,7 +1813,7 @@
                     const x = -250 - depthFromCurrent * 120;
                     const y = isImmediateParent
                         ? 0
-                        : (idx - (visibleAncestors.length - 1) / 2) * 56;
+                        : (idx - (visible.length - 1) / 2) * 56;
 
                     const crumb = document.createElement('div');
                     crumb.className = `arc-item mass-breadcrumb${isImmediateParent ? ' breadcrumb selected' : ''}`;
@@ -1027,6 +1879,17 @@
             };
 
             const refreshList = () => {
+                if (optionsState) {
+                    renderOptionsPage();
+                    saveBrowseState();
+                    return;
+                }
+                if (detailState) {
+                    renderDetailPage();
+                    saveBrowseState();
+                    return;
+                }
+                clearPageView();
                 arcList.viewMode      = 'single';
                 arcList.selectedParent = null;
                 arcList.currentIndex  = clampIndex(arcList.items, arcList.currentIndex);
@@ -1062,6 +1925,8 @@
                 const current = getCurrentItem();
                 if (!current || !Array.isArray(current.tracks) || current.tracks.length === 0)
                     return false;
+                const enteringFromRoot = folderStack.length === 0;
+                const rootId = String(current.id || '').trim();
 
                 folderStack.push({
                     item:         current,
@@ -1071,14 +1936,22 @@
                 });
 
                 arcList.items        = mapChildrenForParent(current);
-                arcList.currentIndex = 0;
-                arcList.targetIndex  = 0;
+                let nextIndex = 0;
+                if (enteringFromRoot && CROSS_SECTION_TARGET_IDS.has(rootId)) {
+                    const contextualIndex = resolveSectionSelectionIndex(rootId, arcList.items, lastSectionBrowseContext);
+                    if (contextualIndex >= 0) {
+                        nextIndex = contextualIndex;
+                    }
+                }
+                arcList.currentIndex = clampIndex(arcList.items, nextIndex);
+                arcList.targetIndex  = arcList.currentIndex;
                 refreshList();
                 console.log('[MASS] Entered folder:', current.name);
                 return true;
             };
 
             const exitFolder = () => {
+                rememberCurrentSectionBrowseContext();
                 const previous = folderStack.pop();
                 if (!previous) return false;
 
@@ -1094,6 +1967,15 @@
             // â”€â”€ Override ArcList methods â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
             arcList.render = function () {
+                if (optionsState) {
+                    renderOptionsPage();
+                    return;
+                }
+                if (detailState) {
+                    renderDetailPage();
+                    return;
+                }
+                clearPageView();
                 if (typeof originalRender === 'function') originalRender();
                 renderBreadcrumbs();
             };
@@ -1115,73 +1997,84 @@
             // GO = PLAY (leaf via `url`, folder via `play_url`)
             // LEFT = navigate INTO folder
             // RIGHT = navigate OUT of folder
-            arcList.sendGoWebhook = async function (command = 'play_item') {
-                const current = getCurrentItem();
+            arcList.sendGoWebhook = async function (command = 'play_item', itemOverride = null, extraPayload = {}) {
+                const current = itemOverride || detailState?.item || optionsState?.item || getCurrentItem();
                 if (!current) return;
+                if (detailState?.loading) return;
 
-                // Resolve playback URI: leaf has `url`, folder has `play_url`
-                const playUri = current.url || current.play_url;
+                const playUri = String(
+                    extraPayload.url
+                    || extraPayload.play_url
+                    || detailState?.page?.play_uri
+                    || current.url
+                    || current.play_url
+                    || ''
+                ).trim();
 
-                if (!playUri) {
+                if (!playUri && !['favorite_add', 'playlist_add'].includes(command)) {
                     console.warn('[MASS] No playback URI for item:', current.name);
                     return;
                 }
 
                 if (typeof arcList.snapToNearest === 'function') arcList.snapToNearest();
 
-                const pendingMessage = command === 'play_now' ? 'Starting playback' : 'Adding to queue…';
-                const errorMessage = command === 'play_now' ? 'Error starting playback' : 'Error adding to queue';
-                showActionToast(pendingMessage);
+                const commandMessages = {
+                    play_item:    { pending: 'Adding to queue…', error: 'Error adding to queue', queued: 'Added to queue', playing: 'Starting playback' },
+                    play_now:     { pending: 'Starting playback', error: 'Error starting playback', queued: 'Queued for immediate playback', playing: 'Starting playback' },
+                    play_next:    { pending: 'Queueing next…', error: 'Error queueing next', queued: 'Queued to play next', playing: 'Queued to play next' },
+                    queue_item:   { pending: 'Adding to queue…', error: 'Error adding to queue', queued: 'Added to queue', playing: 'Added to queue' },
+                    play_radio:   { pending: 'Starting radio…', error: 'Error starting radio', queued: 'Starting radio', playing: 'Starting radio' },
+                    favorite_add: { pending: 'Adding to favorites…', error: 'Error adding to favorites', favorited: 'Added to favorites' },
+                    playlist_add: { pending: 'Adding to playlist…', error: 'Error adding to playlist', playlist_added: 'Added to playlist' },
+                };
+                const copy = commandMessages[command] || commandMessages.play_item;
+                const payload = Object.assign({
+                    command,
+                    id: current.id || '',
+                    url: current.url || '',
+                    play_url: current.play_url || '',
+                }, extraPayload || {});
+
+                showActionToast(copy.pending);
 
                 try {
                     const response = await fetch(sourceCommandUrl, {
                         method:  'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body:    JSON.stringify({
-                            command,
-                            id: current.id || '',
-                            url: current.url || '',
-                            play_url: current.play_url || '',
-                        }),
+                        body:    JSON.stringify(payload),
                     });
                     let result = null;
                     try {
                         result = await response.json();
                     } catch (e) {}
                     if (!response.ok) {
-                        showActionToast(errorMessage, { preserveTiming: true });
+                        showActionToast(copy.error, { preserveTiming: true });
                         settleActionToast();
-                        console.warn('[MASS] Play command failed:', response.status);
-                    } else if (result?.state === 'error') {
-                        showActionToast(errorMessage, { preserveTiming: true });
-                        settleActionToast();
-                        console.warn('[MASS] Service rejected play:', result);
-                    } else if (command === 'play_now') {
-                        showActionToast('Starting playback', { preserveTiming: true });
-                        pushNowPlayingPayload(current);
-                        await refreshQueueRoot(false);
-                        settleActionToast();
-                        if (result?.state === 'queued') {
-                            console.log('[MASS] Queued for immediate playback:', current.name, '→', playUri, result);
-                        } else {
-                            console.log('[MASS] Starting now:', current.name, '→', playUri, result);
-                        }
-                    } else if (result?.state === 'queued') {
-                        showActionToast('Added to queue', { preserveTiming: true });
-                        await refreshQueueRoot(false);
-                        settleActionToast();
-                        console.log('[MASS] Queued:', current.name, '→', playUri, result);
-                    } else {
-                        showActionToast('Starting playback', { preserveTiming: true });
-                        await refreshQueueRoot(false);
-                        settleActionToast();
-                        pushNowPlayingPayload(current);
-                        console.log('[MASS] Playing:', current.name, '→', playUri, command);
+                        console.warn('[MASS] Command failed:', response.status);
+                        return;
                     }
-                } catch (err) {
-                    showActionToast(errorMessage, { preserveTiming: true });
+                    if (result?.state === 'error') {
+                        showActionToast(copy.error, { preserveTiming: true });
+                        settleActionToast();
+                        console.warn('[MASS] Service rejected command:', result);
+                        return;
+                    }
+
+                    const state = String(result?.state || '').trim().toLowerCase();
+                    const successMessage = copy[state] || copy.playing || copy.queued || copy.pending;
+                    showActionToast(successMessage, { preserveTiming: true });
+                    if (state === 'playing' || command === 'play_now' || command === 'play_radio') {
+                        pushNowPlayingPayload(current, detailState?.page || null);
+                    }
+                    if (state === 'queued' || state === 'playing' || state === 'playlist_added') {
+                        await refreshQueueRoot(false);
+                    }
                     settleActionToast();
-                    console.warn('[MASS] Play command error:', err);
+                    console.log('[MASS] Command complete:', command, current.name, '→', playUri, result);
+                } catch (err) {
+                    showActionToast(copy.error, { preserveTiming: true });
+                    settleActionToast();
+                    console.warn('[MASS] Command error:', err);
                 }
             };
 
@@ -1192,15 +2085,38 @@
 
             arcList.handleButtonFromParent = function (button) {
                 const normalized = String(button || '').toLowerCase();
-                // LEFT = enter folder (drill down)
-                if (normalized === 'left')  { clearPendingGoPress(); if (enterFolder()) return; }
-                // RIGHT = exit folder (go back)
+                if (optionsState) {
+                    if (normalized === 'left') {
+                        const entry = optionsState.entries?.[optionsState.currentIndex || 0];
+                        if (entry?.submenu && typeof entry.onSelect === 'function') {
+                            return entry.onSelect();
+                        }
+                    }
+                    if (normalized === 'right') { if (closeOptionsMenu()) return; }
+                    if (normalized === 'go') { return activateSelectedOption(); }
+                    if (normalized === 'go_long' || normalized === 'go_hold') return;
+                    return;
+                }
+                if (detailState) {
+                    if (normalized === 'right') { if (closeDetailPage()) return; }
+                    if (normalized === 'go_long' || normalized === 'go_hold') {
+                        clearPendingGoPress();
+                        return showOptionsForItem(detailState.item);
+                    }
+                    if (normalized === 'go') { return schedulePlayCommand(); }
+                    return;
+                }
+                if (normalized === 'left')  {
+                    clearPendingGoPress();
+                    const current = getCurrentItem();
+                    if (current && getDetailSpec(current)) { openDetailPage(current); return; }
+                    if (enterFolder()) return;
+                }
                 if (normalized === 'right') { clearPendingGoPress(); if (exitFolder())  return; }
                 if (normalized === 'go_long' || normalized === 'go_hold') {
                     clearPendingGoPress();
-                    return arcList.sendGoWebhook('play_now');
+                    return showOptionsForItem();
                 }
-                // GO = start playback when idle, otherwise add to queue.
                 if (normalized === 'go')    { return schedulePlayCommand(); }
                 clearPendingGoPress();
                 if (originalHandleButtonFromParent) originalHandleButtonFromParent(button);
@@ -1208,13 +2124,55 @@
 
             arcList.handleKeyPress = function (e) {
                 clearPendingGoPress();
-                if (e.key === 'ArrowLeft')  { if (enterFolder()) return; }
+                if (optionsState) {
+                    if (e.key === 'ArrowUp') { moveOptionsSelection(-1); return; }
+                    if (e.key === 'ArrowDown') { moveOptionsSelection(1); return; }
+                    if (e.key === 'ArrowLeft') {
+                        const entry = optionsState.entries?.[optionsState.currentIndex || 0];
+                        if (entry?.submenu && typeof entry.onSelect === 'function') {
+                            return entry.onSelect();
+                        }
+                        return;
+                    }
+                    if (e.key === 'ArrowRight' || e.key === 'Escape' || e.key === 'Backspace') { if (closeOptionsMenu()) return; }
+                    if (e.key === 'Enter') { return activateSelectedOption(); }
+                    return;
+                }
+                if (detailState) {
+                    if (e.key === 'ArrowUp')    { if (detailState.scrollEl) detailState.scrollEl.scrollTop -= 42; return; }
+                    if (e.key === 'ArrowDown')  { if (detailState.scrollEl) detailState.scrollEl.scrollTop += 42; return; }
+                    if (e.key === 'ArrowRight') { if (closeDetailPage()) return; }
+                    if (e.key === 'Enter')      { return arcList.sendGoWebhook('play_item'); }
+                    return;
+                }
+                if (e.key === 'ArrowLeft')  {
+                    const current = getCurrentItem();
+                    if (current && getDetailSpec(current)) { openDetailPage(current); return; }
+                    if (enterFolder()) return;
+                }
                 if (e.key === 'ArrowRight') { if (exitFolder())  return; }
                 if (e.key === 'Enter')      { return arcList.sendGoWebhook('play_item'); }
                 if (originalHandleKeyPress) originalHandleKeyPress(e);
             };
 
             arcList.handleNavFromParent = function (data) {
+                if (optionsState) {
+                    const direction = data?.direction;
+                    if (direction === 'clock') moveOptionsSelection(1);
+                    else if (direction === 'counter') moveOptionsSelection(-1);
+                    return;
+                }
+                if (detailState?.scrollEl) {
+                    const direction = data?.direction;
+                    const speed = Math.max(1, Number(data?.speed || 1));
+                    const delta = speed * 8;
+                    if (direction === 'clock') {
+                        detailState.scrollEl.scrollTop += delta;
+                    } else if (direction === 'counter') {
+                        detailState.scrollEl.scrollTop -= delta;
+                    }
+                    return;
+                }
                 if (originalHandleNavFromParent) {
                     originalHandleNavFromParent(data);
                 }
@@ -1232,6 +2190,7 @@
                 arcList.items         = rootItems();
                 arcList.currentIndex  = 0;
                 arcList.targetIndex   = 0;
+                lastSectionBrowseContext = loadSectionBrowseContext();
                 restoreBrowseState(loadBrowseState());
                 refreshList();
                 requestAnimationFrame(() => refreshList());

@@ -1871,6 +1871,232 @@ class KodiSource(SourceBase):
             return {"file": file_path}
         return KodiSource._playlist_item_ref(item)
 
+    @staticmethod
+    def _parse_kodi_uri(uri):
+        text = str(uri or "").strip()
+        if not text.startswith("kodi://"):
+            return "", ""
+        parts = text[7:].split("/", 1)
+        item_type = str(parts[0] or "").strip().lower()
+        item_id = str(parts[1] or "").strip() if len(parts) > 1 else ""
+        return item_type, item_id
+
+    @classmethod
+    def _queue_item_ref_for_uri(cls, uri):
+        item_type, item_id_raw = cls._parse_kodi_uri(uri)
+        if not item_type or not item_id_raw:
+            return {}
+        if item_type == "playlist":
+            playlist_file = urllib.parse.unquote(item_id_raw).strip()
+            return {"file": playlist_file} if playlist_file else {}
+        try:
+            item_id = int(item_id_raw)
+        except (TypeError, ValueError):
+            return {}
+        if item_type == "movie":
+            return {"movieid": item_id}
+        if item_type == "episode":
+            return {"episodeid": item_id}
+        if item_type == "channel":
+            return {"channelid": item_id}
+        return {}
+
+    async def _handle_library_queue_command(self, data, *, target=None, play_next=False):
+        uri = str(data.get("url") or data.get("play_url") or "").strip()
+        if not uri:
+            return {"state": "error", "reason": "unresolved_uri"}
+        item_ref = self._queue_item_ref_for_uri(uri)
+        if not item_ref:
+            return {"state": "error", "reason": "queue_item_unaddressable", "uri": uri}
+
+        _player_id, playlist_id, current_index = await self._active_playlist_context(target=target)
+        if playlist_id not in {PLAYLIST_AUDIO, PLAYLIST_VIDEO}:
+            playlist_id = PLAYLIST_VIDEO
+
+        if play_next and current_index >= 0:
+            target_index = current_index + 1
+            insert_result = await self._rpc(
+                "Playlist.Insert",
+                {"playlistid": playlist_id, "position": target_index, "item": item_ref},
+                target=target,
+            )
+            if insert_result is not None:
+                return {
+                    "state": "queued",
+                    "queue_id": str(playlist_id),
+                    "uri": uri,
+                    "target_index": target_index,
+                    "option": "next",
+                }
+
+        add_result = await self._rpc(
+            "Playlist.Add",
+            {"playlistid": playlist_id, "item": item_ref},
+            target=target,
+        )
+        if add_result is None:
+            return {"state": "error", "reason": "queue_add_failed", "uri": uri}
+        return {
+            "state": "queued",
+            "queue_id": str(playlist_id),
+            "uri": uri,
+            "option": "add",
+        }
+
+    async def _handle_mark_unwatched_command(self, data, *, target=None):
+        uri = str(data.get("url") or data.get("play_url") or "").strip()
+        item_type, item_id_raw = self._parse_kodi_uri(uri)
+        if item_type not in {"movie", "episode"}:
+            return {"state": "error", "reason": "mark_unwatched_unsupported", "uri": uri}
+        try:
+            item_id = int(item_id_raw)
+        except (TypeError, ValueError):
+            return {"state": "error", "reason": "invalid_item_id", "uri": uri}
+
+        method = "VideoLibrary.SetMovieDetails" if item_type == "movie" else "VideoLibrary.SetEpisodeDetails"
+        id_key = "movieid" if item_type == "movie" else "episodeid"
+        result = await self._rpc(method, {id_key: item_id, "playcount": 0}, target=target)
+        if result is None:
+            return {"state": "error", "reason": "mark_unwatched_failed", "uri": uri}
+        return {"state": "updated", "action": "mark_unwatched", "uri": uri}
+
+    async def _resolve_favorite_payload(self, uri, *, target=None):
+        item_type, item_id_raw = self._parse_kodi_uri(uri)
+        if not item_type or not item_id_raw:
+            return None
+
+        if item_type == "playlist":
+            playlist_file = urllib.parse.unquote(item_id_raw).strip()
+            if not playlist_file:
+                return None
+            return {
+                "title": os.path.splitext(os.path.basename(playlist_file))[0] or "Kodi Playlist",
+                "path": playlist_file,
+                "thumbnail": "",
+            }
+
+        try:
+            item_id = int(item_id_raw)
+        except (TypeError, ValueError):
+            return None
+
+        if item_type == "movie":
+            details_result = await self._rpc(
+                "VideoLibrary.GetMovieDetails",
+                {"movieid": item_id, "properties": ["title", "file", "thumbnail", "art"]},
+                target=target,
+            ) or {}
+            details = details_result.get("moviedetails") if isinstance(details_result, dict) else None
+        elif item_type == "episode":
+            details_result = await self._rpc(
+                "VideoLibrary.GetEpisodeDetails",
+                {"episodeid": item_id, "properties": ["title", "showtitle", "file", "thumbnail", "art"]},
+                target=target,
+            ) or {}
+            details = details_result.get("episodedetails") if isinstance(details_result, dict) else None
+        else:
+            details = None
+
+        if not isinstance(details, dict):
+            return None
+        file_path = str(details.get("file") or "").strip()
+        if not file_path:
+            return None
+        title = str(details.get("title") or details.get("showtitle") or "Kodi").strip()
+        thumbnail = self._art_from_item(details)
+        return {
+            "title": title,
+            "path": file_path,
+            "thumbnail": thumbnail,
+        }
+
+    async def _handle_favorite_add_command(self, data, *, target=None):
+        uri = str(data.get("url") or data.get("play_url") or "").strip()
+        payload = await self._resolve_favorite_payload(uri, target=target)
+        if not isinstance(payload, dict):
+            return {"state": "error", "reason": "favorite_add_unsupported", "uri": uri}
+        result = await self._rpc(
+            "Favourites.AddFavourite",
+            {
+                "title": payload["title"],
+                "type": "media",
+                "path": payload["path"],
+                "thumbnail": payload.get("thumbnail") or None,
+            },
+            target=target,
+        )
+        if result is None:
+            return {"state": "error", "reason": "favorite_add_failed", "uri": uri}
+        return {"state": "favorited", "uri": uri}
+
+    async def _handle_play_from_here_command(self, data, *, target=None):
+        uri = str(data.get("url") or data.get("play_url") or "").strip()
+        if not uri:
+            return {"state": "error", "reason": "unresolved_uri"}
+
+        node, parents = self._find_node_by_uri(uri)
+        if not isinstance(node, dict):
+            return {"state": "error", "reason": "item_not_found", "uri": uri}
+
+        siblings = parents[-1].get("tracks") if parents else self._library_data
+        if not isinstance(siblings, list) or not siblings:
+            return {"state": "error", "reason": "siblings_not_found", "uri": uri}
+
+        start_index = -1
+        item_refs = []
+        for index, sibling in enumerate(siblings):
+            sibling_uri = str(sibling.get("url") or sibling.get("play_url") or "").strip()
+            if not sibling_uri:
+                continue
+            if sibling_uri == uri and start_index < 0:
+                start_index = len(item_refs)
+            item_ref = self._queue_item_ref_for_uri(sibling_uri)
+            if item_ref:
+                item_refs.append(item_ref)
+
+        if start_index < 0 or not item_refs[start_index:]:
+            return {"state": "error", "reason": "play_from_here_unavailable", "uri": uri}
+
+        target_playlist_id = PLAYLIST_VIDEO
+        if await self._rpc("Playlist.Clear", {"playlistid": target_playlist_id}, target=target) is None:
+            return {"state": "error", "reason": "target_clear_failed", "uri": uri}
+
+        added = 0
+        for item_ref in item_refs[start_index:]:
+            result = await self._rpc(
+                "Playlist.Add",
+                {"playlistid": target_playlist_id, "item": item_ref},
+                target=target,
+            )
+            if result is not None:
+                added += 1
+
+        if added <= 0:
+            return {"state": "error", "reason": "target_add_failed", "uri": uri}
+
+        open_result = await self._rpc(
+            "Player.Open",
+            {"item": {"playlistid": target_playlist_id, "position": 0}},
+            target=target,
+        )
+        if open_result is None:
+            return {"state": "error", "reason": "playback_rejected", "uri": uri}
+
+        await asyncio.sleep(0.2)
+        payload = await self._build_active_media_payload(target=target)
+        if not payload:
+            payload = await self._build_cached_media_payload(uri, state="playing")
+        if payload:
+            await self._post_media_snapshot(payload, reason="track_change", force_state="playing")
+        else:
+            await self.register("playing", auto_power=True)
+        return {
+            "state": "playing",
+            "uri": uri,
+            "queue_id": str(target_playlist_id),
+            "items": added,
+        }
+
     def _art_from_item(self, item):
         if not isinstance(item, dict):
             return ""
@@ -2104,6 +2330,16 @@ class KodiSource(SourceBase):
             return await self._handle_queue_play_next_command(data)
         if cmd == "play_index":
             return await self._handle_queue_play_index_command(data)
+        if cmd == "play_next":
+            return await self._handle_library_queue_command(data, target=target or None, play_next=True)
+        if cmd == "queue_item":
+            return await self._handle_library_queue_command(data, target=target or None, play_next=False)
+        if cmd == "mark_unwatched":
+            return await self._handle_mark_unwatched_command(data, target=target or None)
+        if cmd == "favorite_add":
+            return await self._handle_favorite_add_command(data, target=target or None)
+        if cmd == "play_from_here":
+            return await self._handle_play_from_here_command(data, target=target or None)
 
         uri = data.get("url", "") or data.get("play_url", "")
         if not uri:

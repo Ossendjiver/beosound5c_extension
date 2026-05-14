@@ -227,91 +227,84 @@ const _massPlayingPreset = (() => {
         const style = document.createElement('style');
         style.id = 'mass-playing-preset-style';
         style.textContent = `
-            #now-playing {
+            #now-playing.mass-playing-active {
                 position: relative;
                 overflow: hidden;
+            }
+
+            #now-playing.mass-playing-active.immersive-active {
+                overflow: visible;
             }
 
             #now-playing.mass-playing-active .mass-playing-overlay {
                 position: absolute;
                 inset: 0;
                 display: flex;
-                align-items: stretch;
+                align-items: flex-start;
                 justify-content: flex-end;
                 pointer-events: none;
                 z-index: 3;
             }
 
             #now-playing.mass-playing-active .mass-playing-panel {
-                width: min(44%, 390px);
-                height: 100%;
-                margin-left: auto;
-                padding: 48px 42px 42px;
+                width: min(500px, calc(100vw - 500px));
+                max-height: 72vh;
+                margin: 8vh 54px 0 auto;
+                padding: 16px 18px 14px;
                 display: flex;
                 flex-direction: column;
-                justify-content: center;
-                background: linear-gradient(90deg, rgba(8, 10, 16, 0) 0%, rgba(8, 10, 16, 0.56) 20%, rgba(8, 10, 16, 0.9) 100%);
+                justify-content: flex-start;
+                background: rgba(10, 10, 10, 0.84);
+                border: 1px solid rgba(255, 255, 255, 0.14);
+                border-radius: 24px;
+                box-shadow: 0 22px 48px rgba(0, 0, 0, 0.42);
+                backdrop-filter: blur(16px);
                 opacity: 0;
-                transform: translateX(18px);
-                transition: opacity 180ms ease, transform 180ms ease;
+                transform: translateY(-8px);
+                transition: opacity 160ms ease, transform 160ms ease;
+                overflow: hidden;
+                pointer-events: auto;
             }
 
-            #now-playing.mass-playing-active[data-mass-page="artist"] .mass-playing-panel,
-            #now-playing.mass-playing-active[data-mass-page="queue"] .mass-playing-panel,
             #now-playing.mass-playing-active[data-mass-page="transfer"] .mass-playing-panel {
                 opacity: 1;
-                transform: translateX(0);
+                transform: translateY(0);
             }
 
             #now-playing.mass-playing-active .mass-playing-kicker {
                 font: 600 11px/1.2 Arial, sans-serif;
-                letter-spacing: 2.8px;
+                letter-spacing: 1.8px;
                 text-transform: uppercase;
-                color: rgba(160, 184, 222, 0.8);
-                margin-bottom: 14px;
+                color: rgba(255, 255, 255, 0.58);
+                margin-bottom: 6px;
             }
 
             #now-playing.mass-playing-active .mass-playing-heading {
-                font: 300 30px/1.08 Arial, sans-serif;
+                font: 300 22px/1.12 Arial, sans-serif;
                 color: #ffffff;
-                margin-bottom: 14px;
-                white-space: pre-line;
+                margin-bottom: 8px;
             }
 
             #now-playing.mass-playing-active .mass-playing-copy {
-                font: 400 16px/1.55 Arial, sans-serif;
-                color: rgba(223, 232, 247, 0.82);
-                white-space: pre-line;
+                min-height: 0;
+                margin-bottom: 6px;
+                font: 400 11px/1.35 Arial, sans-serif;
+                color: rgba(255, 255, 255, 0.56);
+                white-space: nowrap;
+                overflow: hidden;
+                text-overflow: ellipsis;
             }
 
             #now-playing.mass-playing-active .mass-playing-meta {
-                margin-top: 18px;
-                font: 500 13px/1.5 Arial, sans-serif;
-                color: rgba(160, 184, 222, 0.78);
-                letter-spacing: 0.4px;
+                margin-bottom: 10px;
+                font: 500 11px/1.25 Arial, sans-serif;
+                color: rgba(255, 255, 255, 0.45);
+                letter-spacing: 1.2px;
+                text-transform: uppercase;
             }
 
             #now-playing.mass-playing-active .mass-playing-indicators {
-                position: absolute;
-                left: 50%;
-                bottom: 26px;
-                transform: translateX(-50%);
-                display: flex;
-                gap: 10px;
-                z-index: 4;
-            }
-
-            #now-playing.mass-playing-active .mass-playing-indicator {
-                width: 8px;
-                height: 8px;
-                border-radius: 999px;
-                background: rgba(255, 255, 255, 0.22);
-                transition: transform 160ms ease, background-color 160ms ease;
-            }
-
-            #now-playing.mass-playing-active .mass-playing-indicator.active {
-                background: rgba(148, 199, 255, 0.95);
-                transform: scale(1.45);
+                display: none;
             }
 
             #now-playing.mass-playing-active .mass-paused-overlay {
@@ -399,69 +392,53 @@ const _massPlayingPreset = (() => {
             }
 
             #now-playing.mass-playing-active .mass-playing-transfer {
-                margin-top: 18px;
                 display: flex;
                 flex-direction: column;
-                gap: 10px;
+                gap: 4px;
+                max-height: 52vh;
+                overflow-y: auto;
+                padding-right: 2px;
                 pointer-events: auto;
             }
 
+            #now-playing.mass-playing-active .mass-playing-transfer::-webkit-scrollbar {
+                display: none;
+            }
+
             #now-playing.mass-playing-active .mass-transfer-option,
-            #now-playing.mass-playing-active .mass-transfer-action {
+            #now-playing.mass-playing-active .mass-youtube-toggle {
                 width: 100%;
-                min-height: 42px;
-                border: 1px solid rgba(148, 199, 255, 0.26);
-                border-radius: 6px;
-                background: rgba(255, 255, 255, 0.08);
+                min-height: 38px;
+                border: 1px solid transparent;
+                border-radius: 12px;
+                background: transparent;
                 color: #ffffff;
                 font: 500 14px/1.2 Arial, sans-serif;
                 text-align: left;
-                padding: 0 14px;
+                padding: 8px 10px;
                 touch-action: manipulation;
             }
 
             #now-playing.mass-playing-active .mass-transfer-option.active {
-                background: rgba(148, 199, 255, 0.22);
-                border-color: rgba(158, 209, 255, 0.74);
+                box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.18);
             }
 
             #now-playing.mass-playing-active .mass-transfer-option.focused,
-            #now-playing.mass-playing-active .mass-transfer-action.focused,
             #now-playing.mass-playing-active .mass-youtube-toggle.focused {
-                border-color: rgba(255, 255, 255, 0.86);
-                box-shadow: 0 0 0 2px rgba(158, 209, 255, 0.34);
-            }
-
-            #now-playing.mass-playing-active .mass-transfer-action {
-                margin-top: 4px;
-                text-align: center;
-                background: rgba(158, 209, 255, 0.18);
-            }
-
-            #now-playing.mass-playing-active .mass-transfer-action:disabled {
-                opacity: 0.55;
+                background: rgba(255, 255, 255, 0.14);
+                border-color: rgba(255, 255, 255, 0.28);
+                box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.28);
             }
 
             #now-playing.mass-playing-active .mass-youtube-toggle {
-                width: 100%;
-                min-height: 46px;
-                border: 1px solid rgba(255, 255, 255, 0.16);
-                border-radius: 6px;
-                background: rgba(255, 255, 255, 0.06);
-                color: #ffffff;
                 display: grid;
                 grid-template-columns: 1fr 52px;
                 gap: 12px;
                 align-items: center;
-                padding: 0 12px 0 14px;
-                font: 500 14px/1.2 Arial, sans-serif;
-                text-align: left;
-                touch-action: manipulation;
             }
 
             #now-playing.mass-playing-active .mass-youtube-toggle.active {
-                border-color: rgba(158, 209, 255, 0.62);
-                background: rgba(158, 209, 255, 0.12);
+                box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.18);
             }
 
             #now-playing.mass-playing-active .mass-youtube-switch {
@@ -469,7 +446,7 @@ const _massPlayingPreset = (() => {
                 width: 44px;
                 height: 24px;
                 border-radius: 999px;
-                background: rgba(255, 255, 255, 0.22);
+                background: rgba(255, 255, 255, 0.18);
                 justify-self: end;
             }
 
@@ -486,7 +463,7 @@ const _massPlayingPreset = (() => {
             }
 
             #now-playing.mass-playing-active .mass-youtube-toggle.active .mass-youtube-switch {
-                background: rgba(158, 209, 255, 0.72);
+                background: rgba(255, 255, 255, 0.36);
             }
 
             #now-playing.mass-playing-active .mass-youtube-toggle.active .mass-youtube-switch::after {
@@ -525,17 +502,14 @@ const _massPlayingPreset = (() => {
             if (youtubeToggle) {
                 transferState.focusIndex = youtubeFocusIndex();
                 toggleYoutubeVideos();
+                if (mountedContainer) renderOverlay(mountedContainer);
                 return;
             }
             const option = event.target.closest('[data-transfer-target]');
             if (option) {
                 selectTransferTarget(option.dataset.transferTarget);
+                void transferQueueToSelected({ closeOnSuccess: true });
                 return;
-            }
-            const action = event.target.closest('[data-transfer-action]');
-            if (action) {
-                transferState.focusIndex = actionFocusIndex();
-                void transferQueueToSelected();
             }
         });
         container.classList.add('mass-playing-active');
@@ -581,7 +555,7 @@ const _massPlayingPreset = (() => {
     }
 
     function currentPageId() {
-        return PAGE_IDS[currentPageIndex] || 'now';
+        return currentPageIndex === 1 && canShowTransferOverlay() ? 'transfer' : 'now';
     }
 
     function transferTargets() {
@@ -595,17 +569,18 @@ const _massPlayingPreset = (() => {
             .map((target) => ({ ...target, name: target.name || target.id }));
     }
 
-    function actionFocusIndex() {
+    function youtubeFocusIndex() {
         return transferTargets().length;
     }
 
-    function youtubeFocusIndex() {
-        return transferTargets().length + 1;
+    function canShowTransferOverlay() {
+        return window.uiStore?.currentRoute === 'menu/playing'
+            && window.uiStore?.menuVisible !== false;
     }
 
     function clampTransferFocus() {
         const targets = transferTargets();
-        const maxFocus = targets.length + 1;
+        const maxFocus = Math.max(0, targets.length);
         transferState.selectedIndex = Math.max(0, Math.min(transferState.selectedIndex, Math.max(0, targets.length - 1)));
         transferState.focusIndex = Math.max(0, Math.min(transferState.focusIndex || 0, maxFocus));
         if (transferState.focusIndex < targets.length) {
@@ -619,23 +594,46 @@ const _massPlayingPreset = (() => {
         return targets[transferState.selectedIndex] || targets[0] || null;
     }
 
+    function openTransferMenu() {
+        if (!canShowTransferOverlay()) return false;
+        currentPageIndex = 1;
+        clampTransferFocus();
+        transferState.focusIndex = Math.min(
+            Math.max(0, transferState.selectedIndex || 0),
+            youtubeFocusIndex(),
+        );
+        transferState.message = '';
+        transferState.error = '';
+        if (mountedContainer) renderOverlay(mountedContainer);
+        return true;
+    }
+
+    function closeTransferMenu() {
+        currentPageIndex = 0;
+        if (mountedContainer) renderOverlay(mountedContainer);
+        return true;
+    }
+
     function selectTransferTarget(targetId) {
         const targets = transferTargets();
         const nextIndex = targets.findIndex((target) => target.id === targetId);
         if (nextIndex >= 0) {
             transferState.selectedIndex = nextIndex;
             transferState.focusIndex = nextIndex;
-            transferState.message = '';
+            transferState.message = `Selected ${targets[nextIndex].name}`;
             transferState.error = '';
             if (mountedContainer) renderOverlay(mountedContainer);
         }
     }
 
     function stepTransferFocus(delta) {
+        if (currentPageId() !== 'transfer' || !canShowTransferOverlay()) return;
+
         const targets = transferTargets();
-        const count = targets.length + 2;
+        const count = targets.length + 1;
         if (!count) return;
-        transferState.focusIndex = ((transferState.focusIndex || 0) + delta + count) % count;
+        const nextFocus = Math.max(0, Math.min(count - 1, (transferState.focusIndex || 0) + delta));
+        transferState.focusIndex = nextFocus;
         if (transferState.focusIndex < targets.length) {
             transferState.selectedIndex = transferState.focusIndex;
         }
@@ -649,16 +647,12 @@ const _massPlayingPreset = (() => {
         clampTransferFocus();
         if (transferState.focusIndex < targets.length) {
             transferState.selectedIndex = transferState.focusIndex;
-            transferState.message = `Selected ${targets[transferState.selectedIndex].name}`;
-            transferState.error = '';
-            if (mountedContainer) renderOverlay(mountedContainer);
+            void transferQueueToSelected({ closeOnSuccess: true });
             return true;
         }
-        if (transferState.focusIndex === actionFocusIndex()) {
-            void transferQueueToSelected();
-            return true;
-        }
-        return toggleYoutubeVideos();
+        const handled = toggleYoutubeVideos();
+        if (mountedContainer) renderOverlay(mountedContainer);
+        return handled;
     }
 
     function renderTransferOptions(transferEl) {
@@ -678,17 +672,6 @@ const _massPlayingPreset = (() => {
             transferEl.appendChild(button);
         });
 
-        const action = document.createElement('button');
-        action.type = 'button';
-        action.className = 'mass-transfer-action';
-        action.dataset.transferAction = 'send';
-        action.disabled = transferState.sending || !selected;
-        if (transferState.focusIndex === actionFocusIndex()) action.classList.add('focused');
-        action.textContent = transferState.sending
-            ? 'Transferring...'
-            : (selected ? `Transfer to ${selected.name}` : 'No targets configured');
-        transferEl.appendChild(action);
-
         const youtubeEnabled = youtubeVideosEnabled();
         const youtube = document.createElement('button');
         youtube.type = 'button';
@@ -707,9 +690,15 @@ const _massPlayingPreset = (() => {
         youtube.appendChild(label);
         youtube.appendChild(switchEl);
         transferEl.appendChild(youtube);
+        requestAnimationFrame(() => {
+            transferEl.querySelector('.focused')?.scrollIntoView({
+                block: 'nearest',
+            });
+        });
     }
 
-    async function transferQueueToSelected() {
+    async function transferQueueToSelected(options = {}) {
+        const closeOnSuccess = options.closeOnSuccess === true;
         if (transferState.sending) return true;
         const target = currentTransferTarget();
         if (!target) return true;
@@ -742,6 +731,9 @@ const _massPlayingPreset = (() => {
             } else {
                 transferState.message = `Queue transferred to ${target.name}`;
                 transferState.error = '';
+                if (closeOnSuccess) {
+                    currentPageIndex = 0;
+                }
                 setTimeout(() => {
                     void refreshNowPlaying(true);
                 }, 500);
@@ -847,13 +839,14 @@ const _massPlayingPreset = (() => {
         if (pageId === 'transfer') {
             queueEl.hidden = true;
             transferEl.hidden = false;
-            const target = currentTransferTarget();
-            kickerEl.textContent = 'Transfer';
+            kickerEl.textContent = 'Playing';
             headingEl.textContent = 'Transfer Queue';
             copyEl.textContent = transferState.error || transferState.message || '';
-            metaEl.textContent = target
-                ? `Selected: ${target.name} - YouTube: ${youtubeVideosEnabled() ? 'On' : 'Off'}`
-                : '';
+            copyEl.hidden = !copyEl.textContent;
+            metaEl.textContent = transferTargets().length
+                ? 'GO Select   RIGHT Back'
+                : 'Populate mass.transfer_targets in config';
+            metaEl.hidden = !metaEl.textContent;
             renderTransferOptions(transferEl);
             return;
         }
@@ -1023,35 +1016,42 @@ const _massPlayingPreset = (() => {
     }
 
     function cyclePage(data) {
+        if (currentPageId() !== 'transfer') return true;
         const now = Date.now();
         if (now - lastPageCycleAt < PAGE_CYCLE_COOLDOWN_MS) return true;
         lastPageCycleAt = now;
         const direction = String(data?.direction || 'clock').toLowerCase();
         const delta = direction === 'counter' ? -1 : 1;
-        currentPageIndex = (currentPageIndex + delta + PAGE_IDS.length) % PAGE_IDS.length;
-        if (mountedContainer) {
-            renderOverlay(mountedContainer);
-        }
+        stepTransferFocus(delta);
         return true;
     }
 
     function handleTransferButton(button) {
-        if (currentPageId() !== 'transfer') return false;
         const normalized = String(button || '').toLowerCase();
-        if (normalized === 'left') {
+        if (normalized === '__close_transfer_overlay__') {
+            return closeTransferMenu();
+        }
+        if (currentPageId() !== 'transfer') {
+            if (normalized === 'left') {
+                return openTransferMenu();
+            }
+            return false;
+        }
+        if (normalized === 'right') {
+            return closeTransferMenu();
+        }
+        if (normalized === 'up') {
             stepTransferFocus(-1);
             return true;
         }
-        if (normalized === 'right') {
+        if (normalized === 'down') {
             stepTransferFocus(1);
             return true;
         }
         if (normalized === 'go') {
             return activateTransferFocus();
         }
-        if (normalized === 'up' || normalized === 'down') {
-            return toggleYoutubeVideos();
-        }
+        if (normalized === 'left') return true;
         return false;
     }
 
@@ -1146,6 +1146,12 @@ const _massPlayingPreset = (() => {
         },
     };
 })();
+
+document.addEventListener('bs5c:menu-visibility', (event) => {
+    if (event.detail?.visible === false) {
+        _massPlayingPreset.handleButton('__close_transfer_overlay__');
+    }
+});
 
 const _massController = (() => {
     function currentRoute() {

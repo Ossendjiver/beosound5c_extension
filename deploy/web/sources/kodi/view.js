@@ -56,69 +56,72 @@ const _kodiPlayingPreset = (() => {
         style.id = 'kodi-playing-preset-style';
         style.textContent = `
             #now-playing.kodi-playing-active { position: relative; overflow: hidden; }
+            #now-playing.kodi-playing-active.immersive-active { overflow: visible; }
             #now-playing.kodi-playing-active .kodi-playing-overlay {
-                position: absolute; inset: 0; display: flex; justify-content: flex-end;
+                position: absolute; inset: 0; display: flex; align-items: flex-start; justify-content: flex-end;
                 pointer-events: none; z-index: 3;
             }
             #now-playing.kodi-playing-active .kodi-playing-panel {
-                width: min(44%, 390px); height: 100%; margin-left: auto;
-                padding: 48px 42px 42px; display: flex; flex-direction: column;
-                justify-content: center;
-                background: linear-gradient(90deg, rgba(8, 10, 16, 0) 0%, rgba(8, 10, 16, 0.56) 20%, rgba(8, 10, 16, 0.9) 100%);
-                opacity: 0; transform: translateX(18px);
-                transition: opacity 180ms ease, transform 180ms ease;
+                width: min(500px, calc(100vw - 500px)); max-height: 72vh; margin: 8vh 54px 0 auto;
+                padding: 16px 18px 14px; display: flex; flex-direction: column;
+                justify-content: flex-start;
+                background: rgba(10, 10, 10, 0.84);
+                border: 1px solid rgba(255, 255, 255, 0.14);
+                border-radius: 24px;
+                box-shadow: 0 22px 48px rgba(0, 0, 0, 0.42);
+                backdrop-filter: blur(16px);
+                opacity: 0; transform: translateY(-8px);
+                transition: opacity 160ms ease, transform 160ms ease;
+                overflow: hidden; pointer-events: auto;
             }
             #now-playing.kodi-playing-active[data-kodi-page="transfer"] .kodi-playing-panel {
-                opacity: 1; transform: translateX(0);
+                opacity: 1; transform: translateY(0);
             }
             #now-playing.kodi-playing-active .kodi-playing-kicker {
-                font: 600 11px/1.2 Arial, sans-serif; letter-spacing: 2.8px;
-                text-transform: uppercase; color: rgba(160, 184, 222, 0.8);
-                margin-bottom: 14px;
+                font: 600 11px/1.2 Arial, sans-serif; letter-spacing: 1.8px;
+                text-transform: uppercase; color: rgba(255, 255, 255, 0.58);
+                margin-bottom: 6px;
             }
             #now-playing.kodi-playing-active .kodi-playing-heading {
-                font: 300 30px/1.08 Arial, sans-serif; color: #fff; margin-bottom: 14px;
+                font: 300 22px/1.12 Arial, sans-serif; color: #fff; margin-bottom: 8px;
             }
             #now-playing.kodi-playing-active .kodi-playing-copy {
-                min-height: 20px; font: 400 16px/1.55 Arial, sans-serif;
-                color: rgba(223, 232, 247, 0.82);
+                min-height: 0; margin-bottom: 6px; font: 400 11px/1.35 Arial, sans-serif;
+                color: rgba(255, 255, 255, 0.56);
+                white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
             }
             #now-playing.kodi-playing-active .kodi-playing-meta {
-                margin-top: 18px; font: 500 13px/1.5 Arial, sans-serif;
-                color: rgba(160, 184, 222, 0.78);
+                margin-bottom: 10px; font: 500 11px/1.25 Arial, sans-serif;
+                color: rgba(255, 255, 255, 0.45);
+                letter-spacing: 1.2px; text-transform: uppercase;
             }
             #now-playing.kodi-playing-active .kodi-transfer-options {
-                margin-top: 18px; display: flex; flex-direction: column; gap: 10px;
-                pointer-events: auto;
+                display: flex; flex-direction: column; gap: 4px;
+                max-height: 52vh; overflow-y: auto; padding-right: 2px; pointer-events: auto;
             }
+            #now-playing.kodi-playing-active .kodi-transfer-options::-webkit-scrollbar { display: none; }
             #now-playing.kodi-playing-active .kodi-transfer-option,
-            #now-playing.kodi-playing-active .kodi-transfer-action,
             #now-playing.kodi-playing-active .kodi-youtube-toggle {
-                width: 100%; min-height: 42px; border: 1px solid rgba(148, 199, 255, 0.26);
-                border-radius: 6px; background: rgba(255, 255, 255, 0.08);
+                width: 100%; min-height: 38px; border: 1px solid transparent;
+                border-radius: 12px; background: transparent;
                 color: #fff; font: 500 14px/1.2 Arial, sans-serif; text-align: left;
-                padding: 0 14px; touch-action: manipulation;
+                padding: 8px 10px; touch-action: manipulation;
             }
             #now-playing.kodi-playing-active .kodi-transfer-option.active {
-                background: rgba(148, 199, 255, 0.22);
-                border-color: rgba(158, 209, 255, 0.74);
+                box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.18);
             }
             #now-playing.kodi-playing-active .kodi-transfer-option.focused,
-            #now-playing.kodi-playing-active .kodi-transfer-action.focused,
             #now-playing.kodi-playing-active .kodi-youtube-toggle.focused {
-                border-color: rgba(255, 255, 255, 0.86);
-                box-shadow: 0 0 0 2px rgba(158, 209, 255, 0.34);
-            }
-            #now-playing.kodi-playing-active .kodi-transfer-action {
-                text-align: center; background: rgba(158, 209, 255, 0.18);
+                background: rgba(255, 255, 255, 0.14);
+                border-color: rgba(255, 255, 255, 0.28);
+                box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.28);
             }
             #now-playing.kodi-playing-active .kodi-youtube-toggle {
-                min-height: 46px; border-color: rgba(255, 255, 255, 0.16);
                 display: grid; grid-template-columns: 1fr 52px; gap: 12px; align-items: center;
             }
             #now-playing.kodi-playing-active .kodi-youtube-switch {
                 position: relative; width: 44px; height: 24px; border-radius: 999px;
-                background: rgba(255, 255, 255, 0.22); justify-self: end;
+                background: rgba(255, 255, 255, 0.18); justify-self: end;
             }
             #now-playing.kodi-playing-active .kodi-youtube-switch::after {
                 content: ""; position: absolute; left: 3px; top: 3px; width: 18px; height: 18px;
@@ -126,20 +129,13 @@ const _kodiPlayingPreset = (() => {
                 transition: transform 160ms ease;
             }
             #now-playing.kodi-playing-active .kodi-youtube-toggle.active .kodi-youtube-switch {
-                background: rgba(158, 209, 255, 0.72);
+                background: rgba(255, 255, 255, 0.36);
             }
             #now-playing.kodi-playing-active .kodi-youtube-toggle.active .kodi-youtube-switch::after {
                 transform: translateX(20px);
             }
             #now-playing.kodi-playing-active .kodi-playing-indicators {
-                position: absolute; left: 50%; bottom: 26px; transform: translateX(-50%);
-                display: flex; gap: 10px; z-index: 4;
-            }
-            #now-playing.kodi-playing-active .kodi-playing-indicator {
-                width: 8px; height: 8px; border-radius: 999px; background: rgba(255, 255, 255, 0.22);
-            }
-            #now-playing.kodi-playing-active .kodi-playing-indicator.active {
-                background: rgba(148, 199, 255, 0.95); transform: scale(1.45);
+                display: none;
             }
             #now-playing.kodi-playing-active .kodi-paused-overlay {
                 position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
@@ -166,17 +162,18 @@ const _kodiPlayingPreset = (() => {
             .map((target) => ({ ...target, name: target.name || target.id }));
     }
 
-    function actionFocusIndex() {
+    function youtubeFocusIndex() {
         return transferTargets().length;
     }
 
-    function youtubeFocusIndex() {
-        return transferTargets().length + 1;
+    function canShowTransferOverlay() {
+        return window.uiStore?.currentRoute === 'menu/playing'
+            && window.uiStore?.menuVisible !== false;
     }
 
     function clampTransferFocus() {
         const targets = transferTargets();
-        const maxFocus = targets.length + 1;
+        const maxFocus = Math.max(0, targets.length);
         transferState.selectedIndex = Math.max(0, Math.min(transferState.selectedIndex, Math.max(0, targets.length - 1)));
         transferState.focusIndex = Math.max(0, Math.min(transferState.focusIndex || 0, maxFocus));
         if (transferState.focusIndex < targets.length) {
@@ -190,11 +187,36 @@ const _kodiPlayingPreset = (() => {
         return targets[transferState.selectedIndex] || targets[0] || null;
     }
 
+    function openTransferMenu() {
+        if (!canShowTransferOverlay()) return false;
+        currentPageIndex = 1;
+        clampTransferFocus();
+        transferState.focusIndex = Math.min(
+            Math.max(0, transferState.selectedIndex || 0),
+            youtubeFocusIndex(),
+        );
+        transferState.message = '';
+        transferState.error = '';
+        if (mountedContainer) renderOverlay(mountedContainer);
+        return true;
+    }
+
+    function closeTransferMenu() {
+        currentPageIndex = 0;
+        if (mountedContainer) renderOverlay(mountedContainer);
+        return true;
+    }
+
     function stepTransferFocus(delta) {
+        if (currentPageIndex !== 1 || !canShowTransferOverlay()) return;
+
         const targets = transferTargets();
-        const count = targets.length + 2;
+        const count = targets.length + 1;
         if (!count) return;
-        transferState.focusIndex = ((transferState.focusIndex || 0) + delta + count) % count;
+        transferState.focusIndex = Math.max(
+            0,
+            Math.min(count - 1, (transferState.focusIndex || 0) + delta),
+        );
         if (transferState.focusIndex < targets.length) {
             transferState.selectedIndex = transferState.focusIndex;
         }
@@ -209,36 +231,22 @@ const _kodiPlayingPreset = (() => {
         if (index >= 0) {
             transferState.selectedIndex = index;
             transferState.focusIndex = index;
-            transferState.message = '';
+            transferState.message = `Selected ${targets[index].name}`;
             transferState.error = '';
             if (mountedContainer) renderOverlay(mountedContainer);
         }
-    }
-
-    async function setSelectedTarget() {
-        const target = currentTransferTarget();
-        if (!target) return true;
-        if (window.PlaybackTargets?.setVideoTarget) {
-            await window.PlaybackTargets.setVideoTarget(target.id);
-        }
-        transferState.message = `Selected ${target.name}`;
-        transferState.error = '';
-        if (mountedContainer) renderOverlay(mountedContainer);
-        return true;
     }
 
     function activateTransferFocus() {
         const targets = transferTargets();
         clampTransferFocus();
         if (transferState.focusIndex < targets.length) {
-            void setSelectedTarget();
+            void transferQueueToSelected({ closeOnSuccess: true });
             return true;
         }
-        if (transferState.focusIndex === actionFocusIndex()) {
-            void transferQueueToSelected();
-            return true;
-        }
-        return toggleYoutubeVideos();
+        const handled = toggleYoutubeVideos();
+        if (mountedContainer) renderOverlay(mountedContainer);
+        return handled;
     }
 
     function ensureOverlay(container) {
@@ -267,16 +275,13 @@ const _kodiPlayingPreset = (() => {
             const option = event.target.closest('[data-kodi-target]');
             if (option) {
                 selectTransferTarget(option.dataset.kodiTarget);
-                return;
-            }
-            if (event.target.closest('[data-kodi-action]')) {
-                transferState.focusIndex = actionFocusIndex();
-                void transferQueueToSelected();
+                void transferQueueToSelected({ closeOnSuccess: true });
                 return;
             }
             if (event.target.closest('[data-youtube-toggle]')) {
                 transferState.focusIndex = youtubeFocusIndex();
                 toggleYoutubeVideos();
+                if (mountedContainer) renderOverlay(mountedContainer);
             }
         });
         container.classList.add('kodi-playing-active');
@@ -326,17 +331,6 @@ const _kodiPlayingPreset = (() => {
             button.textContent = target.name;
             targetsEl.appendChild(button);
         });
-        const action = document.createElement('button');
-        action.type = 'button';
-        action.className = 'kodi-transfer-action';
-        action.dataset.kodiAction = 'select';
-        action.disabled = transferState.sending || !selected;
-        if (transferState.focusIndex === actionFocusIndex()) action.classList.add('focused');
-        action.textContent = transferState.sending
-            ? 'Transferring...'
-            : (selected ? `Transfer to ${selected.name}` : 'No targets configured');
-        targetsEl.appendChild(action);
-
         const youtubeEnabled = youtubeVideosEnabled();
         const youtube = document.createElement('button');
         youtube.type = 'button';
@@ -351,12 +345,17 @@ const _kodiPlayingPreset = (() => {
             <span class="kodi-youtube-switch"></span>
         `;
         targetsEl.appendChild(youtube);
+        requestAnimationFrame(() => {
+            targetsEl.querySelector('.focused')?.scrollIntoView({
+                block: 'nearest',
+            });
+        });
     }
 
     function renderOverlay(container) {
         if (!container) return;
         const overlay = ensureOverlay(container);
-        const pageId = PAGE_IDS[currentPageIndex] || 'now';
+        const pageId = currentPageIndex === 1 && canShowTransferOverlay() ? 'transfer' : 'now';
         const isPaused = String(lastMedia.state || '').trim().toLowerCase() === 'paused';
         container.dataset.kodiPage = pageId;
         container.classList.toggle('is-kodi-paused', isPaused);
@@ -376,15 +375,17 @@ const _kodiPlayingPreset = (() => {
             metaEl.textContent = lastMedia.state ? `State: ${String(lastMedia.state).toUpperCase()}` : '';
             return;
         }
-        const selected = currentTransferTarget();
         copyEl.textContent = transferState.error || transferState.message || '';
-        metaEl.textContent = selected
-            ? `Selected: ${selected.name} - YouTube: ${youtubeVideosEnabled() ? 'On' : 'Off'}`
+        copyEl.hidden = !copyEl.textContent;
+        metaEl.textContent = transferTargets().length
+            ? 'GO Select   RIGHT Back'
             : 'Populate kodi.transfer_targets in config';
+        metaEl.hidden = !metaEl.textContent;
         renderTransferOptions(targetsEl);
     }
 
-    async function transferQueueToSelected() {
+    async function transferQueueToSelected(options = {}) {
+        const closeOnSuccess = options.closeOnSuccess === true;
         if (transferState.sending) return true;
         const target = currentTransferTarget();
         if (!target) return true;
@@ -418,6 +419,9 @@ const _kodiPlayingPreset = (() => {
             } else {
                 transferState.message = `Queue transferred to ${target.name}`;
                 transferState.error = '';
+                if (closeOnSuccess) {
+                    currentPageIndex = 0;
+                }
             }
         } catch (error) {
             transferState.error = `Unable to transfer to ${target.name}`;
@@ -430,47 +434,57 @@ const _kodiPlayingPreset = (() => {
     }
 
     function cyclePage(data) {
+        if (currentPageIndex !== 1) return true;
         const now = Date.now();
         if (now - lastPageCycleAt < PAGE_CYCLE_COOLDOWN_MS) return true;
         lastPageCycleAt = now;
         const direction = String(data?.direction || 'clock').toLowerCase();
         const delta = direction === 'counter' ? -1 : 1;
-        currentPageIndex = (currentPageIndex + delta + PAGE_IDS.length) % PAGE_IDS.length;
+        stepTransferFocus(delta);
         if (mountedContainer) renderOverlay(mountedContainer);
         return true;
     }
 
     function handleButton(button) {
-        if ((PAGE_IDS[currentPageIndex] || 'now') !== 'transfer') return false;
         const normalized = String(button || '').toLowerCase();
-        if (normalized === 'left') {
+        if (normalized === '__close_transfer_overlay__') {
+            return closeTransferMenu();
+        }
+        if (currentPageIndex !== 1 || !canShowTransferOverlay()) {
+            if (normalized === 'left') {
+                return openTransferMenu();
+            }
+            return false;
+        }
+        if (normalized === 'right') {
+            return closeTransferMenu();
+        }
+        if (normalized === 'up') {
             stepTransferFocus(-1);
             return true;
         }
-        if (normalized === 'right') {
+        if (normalized === 'down') {
             stepTransferFocus(1);
             return true;
         }
         if (normalized === 'go') {
             return activateTransferFocus();
         }
-        if (normalized === 'up' || normalized === 'down') {
-            return toggleYoutubeVideos();
-        }
+        if (normalized === 'left') return true;
         return false;
     }
 
     document.addEventListener('bs5c:music-video-preference', () => {
-        if (mountedContainer && (PAGE_IDS[currentPageIndex] || 'now') === 'transfer') {
+        if (mountedContainer && currentPageIndex === 1) {
             renderOverlay(mountedContainer);
         }
     });
 
     document.addEventListener('bs5c:playback-targets', () => {
-        if (mountedContainer && (PAGE_IDS[currentPageIndex] || 'now') === 'transfer') {
+        if (mountedContainer && currentPageIndex === 1) {
             const targets = transferTargets();
             transferState.selectedIndex = Math.max(0, Math.min(transferState.selectedIndex, Math.max(0, targets.length - 1)));
-            transferState.focusIndex = Math.max(0, Math.min(transferState.focusIndex || 0, targets.length + 1));
+            transferState.focusIndex = Math.max(0, Math.min(transferState.focusIndex || 0, Math.max(0, targets.length)));
             renderOverlay(mountedContainer);
         }
     });
@@ -508,6 +522,12 @@ const _kodiPlayingPreset = (() => {
         handleButton,
     };
 })();
+
+document.addEventListener('bs5c:menu-visibility', (event) => {
+    if (event.detail?.visible === false) {
+        _kodiPlayingPreset.handleButton('__close_transfer_overlay__');
+    }
+});
 
 const _kodiController = (() => {
     function currentRoute() {

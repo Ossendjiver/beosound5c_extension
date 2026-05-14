@@ -198,3 +198,96 @@ class TestMassLocalPlayback:
         assert payload is None
         assert source._local_queue_active is False
         assert source._local_queue_last_player_state == "stopped"
+
+    def test_item_info_falls_back_to_album_notes_when_track_has_no_description(self):
+        source = _make_mass_source()
+        source._http_session = None
+        track_item = {
+            "uri": "track://library/1",
+            "name": "Track One",
+            "artist_str": "Artist One",
+            "album": {
+                "name": "Album One",
+                "uri": "album://library/1",
+            },
+            "provider": "library",
+            "duration": 182,
+            "track_number": 4,
+            "media_type": "track",
+        }
+        album_item = {
+            "uri": "album://library/1",
+            "name": "Album One",
+            "metadata": {
+                "description": "<p>A focused album note.</p>",
+            },
+        }
+        source.send_command = AsyncMock(side_effect=[track_item, album_item])
+
+        payload = _run(source._build_item_info_payload("track://library/1"))
+
+        assert payload["state"] == "available"
+        assert payload["title"] == "Track One"
+        assert payload["artist"] == "Artist One"
+        assert payload["album"] == "Album One"
+        assert payload["description"] == "A focused album note."
+        assert payload["description_label"] == "About the album"
+        assert {"label": "Type", "value": "Track"} in payload["facts"]
+        assert {"label": "Duration", "value": "3:02"} in payload["facts"]
+
+    def test_favorite_add_uses_music_assistant_favorites_endpoint(self):
+        source = _make_mass_source()
+        source._send_command_response = AsyncMock(return_value={"ok": True})
+
+        result = _run(source.handle_command("favorite_add", {
+            "url": "track://library/42",
+        }))
+
+        source._send_command_response.assert_awaited_once_with(
+            "music/favorites/add_item",
+            item="track://library/42",
+        )
+        assert result["state"] == "favorited"
+
+    def test_playlist_add_extracts_library_playlist_id_from_uri(self):
+        source = _make_mass_source()
+        source._send_command_response = AsyncMock(return_value={"ok": True})
+
+        result = _run(source.handle_command("playlist_add", {
+            "url": "track://library/42",
+            "target_playlist_uri": "library://playlist/26",
+        }))
+
+        source._send_command_response.assert_awaited_once_with(
+            "music/playlists/add_playlist_tracks",
+            db_playlist_id="26",
+            uris=["track://library/42"],
+        )
+        assert result["state"] == "playlist_added"
+        assert result["playlist_id"] == "26"
+
+    def test_local_play_next_inserts_after_current_queue_item(self):
+        source = _make_mass_source()
+        source._should_try_local_playback = MagicMock(return_value=True)
+        source._forced_local_playback = MagicMock(return_value=False)
+        source._local_player_ready = MagicMock(return_value=True)
+        source._local_queue_entries = [
+            {"id": "track-1", "source_uri": "track://library/1", "title": "One"},
+            {"id": "track-2", "source_uri": "track://library/2", "title": "Two"},
+        ]
+        source._local_queue_index = 0
+        source._local_queue_active = True
+        source._build_local_entries_for_request = MagicMock(return_value=[
+            {"id": "track-3", "source_uri": "track://library/3", "title": "Three"},
+        ])
+
+        result = _run(source.handle_command("play_next", {
+            "url": "track://library/3",
+        }))
+
+        assert result["state"] == "queued"
+        assert [entry["source_uri"] for entry in source._local_queue_entries] == [
+            "track://library/1",
+            "track://library/3",
+            "track://library/2",
+        ]

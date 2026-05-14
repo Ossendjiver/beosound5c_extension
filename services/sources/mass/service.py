@@ -25,6 +25,7 @@ Node contracts (enforced at construction + _finalize_node):
 import asyncio
 import datetime
 import hashlib
+import html
 import json
 import logging
 import os
@@ -973,6 +974,12 @@ class MassSource(SourceBase):
                 headers=self._cors_headers(),
             )
 
+        async def _handle_item_info(request):
+            uri = str(request.query.get("uri") or "").strip()
+            payload = await self._build_item_info_payload(uri)
+            status = 200 if payload.get("state") != "error" else 404
+            return web.json_response(payload, status=status, headers=self._cors_headers())
+
         async def _handle_art(request):
             filename = os.path.basename(request.match_info.get("filename", ""))
             art_path = os.path.join(ART_CACHE_DIR, filename)
@@ -985,6 +992,7 @@ class MassSource(SourceBase):
         app.router.add_get('/playlists', _handle_playlists)
         app.router.add_get('/artist_bio', _handle_artist_bio)
         app.router.add_get('/now_playing', _handle_now_playing)
+        app.router.add_get('/item_info', _handle_item_info)
         app.router.add_get('/art/{filename}', _handle_art)
 
     def _library_root(self, root_id):
@@ -1580,9 +1588,48 @@ class MassSource(SourceBase):
                 }
             return None
 
+        if cmd == "play_radio":
+            return {
+                "state": "error",
+                "reason": "radio_mode_unavailable_local",
+                "uri": uri,
+            }
+
         entries = self._build_local_entries_for_request(data, uri)
         if not entries:
             return None
+
+        if cmd == "play_next":
+            if self._local_queue_entries:
+                insert_at = self._local_queue_index + 1 if self._local_queue_index >= 0 else 0
+                for offset, entry in enumerate(entries):
+                    self._local_queue_entries.insert(insert_at + offset, entry)
+            else:
+                self._local_queue_entries = list(entries)
+                self._local_queue_index = -1
+                self._local_queue_active = False
+            return {
+                "state": "queued",
+                "queue_id": "local",
+                "uri": uri,
+                "queued": len(entries),
+                "total": len(self._local_queue_entries),
+            }
+
+        if cmd == "queue_item":
+            if self._local_queue_entries:
+                self._local_queue_entries.extend(entries)
+            else:
+                self._local_queue_entries = list(entries)
+                self._local_queue_index = -1
+                self._local_queue_active = False
+            return {
+                "state": "queued",
+                "queue_id": "local",
+                "uri": uri,
+                "queued": len(entries),
+                "total": len(self._local_queue_entries),
+            }
 
         if cmd != "play_now" and self._local_queue_active and self._local_queue_entries:
             self._local_queue_entries.extend(entries)
@@ -1854,6 +1901,49 @@ class MassSource(SourceBase):
 
         # Return folder's play_url or leaf's url
         return node.get("play_url", "") or node.get("url", "")
+
+    @staticmethod
+    def _playlist_db_id_from_uri(uri):
+        text = str(uri or "").strip()
+        if not text:
+            return ""
+        match = re.search(r"(?:^|//|/)(\d+)(?:/)?$", text)
+        return match.group(1) if match else ""
+
+    async def _handle_favorite_add_command(self, data, uri):
+        response = await self._send_command_response("music/favorites/add_item", item=uri)
+        if response is None:
+            return {"state": "error", "reason": "favorite_add_failed", "uri": uri}
+        return {"state": "favorited", "uri": uri}
+
+    async def _handle_playlist_add_command(self, data, uri):
+        playlist_uri = str(
+            data.get("target_playlist_uri")
+            or data.get("playlist_uri")
+            or data.get("playlist")
+            or ""
+        ).strip()
+        db_playlist_id = self._playlist_db_id_from_uri(playlist_uri)
+        if not db_playlist_id:
+            return {"state": "error", "reason": "missing_playlist", "uri": uri}
+        response = await self._send_command_response(
+            "music/playlists/add_playlist_tracks",
+            db_playlist_id=db_playlist_id,
+            uris=[uri],
+        )
+        if response is None:
+            return {
+                "state": "error",
+                "reason": "playlist_add_failed",
+                "uri": uri,
+                "playlist_uri": playlist_uri,
+            }
+        return {
+            "state": "playlist_added",
+            "uri": uri,
+            "playlist_uri": playlist_uri,
+            "playlist_id": db_playlist_id,
+        }
 
     async def _resolve_queue_candidates(self):
         preferred_player = str(self._preferred_player_id or "").strip()
@@ -2152,6 +2242,234 @@ class MassSource(SourceBase):
         return ""
 
     @staticmethod
+    def _clean_detail_text(value):
+        text = str(value or "").strip()
+        if not text:
+            return ""
+        text = re.sub(r"(?i)<br\s*/?>", "\n", text)
+        text = re.sub(r"(?i)</(p|div|blockquote|li|tr|h[1-6])>", "\n\n", text)
+        text = re.sub(r"(?i)<li[^>]*>", "• ", text)
+        text = re.sub(r"<[^>]+>", "", text)
+        text = html.unescape(text)
+        text = text.replace("\r\n", "\n").replace("\r", "\n")
+        text = re.sub(r"[ \t]+\n", "\n", text)
+        text = re.sub(r"\n{3,}", "\n\n", text)
+        return text.strip()
+
+    @staticmethod
+    def _iter_item_contexts(item):
+        if not isinstance(item, dict):
+            return
+        seen = set()
+        pending = [item]
+        while pending:
+            current = pending.pop(0)
+            if not isinstance(current, dict):
+                continue
+            identity = id(current)
+            if identity in seen:
+                continue
+            seen.add(identity)
+            yield current
+            for key in ("metadata", "media_item", "album"):
+                nested = current.get(key)
+                if isinstance(nested, dict):
+                    pending.append(nested)
+
+    @classmethod
+    def _extract_first_scalar(cls, item, keys):
+        for source in cls._iter_item_contexts(item):
+            for key in keys:
+                value = source.get(key)
+                if isinstance(value, bool):
+                    return value
+                if isinstance(value, (int, float)):
+                    return value
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+        return None
+
+    @classmethod
+    def _extract_item_year(cls, item):
+        value = cls._extract_first_scalar(item, ("year", "release_year", "release_date", "date"))
+        if value in (None, ""):
+            return ""
+        if isinstance(value, (int, float)):
+            year = int(value)
+            return str(year) if 1000 <= year <= 9999 else ""
+        match = re.search(r"\b(19|20)\d{2}\b", str(value))
+        return match.group(0) if match else ""
+
+    @staticmethod
+    def _coerce_duration_to_ms(value, *, assume_ms=False):
+        if value in (None, ""):
+            return 0
+        if isinstance(value, (int, float)):
+            numeric = float(value)
+            if numeric <= 0:
+                return 0
+            if assume_ms or numeric >= 100000:
+                return int(numeric)
+            return int(numeric * 1000)
+        text = str(value).strip()
+        if not text:
+            return 0
+        if re.fullmatch(r"\d+:\d{2}(?::\d{2})?", text):
+            parts = [int(part) for part in text.split(":")]
+            if len(parts) == 2:
+                minutes, seconds = parts
+                return ((minutes * 60) + seconds) * 1000
+            hours, minutes, seconds = parts
+            return (((hours * 60) + minutes) * 60 + seconds) * 1000
+        if re.fullmatch(r"\d+(?:\.\d+)?", text):
+            return MassSource._coerce_duration_to_ms(float(text), assume_ms=assume_ms)
+        return 0
+
+    @classmethod
+    def _extract_item_duration_ms(cls, item):
+        key_specs = (
+            ("duration_ms", True),
+            ("duration", False),
+            ("duration_seconds", False),
+            ("runtime", False),
+            ("length", False),
+        )
+        for source in cls._iter_item_contexts(item):
+            for key, assume_ms in key_specs:
+                if key not in source:
+                    continue
+                duration_ms = cls._coerce_duration_to_ms(source.get(key), assume_ms=assume_ms)
+                if duration_ms > 0:
+                    return duration_ms
+        return 0
+
+    @staticmethod
+    def _format_duration_ms(value):
+        total_ms = int(value or 0)
+        if total_ms <= 0:
+            return ""
+        total_seconds = total_ms // 1000
+        hours, remainder = divmod(total_seconds, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        if hours:
+            return f"{hours}:{minutes:02d}:{seconds:02d}"
+        return f"{minutes}:{seconds:02d}"
+
+    @classmethod
+    def _extract_item_genres(cls, item):
+        genres = []
+        seen = set()
+        for source in cls._iter_item_contexts(item):
+            for key in ("genres", "genre"):
+                value = source.get(key)
+                entries = value if isinstance(value, list) else [value]
+                for entry in entries:
+                    name = ""
+                    if isinstance(entry, dict):
+                        name = str(entry.get("name") or "").strip()
+                    elif isinstance(entry, str):
+                        name = entry.strip()
+                    if not name:
+                        continue
+                    normalized = name.casefold()
+                    if normalized in seen:
+                        continue
+                    seen.add(normalized)
+                    genres.append(name)
+        return ", ".join(genres[:3])
+
+    @classmethod
+    def _extract_item_provider(cls, item):
+        seen = set()
+        providers = []
+
+        def add(value):
+            name = str(value or "").strip()
+            if not name:
+                return
+            normalized = name.casefold()
+            if normalized in seen:
+                return
+            seen.add(normalized)
+            providers.append(name)
+
+        add(cls._extract_first_scalar(item, ("provider", "provider_domain", "provider_instance")))
+        provider_mappings = item.get("provider_mappings")
+        if isinstance(provider_mappings, list):
+            for mapping in provider_mappings:
+                if not isinstance(mapping, dict):
+                    continue
+                add(mapping.get("provider"))
+                add(mapping.get("provider_domain"))
+                add(mapping.get("provider_instance"))
+                add(mapping.get("provider_instance_id"))
+        return providers[0] if providers else ""
+
+    @classmethod
+    def _extract_item_track_number(cls, item):
+        value = cls._extract_first_scalar(item, ("track_number", "position"))
+        if isinstance(value, bool) or value in (None, ""):
+            return ""
+        if isinstance(value, (int, float)):
+            number = int(value)
+            return str(number) if number > 0 else ""
+        text = str(value).strip()
+        return text if text and text != "0" else ""
+
+    @classmethod
+    def _extract_item_explicit(cls, item):
+        value = cls._extract_first_scalar(item, ("explicit", "is_explicit"))
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return bool(value)
+        if isinstance(value, str):
+            return value.strip().lower() in {"1", "true", "yes", "explicit"}
+        return False
+
+    @staticmethod
+    def _humanize_media_type(item):
+        if not isinstance(item, dict):
+            return ""
+        value = str(item.get("media_type") or item.get("type") or "").strip().lower()
+        if not value:
+            return ""
+        return value.replace("_", " ").title()
+
+    def _extract_item_album_reference(self, item):
+        if not isinstance(item, dict):
+            return {"name": "", "uri": ""}
+        for source in self._iter_item_contexts(item):
+            album = source.get("album")
+            if isinstance(album, dict):
+                name = str(album.get("name") or "").strip()
+                uri = str(album.get("uri") or "").strip()
+                if name or uri:
+                    return {"name": name, "uri": uri}
+        return {"name": self._extract_item_album(item, ""), "uri": ""}
+
+    def _extract_item_artist_reference(self, item):
+        if not isinstance(item, dict):
+            return {"name": "", "uri": ""}
+        for source in self._iter_item_contexts(item):
+            artists = source.get("artists")
+            if isinstance(artists, list):
+                for artist in artists:
+                    if not isinstance(artist, dict):
+                        continue
+                    name = str(artist.get("name") or "").strip()
+                    uri = str(artist.get("uri") or "").strip()
+                    if name or uri:
+                        return {"name": name, "uri": uri}
+            artist = source.get("artist")
+            if isinstance(artist, dict):
+                name = str(artist.get("name") or "").strip()
+                uri = str(artist.get("uri") or "").strip()
+                if name or uri:
+                    return {"name": name, "uri": uri}
+        return {"name": self._extract_item_artist(item, ""), "uri": ""}
+
+    @staticmethod
     def _normalize_lookup_key(value):
         return str(value or "").strip().casefold()
 
@@ -2220,6 +2538,80 @@ class MassSource(SourceBase):
             "name": artist_name,
             "bio": bio,
             "image": image,
+        }
+
+    async def _build_item_info_payload(self, uri):
+        uri_text = str(uri or "").strip()
+        if not uri_text:
+            return {"state": "error", "error": "missing_uri"}
+
+        item = await self.send_command("music/item_by_uri", uri=uri_text)
+        if not isinstance(item, dict):
+            return {"state": "error", "error": "item_not_found", "uri": uri_text}
+
+        title = self._extract_item_title(item, "Music Assistant").strip()
+        artist = self._extract_item_artist(item, "").strip()
+        album_ref = self._extract_item_album_reference(item)
+        album = str(album_ref.get("name") or "").strip()
+        artist_ref = self._extract_item_artist_reference(item)
+        if not artist:
+            artist = str(artist_ref.get("name") or "").strip()
+
+        artwork = await self._extract_item_artwork(item, "")
+        description = self._clean_detail_text(self._extract_metadata_text(item))
+        description_label = "About this item"
+
+        if not description and album_ref.get("uri") and str(album_ref.get("uri")).strip() != uri_text:
+            album_item = await self.send_command("music/item_by_uri", uri=str(album_ref.get("uri")).strip())
+            if isinstance(album_item, dict):
+                description = self._clean_detail_text(self._extract_metadata_text(album_item))
+                if description:
+                    description_label = "About the album"
+                if not artwork:
+                    artwork = await self._extract_item_artwork(album_item, artwork)
+
+        if not description:
+            artist_uri = str(artist_ref.get("uri") or "").strip() or self._find_artist_uri_by_name(artist)
+            if artist_uri and artist_uri != uri_text:
+                artist_item = await self.send_command("music/item_by_uri", uri=artist_uri)
+                if isinstance(artist_item, dict):
+                    description = self._clean_detail_text(self._extract_metadata_text(artist_item))
+                    if description:
+                        description_label = "About the artist"
+
+        facts = []
+        for label, value in (
+            ("Artist", artist),
+            ("Album", album),
+            ("Type", self._humanize_media_type(item)),
+            ("Year", self._extract_item_year(item)),
+            ("Duration", self._format_duration_ms(self._extract_item_duration_ms(item))),
+            ("Genre", self._extract_item_genres(item)),
+            ("Provider", self._extract_item_provider(item)),
+            ("Track", self._extract_item_track_number(item)),
+        ):
+            text = str(value or "").strip()
+            if text:
+                facts.append({"label": label, "value": text})
+
+        if self._extract_item_explicit(item):
+            facts.append({"label": "Explicit", "value": "Yes"})
+
+        subtitle_parts = [part for part in (artist, album) if part]
+        subtitle = " • ".join(subtitle_parts)
+
+        return {
+            "state": "available",
+            "uri": uri_text,
+            "play_uri": str(item.get("uri") or uri_text).strip(),
+            "title": title or "Music Assistant",
+            "subtitle": subtitle,
+            "artist": artist,
+            "album": album,
+            "image": artwork,
+            "description": description,
+            "description_label": description_label if description else "",
+            "facts": facts,
         }
 
     async def _get_player_state(self, player_id):
@@ -2726,6 +3118,14 @@ class MassSource(SourceBase):
     def _options_for_request(cmd, uri, queue_state, source_active):
         if cmd == "play_now":
             return ("replace",)
+        if cmd == "play_next":
+            if source_active and str(queue_state or "").strip().lower() in ACTIVE_PLAYBACK_STATES:
+                return ("next", "add")
+            return ("add", "replace")
+        if cmd == "queue_item":
+            return ("add",)
+        if cmd == "play_radio":
+            return ("replace",)
         if source_active and str(queue_state or "").strip().lower() in ACTIVE_PLAYBACK_STATES:
             return ("add",)
         uri_text = str(uri or "").lower()
@@ -3132,6 +3532,11 @@ class MassSource(SourceBase):
             logger.warning("Unable to resolve URI for cmd=%s payload=%s", cmd, data)
             return {"state": "error", "reason": "unresolved_uri"}
 
+        if cmd == "favorite_add":
+            return await self._handle_favorite_add_command(data, uri)
+        if cmd == "playlist_add":
+            return await self._handle_playlist_add_command(data, uri)
+
         if self._forced_local_playback() and not self._local_player_ready():
             logger.warning("MASS local playback requested but player.type is not local.")
             return {"state": "error", "reason": "local_player_unavailable"}
@@ -3175,6 +3580,7 @@ class MassSource(SourceBase):
                         queue_id=queue_id,
                         media=media,
                         option=option,
+                        radio_mode=(cmd == "play_radio"),
                     )
                     if response is not None:
                         accepted_response = response
