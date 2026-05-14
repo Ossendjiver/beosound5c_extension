@@ -2,7 +2,7 @@
  * MASS Source Preset
  */
 const _massPlayingPreset = (() => {
-    const PAGE_IDS = ['now', 'transfer'];
+    const PAGE_IDS = ['now', 'options', 'transfer'];
     const QUEUE_REFRESH_MS = 3000;
     const NOW_PLAYING_REFRESH_MS = 2000;
     const PAGE_CYCLE_COOLDOWN_MS = 520;
@@ -11,6 +11,9 @@ const _massPlayingPreset = (() => {
         { id: '08a2eca2-247c-96fe-7998-7baddf01b2b1', name: 'Cuisine' },
         { id: '64ad9554-d5e6-116c-8b0b-069c1f0b7885', name: 'Bedroom Mini' },
         { id: 'up50411c87e1c0', name: 'Link' },
+    ];
+    const PLAYING_MENU_ITEMS = [
+        { id: 'transfer', name: 'Transfer Queue' },
     ];
     let currentPageIndex = 0;
     let mountedContainer = null;
@@ -45,6 +48,9 @@ const _massPlayingPreset = (() => {
         sending: false,
         message: '',
         error: '',
+    };
+    let optionState = {
+        focusIndex: 0,
     };
 
     function getServiceUrlSafe() {
@@ -266,6 +272,7 @@ const _massPlayingPreset = (() => {
                 pointer-events: auto;
             }
 
+            #now-playing.mass-playing-active[data-mass-page="options"] .mass-playing-panel,
             #now-playing.mass-playing-active[data-mass-page="transfer"] .mass-playing-panel {
                 opacity: 1;
                 transform: translateY(0);
@@ -498,6 +505,11 @@ const _massPlayingPreset = (() => {
             </div>
         `;
         overlay.addEventListener('click', (event) => {
+            const playingOption = event.target.closest('[data-playing-option]');
+            if (playingOption) {
+                activateOptionFocus(playingOption.dataset.playingOption);
+                return;
+            }
             const youtubeToggle = event.target.closest('[data-youtube-toggle]');
             if (youtubeToggle) {
                 transferState.focusIndex = youtubeFocusIndex();
@@ -555,7 +567,8 @@ const _massPlayingPreset = (() => {
     }
 
     function currentPageId() {
-        return currentPageIndex === 1 && canShowTransferOverlay() ? 'transfer' : 'now';
+        if (!canShowTransferOverlay()) return 'now';
+        return PAGE_IDS[currentPageIndex] || 'now';
     }
 
     function transferTargets() {
@@ -578,6 +591,11 @@ const _massPlayingPreset = (() => {
             && window.uiStore?.menuVisible !== false;
     }
 
+    function clampOptionFocus() {
+        const maxFocus = Math.max(0, PLAYING_MENU_ITEMS.length - 1);
+        optionState.focusIndex = Math.max(0, Math.min(optionState.focusIndex || 0, maxFocus));
+    }
+
     function clampTransferFocus() {
         const targets = transferTargets();
         const maxFocus = Math.max(0, targets.length);
@@ -594,9 +612,19 @@ const _massPlayingPreset = (() => {
         return targets[transferState.selectedIndex] || targets[0] || null;
     }
 
-    function openTransferMenu() {
+    function openOptionsMenu() {
         if (!canShowTransferOverlay()) return false;
         currentPageIndex = 1;
+        clampOptionFocus();
+        transferState.message = '';
+        transferState.error = '';
+        if (mountedContainer) renderOverlay(mountedContainer);
+        return true;
+    }
+
+    function openTransferMenu() {
+        if (!canShowTransferOverlay()) return false;
+        currentPageIndex = 2;
         clampTransferFocus();
         transferState.focusIndex = Math.min(
             Math.max(0, transferState.selectedIndex || 0),
@@ -608,8 +636,14 @@ const _massPlayingPreset = (() => {
         return true;
     }
 
-    function closeTransferMenu() {
+    function closePlayingMenu() {
         currentPageIndex = 0;
+        if (mountedContainer) renderOverlay(mountedContainer);
+        return true;
+    }
+
+    function closeTransferMenu() {
+        currentPageIndex = 1;
         if (mountedContainer) renderOverlay(mountedContainer);
         return true;
     }
@@ -624,6 +658,14 @@ const _massPlayingPreset = (() => {
             transferState.error = '';
             if (mountedContainer) renderOverlay(mountedContainer);
         }
+    }
+
+    function stepOptionFocus(delta) {
+        if (currentPageId() !== 'options') return;
+        const count = PLAYING_MENU_ITEMS.length;
+        if (!count) return;
+        optionState.focusIndex = Math.max(0, Math.min(count - 1, (optionState.focusIndex || 0) + delta));
+        if (mountedContainer) renderOverlay(mountedContainer);
     }
 
     function stepTransferFocus(delta) {
@@ -642,6 +684,14 @@ const _massPlayingPreset = (() => {
         if (mountedContainer) renderOverlay(mountedContainer);
     }
 
+    function activateOptionFocus(optionId = '') {
+        const normalized = String(optionId || PLAYING_MENU_ITEMS[optionState.focusIndex]?.id || '').trim().toLowerCase();
+        if (normalized === 'transfer') {
+            return openTransferMenu();
+        }
+        return false;
+    }
+
     function activateTransferFocus() {
         const targets = transferTargets();
         clampTransferFocus();
@@ -653,6 +703,21 @@ const _massPlayingPreset = (() => {
         const handled = toggleYoutubeVideos();
         if (mountedContainer) renderOverlay(mountedContainer);
         return handled;
+    }
+
+    function renderPlayingOptions(transferEl) {
+        if (!transferEl) return;
+        clampOptionFocus();
+        transferEl.innerHTML = '';
+        PLAYING_MENU_ITEMS.forEach((item, index) => {
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.className = 'mass-transfer-option';
+            if (optionState.focusIndex === index) button.classList.add('focused', 'active');
+            button.dataset.playingOption = item.id;
+            button.textContent = item.name;
+            transferEl.appendChild(button);
+        });
     }
 
     function renderTransferOptions(transferEl) {
@@ -809,18 +874,21 @@ const _massPlayingPreset = (() => {
         if (pageId === 'now') {
             queueEl.hidden = true;
             transferEl.hidden = true;
+            copyEl.hidden = false;
             kickerEl.textContent = 'Now Playing';
             headingEl.textContent = lastMedia.title || '—';
             copyEl.textContent = [lastMedia.artist || '', lastMedia.album || '']
                 .filter(Boolean)
                 .join('\n') || 'Select something from the library to start playback.';
             metaEl.textContent = lastMedia.state ? `State: ${String(lastMedia.state).toUpperCase()}` : '';
+            metaEl.hidden = !metaEl.textContent;
             return;
         }
 
         if (pageId === 'artist') {
             queueEl.hidden = true;
             transferEl.hidden = true;
+            copyEl.hidden = false;
             kickerEl.textContent = 'Artist';
             headingEl.textContent = artistState.name || lastMedia.artist || 'Unknown Artist';
             if (artistState.loading && !artistState.bio) {
@@ -833,6 +901,20 @@ const _massPlayingPreset = (() => {
                 copyEl.textContent = 'No biography is available for the current artist.';
             }
             metaEl.textContent = lastMedia.title ? `Track: ${lastMedia.title}` : '';
+            metaEl.hidden = !metaEl.textContent;
+            return;
+        }
+
+        if (pageId === 'options') {
+            queueEl.hidden = true;
+            transferEl.hidden = false;
+            kickerEl.textContent = 'Playing';
+            headingEl.textContent = 'Options';
+            copyEl.textContent = '';
+            copyEl.hidden = true;
+            metaEl.textContent = PLAYING_MENU_ITEMS.length ? 'LEFT Open   RIGHT Back' : '';
+            metaEl.hidden = !metaEl.textContent;
+            renderPlayingOptions(transferEl);
             return;
         }
 
@@ -853,6 +935,7 @@ const _massPlayingPreset = (() => {
 
         queueEl.hidden = false;
         transferEl.hidden = true;
+        copyEl.hidden = false;
         kickerEl.textContent = 'Queue';
         headingEl.textContent = 'Active Queue';
         copyEl.textContent = queueState.loading && !queueState.items.length
@@ -861,6 +944,7 @@ const _massPlayingPreset = (() => {
         metaEl.textContent = queueState.items.length
             ? `${queueState.items.length} item${queueState.items.length === 1 ? '' : 's'}`
             : '';
+        metaEl.hidden = !metaEl.textContent;
         renderQueueList(queueEl);
     }
 
@@ -1016,12 +1100,19 @@ const _massPlayingPreset = (() => {
     }
 
     function cyclePage(data) {
-        if (currentPageId() !== 'transfer') return true;
         const now = Date.now();
         if (now - lastPageCycleAt < PAGE_CYCLE_COOLDOWN_MS) return true;
         lastPageCycleAt = now;
+        const pageId = currentPageId();
         const direction = String(data?.direction || 'clock').toLowerCase();
         const delta = direction === 'counter' ? -1 : 1;
+        if (pageId === 'now') {
+            return openOptionsMenu();
+        }
+        if (pageId === 'options') {
+            stepOptionFocus(delta);
+            return true;
+        }
         stepTransferFocus(delta);
         return true;
     }
@@ -1029,11 +1120,22 @@ const _massPlayingPreset = (() => {
     function handleTransferButton(button) {
         const normalized = String(button || '').toLowerCase();
         if (normalized === '__close_transfer_overlay__') {
-            return closeTransferMenu();
+            return closePlayingMenu();
         }
-        if (currentPageId() !== 'transfer') {
-            if (normalized === 'left') {
-                return openTransferMenu();
+        const pageId = currentPageId();
+        if (pageId === 'now') {
+            return false;
+        }
+        if (pageId === 'options') {
+            if (normalized === 'right') return closePlayingMenu();
+            if (normalized === 'left' || normalized === 'go') return activateOptionFocus();
+            if (normalized === 'up') {
+                stepOptionFocus(-1);
+                return true;
+            }
+            if (normalized === 'down') {
+                stepOptionFocus(1);
+                return true;
             }
             return false;
         }
@@ -1070,7 +1172,7 @@ const _massPlayingPreset = (() => {
     }
 
     document.addEventListener('bs5c:music-video-preference', () => {
-        if (mountedContainer && currentPageId() === 'transfer') {
+        if (mountedContainer && currentPageId() !== 'now') {
             renderOverlay(mountedContainer);
         }
     });
@@ -1080,6 +1182,7 @@ const _massPlayingPreset = (() => {
             ensureStyles();
             mountedContainer = container;
             currentPageIndex = 0;
+            optionState = { focusIndex: 0 };
             lastMedia = seedMediaFromUiStore() || {
                 title: 'â€”',
                 artist: 'â€”',
@@ -1117,6 +1220,7 @@ const _massPlayingPreset = (() => {
             }
             mountedContainer = null;
             currentPageIndex = 0;
+            optionState = { focusIndex: 0 };
             queueRequestId += 1;
             artistRequestId += 1;
             nowPlayingRequestId += 1;

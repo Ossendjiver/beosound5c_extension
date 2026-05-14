@@ -7,12 +7,16 @@
 const KODI_IFRAME_SRC = (window.AppConfig && window.AppConfig.kodiIframeSrc) || 'softarc/kodi.html';
 
 const _kodiPlayingPreset = (() => {
-    const PAGE_IDS = ['now', 'transfer'];
+    const PAGE_IDS = ['now', 'options', 'transfer'];
     const PAGE_CYCLE_COOLDOWN_MS = 520;
     const YOUTUBE_PREF_KEY = 'bs5c.youtubeVideosEnabled';
+    const PLAYING_MENU_ITEMS = [
+        { id: 'transfer', name: 'Transfer Queue' },
+    ];
     let currentPageIndex = 0;
     let mountedContainer = null;
     let lastPageCycleAt = 0;
+    let optionState = { focusIndex: 0 };
     let transferState = { selectedIndex: 0, focusIndex: 0, sending: false, message: '', error: '' };
     let lastMedia = { title: '-', artist: '-', album: '-', artwork: '', state: 'idle' };
 
@@ -74,6 +78,7 @@ const _kodiPlayingPreset = (() => {
                 transition: opacity 160ms ease, transform 160ms ease;
                 overflow: hidden; pointer-events: auto;
             }
+            #now-playing.kodi-playing-active[data-kodi-page="options"] .kodi-playing-panel,
             #now-playing.kodi-playing-active[data-kodi-page="transfer"] .kodi-playing-panel {
                 opacity: 1; transform: translateY(0);
             }
@@ -171,6 +176,16 @@ const _kodiPlayingPreset = (() => {
             && window.uiStore?.menuVisible !== false;
     }
 
+    function currentPageId() {
+        if (!canShowTransferOverlay()) return 'now';
+        return PAGE_IDS[currentPageIndex] || 'now';
+    }
+
+    function clampOptionFocus() {
+        const maxFocus = Math.max(0, PLAYING_MENU_ITEMS.length - 1);
+        optionState.focusIndex = Math.max(0, Math.min(optionState.focusIndex || 0, maxFocus));
+    }
+
     function clampTransferFocus() {
         const targets = transferTargets();
         const maxFocus = Math.max(0, targets.length);
@@ -187,9 +202,19 @@ const _kodiPlayingPreset = (() => {
         return targets[transferState.selectedIndex] || targets[0] || null;
     }
 
-    function openTransferMenu() {
+    function openOptionsMenu() {
         if (!canShowTransferOverlay()) return false;
         currentPageIndex = 1;
+        clampOptionFocus();
+        transferState.message = '';
+        transferState.error = '';
+        if (mountedContainer) renderOverlay(mountedContainer);
+        return true;
+    }
+
+    function openTransferMenu() {
+        if (!canShowTransferOverlay()) return false;
+        currentPageIndex = 2;
         clampTransferFocus();
         transferState.focusIndex = Math.min(
             Math.max(0, transferState.selectedIndex || 0),
@@ -201,14 +226,28 @@ const _kodiPlayingPreset = (() => {
         return true;
     }
 
-    function closeTransferMenu() {
+    function closePlayingMenu() {
         currentPageIndex = 0;
         if (mountedContainer) renderOverlay(mountedContainer);
         return true;
     }
 
+    function closeTransferMenu() {
+        currentPageIndex = 1;
+        if (mountedContainer) renderOverlay(mountedContainer);
+        return true;
+    }
+
+    function stepOptionFocus(delta) {
+        if (currentPageId() !== 'options') return;
+        const count = PLAYING_MENU_ITEMS.length;
+        if (!count) return;
+        optionState.focusIndex = Math.max(0, Math.min(count - 1, (optionState.focusIndex || 0) + delta));
+        if (mountedContainer) renderOverlay(mountedContainer);
+    }
+
     function stepTransferFocus(delta) {
-        if (currentPageIndex !== 1 || !canShowTransferOverlay()) return;
+        if (currentPageId() !== 'transfer' || !canShowTransferOverlay()) return;
 
         const targets = transferTargets();
         const count = targets.length + 1;
@@ -237,6 +276,14 @@ const _kodiPlayingPreset = (() => {
         }
     }
 
+    function activateOptionFocus(optionId = '') {
+        const normalized = String(optionId || PLAYING_MENU_ITEMS[optionState.focusIndex]?.id || '').trim().toLowerCase();
+        if (normalized === 'transfer') {
+            return openTransferMenu();
+        }
+        return false;
+    }
+
     function activateTransferFocus() {
         const targets = transferTargets();
         clampTransferFocus();
@@ -247,6 +294,20 @@ const _kodiPlayingPreset = (() => {
         const handled = toggleYoutubeVideos();
         if (mountedContainer) renderOverlay(mountedContainer);
         return handled;
+    }
+
+    function renderPlayingOptions(targetsEl) {
+        clampOptionFocus();
+        targetsEl.innerHTML = '';
+        PLAYING_MENU_ITEMS.forEach((item, index) => {
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.className = 'kodi-transfer-option';
+            if (optionState.focusIndex === index) button.classList.add('focused', 'active');
+            button.dataset.playingOption = item.id;
+            button.textContent = item.name;
+            targetsEl.appendChild(button);
+        });
     }
 
     function ensureOverlay(container) {
@@ -272,6 +333,11 @@ const _kodiPlayingPreset = (() => {
             </div>
         `;
         overlay.addEventListener('click', (event) => {
+            const playingOption = event.target.closest('[data-playing-option]');
+            if (playingOption) {
+                activateOptionFocus(playingOption.dataset.playingOption);
+                return;
+            }
             const option = event.target.closest('[data-kodi-target]');
             if (option) {
                 selectTransferTarget(option.dataset.kodiTarget);
@@ -355,7 +421,7 @@ const _kodiPlayingPreset = (() => {
     function renderOverlay(container) {
         if (!container) return;
         const overlay = ensureOverlay(container);
-        const pageId = currentPageIndex === 1 && canShowTransferOverlay() ? 'transfer' : 'now';
+        const pageId = currentPageId();
         const isPaused = String(lastMedia.state || '').trim().toLowerCase() === 'paused';
         container.dataset.kodiPage = pageId;
         container.classList.toggle('is-kodi-paused', isPaused);
@@ -369,10 +435,21 @@ const _kodiPlayingPreset = (() => {
         const copyEl = overlay.querySelector('.kodi-playing-copy');
         const metaEl = overlay.querySelector('.kodi-playing-meta');
         if (!targetsEl || !copyEl || !metaEl) return;
-        targetsEl.hidden = pageId !== 'transfer';
-        if (pageId !== 'transfer') {
+        if (pageId === 'now') {
+            targetsEl.hidden = true;
             copyEl.textContent = '';
+            copyEl.hidden = true;
             metaEl.textContent = lastMedia.state ? `State: ${String(lastMedia.state).toUpperCase()}` : '';
+            metaEl.hidden = !metaEl.textContent;
+            return;
+        }
+        targetsEl.hidden = false;
+        if (pageId === 'options') {
+            copyEl.textContent = '';
+            copyEl.hidden = true;
+            metaEl.textContent = PLAYING_MENU_ITEMS.length ? 'LEFT Open   RIGHT Back' : '';
+            metaEl.hidden = !metaEl.textContent;
+            renderPlayingOptions(targetsEl);
             return;
         }
         copyEl.textContent = transferState.error || transferState.message || '';
@@ -434,12 +511,19 @@ const _kodiPlayingPreset = (() => {
     }
 
     function cyclePage(data) {
-        if (currentPageIndex !== 1) return true;
         const now = Date.now();
         if (now - lastPageCycleAt < PAGE_CYCLE_COOLDOWN_MS) return true;
         lastPageCycleAt = now;
+        const pageId = currentPageId();
         const direction = String(data?.direction || 'clock').toLowerCase();
         const delta = direction === 'counter' ? -1 : 1;
+        if (pageId === 'now') {
+            return openOptionsMenu();
+        }
+        if (pageId === 'options') {
+            stepOptionFocus(delta);
+            return true;
+        }
         stepTransferFocus(delta);
         if (mountedContainer) renderOverlay(mountedContainer);
         return true;
@@ -448,11 +532,22 @@ const _kodiPlayingPreset = (() => {
     function handleButton(button) {
         const normalized = String(button || '').toLowerCase();
         if (normalized === '__close_transfer_overlay__') {
-            return closeTransferMenu();
+            return closePlayingMenu();
         }
-        if (currentPageIndex !== 1 || !canShowTransferOverlay()) {
-            if (normalized === 'left') {
-                return openTransferMenu();
+        const pageId = currentPageId();
+        if (pageId === 'now') {
+            return false;
+        }
+        if (pageId === 'options') {
+            if (normalized === 'right') return closePlayingMenu();
+            if (normalized === 'left' || normalized === 'go') return activateOptionFocus();
+            if (normalized === 'up') {
+                stepOptionFocus(-1);
+                return true;
+            }
+            if (normalized === 'down') {
+                stepOptionFocus(1);
+                return true;
             }
             return false;
         }
@@ -475,13 +570,13 @@ const _kodiPlayingPreset = (() => {
     }
 
     document.addEventListener('bs5c:music-video-preference', () => {
-        if (mountedContainer && currentPageIndex === 1) {
+        if (mountedContainer && currentPageId() !== 'now') {
             renderOverlay(mountedContainer);
         }
     });
 
     document.addEventListener('bs5c:playback-targets', () => {
-        if (mountedContainer && currentPageIndex === 1) {
+        if (mountedContainer && currentPageId() !== 'now') {
             const targets = transferTargets();
             transferState.selectedIndex = Math.max(0, Math.min(transferState.selectedIndex, Math.max(0, targets.length - 1)));
             transferState.focusIndex = Math.max(0, Math.min(transferState.focusIndex || 0, Math.max(0, targets.length)));
@@ -494,6 +589,7 @@ const _kodiPlayingPreset = (() => {
             ensureStyles();
             mountedContainer = container;
             currentPageIndex = 0;
+            optionState = { focusIndex: 0 };
             transferState = { selectedIndex: 0, focusIndex: 0, sending: false, message: '', error: '' };
             ensureOverlay(container);
             updateBaseView(container, lastMedia);
@@ -509,6 +605,7 @@ const _kodiPlayingPreset = (() => {
         onRemove(container) {
             mountedContainer = null;
             currentPageIndex = 0;
+            optionState = { focusIndex: 0 };
             transferState = { selectedIndex: 0, focusIndex: 0, sending: false, message: '', error: '' };
             const overlay = container?.querySelector('.kodi-playing-overlay');
             if (overlay) overlay.remove();

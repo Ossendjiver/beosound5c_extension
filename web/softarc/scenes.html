@@ -33,6 +33,18 @@
     <script src="../js/emulator-bridge.js"></script>
     <script src="script-v2.js"></script>
     <script>
+        async function readJsonIfAvailable(path) {
+            try {
+                const resp = await fetch(path, { cache: 'no-store' });
+                if (!resp || !resp.ok) return null;
+                const contentType = String(resp.headers.get('content-type') || '').toLowerCase();
+                if (!contentType.includes('json')) return null;
+                return await resp.json();
+            } catch (_error) {
+                return null;
+            }
+        }
+
         // Map a scene object to an ArcList item (supports both icon and legacy image)
         function mapScene(scene) {
             const item = { id: scene.id, name: scene.name, actionable: true };
@@ -48,24 +60,29 @@
 
         document.addEventListener('DOMContentLoaded', async () => {
             try {
-                let scenesData;
-                if (typeof AppConfig !== 'undefined' && AppConfig.scenes) {
-                    scenesData = AppConfig.scenes;
-                } else {
-                    // Load scenes from config.json (../json/ works from softarc iframe)
-                    // Falls back to scenes.json if no config scenes are found
-                    let resp = await fetch('../json/config.json').catch(() => null);
-                    if (resp && resp.ok) {
-                        const config = await resp.json();
+                let scenesData = Array.isArray(AppConfig?.scenes) ? AppConfig.scenes : null;
+                if (!scenesData) {
+                    const config = await readJsonIfAvailable('/json/config.json')
+                        || await readJsonIfAvailable('/config/default.json')
+                        || await readJsonIfAvailable('../json/config.json');
+                    if (Array.isArray(config?.scenes)) {
                         scenesData = config.scenes;
                     }
-                    if (!scenesData) {
-                        const fallback = (typeof AppConfig !== 'undefined' && AppConfig.scenesFile)
-                            ? AppConfig.scenesFile
-                            : '../json/scenes.json';
-                        resp = await fetch(fallback);
-                        scenesData = await resp.json();
-                    }
+                }
+                if (!scenesData) {
+                    const fallback = (typeof AppConfig !== 'undefined' && AppConfig.scenesFile)
+                        ? AppConfig.scenesFile
+                        : '../json/scenes.json';
+                    scenesData = await readJsonIfAvailable(fallback)
+                        || await readJsonIfAvailable('../json/scenes.example.json')
+                        || [];
+                }
+                if (!Array.isArray(scenesData)) scenesData = [];
+                if (typeof AppConfig !== 'undefined' && !Array.isArray(AppConfig.scenes)) {
+                    AppConfig.scenes = scenesData;
+                }
+                if (scenesData.length === 0) {
+                    console.warn('[SCENES] No scenes configured; opening with an empty list');
                 }
 
                 window.arcListInstance = new ArcList({
