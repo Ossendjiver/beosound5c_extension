@@ -210,8 +210,8 @@ class UIStore {
     _getContextMenuConfig(route) {
         const defaults = { includePlaying: false, includeQueue: false };
         const configByRoute = {
-            'menu/mass': { includePlaying: true, includeQueue: true },
-            'menu/kodi': { includePlaying: true, includeQueue: true },
+            'menu/mass': { includePlaying: false, includeQueue: false },
+            'menu/kodi': { includePlaying: false, includeQueue: false },
             'menu/scenes': { includePlaying: false, includeQueue: false },
         };
         return Object.assign({}, defaults, configByRoute[route] || {});

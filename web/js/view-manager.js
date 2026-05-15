@@ -18,7 +18,6 @@ class ViewManager {
         this.navigationTimeout = null;
         this.menuVisible = true;
         this._previousRoute = null;
-        this._pendingMassBrowseContext = null;
 
         // Set by UIStore
         this.menuManager = null;
@@ -36,9 +35,6 @@ class ViewManager {
         }
 
         const from = this.currentRoute;
-        this._pendingMassBrowseContext = (path === 'menu/mass' && from === 'menu/queue')
-            ? (window.QueueView?.getSelectionContext?.() || null)
-            : null;
 
         // Start/stop Apple TV polling based on SHOWING view
         if (path === 'menu/showing' && from !== 'menu/showing') {
@@ -185,15 +181,6 @@ class ViewManager {
                     preset.onMount();
                 }
             }
-        }
-        if (this.currentRoute === 'menu/mass' && this._pendingMassBrowseContext && window.IframeMessenger) {
-            const context = this._pendingMassBrowseContext;
-            this._pendingMassBrowseContext = null;
-            const sendContext = () => {
-                window.IframeMessenger.sendToRoute('menu/mass', 'browse-context', { context });
-            };
-            setTimeout(sendContext, 60);
-            setTimeout(sendContext, 220);
         }
 
         // Fade content back in

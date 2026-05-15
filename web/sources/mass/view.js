@@ -2,7 +2,7 @@
  * MASS Source Preset
  */
 const _massPlayingPreset = (() => {
-    const PAGE_IDS = ['now', 'options', 'transfer'];
+    const PAGE_IDS = ['now', 'options'];
     const QUEUE_REFRESH_MS = 3000;
     const NOW_PLAYING_REFRESH_MS = 2000;
     const PAGE_CYCLE_COOLDOWN_MS = 520;
@@ -11,9 +11,6 @@ const _massPlayingPreset = (() => {
         { id: '08a2eca2-247c-96fe-7998-7baddf01b2b1', name: 'Cuisine' },
         { id: '64ad9554-d5e6-116c-8b0b-069c1f0b7885', name: 'Bedroom Mini' },
         { id: 'up50411c87e1c0', name: 'Link' },
-    ];
-    const PLAYING_MENU_ITEMS = [
-        { id: 'transfer', name: 'Transfer Queue' },
     ];
     let currentPageIndex = 0;
     let mountedContainer = null;
@@ -48,9 +45,6 @@ const _massPlayingPreset = (() => {
         sending: false,
         message: '',
         error: '',
-    };
-    let optionState = {
-        focusIndex: 0,
     };
 
     function getServiceUrlSafe() {
@@ -272,8 +266,7 @@ const _massPlayingPreset = (() => {
                 pointer-events: auto;
             }
 
-            #now-playing.mass-playing-active[data-mass-page="options"] .mass-playing-panel,
-            #now-playing.mass-playing-active[data-mass-page="transfer"] .mass-playing-panel {
+            #now-playing.mass-playing-active[data-mass-page="options"] .mass-playing-panel {
                 opacity: 1;
                 transform: translateY(0);
             }
@@ -501,15 +494,10 @@ const _massPlayingPreset = (() => {
             </div>
             <div class="mass-playing-indicators">
                 <span class="mass-playing-indicator" data-page="now"></span>
-                <span class="mass-playing-indicator" data-page="transfer"></span>
+                <span class="mass-playing-indicator" data-page="options"></span>
             </div>
         `;
         overlay.addEventListener('click', (event) => {
-            const playingOption = event.target.closest('[data-playing-option]');
-            if (playingOption) {
-                activateOptionFocus(playingOption.dataset.playingOption);
-                return;
-            }
             const youtubeToggle = event.target.closest('[data-youtube-toggle]');
             if (youtubeToggle) {
                 transferState.focusIndex = youtubeFocusIndex();
@@ -591,11 +579,6 @@ const _massPlayingPreset = (() => {
             && window.uiStore?.menuVisible !== false;
     }
 
-    function clampOptionFocus() {
-        const maxFocus = Math.max(0, PLAYING_MENU_ITEMS.length - 1);
-        optionState.focusIndex = Math.max(0, Math.min(optionState.focusIndex || 0, maxFocus));
-    }
-
     function clampTransferFocus() {
         const targets = transferTargets();
         const maxFocus = Math.max(0, targets.length);
@@ -615,16 +598,6 @@ const _massPlayingPreset = (() => {
     function openOptionsMenu() {
         if (!canShowTransferOverlay()) return false;
         currentPageIndex = 1;
-        clampOptionFocus();
-        transferState.message = '';
-        transferState.error = '';
-        if (mountedContainer) renderOverlay(mountedContainer);
-        return true;
-    }
-
-    function openTransferMenu() {
-        if (!canShowTransferOverlay()) return false;
-        currentPageIndex = 2;
         clampTransferFocus();
         transferState.focusIndex = Math.min(
             Math.max(0, transferState.selectedIndex || 0),
@@ -642,12 +615,6 @@ const _massPlayingPreset = (() => {
         return true;
     }
 
-    function closeTransferMenu() {
-        currentPageIndex = 1;
-        if (mountedContainer) renderOverlay(mountedContainer);
-        return true;
-    }
-
     function selectTransferTarget(targetId) {
         const targets = transferTargets();
         const nextIndex = targets.findIndex((target) => target.id === targetId);
@@ -660,16 +627,8 @@ const _massPlayingPreset = (() => {
         }
     }
 
-    function stepOptionFocus(delta) {
-        if (currentPageId() !== 'options') return;
-        const count = PLAYING_MENU_ITEMS.length;
-        if (!count) return;
-        optionState.focusIndex = Math.max(0, Math.min(count - 1, (optionState.focusIndex || 0) + delta));
-        if (mountedContainer) renderOverlay(mountedContainer);
-    }
-
     function stepTransferFocus(delta) {
-        if (currentPageId() !== 'transfer' || !canShowTransferOverlay()) return;
+        if (currentPageId() !== 'options' || !canShowTransferOverlay()) return;
 
         const targets = transferTargets();
         const count = targets.length + 1;
@@ -684,14 +643,6 @@ const _massPlayingPreset = (() => {
         if (mountedContainer) renderOverlay(mountedContainer);
     }
 
-    function activateOptionFocus(optionId = '') {
-        const normalized = String(optionId || PLAYING_MENU_ITEMS[optionState.focusIndex]?.id || '').trim().toLowerCase();
-        if (normalized === 'transfer') {
-            return openTransferMenu();
-        }
-        return false;
-    }
-
     function activateTransferFocus() {
         const targets = transferTargets();
         clampTransferFocus();
@@ -703,21 +654,6 @@ const _massPlayingPreset = (() => {
         const handled = toggleYoutubeVideos();
         if (mountedContainer) renderOverlay(mountedContainer);
         return handled;
-    }
-
-    function renderPlayingOptions(transferEl) {
-        if (!transferEl) return;
-        clampOptionFocus();
-        transferEl.innerHTML = '';
-        PLAYING_MENU_ITEMS.forEach((item, index) => {
-            const button = document.createElement('button');
-            button.type = 'button';
-            button.className = 'mass-transfer-option';
-            if (optionState.focusIndex === index) button.classList.add('focused', 'active');
-            button.dataset.playingOption = item.id;
-            button.textContent = item.name;
-            transferEl.appendChild(button);
-        });
     }
 
     function renderTransferOptions(transferEl) {
@@ -909,19 +845,6 @@ const _massPlayingPreset = (() => {
             queueEl.hidden = true;
             transferEl.hidden = false;
             kickerEl.textContent = 'Playing';
-            headingEl.textContent = 'Options';
-            copyEl.textContent = '';
-            copyEl.hidden = true;
-            metaEl.textContent = PLAYING_MENU_ITEMS.length ? 'LEFT Open   RIGHT Back' : '';
-            metaEl.hidden = !metaEl.textContent;
-            renderPlayingOptions(transferEl);
-            return;
-        }
-
-        if (pageId === 'transfer') {
-            queueEl.hidden = true;
-            transferEl.hidden = false;
-            kickerEl.textContent = 'Playing';
             headingEl.textContent = 'Transfer Queue';
             copyEl.textContent = transferState.error || transferState.message || '';
             copyEl.hidden = !copyEl.textContent;
@@ -1109,10 +1032,6 @@ const _massPlayingPreset = (() => {
         if (pageId === 'now') {
             return openOptionsMenu();
         }
-        if (pageId === 'options') {
-            stepOptionFocus(delta);
-            return true;
-        }
         stepTransferFocus(delta);
         return true;
     }
@@ -1126,21 +1045,8 @@ const _massPlayingPreset = (() => {
         if (pageId === 'now') {
             return false;
         }
-        if (pageId === 'options') {
-            if (normalized === 'right') return closePlayingMenu();
-            if (normalized === 'left' || normalized === 'go') return activateOptionFocus();
-            if (normalized === 'up') {
-                stepOptionFocus(-1);
-                return true;
-            }
-            if (normalized === 'down') {
-                stepOptionFocus(1);
-                return true;
-            }
-            return false;
-        }
         if (normalized === 'right') {
-            return closeTransferMenu();
+            return closePlayingMenu();
         }
         if (normalized === 'up') {
             stepTransferFocus(-1);
@@ -1182,7 +1088,6 @@ const _massPlayingPreset = (() => {
             ensureStyles();
             mountedContainer = container;
             currentPageIndex = 0;
-            optionState = { focusIndex: 0 };
             lastMedia = seedMediaFromUiStore() || {
                 title: 'â€”',
                 artist: 'â€”',
@@ -1220,7 +1125,6 @@ const _massPlayingPreset = (() => {
             }
             mountedContainer = null;
             currentPageIndex = 0;
-            optionState = { focusIndex: 0 };
             queueRequestId += 1;
             artistRequestId += 1;
             nowPlayingRequestId += 1;

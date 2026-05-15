@@ -65,7 +65,18 @@
   },
   "kodi": { "transfer_targets": [] },
   "radio": { "source": "radio" },
-  "news": { "guardian_api_key": "test" },
+  "news": {
+    "guardian_api_key": "test",
+    "play_news_scripts": {
+      "play_news_link": "script.play_dynamic_morning_news",
+      "play_news_cuisine": "script.play_dynamic_morning_news_cuisine_ma",
+      "play_news_lounge": "script.play_dynamic_morning_news_lounge_ma"
+    },
+    "tts_targets": {
+      "cuisine": "media_player.cuisine",
+      "lounge": "media_player.lounge_mini_ma"
+    }
+  },
   "masterlink": {
     "role": "master",
     "ir": { "audio": true, "video": true },

@@ -228,6 +228,29 @@
         "guardian_api_key": {
           "type": "string",
           "description": "API key from https://open-platform.theguardian.com/access/. The news service will refuse to start without this."
+        },
+        "play_news_scripts": {
+          "type": "object",
+          "description": "Home Assistant scripts used by the Play News shortcuts in the NEWS menu.",
+          "properties": {
+            "play_news_link": { "type": "string", "description": "Script entity to run for the default Play News action." },
+            "play_news_cuisine": { "type": "string", "description": "Script entity to run for Play News Cuisine." },
+            "play_news_lounge": { "type": "string", "description": "Script entity to run for Play News Lounge." }
+          },
+          "additionalProperties": false
+        },
+        "tts_targets": {
+          "type": "object",
+          "description": "Home Assistant media_player entities used when reading selected news articles aloud.",
+          "properties": {
+            "cuisine": { "type": "string", "description": "Entity ID for the Cuisine read-aloud target." },
+            "lounge": { "type": "string", "description": "Entity ID for the Lounge read-aloud target." }
+          },
+          "additionalProperties": false
+        },
+        "tts_public_base_url": {
+          "type": "string",
+          "description": "Optional externally reachable base URL for the news service, used when Home Assistant needs a stable URL to fetch generated article narration clips."
         }
       },
       "additionalProperties": false
