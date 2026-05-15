@@ -912,6 +912,7 @@
             const originalHandleButtonFromParent = arcList.handleButtonFromParent?.bind(arcList);
             const originalHandleNavFromParent    = arcList.handleNavFromParent?.bind(arcList);
             const originalHandleKeyPress         = arcList.handleKeyPress?.bind(arcList);
+            const originalCheckForSelectionClick = arcList.checkForSelectionClick?.bind(arcList);
             const originalRender                 = arcList.render?.bind(arcList);
             const originalCreateImageElement     = arcList.createImageElement?.bind(arcList);
             const originalSaveState              = arcList.saveState?.bind(arcList);
@@ -1324,7 +1325,12 @@
                 const normalizedId = String(sectionId || '').trim();
                 if (!normalizedId) return false;
 
-                if (String(folderStack[0]?.item?.id || '').trim() === normalizedId) {
+                const activeSectionId = String(folderStack[0]?.item?.id || '').trim();
+                if (activeSectionId && activeSectionId !== normalizedId) {
+                    rememberCurrentSectionBrowseContext();
+                }
+
+                if (activeSectionId === normalizedId) {
                     publishContextMenu();
                     return true;
                 }
@@ -2140,6 +2146,15 @@
                     originalSaveState();
                 }
                 saveBrowseState();
+            };
+
+            arcList.checkForSelectionClick = function () {
+                if (typeof originalCheckForSelectionClick === 'function') {
+                    originalCheckForSelectionClick();
+                }
+                if (!detailState && !optionsState) {
+                    rememberCurrentSectionBrowseContext();
+                }
             };
 
             arcList.destroy = function () {

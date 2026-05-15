@@ -29,13 +29,42 @@ SERVICE_UID=$(id -u "$SERVICE_USER")
 log() { echo "[post-update] $*"; }
 
 log "Starting (base=$BASE_DIR, user=$SERVICE_USER)"
+TEMPLATE_DIR="$BASE_DIR/services/system"
+SYSTEMD_DIR="/etc/systemd/system"
+
+# Clean up stale renamed units and any unsupported custom player services.
+STALE_UNITS=(
+    "beo-cd-source.service"
+    "beo-usb-source.service"
+    "beo-media.service"
+    "beo-sonos.service"
+    "beo-spotify.service"
+    "beo-spotify-fetch.service"
+    "beo-spotify-fetch.timer"
+)
+for svc in "${STALE_UNITS[@]}"; do
+    target="$SYSTEMD_DIR/$svc"
+    [ -f "$target" ] || continue
+    systemctl stop "$svc" 2>/dev/null || true
+    systemctl disable "$svc" 2>/dev/null || true
+    rm -f "$target"
+    log "Removed stale unit $svc"
+done
+
+for unit in "$SYSTEMD_DIR"/beo-player-*.service; do
+    [ -e "$unit" ] || continue
+    svc="$(basename "$unit")"
+    [ -f "$TEMPLATE_DIR/$svc" ] && continue
+    systemctl stop "$svc" 2>/dev/null || true
+    systemctl disable "$svc" 2>/dev/null || true
+    rm -f "$unit"
+    log "Removed unsupported player unit $svc"
+done
 
 # ── 1. Refresh installed systemd service files ───────────────────────────────
 # OTA rsync only updates ~/beosound5c/services/system/ templates. This step
 # re-stamps any already-installed service into /etc/systemd/system/ so that
 # changes (e.g. port, capabilities, env vars) take effect on next restart.
-TEMPLATE_DIR="$BASE_DIR/services/system"
-SYSTEMD_DIR="/etc/systemd/system"
 CHANGED=0
 
 for template in "$TEMPLATE_DIR"/beo-*.service; do

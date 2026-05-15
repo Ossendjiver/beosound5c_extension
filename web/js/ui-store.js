@@ -17,6 +17,7 @@ class UIStore {
         this._baseMenuItems = [];
         this._contextMenusByRoute = new Map();
         this._activeContextRoute = '';
+        this._contextAffinityRoute = '';
         this._openContextRoutes = new Set();
         this._contextResetTimers = new Map();
 
@@ -46,17 +47,34 @@ class UIStore {
         const origNav = this.view.navigateToView.bind(this.view);
         this.view.navigateToView = (path) => {
             const previousRoute = this.view.currentRoute;
+            const previousVisibleContextRoute = this._resolveVisibleContextRoute(previousRoute);
             origNav(path);
-            this.menu._currentRoute = this.view.currentRoute;
-            if (previousRoute && previousRoute !== this.view.currentRoute) {
-                this._closeContextMenuForRoute(previousRoute, { sync: false });
+            const nextRoute = this.view.currentRoute;
+            this.menu._currentRoute = nextRoute;
+
+            const nextIsTransientContextRoute = this._routeUsesContextAffinity(nextRoute);
+            if (nextIsTransientContextRoute && previousVisibleContextRoute) {
+                this._contextAffinityRoute = previousVisibleContextRoute;
+            } else if (!nextIsTransientContextRoute) {
+                this._contextAffinityRoute = '';
             }
-            if (this._routeUsesContextMenu(this.view.currentRoute)) {
-                this._openContextRoutes.delete(this.view.currentRoute);
+
+            const preservePreviousContext = !!previousVisibleContextRoute
+                && this._openContextRoutes.has(previousVisibleContextRoute)
+                && (nextIsTransientContextRoute || nextRoute === previousVisibleContextRoute);
+
+            if (previousRoute && previousRoute !== nextRoute && !preservePreviousContext) {
+                this._closeContextMenuForRoute(previousVisibleContextRoute || previousRoute, { sync: false });
             }
-            this._syncContextMenuForRoute(this.view.currentRoute);
-            if (path && path !== previousRoute) {
-                this._scheduleContextRouteReset(path);
+            if (this._routeUsesContextMenu(nextRoute) && nextRoute !== previousVisibleContextRoute) {
+                this._openContextRoutes.delete(nextRoute);
+            }
+            this._syncContextMenuForRoute(nextRoute);
+            const shouldResetContextRoute = nextRoute
+                && nextRoute !== previousRoute
+                && !(preservePreviousContext && nextRoute === previousVisibleContextRoute);
+            if (shouldResetContextRoute) {
+                this._scheduleContextRouteReset(nextRoute);
             }
         };
 
@@ -225,10 +243,28 @@ class UIStore {
         return route === 'menu/mass' || route === 'menu/kodi' || route === 'menu/scenes';
     }
 
+    _routeUsesContextAffinity(route) {
+        return route === 'menu/playing' || route === 'menu/queue';
+    }
+
+    _resolveVisibleContextRoute(route) {
+        const normalizedRoute = String(route || '').trim();
+        if (this._routeUsesContextMenu(normalizedRoute) && this._openContextRoutes.has(normalizedRoute)) {
+            return normalizedRoute;
+        }
+        if (this._routeUsesContextAffinity(normalizedRoute)
+            && this._contextAffinityRoute
+            && this._openContextRoutes.has(this._contextAffinityRoute)) {
+            return this._contextAffinityRoute;
+        }
+        return '';
+    }
+
     _syncContextMenuForRoute(route) {
-        const visibleItems = this._buildContextMenuItems(route);
-        if (route && this._openContextRoutes.has(route) && visibleItems?.length) {
-            this._activeContextRoute = route;
+        const visibleContextRoute = this._resolveVisibleContextRoute(route);
+        const visibleItems = this._buildContextMenuItems(visibleContextRoute);
+        if (visibleContextRoute && visibleItems?.length) {
+            this._activeContextRoute = visibleContextRoute;
             this._applyVisibleMenuItems(visibleItems);
             return;
         }
@@ -274,16 +310,21 @@ class UIStore {
         if (!normalizedRoute) return false;
 
         const wasOpen = this._openContextRoutes.delete(normalizedRoute);
+        if (this._contextAffinityRoute === normalizedRoute) {
+            this._contextAffinityRoute = '';
+        }
         if (this._activeContextRoute === normalizedRoute) {
             this._activeContextRoute = '';
         }
 
-        if (options.sync !== false && normalizedRoute === this.view.currentRoute) {
-            this._syncContextMenuForRoute(normalizedRoute);
+        const currentVisibleContextRoute = this._resolveVisibleContextRoute(this.view.currentRoute);
+        if (options.sync !== false
+            && (normalizedRoute === this.view.currentRoute || currentVisibleContextRoute === normalizedRoute)) {
+            this._syncContextMenuForRoute(this.view.currentRoute);
             if (options.highlightCurrent !== false) {
-                const currentRouteIndex = this.menu.menuItems.findIndex((item) => item.path === normalizedRoute);
+                const currentRouteIndex = this.menu.menuItems.findIndex((item) => item.path === this.view.currentRoute);
                 if (currentRouteIndex >= 0) {
-                    this.menu.applyMenuHighlight(currentRouteIndex, normalizedRoute);
+                    this.menu.applyMenuHighlight(currentRouteIndex, this.view.currentRoute);
                 }
             }
         }
@@ -334,17 +375,31 @@ class UIStore {
             });
         }
 
-        if (route === this.view.currentRoute) {
-            this._syncContextMenuForRoute(route);
+        const currentVisibleContextRoute = this._resolveVisibleContextRoute(this.view.currentRoute);
+        if (route === this.view.currentRoute || route === currentVisibleContextRoute) {
+            this._syncContextMenuForRoute(this.view.currentRoute);
         }
     }
 
     _selectContextMenuItem(item) {
         if (!item || item.kind !== 'context') return;
         if (!window.IframeMessenger) return;
-        window.IframeMessenger.sendToRoute(item.route || this.view.currentRoute, 'context-select', {
+        const targetRoute = item.route || this.view.currentRoute;
+        const navigated = this.view.currentRoute !== targetRoute;
+        if (this.view.currentRoute !== targetRoute) {
+            this.view.navigateToView(targetRoute);
+            this.menu._currentRoute = this.view.currentRoute;
+        }
+        window.IframeMessenger.sendToRoute(targetRoute, 'context-select', {
             id: item.contextId,
         });
+        if (navigated) {
+            setTimeout(() => {
+                window.IframeMessenger?.sendToRoute(targetRoute, 'context-select', {
+                    id: item.contextId,
+                });
+            }, 80);
+        }
     }
 
     _resolveCurrentMenuSelection() {
@@ -361,7 +416,7 @@ class UIStore {
             ? this.menu.menuItems[result.selectedIndex] || null
             : null;
         const contextSelection = selectedMenuItem?.kind === 'context'
-            && this._activeContextRoute === this.view.currentRoute;
+            && String(selectedMenuItem.route || '').trim() === this._activeContextRoute;
 
         return { result, selectedMenuItem, contextSelection };
     }
@@ -369,17 +424,20 @@ class UIStore {
     tryHandleContextButton(button) {
         const normalized = String(button || '').toLowerCase();
         const currentRoute = this.view.currentRoute;
-        if (normalized !== 'left' || !this._routeUsesContextMenu(currentRoute)) return false;
+        if (normalized !== 'left') return false;
 
         const { selectedMenuItem, contextSelection } = this._resolveCurrentMenuSelection();
-        if (!this._openContextRoutes.has(currentRoute)) {
+        const visibleContextRoute = this._resolveVisibleContextRoute(currentRoute);
+
+        if (!visibleContextRoute) {
+            if (!this._routeUsesContextMenu(currentRoute)) return false;
             if (selectedMenuItem?.path !== currentRoute) return false;
             return this._openContextMenuForRoute(currentRoute);
         }
 
         if (!contextSelection || !selectedMenuItem) return false;
 
-        const context = this._contextMenusByRoute.get(currentRoute);
+        const context = this._contextMenusByRoute.get(visibleContextRoute);
         const activeId = String(context?.activeId || '').trim();
         const selectedId = String(selectedMenuItem.contextId || '').trim();
         if (!selectedId) return false;
@@ -485,7 +543,8 @@ class UIStore {
         // Bold + click (only for non-overlay menu items)
         if (this.menu.applyMenuHighlight(result.selectedIndex, result.path)) {
             if (contextSelection && selectedMenuItem) {
-                const context = this._contextMenusByRoute.get(this.view.currentRoute);
+                const visibleContextRoute = this._resolveVisibleContextRoute(this.view.currentRoute);
+                const context = this._contextMenusByRoute.get(visibleContextRoute);
                 const activeId = String(context?.activeId || '').trim();
                 const selectedId = String(selectedMenuItem.contextId || '').trim();
                 if (selectedId && selectedId !== activeId) {
@@ -645,7 +704,9 @@ class UIStore {
             this.handleWheelChange();
 
             const clickedMenuItem = this.menu.menuItems[index] || null;
-            if (clickedMenuItem?.kind === 'context' && this._activeContextRoute === this.view.currentRoute) {
+            const visibleContextRoute = this._resolveVisibleContextRoute(this.view.currentRoute);
+            if (clickedMenuItem?.kind === 'context'
+                && String(clickedMenuItem.route || '').trim() === visibleContextRoute) {
                 this._selectContextMenuItem(clickedMenuItem);
             }
 

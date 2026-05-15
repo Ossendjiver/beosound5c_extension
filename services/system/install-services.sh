@@ -134,6 +134,25 @@ for svc in "${STALE_SERVICES[@]}"; do
     fi
 done
 
+echo "Cleaning up unsupported player services..."
+for unit in "$SERVICE_DIR"/beo-player-*.service; do
+    [ -e "$unit" ] || continue
+    svc="$(basename "$unit")"
+    keep=0
+    for known in "${SERVICES[@]}"; do
+        if [ "$known" = "$svc" ]; then
+            keep=1
+            break
+        fi
+    done
+    if [ "$keep" -eq 0 ]; then
+        echo "  Removing unsupported player service $svc"
+        systemctl stop "$svc" 2>/dev/null || true
+        systemctl disable "$svc" 2>/dev/null || true
+        rm -f "$unit"
+    fi
+done
+
 # Copy service files to systemd directory, replacing user/home placeholders
 echo "📋 Copying service files..."
 for service in "${SERVICES[@]}"; do

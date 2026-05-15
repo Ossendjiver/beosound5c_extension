@@ -30,6 +30,19 @@ echo "ℹ️  Configured player type: $PLAYER_TYPE"
 
 ALL_PLAYERS=(beo-player-sonos beo-player-bluesound beo-player-local beo-player-mass beo-librespot)
 
+for unit in /etc/systemd/system/beo-player-*.service; do
+    [ -e "$unit" ] || continue
+    svc="$(basename "$unit" .service)"
+    keep=0
+    for known in "${ALL_PLAYERS[@]}"; do
+        [ "$svc" = "$known" ] && keep=1 && break
+    done
+    if [ "$keep" -eq 0 ]; then
+        systemctl disable "$svc.service" 2>/dev/null || true
+        systemctl stop    "$svc.service" 2>/dev/null || true
+    fi
+done
+
 case "$PLAYER_TYPE" in
     local)     WANT_PLAYERS=(beo-librespot beo-player-local) ;;
     sonos)     WANT_PLAYERS=(beo-player-sonos) ;;
