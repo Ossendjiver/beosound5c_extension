@@ -219,7 +219,7 @@ function handleExternalNavigation(uiStore, data) {
         'system': 'menu/system',
         'queue': 'menu/queue',
         'showing': 'menu/showing',
-        'home': 'menu/home'
+        'home': 'menu/scenes'
     };
 
     // Explicit mapping first, then auto-prefix bare names with "menu/"

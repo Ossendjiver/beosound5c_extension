@@ -73,7 +73,7 @@ const Constants = {
     // Menu items (static views only — dynamic sources and webpages are added by the router)
     menuItems: [
         { title: 'PLAYING', path: 'menu/playing' },
-        { title: 'SCENES', path: 'menu/scenes' },
+        { title: 'HOME', path: 'menu/scenes' },
         { title: 'SYSTEM', path: 'menu/system' },
         { title: 'SHOWING', path: 'menu/showing' }
     ],

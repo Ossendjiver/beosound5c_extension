@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Scenes - Beosound 5c</title>
+    <title>Home - Beosound 5c</title>
 
     <!-- Favicons -->
     <link rel="icon" type="image/x-icon" href="../assets/favicons/favicon.ico">
@@ -85,7 +85,7 @@
                     console.warn('[SCENES] No scenes configured; opening with an empty list');
                 }
 
-                window.arcListInstance = new ArcList({
+                const arcList = new ArcList({
                     inlineData: scenesData,
                     levels: [{
                         itemMapper: mapScene,
@@ -95,6 +95,117 @@
                     storagePrefix: 'scenes_arclist',
                     context: 'scenes',
                     webhookUrl: typeof AppConfig !== 'undefined' ? AppConfig.webhookUrl : null,
+                });
+                window.arcListInstance = arcList;
+
+                const clampIndex = (items, index) => {
+                    if (!Array.isArray(items) || !items.length) return 0;
+                    return Math.max(0, Math.min(items.length - 1, Math.round(index || 0)));
+                };
+
+                const topLevelItems = () => arcList.mapItems(scenesData, 0);
+
+                const resolveActiveContextId = () => {
+                    if (Array.isArray(arcList.navStack) && arcList.navStack.length > 0) {
+                        return String(arcList.navStack[0]?.selectedItem?.id || '').trim();
+                    }
+                    const items = Array.isArray(arcList.items) ? arcList.items : [];
+                    const currentIndex = clampIndex(items, arcList.currentIndex);
+                    return String(items[currentIndex]?.id || '').trim();
+                };
+
+                const trimRootBreadcrumb = () => {
+                    if (!arcList.container) return;
+                    const breadcrumbs = Array.from(arcList.container.querySelectorAll('.arc-item.breadcrumb'));
+                    if (!breadcrumbs.length) return;
+                    let rootCrumb = null;
+                    let highestSlot = -1;
+                    breadcrumbs.forEach((crumb) => {
+                        const slot = Number(crumb.dataset.slotIndex || -1);
+                        if (slot > highestSlot) {
+                            highestSlot = slot;
+                            rootCrumb = crumb;
+                        }
+                    });
+                    rootCrumb?.remove();
+                };
+
+                const publishContextMenu = () => {
+                    if (!window.parent || window.parent === window) return;
+                    const items = topLevelItems()
+                        .map((item) => ({
+                            id: String(item?.id || '').trim(),
+                            title: String(item?.name || '').trim(),
+                        }))
+                        .filter((item) => item.id && item.title);
+                    const activeId = resolveActiveContextId();
+                    window.parent.postMessage({
+                        type: 'bs5c-context-menu',
+                        route: 'menu/scenes',
+                        items,
+                        selectedId: activeId || items[0]?.id || '',
+                        activeId,
+                    }, '*');
+                };
+
+                const originalRender = arcList.render?.bind(arcList);
+                arcList.render = function () {
+                    if (typeof originalRender === 'function') {
+                        originalRender();
+                    }
+                    trimRootBreadcrumb();
+                    publishContextMenu();
+                };
+
+                const openTopLevelScene = (itemId) => {
+                    const normalizedId = String(itemId || '').trim();
+                    if (!normalizedId) return false;
+
+                    const roots = topLevelItems();
+                    const rootIndex = roots.findIndex((item) => String(item?.id || '').trim() === normalizedId);
+                    if (rootIndex < 0) return false;
+
+                    const rawRoot = Array.isArray(scenesData) ? scenesData[rootIndex] : null;
+                    if (arcList.container) {
+                        arcList.container.querySelectorAll('.arc-item.breadcrumb').forEach((node) => node.remove());
+                    }
+
+                    arcList.navStack = [];
+                    arcList.depth = 0;
+                    arcList.items = roots;
+                    arcList.currentIndex = rootIndex;
+                    arcList.targetIndex = rootIndex;
+
+                    if (Array.isArray(rawRoot?.scenes) && rawRoot.scenes.length > 0) {
+                        arcList.navStack.push({
+                            items: roots.slice(),
+                            rawItems: Array.isArray(scenesData) ? scenesData.slice() : [],
+                            selectedIndex: rootIndex,
+                            selectedItem: roots[rootIndex],
+                            breadcrumbElement: null,
+                        });
+                        arcList.depth = 1;
+                        arcList.items = arcList.mapItems(rawRoot.scenes, 1);
+                        arcList.currentIndex = 0;
+                        arcList.targetIndex = 0;
+                        if (typeof arcList._createBreadcrumbsFromStack === 'function') {
+                            arcList._createBreadcrumbsFromStack();
+                        }
+                    }
+
+                    if (typeof arcList.updateCounter === 'function') {
+                        arcList.updateCounter();
+                    }
+                    if (arcList.totalItemsDisplay) {
+                        arcList.totalItemsDisplay.textContent = arcList.items.length;
+                    }
+                    arcList.render();
+                    return true;
+                };
+
+                window.addEventListener('message', (event) => {
+                    if (event.data?.type !== 'context-select') return;
+                    openTopLevelScene(event.data?.id);
                 });
             } catch (error) {
                 console.error('Scenes initialization error:', error);

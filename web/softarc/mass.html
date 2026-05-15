@@ -689,16 +689,18 @@
             const itemInfoUrl = serviceBaseUrl + '/item_info';
             const FALLBACK_CARD_IMAGE = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNjQiIGhlaWdodD0iNjQiIHZpZXdCb3g9IjAgMCA2NCA2NCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPHJlY3Qgd2lkdGg9IjY0IiBoZWlnaHQ9IjY0IiBmaWxsPSIjMzMzMzMzIi8+Cjx0ZXh0IHg9IjMyIiB5PSI0MCIgZm9udC1mYW1pbHk9IkFyaWFsLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjI0IiBmaWxsPSIjZmZmZmZmIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIj7imqo8L3RleHQ+Cjwvc3ZnPgo=';
             const ROOT_ICON_STYLE = {
+                covers:    { icon: 'image-square', color: '#74c0fc' },
                 artists:   { icon: 'users-three', color: '#e05618' },
                 albums:    { icon: 'vinyl-record', color: '#1c7ed6' },
-                songs:     { icon: 'music-notes-simple', color: '#2b8a3e' },
+                titles:    { icon: 'music-notes-simple', color: '#2b8a3e' },
                 playlists: { icon: 'list-bullets', color: '#862e9c' },
                 playlist_mixes: { icon: 'shuffle', color: '#b14ae0' },
                 podcasts:  { icon: 'microphone', color: '#ff6b6b' },
                 mixes:     { icon: 'radio', color: '#e6ca19' },
             };
-            const ROOT_SECTION_IDS = new Set(['queue', 'artists', 'albums', 'songs', 'playlists', 'playlist_mixes', 'podcasts', 'mixes']);
-            const CROSS_SECTION_TARGET_IDS = new Set(['artists', 'albums', 'songs']);
+            const SOURCE_ROOT_IDS = new Set(['queue', 'artists', 'albums', 'songs', 'playlists', 'playlist_mixes', 'podcasts', 'mixes']);
+            const ROOT_SECTION_IDS = new Set(['queue', 'covers', 'artists', 'albums', 'titles', 'playlists', 'playlist_mixes', 'podcasts', 'mixes']);
+            const CROSS_SECTION_TARGET_IDS = new Set(['covers', 'artists', 'albums', 'titles']);
             const cleanTitle = (value) => String(value || '').split('\n')[0].trim();
             const normalizeServiceImageUrl = (value) => {
                 const raw = String(value || '').trim();
@@ -743,7 +745,7 @@
                 const nodeArtist = String(node.artist || context.artist || '').trim();
                 const nodeArtwork = normalizeServiceImageUrl(node.image || context.artwork || '');
                 const containsLeaves = !!children?.some((child) => !Array.isArray(child?.tracks) || child.tracks.length === 0);
-                const isRootCategory = ['queue', 'artists', 'albums', 'songs', 'playlists', 'playlist_mixes', 'podcasts', 'mixes'].includes(String(node.id || ''));
+                const isRootCategory = SOURCE_ROOT_IDS.has(String(node.id || ''));
 
                 rememberTrackMeta(node, {
                     artist: nodeArtist,
@@ -860,6 +862,26 @@
                 return baseItems;
             };
 
+            const buildDisplayRootSource = (items) => {
+                const displayItems = [];
+                (Array.isArray(items) ? items : []).forEach((item) => {
+                    const sourceId = String(item?.id || '').trim();
+                    if (sourceId === 'albums') {
+                        displayItems.push(
+                            Object.assign({}, item, { id: 'covers', name: 'Covers' }),
+                            Object.assign({}, item, { id: 'albums', name: 'Albums' }),
+                        );
+                        return;
+                    }
+                    if (sourceId === 'songs') {
+                        displayItems.push(Object.assign({}, item, { id: 'titles', name: 'Titles' }));
+                        return;
+                    }
+                    displayItems.push(item);
+                });
+                return displayItems;
+            };
+
             const applyRootPresentation = (item) => {
                 const visual = ROOT_ICON_STYLE[String(item?.id || '')];
                 if (!visual) return item;
@@ -955,10 +977,12 @@
 
             const normalizeSectionContext = (context = {}) => {
                 const sourceContext = (context && typeof context === 'object') ? context : {};
+                const rawRootId = String(sourceContext.root_id || '').trim();
+                const normalizedRootId = rawRootId === 'songs' ? 'titles' : rawRootId;
                 const normalized = {
                     source: String(sourceContext.source || 'mass').trim() || 'mass',
                     ts: Number(sourceContext.ts || Date.now()) || Date.now(),
-                    root_id: String(sourceContext.root_id || '').trim(),
+                    root_id: normalizedRootId,
                     artist: cleanTitle(sourceContext.artist || ''),
                     album: cleanTitle(sourceContext.album || ''),
                     title: cleanTitle(sourceContext.title || ''),
@@ -1088,7 +1112,7 @@
                     });
                 }
 
-                if (sectionId === 'albums') {
+                if (sectionId === 'albums' || sectionId === 'covers') {
                     if (artistKey) {
                         const byArtist = findItemIndex(childItems, (entry) => {
                             const entryArtist = normalizeLookup(entry?.artist || getItemMeta(entry).artist);
@@ -1103,7 +1127,7 @@
                     return -1;
                 }
 
-                if (sectionId === 'songs') {
+                if (sectionId === 'titles') {
                     if (artistKey) {
                         const byArtist = findItemIndex(childItems, (entry) => {
                             const entryArtist = normalizeLookup(entry?.artist || getItemMeta(entry).artist);
@@ -1202,8 +1226,9 @@
                     });
                 }
                 if (albumKey) {
+                    const preferredAlbumRoot = String(context?.root_id || '').trim() === 'covers' ? 'covers' : 'albums';
                     strategies.push({
-                        rootId: 'albums',
+                        rootId: preferredAlbumRoot,
                         match: (entry) => {
                             if (normalizeLookup(entry?.album || entry?.name) !== albumKey) return false;
                             const entryArtist = normalizeLookup(entry?.artist || getItemMeta(entry).artist);
@@ -1213,7 +1238,7 @@
                 }
                 if (titleKey) {
                     strategies.push({
-                        rootId: 'songs',
+                        rootId: 'titles',
                         match: (entry) => {
                             if (normalizeLookup(entry?.name || entry?.title) !== titleKey) return false;
                             const entryArtist = normalizeLookup(entry?.artist || getItemMeta(entry).artist);
@@ -1231,7 +1256,7 @@
             };
 
             const rootItems = () => {
-                const src = withQueueRoot(arcList.parentData || preloadedData || []);
+                const src = buildDisplayRootSource(withQueueRoot(arcList.parentData || preloadedData || []));
                 return src.map((item, idx, arr) => applyRootPresentation(childNameMapper(item, idx, arr)));
             };
 
@@ -1245,6 +1270,95 @@
                     }
                     return mapped;
                 });
+            };
+
+            const CONTEXT_ROUTE = 'menu/mass';
+            const contextMenuItems = () => rootItems()
+                .filter((entry) => {
+                    const entryId = String(entry?.id || '').trim();
+                    return entryId && entryId !== 'queue' && ROOT_SECTION_IDS.has(entryId);
+                })
+                .map((entry) => ({
+                    id: String(entry.id || '').trim(),
+                    title: cleanTitle(entry.name || entry.id || ''),
+                }));
+
+            const resolveDefaultContextSectionId = () => {
+                const entries = contextMenuItems();
+                const availableIds = new Set(entries.map((entry) => entry.id));
+                const rememberedId = String(lastSectionBrowseContext?.root_id || '').trim();
+                if (rememberedId && availableIds.has(rememberedId)) {
+                    return rememberedId;
+                }
+                const preferredOrder = ['artists', 'covers', 'albums', 'titles', 'playlists', 'playlist_mixes', 'podcasts', 'mixes'];
+                return preferredOrder.find((id) => availableIds.has(id)) || entries[0]?.id || '';
+            };
+
+            const resolveActiveContextSectionId = () =>
+                String(folderStack[0]?.item?.id || '').trim();
+
+            const resolveCurrentContextSectionId = () => {
+                const lockedSectionId = resolveActiveContextSectionId();
+                if (lockedSectionId && lockedSectionId !== 'queue') {
+                    return lockedSectionId;
+                }
+                const currentId = String(getCurrentItem()?.id || '').trim();
+                if (currentId && currentId !== 'queue' && ROOT_SECTION_IDS.has(currentId)) {
+                    return currentId;
+                }
+                return resolveDefaultContextSectionId();
+            };
+
+            const publishContextMenu = () => {
+                if (!window.parent || window.parent === window) return;
+                window.parent.postMessage({
+                    type: 'bs5c-context-menu',
+                    route: CONTEXT_ROUTE,
+                    items: contextMenuItems(),
+                    selectedId: resolveCurrentContextSectionId(),
+                    activeId: resolveActiveContextSectionId(),
+                }, '*');
+            };
+
+            const openContextSection = (sectionId, options = {}) => {
+                const normalizedId = String(sectionId || '').trim();
+                if (!normalizedId) return false;
+
+                if (String(folderStack[0]?.item?.id || '').trim() === normalizedId) {
+                    publishContextMenu();
+                    return true;
+                }
+
+                const roots = rootItems();
+                const rootIndex = roots.findIndex((entry) => String(entry?.id || '').trim() === normalizedId);
+                if (rootIndex < 0) return false;
+
+                const rootFolder = roots[rootIndex];
+                const childItems = mapChildrenForParent(rootFolder);
+                let nextIndex = 0;
+                if (CROSS_SECTION_TARGET_IDS.has(normalizedId)) {
+                    const contextualIndex = resolveSectionSelectionIndex(normalizedId, childItems, lastSectionBrowseContext);
+                    if (contextualIndex >= 0) {
+                        nextIndex = contextualIndex;
+                    }
+                }
+
+                folderStack.length = 0;
+                folderStack.push({
+                    item: rootFolder,
+                    items: roots.slice(),
+                    currentIndex: rootIndex,
+                    targetIndex: rootIndex,
+                });
+                arcList.items = childItems;
+                arcList.currentIndex = clampIndex(childItems, nextIndex);
+                arcList.targetIndex = arcList.currentIndex;
+                refreshList();
+                if (options.saveState !== false) {
+                    saveBrowseState();
+                }
+                publishContextMenu();
+                return true;
             };
 
             const buildNowPlayingPayload = (item, pageData = null) => {
@@ -1532,7 +1646,8 @@
                 const metadata = getItemMeta(item);
                 const artistKey = normalizeLookup(deriveSectionArtist(item, getCurrentRootSectionId()) || metadata.artist || item?.artist);
                 const albumKey = normalizeLookup(item?.album || metadata.album || item?.name);
-                return focusMappedFolder('albums', (entry) => {
+                const targetRootId = getCurrentRootSectionId() === 'covers' ? 'covers' : 'albums';
+                return focusMappedFolder(targetRootId, (entry) => {
                     const entryArtist = normalizeLookup(entry?.artist || getItemMeta(entry).artist);
                     const entryAlbum = normalizeLookup(entry?.album || entry?.name || getItemMeta(entry).album);
                     if (albumKey && entryAlbum === albumKey) {
@@ -1798,7 +1913,7 @@
             const renderBreadcrumbs = () => {
                 if (!arcList.container) return;
                 arcList.container.querySelectorAll('.mass-breadcrumb').forEach(n => n.remove());
-                const crumbEntries = folderStack.map((entry) => ({ item: entry.item }));
+                const crumbEntries = folderStack.slice(1).map((entry) => ({ item: entry.item }));
                 if (detailState?.item) crumbEntries.push({ item: detailState.item });
                 else if (optionsState?.item) crumbEntries.push({ item: optionsState.item });
                 if (!crumbEntries.length) return;
@@ -1875,6 +1990,11 @@
                     arcList.currentIndex = clampIndex(arcList.items, nextIndex);
                     arcList.targetIndex = arcList.currentIndex;
                     refreshList();
+                } else if (folderStack.length === 1) {
+                    const currentSectionId = String(folderStack[0]?.item?.id || '').trim();
+                    if (currentSectionId) {
+                        openContextSection(currentSectionId, { saveState: false });
+                    }
                 }
             };
 
@@ -1900,6 +2020,7 @@
                 if (typeof originalRender === 'function') originalRender();
                 renderBreadcrumbs();
                 saveBrowseState();
+                publishContextMenu();
             };
 
             let fastLetterTimer = null;
@@ -1951,7 +2072,20 @@
             };
 
             const exitFolder = () => {
+                if (!folderStack.length) return false;
                 rememberCurrentSectionBrowseContext();
+                if (folderStack.length === 1) {
+                    const activeSectionId = String(folderStack[0]?.item?.id || '').trim();
+                    const roots = rootItems();
+                    const rootIndex = roots.findIndex((entry) => String(entry?.id || '').trim() === activeSectionId);
+                    folderStack.length = 0;
+                    arcList.items = roots;
+                    arcList.currentIndex = clampIndex(roots, rootIndex >= 0 ? rootIndex : 0);
+                    arcList.targetIndex = arcList.currentIndex;
+                    refreshList();
+                    console.log('[MASS] Returned to root sections');
+                    return true;
+                }
                 const previous = folderStack.pop();
                 if (!previous) return false;
 
@@ -2112,7 +2246,11 @@
                     if (current && getDetailSpec(current)) { openDetailPage(current); return; }
                     if (enterFolder()) return;
                 }
-                if (normalized === 'right') { clearPendingGoPress(); if (exitFolder())  return; }
+                if (normalized === 'right') {
+                    clearPendingGoPress();
+                    if (exitFolder()) return;
+                    return;
+                }
                 if (normalized === 'go_long' || normalized === 'go_hold') {
                     clearPendingGoPress();
                     return showOptionsForItem();
@@ -2150,7 +2288,10 @@
                     if (current && getDetailSpec(current)) { openDetailPage(current); return; }
                     if (enterFolder()) return;
                 }
-                if (e.key === 'ArrowRight') { if (exitFolder())  return; }
+                if (e.key === 'ArrowRight') {
+                    if (exitFolder()) return;
+                    return;
+                }
                 if (e.key === 'Enter')      { return arcList.sendGoWebhook('play_item'); }
                 if (originalHandleKeyPress) originalHandleKeyPress(e);
             };
@@ -2192,6 +2333,9 @@
                 arcList.targetIndex   = 0;
                 lastSectionBrowseContext = loadSectionBrowseContext();
                 restoreBrowseState(loadBrowseState());
+                if (!folderStack.length) {
+                    openContextSection(resolveCurrentContextSectionId(), { saveState: false });
+                }
                 refreshList();
                 requestAnimationFrame(() => refreshList());
                 setTimeout(() => refreshList(), 120);
@@ -2205,6 +2349,13 @@
             setInterval(() => {
                 void refreshQueueRoot(true);
             }, 5000);
+
+            window.addEventListener('message', (event) => {
+                if (event.data?.type !== 'context-select') return;
+                const sectionId = String(event.data?.id || '').trim();
+                if (!sectionId) return;
+                openContextSection(sectionId);
+            });
         }
     </script>
 </body>

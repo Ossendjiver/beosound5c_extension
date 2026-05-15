@@ -14,6 +14,9 @@ class UIStore {
         this.media = new MediaManager();
         this.menu = new MenuManager();
         this.view = new ViewManager();
+        this._baseMenuItems = [];
+        this._contextMenusByRoute = new Map();
+        this._activeContextRoute = '';
 
         // ── Wire cross-references ──
         this.view.menuManager = this.menu;
@@ -26,6 +29,8 @@ class UIStore {
                 this.media.activeSourcePlayer = data.active_player || null;
                 this.media.setActivePlayingPreset(data.active_source);
             }
+            this._updateBaseMenuItems(this.menu.menuItems);
+            this._syncContextMenuForRoute(this.view.currentRoute);
         };
         this.menu.onItemHover = (angle) => {
             this.wheelPointerAngle = angle;
@@ -40,6 +45,7 @@ class UIStore {
         this.view.navigateToView = (path) => {
             origNav(path);
             this.menu._currentRoute = this.view.currentRoute;
+            this._syncContextMenuForRoute(this.view.currentRoute);
         };
 
         // ── Input / pointer state ──
@@ -55,6 +61,7 @@ class UIStore {
 
         // ── Initialize ──
         this._initializeUI();
+        this._updateBaseMenuItems(this.menu.menuItems);
         this._setupEventListeners();
         this.view.updateView();
 
@@ -103,11 +110,191 @@ class UIStore {
     navigateToView(path) { this.view.navigateToView(path); this.menu._currentRoute = this.view.currentRoute; }
     setMenuVisible(visible) { this.view.setMenuVisible(visible); }
 
-    addMenuItem(item, afterPath, viewDef) { this.menu.addMenuItem(item, afterPath, viewDef); }
-    removeMenuItem(path) { this.menu._currentRoute = this.view.currentRoute; this.menu.removeMenuItem(path); }
+    addMenuItem(item, afterPath, viewDef) {
+        if (this._activeContextRoute && this._baseMenuItems.length) {
+            this.menu.menuItems = this._cloneMenuItems(this._baseMenuItems);
+        }
+        this.menu.addMenuItem(item, afterPath, viewDef);
+        this._updateBaseMenuItems(this.menu.menuItems);
+        this._syncContextMenuForRoute(this.view.currentRoute);
+    }
+    removeMenuItem(path) {
+        this.menu._currentRoute = this.view.currentRoute;
+        if (this._activeContextRoute && this._baseMenuItems.length) {
+            this.menu.menuItems = this._cloneMenuItems(this._baseMenuItems);
+        }
+        this.menu.removeMenuItem(path);
+        this._updateBaseMenuItems(this.menu.menuItems);
+        this._syncContextMenuForRoute(this.view.currentRoute);
+    }
 
     _loadSourceScript(preset) { return this.menu.loadSourceScript(preset); }
     _reloadAllSourceIframes() { this.menu.reloadAllSourceIframes(); }
+
+    _cloneMenuItems(items) {
+        return Array.isArray(items)
+            ? items.map((item) => Object.assign({}, item))
+            : [];
+    }
+
+    _normalizeMenuItem(item) {
+        const normalized = Object.assign({}, item || {});
+        if (normalized.path === 'menu/scenes') {
+            normalized.title = 'HOME';
+        }
+        return normalized;
+    }
+
+    _normalizeMenuItems(items) {
+        return this._cloneMenuItems(items).map((item) => this._normalizeMenuItem(item));
+    }
+
+    _updateBaseMenuItems(items) {
+        this._baseMenuItems = this._normalizeMenuItems(items);
+    }
+
+    _applyVisibleMenuItems(items) {
+        const normalized = this._normalizeMenuItems(items);
+        const visiblePaths = new Set(normalized.map((item) => item.path));
+        if (!visiblePaths.has(this.menu._lastSelectedPath)) {
+            this.menu._lastSelectedPath = null;
+        }
+        this.menu.menuItems = normalized;
+        if (window.LaserPositionMapper?.updateMenuItems) {
+            window.LaserPositionMapper.updateMenuItems(this.menu.menuItems);
+        }
+        this.menu.renderMenuItems();
+    }
+
+    _getContextMenuConfig(route) {
+        const defaults = { includePlaying: false, includeQueue: false };
+        const configByRoute = {
+            'menu/mass': { includePlaying: true, includeQueue: true },
+            'menu/kodi': { includePlaying: true, includeQueue: true },
+            'menu/scenes': { includePlaying: false, includeQueue: false },
+        };
+        return Object.assign({}, defaults, configByRoute[route] || {});
+    }
+
+    _buildContextMenuItems(route) {
+        const context = this._contextMenusByRoute.get(route);
+        if (!context || !Array.isArray(context.items) || !context.items.length) {
+            return null;
+        }
+
+        const config = this._getContextMenuConfig(route);
+        const items = [];
+
+        if (config.includePlaying) {
+            items.push({ title: 'PLAYING', path: 'menu/playing', kind: 'navigate' });
+        }
+
+        if (config.includeQueue && this._baseMenuItems.some((item) => item.path === 'menu/queue')) {
+            items.push({ title: 'QUEUE', path: 'menu/queue', kind: 'navigate' });
+        }
+
+        context.items.forEach((entry) => {
+            const id = String(entry.id || '').trim();
+            const title = String(entry.title || '').trim();
+            if (!id || !title) return;
+            items.push({
+                title,
+                path: `context:${route}:${id}`,
+                kind: 'context',
+                route,
+                contextId: id,
+            });
+        });
+
+        return items;
+    }
+
+    _syncContextMenuForRoute(route) {
+        const visibleItems = this._buildContextMenuItems(route);
+        if (visibleItems && route) {
+            this._activeContextRoute = route;
+            this._applyVisibleMenuItems(visibleItems);
+            return;
+        }
+
+        this._activeContextRoute = '';
+        this._applyVisibleMenuItems(this._baseMenuItems.length ? this._baseMenuItems : this.menu.menuItems);
+    }
+
+    receiveContextMenuUpdate(payload) {
+        const route = String(payload?.route || '').trim();
+        if (!route) return;
+
+        const items = Array.isArray(payload?.items)
+            ? payload.items.map((entry) => ({
+                id: String(entry?.id || '').trim(),
+                title: String(entry?.title || '').trim(),
+            })).filter((entry) => entry.id && entry.title)
+            : [];
+
+        if (!items.length) {
+            this._contextMenusByRoute.delete(route);
+        } else {
+            this._contextMenusByRoute.set(route, {
+                route,
+                items,
+                selectedId: String(payload?.selectedId || '').trim(),
+                activeId: String(payload?.activeId || payload?.selectedId || '').trim(),
+            });
+        }
+
+        if (route === this.view.currentRoute) {
+            this._syncContextMenuForRoute(route);
+        }
+    }
+
+    _selectContextMenuItem(item) {
+        if (!item || item.kind !== 'context') return;
+        if (!window.IframeMessenger) return;
+        window.IframeMessenger.sendToRoute(item.route || this.view.currentRoute, 'context-select', {
+            id: item.contextId,
+        });
+    }
+
+    _resolveCurrentMenuSelection() {
+        if (!this.laserPosition || !window.LaserPositionMapper) {
+            return {
+                result: { selectedIndex: -1, path: null, isOverlay: false, angle: this.wheelPointerAngle },
+                selectedMenuItem: null,
+                contextSelection: false,
+            };
+        }
+
+        const result = window.LaserPositionMapper.resolveMenuSelection(this.laserPosition);
+        const selectedMenuItem = result.selectedIndex >= 0
+            ? this.menu.menuItems[result.selectedIndex] || null
+            : null;
+        const contextSelection = selectedMenuItem?.kind === 'context'
+            && this._activeContextRoute === this.view.currentRoute;
+
+        return { result, selectedMenuItem, contextSelection };
+    }
+
+    tryHandleContextButton(button) {
+        const normalized = String(button || '').toLowerCase();
+        if (normalized !== 'left') return false;
+
+        const { selectedMenuItem, contextSelection } = this._resolveCurrentMenuSelection();
+        if (!contextSelection || !selectedMenuItem) return false;
+
+        const context = this._contextMenusByRoute.get(this.view.currentRoute);
+        const activeId = String(context?.activeId || '').trim();
+        const selectedId = String(selectedMenuItem.contextId || '').trim();
+        if (!selectedId) return false;
+
+        if (!activeId || activeId !== selectedId) {
+            this._selectContextMenuItem(selectedMenuItem);
+            this.sendClickCommand();
+            return true;
+        }
+
+        return false;
+    }
 
     // ── Debug logging ──
 
@@ -168,14 +355,21 @@ class UIStore {
             return;
         }
 
-        const result = window.LaserPositionMapper.resolveMenuSelection(this.laserPosition);
+        const {
+            result,
+            selectedMenuItem,
+            contextSelection,
+        } = this._resolveCurrentMenuSelection();
 
         // Determine effective path — overlays navigate to PLAYING/SHOWING.
         // If SHOWING is not in the menu, both ends land on PLAYING.
         let effectivePath = result.path;
         if (result.isOverlay) {
-            const hasShowing = this.menu.menuItems.some(m => m.path === 'menu/showing');
+            const overlayMenu = this._baseMenuItems.length ? this._baseMenuItems : this.menu.menuItems;
+            const hasShowing = overlayMenu.some(m => m.path === 'menu/showing');
             effectivePath = (result.angle >= 200 || !hasShowing) ? 'menu/playing' : 'menu/showing';
+        } else if (contextSelection) {
+            effectivePath = null;
         }
 
         // Menu visibility
@@ -247,8 +441,10 @@ class UIStore {
                     if (this.view.currentRoute === 'menu/playing') {
                         // Webhook handled by dummy hardware system
                     } else {
-                        this.forwardButtonToActiveIframe('left');
-                        this.forwardKeyboardToActiveIframe(event);
+                        if (!this.tryHandleContextButton('left')) {
+                            this.forwardButtonToActiveIframe('left');
+                            this.forwardKeyboardToActiveIframe(event);
+                        }
                     }
                     break;
                 case "ArrowRight":
@@ -342,6 +538,11 @@ class UIStore {
                 this.laserPosition = Math.round(window.LaserPositionMapper.angleToLaserPosition(itemAngle));
             }
             this.handleWheelChange();
+
+            const clickedMenuItem = this.menu.menuItems[index] || null;
+            if (clickedMenuItem?.kind === 'context' && this._activeContextRoute === this.view.currentRoute) {
+                this._selectContextMenuItem(clickedMenuItem);
+            }
 
             this.sendClickCommand();
             return true;
@@ -452,7 +653,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Relay messages from child iframes
     window.addEventListener('message', (event) => {
-        if (event.data?.type === 'reload-playlists') {
+        if (event.data?.type === 'bs5c-context-menu') {
+            uiStore.receiveContextMenuUpdate(event.data);
+        } else if (event.data?.type === 'reload-playlists') {
             uiStore.menu.reloadAllSourceIframes();
         } else if (event.data?.type === 'click') {
             // Only honor clicks from an iframe currently attached to the

@@ -747,6 +747,69 @@
                 });
             };
 
+            const CONTEXT_ROUTE = 'menu/kodi';
+            const contextMenuItems = () => rootItems().map((entry) => ({
+                id: String(entry?.id || '').trim(),
+                title: cleanTitle(entry?.name || entry?.id || ''),
+            })).filter((entry) => entry.id && entry.title);
+
+            const resolveDefaultContextSectionId = () => {
+                const entries = contextMenuItems();
+                const availableIds = new Set(entries.map((entry) => entry.id));
+                const preferredOrder = ['movies', 'tvshows', 'livetv', 'playlists'];
+                return preferredOrder.find((id) => availableIds.has(id)) || entries[0]?.id || '';
+            };
+
+            const resolveActiveContextSectionId = () =>
+                String(folderStack[0]?.item?.id || '').trim();
+
+            const resolveCurrentContextSectionId = () => {
+                const lockedSectionId = resolveActiveContextSectionId();
+                if (lockedSectionId) return lockedSectionId;
+                const currentId = String(getCurrent()?.id || '').trim();
+                return currentId || resolveDefaultContextSectionId();
+            };
+
+            const publishContextMenu = () => {
+                if (!window.parent || window.parent === window) return;
+                window.parent.postMessage({
+                    type: 'bs5c-context-menu',
+                    route: CONTEXT_ROUTE,
+                    items: contextMenuItems(),
+                    selectedId: resolveCurrentContextSectionId(),
+                    activeId: resolveActiveContextSectionId(),
+                }, '*');
+            };
+
+            const openContextSection = (sectionId, options = {}) => {
+                const normalizedId = String(sectionId || '').trim();
+                if (!normalizedId) return false;
+
+                if (String(folderStack[0]?.item?.id || '').trim() === normalizedId) {
+                    publishContextMenu();
+                    return true;
+                }
+
+                const roots = rootItems();
+                const rootIndex = roots.findIndex((entry) => String(entry?.id || '').trim() === normalizedId);
+                if (rootIndex < 0) return false;
+
+                const rootFolder = roots[rootIndex];
+                folderStack.length = 0;
+                folderStack.push({
+                    item: rootFolder,
+                    items: roots.slice(),
+                    currentIndex: rootIndex,
+                    targetIndex: rootIndex,
+                });
+                arcList.items = mapChildrenForParent(rootFolder);
+                arcList.currentIndex = 0;
+                arcList.targetIndex = 0;
+                refreshList();
+                publishContextMenu();
+                return true;
+            };
+
             const cleanTitle = (value) => String(value || '').split('\n')[0].trim();
             const escapeHtml = (value) => String(value || '')
                 .replace(/&/g, '&amp;')
@@ -900,7 +963,7 @@
             const renderBreadcrumbs = () => {
                 if (!arcList.container) return;
                 arcList.container.querySelectorAll('.kodi-breadcrumb').forEach(n => n.remove());
-                const crumbEntries = folderStack.map(entry => ({ item: entry.item }));
+                const crumbEntries = folderStack.slice(1).map(entry => ({ item: entry.item }));
                 if (detailState?.item) crumbEntries.push({ item: detailState.item });
                 else if (optionsState?.item) crumbEntries.push({ item: optionsState.item });
                 if (!crumbEntries.length) return;
@@ -1282,6 +1345,7 @@
                 if (typeof arcList.updateCounter === 'function') arcList.updateCounter();
                 if (typeof origRender === 'function') origRender();
                 renderBreadcrumbs();
+                publishContextMenu();
             };
 
             // â”€â”€ Folder navigation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -1305,6 +1369,19 @@
             };
 
             const exitFolder = () => {
+                if (!folderStack.length) return false;
+                if (folderStack.length === 1) {
+                    const activeSectionId = String(folderStack[0]?.item?.id || '').trim();
+                    const roots = rootItems();
+                    const rootIndex = roots.findIndex((entry) => String(entry?.id || '').trim() === activeSectionId);
+                    folderStack.length = 0;
+                    arcList.items = roots;
+                    arcList.currentIndex = clamp(roots, rootIndex >= 0 ? rootIndex : 0);
+                    arcList.targetIndex = arcList.currentIndex;
+                    refreshList();
+                    console.log('[KODI] Returned to root sections');
+                    return true;
+                }
                 const prev = folderStack.pop();
                 if (!prev) return false;
 
@@ -1426,7 +1503,10 @@
                     if (cur && getDetailSpec(cur)) { openDetailPage(cur); return; }
                     if (enterFolder()) return;
                 }
-                if (normalized === 'right') { if (exitFolder())  return; }
+                if (normalized === 'right') {
+                    if (exitFolder()) return;
+                    return;
+                }
                 if (normalized === 'go_long' || normalized === 'go_hold') { return showOptionsForItem(); }
                 if (normalized === 'go')    { return arcList.sendGoWebhook(); }
                 if (origButton) origButton(button);
@@ -1452,7 +1532,10 @@
                     if (cur && getDetailSpec(cur)) { openDetailPage(cur); return; }
                     if (enterFolder()) return;
                 }
-                if (e.key === 'ArrowRight') { if (exitFolder())  return; }
+                if (e.key === 'ArrowRight') {
+                    if (exitFolder()) return;
+                    return;
+                }
                 if (e.key === 'Enter')      { return arcList.sendGoWebhook(); }
                 if (origKeyPress) origKeyPress(e);
             };
@@ -1486,6 +1569,9 @@
                 arcList.items        = rootItems();
                 arcList.currentIndex = 0;
                 arcList.targetIndex  = 0;
+                if (!folderStack.length) {
+                    openContextSection(resolveCurrentContextSectionId(), { saveState: false });
+                }
                 refreshList();
                 requestAnimationFrame(() => refreshList());
                 setTimeout(() => refreshList(), 120);
@@ -1495,6 +1581,13 @@
                 console.log('[KODI] Navigation ready from preloaded cache');
             };
             setTimeout(initNavigation, 0);
+
+            window.addEventListener('message', (event) => {
+                if (event.data?.type !== 'context-select') return;
+                const sectionId = String(event.data?.id || '').trim();
+                if (!sectionId) return;
+                openContextSection(sectionId);
+            });
         }
     </script>
 </body>

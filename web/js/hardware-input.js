@@ -364,6 +364,10 @@ function handleButtonEvent(uiStore, data) {
 }
 
 function routeButtonToView(page, button, uiStore) {
+    if (uiStore?.tryHandleContextButton?.(button)) {
+        return true;
+    }
+
     const viewId = page.startsWith('menu/') ? page.slice(5) : null;
 
     // Source page — controller owns all buttons
