@@ -33,6 +33,7 @@ import re
 import sys
 import urllib.parse
 import websockets
+from email.utils import parsedate_to_datetime
 from aiohttp import web, ClientSession, ClientTimeout
 
 # ── Path bootstrap ────────────────────────────────────────────────────────────
@@ -678,6 +679,7 @@ class MassSource(SourceBase):
             image=podcast_image,
             url=podcast.get("uri", ""),
         )
+        sorted_episodes = self._sort_podcast_episodes(episodes)
         folder["tracks"] = [
             self._make_leaf_node(
                 id_=episode.get("item_id", ""),
@@ -686,9 +688,11 @@ class MassSource(SourceBase):
                 url=episode.get("uri", ""),
                 image=self._get_img(episode, base) or podcast_image,
             )
-            for episode in (episodes or [])
+            for episode in sorted_episodes
         ]
-        return folder
+        latest_episode_dt = self._extract_item_datetime(sorted_episodes[0]) if sorted_episodes else None
+        latest_episode_ts = latest_episode_dt.timestamp() if latest_episode_dt else float("-inf")
+        return folder, latest_episode_ts
 
     def _finalize_node(self, node):
         """
@@ -891,15 +895,19 @@ class MassSource(SourceBase):
             # Podcasts -> Podcast -> Episode
             try:
                 podcasts = await self.fetch_paginated("music/podcasts/library_items")
+                podcast_entries = []
                 for podcast in podcasts:
                     episodes = await self.fetch_list(
                         "music/podcasts/podcast_episodes",
                         item_id=podcast.get("item_id"),
                         provider_instance_id_or_domain=podcast.get("provider", "library"),
                     )
-                    podcast_node = self._build_podcast_folder_node(podcast, episodes, base)
+                    podcast_node, latest_episode_ts = self._build_podcast_folder_node(podcast, episodes, base)
                     if podcast_node["tracks"]:
-                        podcasts_root["tracks"].append(podcast_node)
+                        podcast_entries.append((latest_episode_ts, podcast_node))
+                podcast_entries.sort(key=lambda entry: str(entry[1].get("name") or "").lower())
+                podcast_entries.sort(key=lambda entry: entry[0], reverse=True)
+                podcasts_root["tracks"].extend(podcast_node for _, podcast_node in podcast_entries)
             except Exception as e:
                 logger.error(f"Error parsing podcasts: {e}")
 
@@ -2299,6 +2307,75 @@ class MassSource(SourceBase):
             return str(year) if 1000 <= year <= 9999 else ""
         match = re.search(r"\b(19|20)\d{2}\b", str(value))
         return match.group(0) if match else ""
+
+    @classmethod
+    def _extract_item_datetime(cls, item):
+        value = cls._extract_first_scalar(
+            item,
+            (
+                "published_at",
+                "publish_date",
+                "published",
+                "release_date",
+                "date",
+                "timestamp",
+                "created_at",
+                "added_at",
+                "year",
+                "release_year",
+            ),
+        )
+        if value in (None, ""):
+            return None
+
+        if isinstance(value, (int, float)):
+            numeric = float(value)
+            if numeric <= 0:
+                return None
+            if numeric >= 1_000_000_000_000:
+                numeric /= 1000.0
+            if numeric >= 1_000_000_000:
+                return datetime.datetime.fromtimestamp(numeric, tz=datetime.timezone.utc)
+            year = int(numeric)
+            if 1000 <= year <= 9999:
+                return datetime.datetime(year, 1, 1, tzinfo=datetime.timezone.utc)
+            return None
+
+        text = str(value).strip()
+        if not text:
+            return None
+
+        normalized = text.replace("Z", "+00:00") if text.endswith("Z") else text
+        parsed = None
+        try:
+            parsed = datetime.datetime.fromisoformat(normalized)
+        except ValueError:
+            try:
+                parsed = parsedate_to_datetime(text)
+            except (TypeError, ValueError, IndexError):
+                match = re.search(r"\b(19|20)\d{2}\b", text)
+                if match:
+                    parsed = datetime.datetime(int(match.group(0)), 1, 1, tzinfo=datetime.timezone.utc)
+
+        if parsed is None:
+            return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=datetime.timezone.utc)
+        return parsed.astimezone(datetime.timezone.utc)
+
+    @classmethod
+    def _sort_podcast_episodes(cls, episodes):
+        entries = list(episodes or [])
+        dated = []
+        undated = []
+        for index, episode in enumerate(entries):
+            parsed = cls._extract_item_datetime(episode)
+            if parsed is None:
+                undated.append((index, episode))
+            else:
+                dated.append((parsed.timestamp(), index, episode))
+        dated.sort(key=lambda entry: (entry[0], -entry[1]), reverse=True)
+        return [episode for _, _, episode in dated] + [episode for _, episode in undated]
 
     @staticmethod
     def _coerce_duration_to_ms(value, *, assume_ms=False):

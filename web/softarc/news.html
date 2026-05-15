@@ -65,6 +65,7 @@
     <script src="../js/config.js"></script>
     <script src="../js/arc-utils.js"></script>
     <script src="../js/emulator-bridge.js"></script>
+    <script src="../js/playback-targets.js"></script>
     <script src="script-v2.js"></script>
     <script>
         const NEWS_URL = (typeof getServiceUrl === 'function')
@@ -85,6 +86,8 @@
             { id: 'play_news_cuisine', label: 'Play News Cuisine', icon: 'fork-knife', color: '#6cb7ff' },
             { id: 'play_news_lounge', label: 'Play News Lounge', icon: 'armchair', color: '#9b8cff' },
         ];
+        const PODCAST_TARGET_ICON = 'speaker-high';
+        const PODCAST_TARGET_COLOR = '#ff8c69';
 
         let actionToastState = null;
 
@@ -178,6 +181,50 @@
             };
         }
 
+        function normalizePlaybackTargets(targets) {
+            return (Array.isArray(targets) ? targets : [])
+                .map((target) => ({
+                    id: String(target?.id || target?.player_id || '').trim(),
+                    name: String(target?.name || target?.label || target?.id || '').trim(),
+                }))
+                .filter((target) => target.id)
+                .map((target) => ({ ...target, name: target.name || target.id }));
+        }
+
+        function podcastPlaybackTargets() {
+            return normalizePlaybackTargets(window.PlaybackTargets?.targetsFor?.('mass') || []);
+        }
+
+        function selectedPodcastTarget() {
+            const selected = window.PlaybackTargets?.selectedTargetFor?.('mass');
+            if (selected?.id) {
+                return {
+                    id: String(selected.id).trim(),
+                    name: String(selected.name || selected.label || selected.id || '').trim() || String(selected.id).trim(),
+                };
+            }
+            return podcastPlaybackTargets()[0] || null;
+        }
+
+        function buildPodcastTargetItem() {
+            const activeTarget = selectedPodcastTarget();
+            const targets = podcastPlaybackTargets();
+            return {
+                id: 'podcast_target',
+                name: `Podcasts: ${activeTarget?.name || 'Default'}`,
+                icon: PODCAST_TARGET_ICON,
+                color: PODCAST_TARGET_COLOR,
+                children: targets.map((entry) => ({
+                    id: `podcast_target_${entry.id}`,
+                    name: entry.name,
+                    icon: PODCAST_TARGET_ICON,
+                    color: PODCAST_TARGET_COLOR,
+                    actionable: true,
+                    podcastTargetId: entry.id,
+                })),
+            };
+        }
+
         function resolveChildrenKey(item) {
             if (Array.isArray(item?.children)) return 'children';
             if (Array.isArray(item?.articles)) return 'articles';
@@ -227,6 +274,7 @@
             const rootItems = [
                 buildPlayNewsItem(),
                 buildReadModeItem(),
+                buildPodcastTargetItem(),
             ];
 
             if (podcastsRoot) rootItems.push(podcastsRoot);
@@ -275,6 +323,8 @@
         }
 
         async function postMassPlayback(item) {
+            const target = selectedPodcastTarget();
+            const targetPayload = window.PlaybackTargets?.payloadFor?.('mass') || {};
             const response = await fetch(`${MASS_URL}/command`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -283,6 +333,8 @@
                     id: item.id || '',
                     url: item.url || '',
                     play_url: item.play_url || '',
+                    target_player_id: target?.id || targetPayload.target_player_id || targetPayload.audio_target_id || '',
+                    ...targetPayload,
                 }),
             });
             const payload = await response.json().catch(() => ({}));
@@ -290,6 +342,27 @@
                 throw new Error(payload?.message || payload?.reason || `Playback failed: ${response.status}`);
             }
             return payload;
+        }
+
+        async function selectPodcastTarget(targetId) {
+            const normalized = String(targetId || '').trim();
+            if (!normalized || !window.PlaybackTargets?.setAudioTarget) return selectedPodcastTarget();
+            await window.PlaybackTargets.setAudioTarget(normalized);
+            return selectedPodcastTarget();
+        }
+
+        async function triggerArticleRead(item) {
+            const targetId = loadReadTarget();
+            if (!targetId || targetId === 'off') {
+                showToast('Select a Read target first', { error: true });
+                return false;
+            }
+            await postNewsAction('read_article', {
+                article_id: item?.id || '',
+                target: targetId,
+            });
+            showToast(`Reading on ${readTargetById(targetId).label}`);
+            return true;
         }
 
         document.addEventListener('DOMContentLoaded', () => {
@@ -330,28 +403,52 @@
                             return;
                         }
 
+                        if (item?.podcastTargetId) {
+                            const nextTarget = await selectPodcastTarget(item.podcastTargetId);
+                            showToast(`Podcasts on ${nextTarget?.name || 'default target'}`);
+                            if (arcList.depth > 0) {
+                                await arcList.goBack();
+                                await delay(360);
+                            }
+                            await refreshRootItems(arcList);
+                            return;
+                        }
+
                         if ((item?.url || item?.play_url) && !Array.isArray(item?.tracks)) {
                             await postMassPlayback(item);
-                            showToast(`Playing ${item.name || 'podcast'}`);
+                            const target = selectedPodcastTarget();
+                            showToast(`Playing ${item.name || 'podcast'}${target?.name ? ` on ${target.name}` : ''}`);
                             return;
                         }
 
                         if (item?.page) {
-                            const targetId = loadReadTarget();
-                            if (!targetId || targetId === 'off') {
-                                showToast('Select a Read target first', { error: true });
-                                return;
-                            }
-                            await postNewsAction('read_article', {
-                                article_id: item.id || '',
-                                target: targetId,
-                            });
-                            showToast(`Reading on ${readTargetById(targetId).label}`);
+                            await triggerArticleRead(item);
                         }
                     } catch (error) {
                         showToast(error?.message || 'Action failed', { error: true });
                     }
                 },
+            });
+
+            const baseHandleButton = arcList.handleButton.bind(arcList);
+            arcList.handleButton = (button) => {
+                const normalized = String(button || '').toLowerCase();
+                if (normalized === 'go' && arcList._inPageView) {
+                    const pageFrame = arcList.navStack?.[arcList.navStack.length - 1];
+                    if (pageFrame?.selectedItem?.page) {
+                        void triggerArticleRead(pageFrame.selectedItem);
+                        return;
+                    }
+                }
+                return baseHandleButton(button);
+            };
+            arcList.handleButtonFromParent = (button) => arcList.handleButton(button);
+
+            if (window.PlaybackTargets?.refresh) {
+                void window.PlaybackTargets.refresh().then(() => refreshRootItems(arcList)).catch(() => {});
+            }
+            document.addEventListener('bs5c:playback-targets', () => {
+                void refreshRootItems(arcList);
             });
 
             window.arcListInstance = arcList;
