@@ -810,6 +810,31 @@
                 return true;
             };
 
+            const returnToRootState = (preferredSectionId = '') => {
+                const roots = rootItems();
+                const normalizedId = String(preferredSectionId || '').trim();
+                const nextIndex = roots.findIndex((entry) => String(entry?.id || '').trim() === normalizedId);
+
+                folderStack.length = 0;
+                arcList.items = roots;
+                arcList.currentIndex = clamp(roots, nextIndex >= 0 ? nextIndex : 0);
+                arcList.targetIndex = arcList.currentIndex;
+                refreshList();
+                publishContextMenu();
+                return true;
+            };
+
+            const postContextExit = (preferredSectionId = '') => {
+                returnToRootState(preferredSectionId);
+                if (window.parent && window.parent !== window) {
+                    window.parent.postMessage({
+                        type: 'bs5c-context-exit',
+                        route: CONTEXT_ROUTE,
+                    }, '*');
+                }
+                return true;
+            };
+
             const cleanTitle = (value) => String(value || '').split('\n')[0].trim();
             const escapeHtml = (value) => String(value || '')
                 .replace(/&/g, '&amp;')
@@ -1372,15 +1397,8 @@
                 if (!folderStack.length) return false;
                 if (folderStack.length === 1) {
                     const activeSectionId = String(folderStack[0]?.item?.id || '').trim();
-                    const roots = rootItems();
-                    const rootIndex = roots.findIndex((entry) => String(entry?.id || '').trim() === activeSectionId);
-                    folderStack.length = 0;
-                    arcList.items = roots;
-                    arcList.currentIndex = clamp(roots, rootIndex >= 0 ? rootIndex : 0);
-                    arcList.targetIndex = arcList.currentIndex;
-                    refreshList();
-                    console.log('[KODI] Returned to root sections');
-                    return true;
+                    console.log('[KODI] Closing context view back to main menu');
+                    return postContextExit(activeSectionId);
                 }
                 const prev = folderStack.pop();
                 if (!prev) return false;
@@ -1566,12 +1584,7 @@
 
             const initNavigation = () => {
                 arcList.parentData = Array.isArray(preloadedData) ? preloadedData : [];
-                arcList.items        = rootItems();
-                arcList.currentIndex = 0;
-                arcList.targetIndex  = 0;
-                if (!folderStack.length) {
-                    openContextSection(resolveCurrentContextSectionId(), { saveState: false });
-                }
+                returnToRootState(resolveDefaultContextSectionId());
                 refreshList();
                 requestAnimationFrame(() => refreshList());
                 setTimeout(() => refreshList(), 120);
@@ -1583,10 +1596,15 @@
             setTimeout(initNavigation, 0);
 
             window.addEventListener('message', (event) => {
-                if (event.data?.type !== 'context-select') return;
-                const sectionId = String(event.data?.id || '').trim();
-                if (!sectionId) return;
-                openContextSection(sectionId);
+                if (event.data?.type === 'context-select') {
+                    const sectionId = String(event.data?.id || '').trim();
+                    if (!sectionId) return;
+                    openContextSection(sectionId);
+                    return;
+                }
+                if (event.data?.type === 'context-reset') {
+                    returnToRootState(resolveCurrentContextSectionId());
+                }
             });
         }
     </script>

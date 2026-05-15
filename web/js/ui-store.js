@@ -17,6 +17,8 @@ class UIStore {
         this._baseMenuItems = [];
         this._contextMenusByRoute = new Map();
         this._activeContextRoute = '';
+        this._openContextRoutes = new Set();
+        this._contextResetTimers = new Map();
 
         // ── Wire cross-references ──
         this.view.menuManager = this.menu;
@@ -43,9 +45,19 @@ class UIStore {
         // Keep menu manager informed of current route for removeMenuItem
         const origNav = this.view.navigateToView.bind(this.view);
         this.view.navigateToView = (path) => {
+            const previousRoute = this.view.currentRoute;
             origNav(path);
             this.menu._currentRoute = this.view.currentRoute;
+            if (previousRoute && previousRoute !== this.view.currentRoute) {
+                this._closeContextMenuForRoute(previousRoute, { sync: false });
+            }
+            if (this._routeUsesContextMenu(this.view.currentRoute)) {
+                this._openContextRoutes.delete(this.view.currentRoute);
+            }
             this._syncContextMenuForRoute(this.view.currentRoute);
+            if (path && path !== previousRoute) {
+                this._scheduleContextRouteReset(path);
+            }
         };
 
         // ── Input / pointer state ──
@@ -209,9 +221,13 @@ class UIStore {
         return items;
     }
 
+    _routeUsesContextMenu(route) {
+        return route === 'menu/mass' || route === 'menu/kodi' || route === 'menu/scenes';
+    }
+
     _syncContextMenuForRoute(route) {
         const visibleItems = this._buildContextMenuItems(route);
-        if (visibleItems && route) {
+        if (route && this._openContextRoutes.has(route) && visibleItems?.length) {
             this._activeContextRoute = route;
             this._applyVisibleMenuItems(visibleItems);
             return;
@@ -219,6 +235,81 @@ class UIStore {
 
         this._activeContextRoute = '';
         this._applyVisibleMenuItems(this._baseMenuItems.length ? this._baseMenuItems : this.menu.menuItems);
+    }
+
+    _openContextMenuForRoute(route, options = {}) {
+        const normalizedRoute = String(route || '').trim();
+        if (!this._routeUsesContextMenu(normalizedRoute)) return false;
+
+        const visibleItems = this._buildContextMenuItems(normalizedRoute);
+        if (!visibleItems?.length) return false;
+
+        this._openContextRoutes.add(normalizedRoute);
+        this._syncContextMenuForRoute(normalizedRoute);
+
+        const context = this._contextMenusByRoute.get(normalizedRoute);
+        const requestedId = String(
+            options.contextId
+            || context?.selectedId
+            || context?.activeId
+            || visibleItems.find((item) => item.kind === 'context')?.contextId
+            || ''
+        ).trim();
+
+        if (options.selectCurrent !== false && requestedId) {
+            const requestedItem = visibleItems.find((item) =>
+                item.kind === 'context' && String(item.contextId || '').trim() === requestedId
+            );
+            if (requestedItem) {
+                this._selectContextMenuItem(requestedItem);
+                this.sendClickCommand();
+            }
+        }
+
+        return true;
+    }
+
+    _closeContextMenuForRoute(route, options = {}) {
+        const normalizedRoute = String(route || '').trim();
+        if (!normalizedRoute) return false;
+
+        const wasOpen = this._openContextRoutes.delete(normalizedRoute);
+        if (this._activeContextRoute === normalizedRoute) {
+            this._activeContextRoute = '';
+        }
+
+        if (options.sync !== false && normalizedRoute === this.view.currentRoute) {
+            this._syncContextMenuForRoute(normalizedRoute);
+            if (options.highlightCurrent !== false) {
+                const currentRouteIndex = this.menu.menuItems.findIndex((item) => item.path === normalizedRoute);
+                if (currentRouteIndex >= 0) {
+                    this.menu.applyMenuHighlight(currentRouteIndex, normalizedRoute);
+                }
+            }
+        }
+
+        return wasOpen;
+    }
+
+    exitContextMenu(route) {
+        this._closeContextMenuForRoute(route || this.view.currentRoute);
+    }
+
+    _routeNeedsContextReset(route) {
+        return route === 'menu/mass' || route === 'menu/kodi' || route === 'menu/scenes';
+    }
+
+    _scheduleContextRouteReset(route) {
+        if (!this._routeNeedsContextReset(route) || !window.IframeMessenger) return;
+        const existingTimer = this._contextResetTimers.get(route);
+        if (existingTimer) {
+            clearTimeout(existingTimer);
+        }
+        const timer = setTimeout(() => {
+            this._contextResetTimers.delete(route);
+            window.IframeMessenger.sendToRoute(route, 'context-reset', { reason: 'route-enter' });
+        }, 220);
+        this._contextResetTimers.set(route, timer);
     }
 
     receiveContextMenuUpdate(payload) {
@@ -277,12 +368,18 @@ class UIStore {
 
     tryHandleContextButton(button) {
         const normalized = String(button || '').toLowerCase();
-        if (normalized !== 'left') return false;
+        const currentRoute = this.view.currentRoute;
+        if (normalized !== 'left' || !this._routeUsesContextMenu(currentRoute)) return false;
 
         const { selectedMenuItem, contextSelection } = this._resolveCurrentMenuSelection();
+        if (!this._openContextRoutes.has(currentRoute)) {
+            if (selectedMenuItem?.path !== currentRoute) return false;
+            return this._openContextMenuForRoute(currentRoute);
+        }
+
         if (!contextSelection || !selectedMenuItem) return false;
 
-        const context = this._contextMenusByRoute.get(this.view.currentRoute);
+        const context = this._contextMenusByRoute.get(currentRoute);
         const activeId = String(context?.activeId || '').trim();
         const selectedId = String(selectedMenuItem.contextId || '').trim();
         if (!selectedId) return false;
@@ -387,6 +484,14 @@ class UIStore {
 
         // Bold + click (only for non-overlay menu items)
         if (this.menu.applyMenuHighlight(result.selectedIndex, result.path)) {
+            if (contextSelection && selectedMenuItem) {
+                const context = this._contextMenusByRoute.get(this.view.currentRoute);
+                const activeId = String(context?.activeId || '').trim();
+                const selectedId = String(selectedMenuItem.contextId || '').trim();
+                if (selectedId && selectedId !== activeId) {
+                    this._selectContextMenuItem(selectedMenuItem);
+                }
+            }
             this.sendClickCommand();
         }
 
@@ -655,6 +760,8 @@ document.addEventListener('DOMContentLoaded', () => {
     window.addEventListener('message', (event) => {
         if (event.data?.type === 'bs5c-context-menu') {
             uiStore.receiveContextMenuUpdate(event.data);
+        } else if (event.data?.type === 'bs5c-context-exit') {
+            uiStore.exitContextMenu(event.data?.route || '');
         } else if (event.data?.type === 'reload-playlists') {
             uiStore.menu.reloadAllSourceIframes();
         } else if (event.data?.type === 'click') {

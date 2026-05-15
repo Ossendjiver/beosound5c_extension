@@ -1361,6 +1361,34 @@
                 return true;
             };
 
+            const returnToRootState = (preferredSectionId = '', options = {}) => {
+                const roots = rootItems();
+                const normalizedId = String(preferredSectionId || '').trim();
+                const nextIndex = roots.findIndex((entry) => String(entry?.id || '').trim() === normalizedId);
+
+                folderStack.length = 0;
+                arcList.items = roots;
+                arcList.currentIndex = clampIndex(roots, nextIndex >= 0 ? nextIndex : 0);
+                arcList.targetIndex = arcList.currentIndex;
+                refreshList();
+                if (options.saveState !== false) {
+                    saveBrowseState();
+                }
+                publishContextMenu();
+                return true;
+            };
+
+            const postContextExit = (preferredSectionId = '') => {
+                returnToRootState(preferredSectionId, { saveState: false });
+                if (window.parent && window.parent !== window) {
+                    window.parent.postMessage({
+                        type: 'bs5c-context-exit',
+                        route: CONTEXT_ROUTE,
+                    }, '*');
+                }
+                return true;
+            };
+
             const buildNowPlayingPayload = (item, pageData = null) => {
                 const ancestors = folderStack
                     .map(entry => entry.item?.name || '')
@@ -2076,15 +2104,8 @@
                 rememberCurrentSectionBrowseContext();
                 if (folderStack.length === 1) {
                     const activeSectionId = String(folderStack[0]?.item?.id || '').trim();
-                    const roots = rootItems();
-                    const rootIndex = roots.findIndex((entry) => String(entry?.id || '').trim() === activeSectionId);
-                    folderStack.length = 0;
-                    arcList.items = roots;
-                    arcList.currentIndex = clampIndex(roots, rootIndex >= 0 ? rootIndex : 0);
-                    arcList.targetIndex = arcList.currentIndex;
-                    refreshList();
-                    console.log('[MASS] Returned to root sections');
-                    return true;
+                    console.log('[MASS] Closing context view back to main menu');
+                    return postContextExit(activeSectionId);
                 }
                 const previous = folderStack.pop();
                 if (!previous) return false;
@@ -2328,14 +2349,8 @@
 
             const initNavigation = () => {
                 arcList.parentData    = Array.isArray(preloadedData) ? preloadedData : [];
-                arcList.items         = rootItems();
-                arcList.currentIndex  = 0;
-                arcList.targetIndex   = 0;
                 lastSectionBrowseContext = loadSectionBrowseContext();
-                restoreBrowseState(loadBrowseState());
-                if (!folderStack.length) {
-                    openContextSection(resolveCurrentContextSectionId(), { saveState: false });
-                }
+                returnToRootState(resolveDefaultContextSectionId(), { saveState: false });
                 refreshList();
                 requestAnimationFrame(() => refreshList());
                 setTimeout(() => refreshList(), 120);
@@ -2351,10 +2366,15 @@
             }, 5000);
 
             window.addEventListener('message', (event) => {
-                if (event.data?.type !== 'context-select') return;
-                const sectionId = String(event.data?.id || '').trim();
-                if (!sectionId) return;
-                openContextSection(sectionId);
+                if (event.data?.type === 'context-select') {
+                    const sectionId = String(event.data?.id || '').trim();
+                    if (!sectionId) return;
+                    openContextSection(sectionId);
+                    return;
+                }
+                if (event.data?.type === 'context-reset') {
+                    returnToRootState(resolveCurrentContextSectionId(), { saveState: false });
+                }
             });
         }
     </script>
