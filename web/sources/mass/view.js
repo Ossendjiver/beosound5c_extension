@@ -1251,12 +1251,6 @@ const _massPlayingPreset = (() => {
     };
 })();
 
-document.addEventListener('bs5c:menu-visibility', (event) => {
-    if (event.detail?.visible === false) {
-        _massPlayingPreset.handleButton('__close_transfer_overlay__');
-    }
-});
-
 const _massController = (() => {
     function currentRoute() {
         return window.uiStore?.currentRoute || '';

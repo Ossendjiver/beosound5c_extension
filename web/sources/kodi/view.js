@@ -620,12 +620,6 @@ const _kodiPlayingPreset = (() => {
     };
 })();
 
-document.addEventListener('bs5c:menu-visibility', (event) => {
-    if (event.detail?.visible === false) {
-        _kodiPlayingPreset.handleButton('__close_transfer_overlay__');
-    }
-});
-
 const _kodiController = (() => {
     function currentRoute() {
         return window.uiStore?.currentRoute || '';

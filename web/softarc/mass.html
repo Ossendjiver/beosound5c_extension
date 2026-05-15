@@ -689,7 +689,6 @@
             const itemInfoUrl = serviceBaseUrl + '/item_info';
             const FALLBACK_CARD_IMAGE = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNjQiIGhlaWdodD0iNjQiIHZpZXdCb3g9IjAgMCA2NCA2NCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPHJlY3Qgd2lkdGg9IjY0IiBoZWlnaHQ9IjY0IiBmaWxsPSIjMzMzMzMzIi8+Cjx0ZXh0IHg9IjMyIiB5PSI0MCIgZm9udC1mYW1pbHk9IkFyaWFsLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjI0IiBmaWxsPSIjZmZmZmZmIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIj7imqo8L3RleHQ+Cjwvc3ZnPgo=';
             const ROOT_ICON_STYLE = {
-                covers:    { icon: 'image-square', color: '#74c0fc' },
                 artists:   { icon: 'users-three', color: '#e05618' },
                 albums:    { icon: 'vinyl-record', color: '#1c7ed6' },
                 titles:    { icon: 'music-notes-simple', color: '#2b8a3e' },
@@ -699,8 +698,8 @@
                 mixes:     { icon: 'radio', color: '#e6ca19' },
             };
             const SOURCE_ROOT_IDS = new Set(['queue', 'artists', 'albums', 'songs', 'playlists', 'playlist_mixes', 'podcasts', 'mixes']);
-            const ROOT_SECTION_IDS = new Set(['queue', 'covers', 'artists', 'albums', 'titles', 'playlists', 'playlist_mixes', 'podcasts', 'mixes']);
-            const CROSS_SECTION_TARGET_IDS = new Set(['covers', 'artists', 'albums', 'titles']);
+            const ROOT_SECTION_IDS = new Set(['queue', 'artists', 'albums', 'titles', 'playlists', 'playlist_mixes', 'podcasts', 'mixes']);
+            const CROSS_SECTION_TARGET_IDS = new Set(['artists', 'albums', 'titles']);
             const cleanTitle = (value) => String(value || '').split('\n')[0].trim();
             const normalizeServiceImageUrl = (value) => {
                 const raw = String(value || '').trim();
@@ -866,13 +865,6 @@
                 const displayItems = [];
                 (Array.isArray(items) ? items : []).forEach((item) => {
                     const sourceId = String(item?.id || '').trim();
-                    if (sourceId === 'albums') {
-                        displayItems.push(
-                            Object.assign({}, item, { id: 'covers', name: 'Covers' }),
-                            Object.assign({}, item, { id: 'albums', name: 'Albums' }),
-                        );
-                        return;
-                    }
                     if (sourceId === 'songs') {
                         displayItems.push(Object.assign({}, item, { id: 'titles', name: 'Titles' }));
                         return;
@@ -1113,7 +1105,7 @@
                     });
                 }
 
-                if (sectionId === 'albums' || sectionId === 'covers') {
+                if (sectionId === 'albums') {
                     if (artistKey) {
                         const byArtist = findItemIndex(childItems, (entry) => {
                             const entryArtist = normalizeLookup(entry?.artist || getItemMeta(entry).artist);
@@ -1227,9 +1219,8 @@
                     });
                 }
                 if (albumKey) {
-                    const preferredAlbumRoot = String(context?.root_id || '').trim() === 'covers' ? 'covers' : 'albums';
                     strategies.push({
-                        rootId: preferredAlbumRoot,
+                        rootId: 'albums',
                         match: (entry) => {
                             if (normalizeLookup(entry?.album || entry?.name) !== albumKey) return false;
                             const entryArtist = normalizeLookup(entry?.artist || getItemMeta(entry).artist);
@@ -1291,7 +1282,7 @@
                 if (rememberedId && availableIds.has(rememberedId)) {
                     return rememberedId;
                 }
-                const preferredOrder = ['artists', 'covers', 'albums', 'titles', 'playlists', 'playlist_mixes', 'podcasts', 'mixes'];
+                const preferredOrder = ['artists', 'albums', 'titles', 'playlists', 'playlist_mixes', 'podcasts', 'mixes'];
                 return preferredOrder.find((id) => availableIds.has(id)) || entries[0]?.id || '';
             };
 
@@ -1680,8 +1671,7 @@
                 const metadata = getItemMeta(item);
                 const artistKey = normalizeLookup(deriveSectionArtist(item, getCurrentRootSectionId()) || metadata.artist || item?.artist);
                 const albumKey = normalizeLookup(item?.album || metadata.album || item?.name);
-                const targetRootId = getCurrentRootSectionId() === 'covers' ? 'covers' : 'albums';
-                return focusMappedFolder(targetRootId, (entry) => {
+                return focusMappedFolder('albums', (entry) => {
                     const entryArtist = normalizeLookup(entry?.artist || getItemMeta(entry).artist);
                     const entryAlbum = normalizeLookup(entry?.album || entry?.name || getItemMeta(entry).album);
                     if (albumKey && entryAlbum === albumKey) {
