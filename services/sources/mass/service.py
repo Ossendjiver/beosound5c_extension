@@ -810,6 +810,7 @@ class MassSource(SourceBase):
                     alb_node = self._make_folder_node(
                         id_=alb.get('item_id', ''),
                         name=alb.get('name', 'Unknown Album'),
+                        artist=a_name,
                         image=self._get_img(alb, base),
                         url=alb.get('uri', ''),
                     )

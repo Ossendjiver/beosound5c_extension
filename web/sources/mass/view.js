@@ -20,6 +20,8 @@ const _massPlayingPreset = (() => {
     let artistRequestId = 0;
     let nowPlayingRequestId = 0;
     let lastPageCycleAt = 0;
+    let lastRouterResyncTrackKey = '';
+    let lastRouterResyncAt = 0;
     let lastMedia = {
         title: '—',
         artist: '—',
@@ -107,6 +109,22 @@ const _massPlayingPreset = (() => {
         );
     }
 
+    function normalizeTrackKeyPart(value) {
+        return String(value || '')
+            .trim()
+            .replace(/\s+/g, ' ')
+            .toLowerCase();
+    }
+
+    function buildTrackKey(data) {
+        if (!data || typeof data !== 'object') return '';
+        return [
+            normalizeTrackKeyPart(data.title),
+            normalizeTrackKeyPart(data.artist),
+            normalizeTrackKeyPart(data.album),
+        ].filter(Boolean).join('||');
+    }
+
     function normalizeArtistKey(value) {
         return String(value || '')
             .replace(/^Now Playing\s*-\s*/i, '')
@@ -161,6 +179,31 @@ const _massPlayingPreset = (() => {
             window.uiStore.handleMediaUpdate(snapshot, reason);
         } else {
             window.uiStore.mediaInfo = snapshot;
+        }
+    }
+
+    async function requestRouterResyncForTrack(media) {
+        const trackKey = buildTrackKey(media);
+        if (!trackKey || !window.uiStore || window.uiStore.activeSource !== 'mass') return false;
+
+        const now = Date.now();
+        if (trackKey === lastRouterResyncTrackKey && (now - lastRouterResyncAt) < 15000) {
+            return false;
+        }
+
+        lastRouterResyncTrackKey = trackKey;
+        lastRouterResyncAt = now;
+
+        try {
+            const routerBase = String(window.AppConfig?.routerUrl || 'http://localhost:8770').replace(/\/$/, '');
+            await fetch(`${routerBase}/router/resync`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ source: 'mass', reason: 'mass_now_playing_poll' }),
+            });
+            return true;
+        } catch (error) {
+            return false;
         }
     }
 
@@ -951,6 +994,11 @@ const _massPlayingPreset = (() => {
             };
 
             if (hasMeaningfulMedia(media)) {
+                const previousTrackKey = buildTrackKey(lastMedia);
+                const nextTrackKey = buildTrackKey(media);
+                if (nextTrackKey && nextTrackKey !== previousTrackKey) {
+                    void requestRouterResyncForTrack(media);
+                }
                 applyMediaSnapshot(media, {
                     syncSource: true,
                     publishToUiStore: true,
