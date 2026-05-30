@@ -99,6 +99,7 @@ class MenuManager {
         this._menuLoaded = false;
         this._menuRetries = 0;
         this._lastSelectedPath = null;
+        this._menuLayout = null;
 
         // Callbacks wired by UIStore
         this.onNavigate = null;      // (path) => void
@@ -343,9 +344,18 @@ class MenuManager {
     // ── Rendering ──
 
     getStartItemAngle() {
+        const dynamicStart = Number(this._menuLayout?.startAngle);
+        if (Number.isFinite(dynamicStart)) {
+            return dynamicStart;
+        }
         const visibleCount = this.menuItems.length;
         const totalSpan = this.angleStep * (visibleCount - 1);
         return 180 - totalSpan / 2;
+    }
+
+    setMenuLayout(layout = null) {
+        const startAngle = Number(layout?.startAngle);
+        this._menuLayout = Number.isFinite(startAngle) ? { startAngle } : null;
     }
 
     _ensureHoverDelegation(menuContainer) {

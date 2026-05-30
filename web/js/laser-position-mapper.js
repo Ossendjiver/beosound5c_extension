@@ -62,6 +62,16 @@ function updateMenuItems(items) {
     }
 }
 
+function updateMenuLayout(layout) {
+    if (typeof window === 'undefined') return;
+    const startAngle = Number(layout?.startAngle);
+    if (Number.isFinite(startAngle)) {
+        window._dynamicMenuLayout = { startAngle };
+    } else {
+        delete window._dynamicMenuLayout;
+    }
+}
+
 /**
  * Convert laser position to angle using the current calibration
  * @param {number} position - Laser position (3-123)
@@ -99,6 +109,12 @@ function laserPositionToAngle(position) {
  * @returns {number} Starting angle for first menu item
  */
 function getMenuStartAngle() {
+    if (typeof window !== 'undefined') {
+        const dynamicStart = Number(window._dynamicMenuLayout?.startAngle);
+        if (Number.isFinite(dynamicStart)) {
+            return dynamicStart;
+        }
+    }
     const { MENU_ITEMS, MENU_ANGLE_STEP } = LASER_MAPPING_CONFIG;
     const totalSpan = MENU_ANGLE_STEP * (MENU_ITEMS.length - 1);
     return 180 - totalSpan / 2;
@@ -165,6 +181,7 @@ if (typeof module !== 'undefined' && module.exports) {
         getMenuItemAngle,
         getMenuStartAngle,
         updateMenuItems,
+        updateMenuLayout,
         LASER_MAPPING_CONFIG
     };
 } else {
@@ -176,6 +193,7 @@ if (typeof module !== 'undefined' && module.exports) {
         getMenuItemAngle,
         getMenuStartAngle,
         updateMenuItems,
+        updateMenuLayout,
         LASER_MAPPING_CONFIG
     };
 }
