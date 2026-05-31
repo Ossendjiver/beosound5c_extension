@@ -33,8 +33,10 @@ const SHARED_MEDIA_STYLE_ID = 'bs5c-shared-media-style';
 const SHOWING_INPUT_URL = 'http://localhost:8767';
 
 function isPausedPlaybackState(state) {
-    return String(state || '').trim().toLowerCase() === 'paused';
+    const normalized = String(state || '').trim().toLowerCase();
+    return ['paused', 'idle', 'stopped'].includes(normalized);
 }
+window.isPausedPlaybackState = isPausedPlaybackState;
 
 function ensureSharedMediaStyle() {
     if (document.getElementById(SHARED_MEDIA_STYLE_ID)) return;
@@ -267,8 +269,7 @@ class MediaManager {
         }
         setPausedOverlayVisible(
             container?.querySelector('.playing-artwork-slot'),
-            this.activePlayingPreset === DEFAULT_PLAYING_PRESET
-                && isPausedPlaybackState(this.mediaInfo.state)
+            isPausedPlaybackState(this.mediaInfo.state)
         );
     }
 

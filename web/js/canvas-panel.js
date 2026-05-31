@@ -42,6 +42,10 @@
 
     function isPaused() {
         var s = window.uiStore && window.uiStore.mediaInfo && window.uiStore.mediaInfo.state;
+        if (typeof window.isPausedPlaybackState === 'function') {
+            return window.isPausedPlaybackState(s);
+        }
+        s = String(s || '').trim().toLowerCase();
         return s === 'paused' || s === 'idle' || s === 'stopped';
     }
 
