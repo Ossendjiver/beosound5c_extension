@@ -260,35 +260,61 @@ class UIStore {
             anchorPath: String(anchorItem.path || '').trim(),
             pointerAngle: this._resolvePointerAngle(),
         };
+        const firstContextIndex = items.findIndex((item) => String(item.kind || '').trim() === 'context');
+        const contextItems = items.filter((item) => String(item.kind || '').trim() === 'context');
+        const anchorContextIndex = contextItems.findIndex((item) => String(item.path || '').trim() === anchor.anchorPath);
+        if (firstContextIndex >= 0 && contextItems.length > 0 && anchorContextIndex >= 0) {
+            const step = Number(this.menu?.angleStep || window.Constants?.arc?.menuAngleStep || 5);
+            if (Number.isFinite(step) && step > 0) {
+                const totalSpan = step * Math.max(0, items.length - 1);
+                const fixedStartAngle = 180 - (totalSpan / 2);
+                const unclampedSlotIndex = Math.round((Number(anchor.pointerAngle) - fixedStartAngle) / step);
+                const targetSlotIndex = Math.max(firstContextIndex, Math.min(items.length - 1, unclampedSlotIndex));
+                const targetContextIndex = Math.max(0, Math.min(contextItems.length - 1, targetSlotIndex - firstContextIndex));
+                const rotateFromIndex = ((anchorContextIndex - targetContextIndex) % contextItems.length + contextItems.length) % contextItems.length;
+                anchor.orderedContextPaths = contextItems
+                    .slice(rotateFromIndex)
+                    .concat(contextItems.slice(0, rotateFromIndex))
+                    .map((item) => String(item.path || '').trim())
+                    .filter(Boolean);
+            }
+        }
         this._contextMenuAnchors.set(normalizedRoute, anchor);
         return anchor;
     }
 
-    _resolveContextMenuLayout(route, items) {
+    _orderContextMenuItems(route, items) {
         const normalizedRoute = String(route || '').trim();
         const anchor = this._contextMenuAnchors.get(normalizedRoute);
-        if (!anchor || !Array.isArray(items) || !items.length) return null;
+        if (!Array.isArray(items) || !items.length || !anchor) return Array.isArray(items) ? items.slice() : [];
 
-        const anchorIndex = items.findIndex((item) => String(item.path || '').trim() === anchor.anchorPath);
-        if (anchorIndex < 0) return null;
+        const firstContextIndex = items.findIndex((item) => String(item.kind || '').trim() === 'context');
+        if (firstContextIndex < 0) return items.slice();
 
-        const step = Number(this.menu?.angleStep || window.Constants?.arc?.menuAngleStep || 5);
-        if (!Number.isFinite(step) || step <= 0) return null;
+        const orderedContextPaths = Array.isArray(anchor.orderedContextPaths)
+            ? anchor.orderedContextPaths.map((path) => String(path || '').trim()).filter(Boolean)
+            : [];
+        if (!orderedContextPaths.length) return items.slice();
 
-        const totalSpan = step * Math.max(0, items.length - 1);
-        const halfStep = step / 2;
-        const minSelectableAngle = Number(window.Constants?.overlays?.topOverlayStart ?? 160) + halfStep;
-        const maxSelectableAngle = Number(window.Constants?.overlays?.bottomOverlayStart ?? 200) - halfStep;
-        const minStart = minSelectableAngle;
-        const maxStart = maxSelectableAngle - totalSpan;
-        const unclampedStart = Number(anchor.pointerAngle) - ((items.length - 1 - anchorIndex) * step);
+        const prefixItems = items.slice(0, firstContextIndex);
+        const contextItems = items.slice(firstContextIndex);
+        const orderLookup = new Map(orderedContextPaths.map((path, index) => [path, index]));
 
-        let startAngle = unclampedStart;
-        if (maxStart >= minStart) {
-            startAngle = Math.max(minStart, Math.min(maxStart, unclampedStart));
-        }
+        const orderedContextItems = contextItems
+            .map((item, index) => ({ item, index }))
+            .sort((left, right) => {
+                const leftOrder = orderLookup.has(String(left.item.path || '').trim())
+                    ? orderLookup.get(String(left.item.path || '').trim())
+                    : Number.MAX_SAFE_INTEGER;
+                const rightOrder = orderLookup.has(String(right.item.path || '').trim())
+                    ? orderLookup.get(String(right.item.path || '').trim())
+                    : Number.MAX_SAFE_INTEGER;
+                if (leftOrder !== rightOrder) return leftOrder - rightOrder;
+                return left.index - right.index;
+            })
+            .map((entry) => entry.item);
 
-        return { startAngle };
+        return prefixItems.concat(orderedContextItems);
     }
 
     _restoreVisibleMenuState() {
@@ -370,11 +396,13 @@ class UIStore {
 
     _syncContextMenuForRoute(route) {
         const visibleContextRoute = this._resolveVisibleContextRoute(route);
-        const visibleItems = this._buildContextMenuItems(visibleContextRoute);
+        const visibleItems = this._orderContextMenuItems(
+            visibleContextRoute,
+            this._buildContextMenuItems(visibleContextRoute)
+        );
         if (visibleContextRoute && visibleItems?.length) {
             this._activeContextRoute = visibleContextRoute;
-            const layout = this._resolveContextMenuLayout(visibleContextRoute, visibleItems);
-            this._applyVisibleMenuItems(visibleItems, layout);
+            this._applyVisibleMenuItems(visibleItems, null);
             return;
         }
 

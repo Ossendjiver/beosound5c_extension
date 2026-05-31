@@ -91,6 +91,91 @@
             margin: 0 0 1.35rem;
         }
 
+        .page-view.page-view-kodi .page-view-body .kodi-file-path {
+            display: block;
+            margin-top: 0.38rem;
+            color: rgba(255, 255, 255, 0.66);
+            font: 400 0.72rem/1.45 "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+            letter-spacing: 0;
+            word-break: break-all;
+        }
+
+        .kodi-item-visual {
+            position: relative;
+            flex: 0 0 auto;
+            width: 128px;
+            height: 128px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .kodi-item-visual .item-image,
+        .kodi-item-visual .item-icon {
+            width: 128px;
+            height: 128px;
+            border-radius: 0.75rem;
+        }
+
+        .kodi-status-badge {
+            position: absolute;
+            right: -8px;
+            bottom: -8px;
+            min-width: 30px;
+            height: 30px;
+            padding: 0 9px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 999px;
+            color: #fff;
+            background: rgba(11, 16, 24, 0.96);
+            border: 1px solid rgba(255, 255, 255, 0.16);
+            box-shadow: 0 10px 20px rgba(0, 0, 0, 0.34);
+            font: 700 12px/1 Arial, sans-serif;
+            letter-spacing: 0.2px;
+            z-index: 3;
+        }
+
+        .kodi-status-badge i {
+            position: relative;
+            z-index: 1;
+            font-size: 15px;
+            line-height: 1;
+        }
+
+        .kodi-status-badge--watched {
+            background: linear-gradient(135deg, rgba(39, 196, 170, 0.98), rgba(18, 140, 122, 0.98));
+        }
+
+        .kodi-status-badge--count {
+            background: linear-gradient(135deg, rgba(255, 180, 92, 0.98), rgba(221, 118, 41, 0.98));
+        }
+
+        .kodi-status-badge--progress {
+            width: 34px;
+            min-width: 34px;
+            height: 34px;
+            padding: 0;
+            border: none;
+            background:
+                conic-gradient(
+                    from -90deg,
+                    rgba(109, 176, 255, 1) 0deg,
+                    rgba(109, 176, 255, 1) var(--kodi-progress, 0deg),
+                    rgba(16, 24, 36, 0.98) var(--kodi-progress, 0deg),
+                    rgba(16, 24, 36, 0.98) 360deg
+                );
+        }
+
+        .kodi-status-badge--progress::after {
+            content: "";
+            position: absolute;
+            inset: 4px;
+            border-radius: 999px;
+            background: rgba(8, 13, 21, 0.94);
+        }
+
         .fast-letter-overlay {
             position: absolute;
             top: 50%;
@@ -610,6 +695,70 @@
                 return raw.startsWith('/art/') ? `${kodiServiceBaseUrl}${raw}` : raw;
             };
 
+            const getKodiStatusBadgeData = (item) => {
+                const safeItem = (item && typeof item === 'object') ? item : {};
+                const state = String(safeItem.watched_state || '').trim().toLowerCase();
+                const isFolder = Array.isArray(safeItem.tracks) && safeItem.tracks.length > 0;
+                const unwatchedCount = Math.max(0, Number(safeItem.unwatched_count || 0));
+                const resumeProgress = Math.max(0, Math.min(1, Number(safeItem.resume_progress || 0)));
+
+                if (isFolder && unwatchedCount > 0) {
+                    return {
+                        variant: 'count',
+                        text: unwatchedCount > 99 ? '99+' : String(unwatchedCount),
+                        title: `${unwatchedCount} unwatched`,
+                    };
+                }
+                if (state === 'watched') {
+                    return {
+                        variant: 'watched',
+                        icon: 'check',
+                        title: 'Watched',
+                    };
+                }
+                if (state === 'inprogress' || resumeProgress > 0.01) {
+                    return {
+                        variant: 'progress',
+                        icon: 'play',
+                        progress: resumeProgress,
+                        title: resumeProgress > 0.01
+                            ? `In progress (${Math.round(resumeProgress * 100)}%)`
+                            : 'In progress',
+                    };
+                }
+                return null;
+            };
+
+            const wrapKodiVisual = (baseElement, item) => {
+                const badgeData = getKodiStatusBadgeData(item);
+                if (!badgeData) return baseElement;
+
+                const wrapper = document.createElement('div');
+                wrapper.className = 'kodi-item-visual';
+                wrapper.appendChild(baseElement);
+
+                const badge = document.createElement('div');
+                badge.className = `kodi-status-badge kodi-status-badge--${badgeData.variant}`;
+                badge.setAttribute('aria-hidden', 'true');
+                if (badgeData.title) badge.title = badgeData.title;
+
+                if (badgeData.variant === 'count') {
+                    badge.textContent = badgeData.text || '';
+                } else {
+                    const icon = document.createElement('i');
+                    icon.className = `ph ph-${badgeData.icon || 'check'}`;
+                    badge.appendChild(icon);
+                }
+
+                if (badgeData.variant === 'progress') {
+                    const degrees = Math.max(0, Math.min(360, Math.round((badgeData.progress || 0) * 360)));
+                    badge.style.setProperty('--kodi-progress', `${degrees}deg`);
+                }
+
+                wrapper.appendChild(badge);
+                return wrapper;
+            };
+
             const firstDescendantImage = (node) => {
                 if (!node || typeof node !== 'object') return '';
                 const directImage = normalizeKodiImageUrl(node.image || '');
@@ -692,6 +841,7 @@
             const origCreateImageElement = arcList.createImageElement?.bind(arcList);
 
             arcList.createImageElement = function (item) {
+                let visual = null;
                 if (item?.icon) {
                     const iconBox = document.createElement('div');
                     iconBox.className = 'item-image item-icon';
@@ -699,16 +849,17 @@
                     const icon = document.createElement('i');
                     icon.className = `ph ph-${item.icon}`;
                     iconBox.appendChild(icon);
-                    return iconBox;
+                    visual = iconBox;
+                } else if (typeof origCreateImageElement === 'function') {
+                    visual = origCreateImageElement(item);
+                } else {
+                    const img = document.createElement('img');
+                    img.className = 'item-image';
+                    img.src = item?.image || FALLBACK_CARD_IMAGE;
+                    img.alt = item?.name || '';
+                    visual = img;
                 }
-                if (typeof origCreateImageElement === 'function') {
-                    return origCreateImageElement(item);
-                }
-                const img = document.createElement('img');
-                img.className = 'item-image';
-                img.src = item?.image || FALLBACK_CARD_IMAGE;
-                img.alt = item?.name || '';
-                return img;
+                return wrapKodiVisual(visual, item);
             };
 
             // Clear stale hierarchy localStorage
@@ -864,6 +1015,17 @@
                 }
                 if (subtitle) {
                     body.push(`<p><strong>${escapeHtml(subtitle)}</strong></p>`);
+                }
+                if (safeItem.file_path) {
+                    body.push(
+                        `<p><strong>Path:</strong><span class="kodi-file-path">${escapeHtml(safeItem.file_path)}</span></p>`
+                    );
+                }
+                if (safeItem.watched_state === 'watched') {
+                    body.push('<p><strong>Status:</strong> Watched</p>');
+                } else if (safeItem.watched_state === 'inprogress') {
+                    const progress = Math.max(0, Math.min(100, Math.round(Number(safeItem.resume_progress || 0) * 100)));
+                    body.push(`<p><strong>Status:</strong> In Progress${progress > 0 ? ` (${progress}% watched)` : ''}</p>`);
                 }
                 body.push(`<p>Live ${escapeHtml(label)} information is unavailable right now, but playback is still available from this item.</p>`);
                 return {
@@ -1368,6 +1530,7 @@
                 if (arcList.totalItemsDisplay)
                     arcList.totalItemsDisplay.textContent = arcList.items.length;
                 if (typeof arcList.updateCounter === 'function') arcList.updateCounter();
+                arcList.container?.querySelectorAll('.arc-item:not(.kodi-breadcrumb)').forEach(node => node.remove());
                 if (typeof origRender === 'function') origRender();
                 renderBreadcrumbs();
                 publishContextMenu();

@@ -92,6 +92,8 @@ class KodiSource(SourceBase):
         self._preferred_player_id = ""
         self.has_cache     = self._load_local_cache()
 
+    LIBRARY_META_VERSION = 2
+
     # â”€â”€ Cache â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     def _load_local_cache(self):
@@ -517,6 +519,105 @@ class KodiSource(SourceBase):
                 break
         return ", ".join(entries)
 
+    @staticmethod
+    def _normalize_playcount(value):
+        try:
+            return max(0, int(value or 0))
+        except (TypeError, ValueError):
+            return 0
+
+    @staticmethod
+    def _resume_position_seconds(value):
+        if not isinstance(value, dict):
+            return 0.0
+        try:
+            return max(0.0, float(value.get("position") or 0.0))
+        except (TypeError, ValueError):
+            return 0.0
+
+    @classmethod
+    def _resume_progress(cls, value):
+        if not isinstance(value, dict):
+            return 0.0
+        position = cls._resume_position_seconds(value)
+        try:
+            total = max(0.0, float(value.get("total") or 0.0))
+        except (TypeError, ValueError):
+            total = 0.0
+        if position <= 0.0 or total <= 0.0:
+            return 0.0
+        return max(0.0, min(1.0, position / total))
+
+    @staticmethod
+    def _format_playback_position(seconds):
+        try:
+            total_seconds = max(0, int(round(float(seconds or 0))))
+        except (TypeError, ValueError):
+            return ""
+        if total_seconds <= 0:
+            return ""
+        hours, remainder = divmod(total_seconds, 3600)
+        minutes, secs = divmod(remainder, 60)
+        if hours:
+            return f"{hours}:{minutes:02d}:{secs:02d}"
+        return f"{minutes}:{secs:02d}"
+
+    @classmethod
+    def _leaf_watch_meta(cls, details):
+        payload = details if isinstance(details, dict) else {}
+        playcount = cls._normalize_playcount(payload.get("playcount"))
+        progress = cls._resume_progress(payload.get("resume"))
+        position = cls._resume_position_seconds(payload.get("resume"))
+        meta = {}
+        if playcount > 0:
+            meta["watched_state"] = "watched"
+        elif progress > 0.0:
+            meta["watched_state"] = "inprogress"
+        if progress > 0.0:
+            meta["resume_progress"] = round(progress, 4)
+        if position > 0.0:
+            meta["resume_seconds"] = int(round(position))
+        return meta
+
+    @classmethod
+    def _folder_watch_meta(cls, total_count, watched_count):
+        total = max(0, cls._normalize_playcount(total_count))
+        watched = min(total, max(0, cls._normalize_playcount(watched_count)))
+        meta = {}
+        if total > 0:
+            meta["total_count"] = total
+            meta["watched_count"] = watched
+        unwatched = max(0, total - watched)
+        if unwatched > 0:
+            meta["unwatched_count"] = unwatched
+        if total > 0 and unwatched == 0:
+            meta["watched_state"] = "watched"
+        elif watched > 0:
+            meta["watched_state"] = "inprogress"
+        return meta
+
+    @classmethod
+    def _status_meta_pairs(cls, details):
+        payload = details if isinstance(details, dict) else {}
+        playcount = cls._normalize_playcount(payload.get("playcount"))
+        progress = cls._resume_progress(payload.get("resume"))
+        position = cls._resume_position_seconds(payload.get("resume"))
+        pairs = []
+        if playcount > 0:
+            pairs.append(("Status", "Watched"))
+        elif progress > 0.0:
+            pairs.append(("Status", "In Progress"))
+        else:
+            pairs.append(("Status", "Unwatched"))
+        if progress > 0.0:
+            percent = int(round(progress * 100))
+            position_label = cls._format_playback_position(position)
+            resume_label = f"{percent}% watched"
+            if position_label:
+                resume_label += f" ({position_label})"
+            pairs.append(("Resume", resume_label))
+        return pairs
+
     async def _finalize_detail_payload(self, *, kind, item_id, title, image, subtitle, meta_pairs,
                                        plot, cast_list=None, tagline="", play_uri=""):
         if image:
@@ -534,9 +635,14 @@ class KodiSource(SourceBase):
 
         for label, value in meta_pairs:
             if value:
-                body_parts.append(
-                    f"<p><strong>{html.escape(label)}:</strong> {html.escape(str(value))}</p>"
-                )
+                safe_label = html.escape(str(label))
+                safe_value = html.escape(str(value))
+                if str(label).strip().lower() == "path":
+                    body_parts.append(
+                        f'<p><strong>{safe_label}:</strong><span class="kodi-file-path">{safe_value}</span></p>'
+                    )
+                else:
+                    body_parts.append(f"<p><strong>{safe_label}:</strong> {safe_value}</p>")
 
         safe_plot = (plot or "No synopsis available.").strip()
         paragraphs = [part.strip() for part in safe_plot.replace("\r", "").split("\n\n") if part.strip()]
@@ -586,6 +692,8 @@ class KodiSource(SourceBase):
             ("Studio", self._join_values(details.get("studio"))),
             ("Country", self._join_values(details.get("country"))),
         ]
+        meta_pairs.extend(self._status_meta_pairs(details))
+        meta_pairs.append(("Path", details.get("file", "")))
         return await self._finalize_detail_payload(
             kind="movie",
             item_id=movie_id,
@@ -640,6 +748,8 @@ class KodiSource(SourceBase):
             ("Writer", self._join_values(details.get("writer"))),
             ("Studio", self._join_values(details.get("studio"))),
         ]
+        meta_pairs.extend(self._status_meta_pairs(details))
+        meta_pairs.append(("Path", details.get("file", "")))
         return await self._finalize_detail_payload(
             kind="episode",
             item_id=episode_id,
@@ -698,19 +808,31 @@ class KodiSource(SourceBase):
 
     # â”€â”€ Node constructors â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-    def _folder(self, id_, name, play_url="", artist="", image=""):
+    def _folder(self, id_, name, play_url="", artist="", image="", **extra):
         """Folder node: `play_url` for playback, `tracks` populated by caller."""
-        node = {"id": id_, "name": name, "tracks": []}
+        node = {"id": id_, "name": name, "tracks": [], "kodi_meta_version": self.LIBRARY_META_VERSION}
         if play_url: node["play_url"] = play_url
         if artist:   node["artist"]   = artist
         if image:    node["image"]    = image
+        for key, value in (extra or {}).items():
+            if value is None:
+                continue
+            if isinstance(value, str) and not value:
+                continue
+            node[key] = value
         return node
 
-    def _leaf(self, id_, name, url, artist="", image=""):
+    def _leaf(self, id_, name, url, artist="", image="", **extra):
         """Leaf node: `url` for playback, no `tracks`."""
-        node = {"id": id_, "name": name, "url": url}
+        node = {"id": id_, "name": name, "url": url, "kodi_meta_version": self.LIBRARY_META_VERSION}
         if artist: node["artist"] = artist
         if image:  node["image"]  = image
+        for key, value in (extra or {}).items():
+            if value is None:
+                continue
+            if isinstance(value, str) and not value:
+                continue
+            node[key] = value
         return node
 
     @staticmethod
@@ -747,6 +869,19 @@ class KodiSource(SourceBase):
         if not isinstance(tree, list):
             return False
 
+        def has_current_meta_version(nodes):
+            stack = list(nodes or [])
+            while stack:
+                node = stack.pop()
+                if not isinstance(node, dict):
+                    continue
+                if int(node.get("kodi_meta_version") or 0) < self.LIBRARY_META_VERSION:
+                    return False
+                children = node.get("tracks")
+                if isinstance(children, list):
+                    stack.extend(children)
+            return True
+
         roots = {
             str(node.get("id") or ""): node
             for node in tree
@@ -774,7 +909,7 @@ class KodiSource(SourceBase):
             return False
 
         self._sort_playlist_children(playlists_root)
-        return True
+        return has_current_meta_version(tree)
 
     @staticmethod
     def _playlist_display_name(file_path, label, is_directory=False):
@@ -830,6 +965,7 @@ class KodiSource(SourceBase):
                     url=self._kodi_uri("playlist", urllib.parse.quote(file_path, safe="")),
                     artist=media_label,
                     image=image,
+                    file_path=file_path,
                 )
             )
 
@@ -855,7 +991,7 @@ class KodiSource(SourceBase):
             movies = await self._rpc_paginated(
                 "VideoLibrary.GetMovies",
                 "movies",
-                params={"properties": ["title", "file", "art", "year", "genre"]},
+                params={"properties": ["title", "file", "art", "year", "genre", "playcount", "resume"]},
             )
             for m in movies:
                 year  = str(m.get("year", "")) if m.get("year") else ""
@@ -877,6 +1013,8 @@ class KodiSource(SourceBase):
                         url=self._kodi_uri("movie", m["movieid"]),
                         artist=year,
                         image=image,
+                        file_path=m.get("file", ""),
+                        **self._leaf_watch_meta(m),
                     )
                 )
             logger.info(f"  Movies: {len(movies_root['tracks'])}")
@@ -886,7 +1024,7 @@ class KodiSource(SourceBase):
             shows = await self._rpc_paginated(
                 "VideoLibrary.GetTVShows",
                 "tvshows",
-                params={"properties": ["title", "art", "year", "genre"]},
+                params={"properties": ["title", "art", "year", "genre", "episode", "watchedepisodes", "playcount"]},
             )
             for show in shows:
                 show_title = show.get("title", "Unknown Show")
@@ -906,6 +1044,10 @@ class KodiSource(SourceBase):
                     name=show_title,
                     play_url=self._kodi_uri("tvshow", show["tvshowid"]),
                     image=image,
+                    **self._folder_watch_meta(
+                        show.get("episode"),
+                        show.get("watchedepisodes") or show.get("playcount"),
+                    ),
                 )
 
                 seasons = await self._rpc_paginated(
@@ -913,7 +1055,7 @@ class KodiSource(SourceBase):
                     "seasons",
                     params={
                         "tvshowid": show["tvshowid"],
-                        "properties": ["season", "art"],
+                        "properties": ["season", "art", "episode", "watchedepisodes", "playcount"],
                         "sort": {"method": "label", "order": "ascending"},
                     },
                 )
@@ -940,6 +1082,10 @@ class KodiSource(SourceBase):
                         name=f"Season {season_num}",
                         play_url=self._kodi_uri("season", f"{show['tvshowid']}_{season_num}"),
                         image=season_image,
+                        **self._folder_watch_meta(
+                            season.get("episode"),
+                            season.get("watchedepisodes") or season.get("playcount"),
+                        ),
                     )
 
                     episodes = await self._rpc_paginated(
@@ -948,7 +1094,7 @@ class KodiSource(SourceBase):
                         params={
                             "tvshowid": show["tvshowid"],
                             "season": season_num,
-                            "properties": ["title", "season", "episode", "file", "art"],
+                            "properties": ["title", "season", "episode", "file", "art", "playcount", "resume"],
                             "sort": {"method": "episode", "order": "ascending"},
                         },
                     )
@@ -972,6 +1118,8 @@ class KodiSource(SourceBase):
                                 name=f"S{s:02d}E{e:02d} {ep_title}",
                                 url=self._kodi_uri("episode", ep["episodeid"]),
                                 image=ep_image,
+                                file_path=ep.get("file", ""),
+                                **self._leaf_watch_meta(ep),
                             )
                         )
 
@@ -984,7 +1132,7 @@ class KodiSource(SourceBase):
                         "episodes",
                         params={
                             "tvshowid": show["tvshowid"],
-                            "properties": ["title", "season", "episode", "file", "art"],
+                            "properties": ["title", "season", "episode", "file", "art", "playcount", "resume"],
                             "sort": {"method": "episode", "order": "ascending"},
                         },
                     )
@@ -1008,6 +1156,8 @@ class KodiSource(SourceBase):
                                 name=f"S{s:02d}E{e:02d} {ep_title}",
                                 url=self._kodi_uri("episode", ep["episodeid"]),
                                 image=ep_image,
+                                file_path=ep.get("file", ""),
+                                **self._leaf_watch_meta(ep),
                             )
                         )
 
@@ -1154,6 +1304,9 @@ class KodiSource(SourceBase):
                         "premiered",
                         "mpaa",
                         "art",
+                        "file",
+                        "playcount",
+                        "resume",
                     ],
                 },
             ) or {}
@@ -1201,6 +1354,9 @@ class KodiSource(SourceBase):
                         "episode",
                         "art",
                         "tvshowid",
+                        "file",
+                        "playcount",
+                        "resume",
                     ],
                 },
             ) or {}
