@@ -921,15 +921,20 @@
                 return currentId || resolveDefaultContextSectionId();
             };
 
+            let lastPublishedContextMenuSignature = '';
             const publishContextMenu = () => {
-                if (!window.parent || window.parent === window) return;
-                window.parent.postMessage({
+                const payload = {
                     type: 'bs5c-context-menu',
                     route: CONTEXT_ROUTE,
                     items: contextMenuItems(),
                     selectedId: resolveCurrentContextSectionId(),
                     activeId: resolveActiveContextSectionId(),
-                }, '*');
+                };
+                if (!window.parent || window.parent === window) return;
+                const signature = JSON.stringify(payload);
+                if (signature === lastPublishedContextMenuSignature) return;
+                lastPublishedContextMenuSignature = signature;
+                window.parent.postMessage(payload, '*');
             };
 
             const openContextSection = (sectionId, options = {}) => {
@@ -1589,6 +1594,7 @@
                 clearPageView();
                 if (typeof origRender === 'function') origRender();
                 renderBreadcrumbs();
+                publishContextMenu();
             };
 
             // GO = play the current item directly. LEFT opens detail pages where available.
