@@ -209,7 +209,7 @@ class MassSource(SourceBase):
         self._library_node_by_id = {}
         self._library_node_by_uri = {}
         self._is_syncing  = False
-        self._http_session = None
+        self._art_http_session = None
         self._preferred_player_id = ""
         self._local_queue_entries = []
         self._local_queue_index = -1
@@ -251,6 +251,7 @@ class MassSource(SourceBase):
                     self._library_data = json.load(f)
                 self._normalize_library_tree(self._library_data)
                 self._upgrade_cached_library_identities(self._library_data)
+                self._backfill_cached_playlist_art(self._library_data)
                 self._rebuild_library_indexes()
                 self._write_json_file(CACHE_FILE, self._library_data)
                 self._write_json_file(LEGACY_CACHE_FILE, self._library_data)
@@ -274,16 +275,18 @@ class MassSource(SourceBase):
         logger.info("MASS Source Starting...")
         if not MASS_TOKEN:
             logger.warning("MASS source missing MASS_TOKEN; login/bootstrap actions will be required.")
-        self._http_session = ClientSession(timeout=ClientTimeout(total=20))
+        if self._art_http_session and not self._art_http_session.closed:
+            await self._art_http_session.close()
+        self._art_http_session = ClientSession(timeout=ClientTimeout(total=20))
         await self.register("available")
         self._spawn(self._maintain_connection(), name="mass_connection")
         self._spawn(self._schedule_sync_loop(), name="mass_sync_loop")
 
     async def on_stop(self):
         await self._stop_local_queue_monitor()
-        if self._http_session and not self._http_session.closed:
-            await self._http_session.close()
-        self._http_session = None
+        if self._art_http_session and not self._art_http_session.closed:
+            await self._art_http_session.close()
+        self._art_http_session = None
 
     async def _schedule_sync_loop(self):
         if not self.has_cache:
@@ -414,6 +417,26 @@ class MassSource(SourceBase):
                 )
                 return f"{base}/imageproxy?path={encoded}&provider={provider}&size=256"
         return ""
+
+    def _placeholder_art(self, title, subtitle=""):
+        safe_title = html.escape((title or "Unknown")[:22])
+        safe_subtitle = html.escape((subtitle or "")[:26])
+        svg = f"""
+        <svg xmlns="http://www.w3.org/2000/svg" width="320" height="320" viewBox="0 0 320 320">
+          <defs>
+            <linearGradient id="g" x1="0" x2="1" y1="0" y2="1">
+              <stop offset="0%" stop-color="#1a2440"/>
+              <stop offset="100%" stop-color="#101010"/>
+            </linearGradient>
+          </defs>
+          <rect width="320" height="320" rx="24" fill="url(#g)"/>
+          <rect x="92" y="92" width="136" height="136" rx="24" fill="rgba(255,255,255,0.08)" stroke="rgba(255,255,255,0.22)" stroke-width="8"/>
+          <path d="M128 132h64v16h-64zm0 28h64v16h-64zm0 28h44v16h-44z" fill="#eef2ff"/>
+          <text x="160" y="254" fill="#f4f7fb" font-family="Arial,sans-serif" font-size="24" text-anchor="middle">{safe_title}</text>
+          <text x="160" y="284" fill="#9fb0c8" font-family="Arial,sans-serif" font-size="16" text-anchor="middle">{safe_subtitle}</text>
+        </svg>
+        """.strip()
+        return "data:image/svg+xml;utf8," + urllib.parse.quote(svg)
 
     def _get_artist_name(self, item, default="Various"):
         artists = item.get("artists", [])
@@ -681,12 +704,12 @@ class MassSource(SourceBase):
         if cached_name:
             return f"{ART_ROUTE_PREFIX}/{cached_name}"
 
-        if not self._http_session:
+        if not self._art_http_session:
             return image_url
 
         try:
             os.makedirs(ART_CACHE_DIR, exist_ok=True)
-            async with self._http_session.get(image_url) as response:
+            async with self._art_http_session.get(image_url) as response:
                 if response.status != 200:
                     return image_url
                 payload = await response.read()
@@ -832,14 +855,98 @@ class MassSource(SourceBase):
             item.get("provider", default_provider),
         )
 
+    @classmethod
+    def _first_cached_node_image(cls, node):
+        if not isinstance(node, dict):
+            return ""
+        image = str(node.get("image") or "").strip()
+        if image:
+            return image
+        for child in node.get("tracks") or []:
+            child_image = cls._first_cached_node_image(child)
+            if child_image:
+                return child_image
+        return ""
+
+    def _backfill_cached_playlist_art(self, tree):
+        if not isinstance(tree, list):
+            return False
+        playlists_root = next(
+            (
+                item for item in tree
+                if isinstance(item, dict) and str(item.get("id") or "") == "playlists"
+            ),
+            None,
+        )
+        if not isinstance(playlists_root, dict):
+            return False
+
+        changed = False
+        for playlist in playlists_root.get("tracks") or []:
+            if not isinstance(playlist, dict):
+                continue
+            playlist_name = str(playlist.get("name") or "Unknown Playlist").strip() or "Unknown Playlist"
+            playlist_image = str(playlist.get("image") or "").strip()
+            if not playlist_image:
+                playlist_image = self._first_cached_node_image(playlist)
+            if not playlist_image:
+                playlist_image = self._placeholder_art(playlist_name, "Playlist")
+            if playlist_image and playlist_image != str(playlist.get("image") or "").strip():
+                playlist["image"] = playlist_image
+                changed = True
+
+            for track in playlist.get("tracks") or []:
+                if not isinstance(track, dict):
+                    continue
+                track_image = str(track.get("image") or "").strip()
+                if track_image:
+                    continue
+                title = str(track.get("name") or "Unknown Track").strip() or "Unknown Track"
+                subtitle = str(track.get("artist") or playlist_name).strip()
+                track["image"] = playlist_image or self._placeholder_art(title, subtitle)
+                changed = True
+        return changed
+
+    def _resolve_track_image(self, track, base):
+        if not isinstance(track, dict):
+            return ""
+        image = self._get_img(track, base)
+        if image:
+            return image
+
+        album = track.get("album")
+        if isinstance(album, dict):
+            image = self._get_img(album, base)
+            if image:
+                return image
+
+        artists = track.get("artists")
+        if isinstance(artists, list):
+            for artist in artists:
+                if not isinstance(artist, dict):
+                    continue
+                image = self._get_img(artist, base)
+                if image:
+                    return image
+        return ""
+
     def _build_playlist_folder_node(self, playlist, tracks, base, *, root_id="", root_name=""):
         playlist = playlist if isinstance(playlist, dict) else {}
         provider = str(playlist.get("provider") or MASS_MIXES_PLAYLIST_PROVIDER).strip() or MASS_MIXES_PLAYLIST_PROVIDER
         item_id = str(playlist.get("item_id") or "").strip()
+        playlist_name = str(root_name or playlist.get("name") or "Unknown Playlist")
+        playlist_image = self._get_img(playlist, base)
+        if not playlist_image:
+            for track in tracks or []:
+                playlist_image = self._resolve_track_image(track, base)
+                if playlist_image:
+                    break
+        if not playlist_image:
+            playlist_image = self._placeholder_art(playlist_name, "Playlist")
         folder = self._make_folder_node(
             id_=str(root_id or item_id),
-            name=str(root_name or playlist.get("name") or "Unknown Playlist"),
-            image=self._get_img(playlist, base),
+            name=playlist_name,
+            image=playlist_image,
             url=str(playlist.get("uri") or self._playlist_uri(item_id, provider)),
         )
         self._apply_media_identity(
@@ -857,7 +964,14 @@ class MassSource(SourceBase):
                     artist=self._get_artist_name(track, ""),
                     album=self._get_album_name(track, ""),
                     url=track.get("uri", ""),
-                    image=self._get_img(track, base),
+                    image=(
+                        self._resolve_track_image(track, base)
+                        or playlist_image
+                        or self._placeholder_art(
+                            track.get("name", "Unknown Track"),
+                            self._get_artist_name(track, playlist_name),
+                        )
+                    ),
                 ),
                 media_type="track",
                 item_id=track.get("item_id", ""),

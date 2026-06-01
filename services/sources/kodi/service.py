@@ -426,6 +426,46 @@ class KodiSource(SourceBase):
         """.strip()
         return "data:image/svg+xml;utf8," + urllib.parse.quote(svg)
 
+    @classmethod
+    def _first_node_image(cls, nodes):
+        for node in nodes or []:
+            if not isinstance(node, dict):
+                continue
+            image = str(node.get("image") or "").strip()
+            if image:
+                return image
+            child_image = cls._first_node_image(node.get("tracks") or [])
+            if child_image:
+                return child_image
+        return ""
+
+    def _playlist_node_art(self, *, name, media_label, entry=None, child_nodes=None):
+        image = ""
+        if isinstance(entry, dict):
+            image = self._img({"thumb": entry.get("thumbnail", "")}, "thumb")
+        if not image and child_nodes:
+            image = self._first_node_image(child_nodes)
+        if not image:
+            image = self._placeholder_art(name, media_label)
+        return image
+
+    async def _resolve_item_artwork(self, *, item, title="", subtitle="", node=None):
+        payload = item if isinstance(item, dict) else {}
+        image = self._art_from_item(payload)
+        if not image and isinstance(node, dict):
+            image = str(node.get("image") or "").strip()
+        if image.startswith("http"):
+            image = await self._cache_image_locally(image)
+        if not image:
+            fallback_title = str(
+                title or payload.get("title") or payload.get("label") or "Kodi"
+            ).strip() or "Kodi"
+            fallback_subtitle = str(
+                subtitle or payload.get("album") or payload.get("showtitle") or ""
+            ).strip()
+            image = self._placeholder_art(fallback_title, fallback_subtitle)
+        return image
+
     def _category_art(self, kind, label):
         accent_map = {
             "movies": "#4f8cff",
@@ -952,12 +992,18 @@ class KodiSource(SourceBase):
                 folder_node = self._folder(
                     id_=f"playlist_dir_{hashlib.sha1(file_path.encode('utf-8')).hexdigest()[:12]}",
                     name=name,
+                    image=self._playlist_node_art(
+                        name=name,
+                        media_label=media_label,
+                        entry=entry,
+                        child_nodes=child_nodes,
+                    ),
                 )
                 folder_node["tracks"] = child_nodes
                 nodes.append(folder_node)
                 continue
 
-            image = self._placeholder_art(name, media_label)
+            image = self._playlist_node_art(name=name, media_label=media_label, entry=entry)
             nodes.append(
                 self._leaf(
                     id_=f"playlist_{hashlib.sha1(file_path.encode('utf-8')).hexdigest()[:12]}",
@@ -1632,17 +1678,21 @@ class KodiSource(SourceBase):
         node, parents = self._find_node_by_uri(uri)
         if not isinstance(node, dict):
             return None
-        image = str(node.get("image") or "").strip()
-        if image.startswith("http"):
-            image = await self._cache_image_locally(image)
         album = ""
         if parents:
             album = str(parents[-1].get("name") or "").strip()
         artist = str(node.get("artist") or "").strip()
         if not artist and len(parents) > 1:
             artist = str(parents[-2].get("name") or "").strip()
+        title = str(node.get("name") or "").strip() or "Kodi"
+        image = await self._resolve_item_artwork(
+            item={},
+            title=title,
+            subtitle=artist or album,
+            node=node,
+        )
         return {
-            "title": str(node.get("name") or "").strip() or "Kodi",
+            "title": title,
             "artist": artist,
             "album": album,
             "artwork": image,
@@ -1709,24 +1759,12 @@ class KodiSource(SourceBase):
         if not album:
             album = str(item.get("showtitle") or "").strip()
 
-        image = self._img(
-            item.get("art", {}),
-            "poster",
-            "thumb",
-            "landscape",
-            "fanart",
-            "banner",
-            "clearlogo",
-            "clearart",
-            "keyart",
-            "icon",
+        image = await self._resolve_item_artwork(
+            item=item,
+            title=title,
+            subtitle=artist or album,
+            node=node if isinstance(node, dict) else None,
         )
-        if not image:
-            image = self._img({"thumb": item.get("thumbnail", "")}, "thumb")
-        if not image and isinstance(node, dict):
-            image = str(node.get("image") or "").strip()
-        if image.startswith("http"):
-            image = await self._cache_image_locally(image)
 
         speed = int(properties.get("speed") or 0)
         state = "paused" if speed == 0 else "playing"
@@ -2305,14 +2343,17 @@ class KodiSource(SourceBase):
             title = str(item.get("title") or item.get("label") or item.get("file") or f"Queue Item {index + 1}")
             artists = item.get("artist")
             artist = ", ".join(artists) if isinstance(artists, list) else str(artists or item.get("showtitle") or "")
-            artwork = self._art_from_item(item)
-            if artwork.startswith("http"):
-                artwork = await self._cache_image_locally(artwork)
+            album = str(item.get("album") or "")
+            artwork = await self._resolve_item_artwork(
+                item=item,
+                title=title,
+                subtitle=artist or album,
+            )
             tracks.append({
                 "id": f"kodi:{playlist_id}:{index}",
                 "title": title,
                 "artist": artist,
-                "album": str(item.get("album") or ""),
+                "album": album,
                 "artwork": artwork,
                 "uri": str(item.get("file") or ""),
                 "index": index,

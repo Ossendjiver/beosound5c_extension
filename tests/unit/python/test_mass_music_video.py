@@ -221,6 +221,95 @@ class TestMassLibraryMenu:
         assert node["url"] == "playlist://library/98"
         assert node["tracks"][0]["url"] == "mass://track-one"
 
+    def test_build_playlist_folder_node_uses_album_art_when_playlist_art_is_missing(self):
+        source = _make_mass_source()
+
+        node = source._build_playlist_folder_node(
+            {
+                "item_id": "11",
+                "name": "Fallback Playlist",
+                "provider": "library",
+                "metadata": {"images": []},
+            },
+            [
+                {
+                    "item_id": "track-1",
+                    "name": "Track One",
+                    "provider": "library",
+                    "uri": "mass://track-one",
+                    "metadata": {"images": []},
+                    "album": {
+                        "name": "Album One",
+                        "metadata": {
+                            "images": [
+                                {"type": "thumb", "path": "album-art.jpg", "provider": "library"}
+                            ]
+                        },
+                    },
+                    "artists": [{"name": "Artist One"}],
+                }
+            ],
+            "http://mass.example",
+        )
+
+        assert "/imageproxy?" in node["image"]
+        assert "/imageproxy?" in node["tracks"][0]["image"]
+
+    def test_build_playlist_folder_node_keeps_placeholder_art_after_finalize(self):
+        source = _make_mass_source()
+
+        node = source._build_playlist_folder_node(
+            {
+                "item_id": "12",
+                "name": "Sparse Playlist",
+                "provider": "library",
+                "metadata": {"images": []},
+            },
+            [
+                {
+                    "item_id": "track-2",
+                    "name": "Track Two",
+                    "provider": "library",
+                    "uri": "mass://track-two",
+                    "metadata": {"images": []},
+                    "album": {"name": "Album Two", "metadata": {"images": []}},
+                    "artists": [{"name": "Artist Two", "metadata": {"images": []}}],
+                }
+            ],
+            "http://mass.example",
+        )
+        source._finalize_node(node)
+
+        assert node["image"].startswith("data:image/svg+xml")
+        assert node["tracks"][0]["image"].startswith("data:image/svg+xml")
+
+    def test_backfill_cached_playlist_art_repairs_legacy_cache_nodes(self):
+        source = _make_mass_source()
+        tree = [
+            {
+                "id": "playlists",
+                "name": "Playlists",
+                "tracks": [
+                    {
+                        "id": "playlist:1",
+                        "name": "Legacy Playlist",
+                        "tracks": [
+                            {"id": "track:1", "name": "First Track", "artist": "Artist A", "image": ""},
+                            {"id": "track:2", "name": "Second Track", "artist": "Artist B"},
+                        ],
+                    }
+                ],
+            }
+        ]
+
+        changed = source._backfill_cached_playlist_art(tree)
+
+        assert changed is True
+        playlist = tree[0]["tracks"][0]
+        assert playlist["image"].startswith("data:image/svg+xml")
+        assert playlist["tracks"][0]["image"] == playlist["image"]
+        assert playlist["tracks"][1]["image"] == playlist["image"]
+
     def test_normalize_renames_and_preserves_podcasts_root_order(self):
         source = _make_mass_source()
         tree = [

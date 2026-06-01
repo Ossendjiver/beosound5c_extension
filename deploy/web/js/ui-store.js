@@ -19,6 +19,9 @@ class UIStore {
         this._activeContextRoute = '';
         this._contextAffinityRoute = '';
         this._openContextRoutes = new Set();
+        this._pendingContextReopenRoute = '';
+        this._pendingContextReopenAnchorPath = '';
+        this._pendingContextReopenSlotIndex = -1;
         this._contextResetTimers = new Map();
         this._contextMenuAnchors = new Map();
 
@@ -67,11 +70,17 @@ class UIStore {
 
             if (previousRoute && previousRoute !== nextRoute && !preservePreviousContext) {
                 this._closeContextMenuForRoute(previousVisibleContextRoute || previousRoute, {
+                    rememberForReopen: false,
                     sync: false,
                 });
             }
             if (nextUsesContextMenu && nextRoute !== previousVisibleContextRoute) {
                 this._openContextRoutes.delete(nextRoute);
+            }
+            if (nextRoute !== previousRoute && this._pendingContextReopenRoute && this._pendingContextReopenRoute !== nextRoute) {
+                this._pendingContextReopenRoute = '';
+                this._pendingContextReopenAnchorPath = '';
+                this._pendingContextReopenSlotIndex = -1;
             }
             this._syncContextMenuForRoute(nextRoute);
             const shouldResetContextRoute = nextRoute
@@ -217,6 +226,9 @@ class UIStore {
 
         const requestedContextId = String(options.contextId || '').trim();
         const requestedPath = String(options.anchorPath || '').trim();
+        const requestedSlotIndex = Number.isInteger(options.anchorSlotIndex)
+            ? Number(options.anchorSlotIndex)
+            : -1;
         let anchorItem = null;
 
         if (requestedPath) {
@@ -256,7 +268,9 @@ class UIStore {
         const contextItems = items.filter((item) => String(item.kind || '').trim() === 'context');
         const anchorContextIndex = contextItems.findIndex((item) => String(item.path || '').trim() === anchor.anchorPath);
         if (firstContextIndex >= 0 && contextItems.length > 0 && anchorContextIndex >= 0) {
-            const preferredSelectedSlotIndex = this._getPreferredContextMenuSlotIndex(normalizedRoute);
+            const preferredSelectedSlotIndex = requestedSlotIndex >= firstContextIndex
+                ? requestedSlotIndex
+                : this._getPreferredContextMenuSlotIndex(normalizedRoute);
             const targetSlotIndex = Math.max(firstContextIndex, Math.min(items.length - 1, preferredSelectedSlotIndex));
             const targetContextIndex = Math.max(0, Math.min(contextItems.length - 1, targetSlotIndex - firstContextIndex));
             const rotateFromIndex = ((anchorContextIndex - targetContextIndex) % contextItems.length + contextItems.length) % contextItems.length;
@@ -421,6 +435,10 @@ class UIStore {
         if (!visibleItems?.length) return false;
 
         const context = this._contextMenusByRoute.get(normalizedRoute);
+        const requestedAnchorPath = String(options.anchorPath || '').trim();
+        const requestedAnchorSlotIndex = Number.isInteger(options.anchorSlotIndex)
+            ? Number(options.anchorSlotIndex)
+            : -1;
         const requestedId = String(
             options.contextId
             || context?.selectedId
@@ -429,8 +447,17 @@ class UIStore {
             || ''
         ).trim();
 
-        this._captureContextMenuAnchor(normalizedRoute, visibleItems, { contextId: requestedId });
+        this._captureContextMenuAnchor(normalizedRoute, visibleItems, {
+            anchorPath: requestedAnchorPath,
+            anchorSlotIndex: requestedAnchorSlotIndex,
+            contextId: requestedId,
+        });
 
+        if (this._pendingContextReopenRoute === normalizedRoute) {
+            this._pendingContextReopenRoute = '';
+            this._pendingContextReopenAnchorPath = '';
+            this._pendingContextReopenSlotIndex = -1;
+        }
         this._openContextRoutes.add(normalizedRoute);
         this._syncContextMenuForRoute(normalizedRoute);
 
@@ -452,6 +479,15 @@ class UIStore {
         if (!normalizedRoute) return false;
 
         const currentVisibleContextRoute = this._resolveVisibleContextRoute(this.view.currentRoute);
+        const shouldRememberForReopen = options.rememberForReopen !== false
+            && this._routeUsesContextMenu(normalizedRoute)
+            && (normalizedRoute === this.view.currentRoute || currentVisibleContextRoute === normalizedRoute);
+        const { result, selectedMenuItem } = this._resolveCurrentMenuSelection();
+        const selectedMenuPath = String(selectedMenuItem?.path || '').trim();
+        const canRememberAnchorPath = shouldRememberForReopen
+            && selectedMenuPath
+            && this._selectionBelongsToVisibleContextMenu(selectedMenuItem, currentVisibleContextRoute || normalizedRoute);
+
         const wasOpen = this._openContextRoutes.delete(normalizedRoute);
         this._contextMenuAnchors.delete(normalizedRoute);
         if (this._contextAffinityRoute === normalizedRoute) {
@@ -459,6 +495,15 @@ class UIStore {
         }
         if (this._activeContextRoute === normalizedRoute) {
             this._activeContextRoute = '';
+        }
+        if (shouldRememberForReopen) {
+            this._pendingContextReopenRoute = normalizedRoute;
+            this._pendingContextReopenAnchorPath = canRememberAnchorPath ? selectedMenuPath : '';
+            this._pendingContextReopenSlotIndex = canRememberAnchorPath ? Number(result?.selectedIndex ?? -1) : -1;
+        } else if (this._pendingContextReopenRoute === normalizedRoute) {
+            this._pendingContextReopenRoute = '';
+            this._pendingContextReopenAnchorPath = '';
+            this._pendingContextReopenSlotIndex = -1;
         }
 
         if (options.sync !== false
@@ -613,8 +658,15 @@ class UIStore {
         if (!visibleContextRoute) {
             if (normalized !== 'left') return false;
             if (!this._routeUsesContextMenu(currentRoute)) return false;
-            if (selectedMenuItem?.path !== currentRoute) return false;
-            return this._openContextMenuForRoute(currentRoute);
+            const canReopenPendingContext = this._pendingContextReopenRoute === currentRoute;
+            if (selectedMenuItem?.path !== currentRoute && !canReopenPendingContext) return false;
+            return this._openContextMenuForRoute(currentRoute, canReopenPendingContext
+                ? {
+                    anchorPath: this._pendingContextReopenAnchorPath,
+                    anchorSlotIndex: this._pendingContextReopenSlotIndex,
+                    selectCurrent: false,
+                }
+                : {});
         }
 
         if (!contextSelection || !selectedMenuItem) return false;
@@ -722,6 +774,15 @@ class UIStore {
             effectivePath = (result.angle >= 200 || !hasShowing) ? 'menu/playing' : 'menu/showing';
         } else if (contextSelection) {
             effectivePath = null;
+        }
+
+        if (!contextSelection && this._pendingContextReopenRoute) {
+            const selectedPath = String(selectedMenuItem?.path || effectivePath || '').trim();
+            if (selectedPath && selectedPath !== this._pendingContextReopenRoute) {
+                this._pendingContextReopenRoute = '';
+                this._pendingContextReopenAnchorPath = '';
+                this._pendingContextReopenSlotIndex = -1;
+            }
         }
 
         // Menu visibility

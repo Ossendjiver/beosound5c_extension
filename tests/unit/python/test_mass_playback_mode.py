@@ -33,6 +33,28 @@ def _make_mass_source():
 
 
 class TestMassPlaybackModeHelpers:
+    def test_on_start_keeps_source_base_http_session_and_closes_art_session_on_stop(self):
+        source = _make_mass_source()
+        base_session = MagicMock()
+        base_session.closed = False
+        art_session = MagicMock()
+        art_session.closed = False
+        art_session.close = AsyncMock()
+        source._http_session = base_session
+        source.register = AsyncMock()
+        source._spawn = MagicMock(side_effect=lambda coro, **kwargs: coro.close())
+
+        with patch("sources.mass.service.ClientSession", return_value=art_session):
+            _run(source.on_start())
+
+        assert source._http_session is base_session
+        assert source._art_http_session is art_session
+
+        _run(source.on_stop())
+
+        art_session.close.assert_awaited_once()
+        assert source._art_http_session is None
+
     def test_normalize_invalid_mode_defaults_to_auto(self):
         assert normalize_mass_playback_mode("banana") == "auto"
 

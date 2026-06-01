@@ -106,3 +106,99 @@ class TestKodiLibraryOptions:
         source.register.assert_not_called()
         assert result["state"] == "playing"
         assert result["items"] == 2
+
+
+class TestKodiArtworkFallbacks:
+    def test_load_playlist_nodes_backfills_directory_and_leaf_art(self):
+        source = _make_kodi_source()
+
+        async def fake_rpc(method, params, target=None):
+            assert method == "Files.GetDirectory"
+            if params["directory"] == "special://videoplaylists":
+                return {
+                    "files": [
+                        {
+                            "file": "special://videoplaylists/Collections",
+                            "filetype": "directory",
+                            "label": "Collections",
+                            "thumbnail": "",
+                        },
+                        {
+                            "file": "special://videoplaylists/Road Trip.xsp",
+                            "filetype": "file",
+                            "label": "Road Trip.xsp",
+                            "thumbnail": "",
+                        },
+                    ]
+                }
+            if params["directory"] == "special://videoplaylists/Collections":
+                return {
+                    "files": [
+                        {
+                            "file": "special://videoplaylists/Collections/Night Watch.xsp",
+                            "filetype": "file",
+                            "label": "Night Watch.xsp",
+                            "thumbnail": "",
+                        }
+                    ]
+                }
+            raise AssertionError(f"unexpected directory lookup: {params['directory']}")
+
+        source._rpc = AsyncMock(side_effect=fake_rpc)
+
+        nodes = _run(source._load_playlist_nodes("special://videoplaylists", "Video Playlist"))
+
+        assert len(nodes) == 2
+        assert nodes[0]["image"].startswith("data:image/svg+xml")
+        assert nodes[0]["tracks"][0]["image"].startswith("data:image/svg+xml")
+        assert nodes[1]["image"].startswith("data:image/svg+xml")
+
+    def test_queue_items_use_placeholder_art_when_kodi_returns_none(self):
+        source = _make_kodi_source()
+        source._active_playlist_context = AsyncMock(return_value=(7, PLAYLIST_VIDEO, 0))
+        source._playlist_items = AsyncMock(return_value=[
+            {
+                "title": "Road Trip",
+                "album": "",
+                "artist": [],
+                "showtitle": "",
+                "thumbnail": "",
+                "art": {},
+                "file": "special://videoplaylists/Road Trip.xsp",
+            }
+        ])
+
+        result = _run(source.get_queue())
+
+        assert result["tracks"][0]["artwork"].startswith("data:image/svg+xml")
+
+    def test_active_media_payload_uses_placeholder_art_when_item_is_blank(self):
+        source = _make_kodi_source()
+        source._session = object()
+        source._get_active_player_ids = AsyncMock(return_value=[1])
+        source._find_node_by_uri = lambda uri: (None, [])
+
+        async def fake_rpc(method, params, target=None):
+            if method == "Player.GetProperties":
+                return {"speed": 1, "time": {}, "totaltime": {}}
+            if method == "Player.GetItem":
+                return {
+                    "item": {
+                        "type": "movie",
+                        "movieid": 42,
+                        "title": "Untitled",
+                        "album": "",
+                        "artist": [],
+                        "showtitle": "",
+                        "thumbnail": "",
+                        "art": {},
+                        "file": "/media/untitled.mkv",
+                    }
+                }
+            raise AssertionError(f"unexpected RPC method: {method}")
+
+        source._rpc = AsyncMock(side_effect=fake_rpc)
+
+        payload = _run(source._build_active_media_payload())
+
+        assert payload["artwork"].startswith("data:image/svg+xml")
