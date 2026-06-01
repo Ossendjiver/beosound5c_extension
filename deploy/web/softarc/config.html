@@ -695,9 +695,17 @@ const ML_LINK_SOURCE_OPTIONS = [
     { value: 'n.music', label: 'N.Music' },
 ];
 
+function normalizeMasterlinkRole(role) {
+    const value = String(role || '').trim().toLowerCase();
+    if (!value) return 'master';
+    if (value === 'audio_slave' || value === 'slave') return 'link';
+    if (value === 'off' || value === 'passive' || value === 'disabled') return 'none';
+    return ['master', 'provider', 'link', 'none'].includes(value) ? value : 'master';
+}
+
 function renderMasterlink(cfg) {
     const ml = cfg.masterlink || {};
-    const role = ml.role || 'master';
+    const role = normalizeMasterlinkRole(ml.role || 'master');
     const ir = ml.ir || {};
     const audioIr = ir.audio !== false;
     const videoIr = ir.video !== false;
@@ -728,10 +736,12 @@ function renderMasterlink(cfg) {
         <h2>Master Link</h2>
         <label for="cfg-ml-role">Role</label>
         <select id="cfg-ml-role">
+            <option value="none"     ${role==='none'?'selected':''}>None / passive (IR only)</option>
             <option value="master"   ${role==='master'?'selected':''}>Audio master (default)</option>
             <option value="provider" ${role==='provider'?'selected':''}>N.MUSIC / N.RADIO provider</option>
-            <option value="link"     ${role==='link'?'selected':''}>Link room</option>
+            <option value="link"     ${role==='link'?'selected':''}>Audio slave / link room</option>
         </select>
+        <div class="hint">Use <strong>None / passive</strong> when another system should own ML source routing. The BS5c will still decode IR and expose mixer/tone control, but it will stop claiming the audio-master role and stop answering ML source requests.</div>
 
         <div id="cfg-ml-provider-cond" class="cfg-cond${role==='provider'?' show':''}">
             <label for="cfg-ml-nmusic">Source for N.MUSIC</label>
@@ -746,7 +756,7 @@ function renderMasterlink(cfg) {
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px 18px;margin:4px 0 8px">
                 ${linkChecks}
             </div>
-            <div class="hint">A LINK page in the main menu (TBD) will show whichever of these the master currently provides, plus its track metadata.</div>
+            <div class="hint">This is the existing link-room role. "Audio slave" is just a clearer label for the same ML behaviour: another device is the master, and this BS5c listens as a link room.</div>
         </div>
 
         <div style="margin-top:18px; padding-top:14px; border-top:1px solid #1a1a1a">
@@ -1455,7 +1465,7 @@ function setupListeners() {
         document.getElementById('cfg-mqtt-cond').classList.toggle('show', show);
     });
     document.getElementById('cfg-ml-role')?.addEventListener('change', e => {
-        const r = e.target.value;
+        const r = normalizeMasterlinkRole(e.target.value);
         document.getElementById('cfg-ml-provider-cond')?.classList.toggle('show', r === 'provider');
         document.getElementById('cfg-ml-link-cond')?.classList.toggle('show', r === 'link');
     });
@@ -1849,7 +1859,7 @@ function buildConfig() {
     collectSecretField('cfg-mlgw-password', 'mlgw_password', _secrets);
     collectSecretField('cfg-mlgw-entity-map', 'mlgw_entity_to_mln', _secrets);
 
-    const role = document.getElementById('cfg-ml-role')?.value || 'master';
+    const role = normalizeMasterlinkRole(document.getElementById('cfg-ml-role')?.value || 'master');
     cfg.masterlink = cfg.masterlink || {};
     cfg.masterlink.role = role;
     cfg.masterlink.ir = {

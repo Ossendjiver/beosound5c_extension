@@ -63,6 +63,42 @@ from lib.watchdog import watchdog_loop
 
 logger = install_logging('beo-masterlink')
 
+# Supported role names. Canonical roles are what the runtime actually
+# implements; a couple of aliases are accepted so the config UI and hand-
+# edited configs can use more human language without breaking startup.
+_CANONICAL_ML_ROLES = {"master", "provider", "link", "none"}
+_ML_ROLE_ALIASES = {
+    "audio_slave": "link",
+    "slave": "link",
+    "off": "none",
+    "passive": "none",
+    "disabled": "none",
+}
+
+
+def normalize_masterlink_role(value):
+    role = str(value or "").strip().lower()
+    if not role:
+        return "master"
+    return _ML_ROLE_ALIASES.get(role, role if role in _CANONICAL_ML_ROLES else "master")
+
+
+def address_filter_payload_for_role(role):
+    """Return the libpc2-derived 0xF6 address-filter payload for ``role``.
+
+    audio-master: claim node 0xC1 and engage the PC2's audio-master path.
+    beoport: passive / local PC2 mode that does not claim audio-master.
+    """
+    canonical = normalize_masterlink_role(role)
+    if canonical == "none":
+        # Beoport PC2 mode from libpc2's set_address_filter().
+        return [0xF6, 0x00, 0x82, 0x80, 0x83]
+    # Master / provider / link keep today's audio-master filter because the
+    # provider/link roles still depend on the PC2's current receive/audio
+    # behaviour. See docs/plan-masterlink-roles.md for the open filter work.
+    return [0xF6, 0x10, 0xC1, 0x80, 0x83, 0x05, 0x00, 0x00]
+
+
 # Configuration variables
 BEOSOUND_DEVICE_NAME = cfg("device", default="BeoSound5c")
 ROUTER_URL = ROUTER_EVENT
@@ -98,12 +134,17 @@ VOL_DEFAULT = int(cfg("volume", "default", default=30))
 #       Receives sources, decodes track metadata for the UI.  Handler:
 #       lib/masterlink_link.LinkRole.
 #
-# Roles 2/3/4 are mutually exclusive — pick exactly one via masterlink.role.
+#   (5) Passive / none role — keep IR decoding + mixer HTTP, but don't claim
+#       audio-master on the ML bus or answer source requests.  Useful when ML
+#       should not compete with external HA / MLGW / A.AUX routing.
+#
+# Roles 2/3/4/5 are mutually exclusive — pick exactly one via masterlink.role.
 # IR decoding (1) runs alongside whichever role is selected.  Outstanding
 # work tracked in docs/plan-masterlink-roles.md.  cfg() is two-level only;
 # nested fields go through dict access on the masterlink block.
 _ML_CFG = cfg("masterlink", default={}) or {}
-ML_ROLE = (_ML_CFG.get("role") or "master").lower()
+ML_ROLE_RAW = _ML_CFG.get("role") or "master"
+ML_ROLE = normalize_masterlink_role(ML_ROLE_RAW)
 _ML_IR = _ML_CFG.get("ir") or {}
 ML_IR_AUDIO = bool(_ML_IR.get("audio", True))
 ML_IR_VIDEO = bool(_ML_IR.get("video", True))
@@ -118,6 +159,23 @@ DEDUP_COMMANDS = ["volup", "voldown", "left", "right"]  # Commands to deduplicat
 WEBHOOK_INTERVAL = 0.2  # Send webhook at least every 0.2 seconds for deduped commands
 MAX_QUEUE_SIZE = 10  # Maximum number of messages to keep in queue
 sys.stdout.reconfigure(line_buffering=True)
+
+
+class PassiveRole:
+    """Passive ML mode: keep IR decoding and mixer HTTP, but do not handle
+    ML telegrams or claim audio-master behaviour in software."""
+
+    def __init__(self, pc2):
+        self.pc2 = pc2
+
+    def start(self, loop):
+        logger.info("ML passive role: IR/mixer only, ML telegram handling disabled")
+
+    def handle_telegram(self, ttype, ptype, src_node, dest_node, src_src, payload):
+        logger.debug(
+            "ML passive role: ignoring telegram src=0x%02X dest=0x%02X t=0x%02X p=0x%02X",
+            src_node, dest_node, ttype, ptype,
+        )
 
 class MessageQueue:
     """Thread-safe queue with lossy behavior and deduplication."""
@@ -219,10 +277,13 @@ class PC2Device:
     #            masterlink_provider.py which embed src=0xC2)
     # link     = 0xC2 (no separate "link speaker" ID is enumerated in the
     #            spec; 0xC2 avoids colliding with the bus master at 0xC1)
-    # The PC2's USB-side address filter stays in audio-master mode — it
-    # still passes broadcasts and 0xC1-addressed traffic.  Receiving traffic
-    # specifically addressed to 0xC2 may need a filter flip; tracked in
-    # docs/plan-masterlink-roles.md.
+    # none     = 0x82 BEOport/PC2 (passive local interface; does not claim
+    #            the audio-master role on the bus)
+    # Provider/link keep the PC2's USB-side address filter in audio-master
+    # mode today because that's the verified receive/audio behaviour. Passive
+    # "none" flips to Beoport mode so the card no longer claims audio-master.
+    # Receiving traffic specifically addressed to 0xC2 may still need a
+    # future filter flip; tracked in docs/plan-masterlink-roles.md.
     OUR_NODE_ID = 0xC1  # AUDIO_MASTER (default; instance overrides for non-master roles)
 
     # Reconnect settings
@@ -260,6 +321,7 @@ class PC2Device:
         self.sniff_mode = False
         self._mixer_runner = None  # aiohttp AppRunner for cleanup
         self._vol_lock = threading.Lock()  # serialize step-based volume changes
+        self._address_filter_role = ML_ROLE
 
         # Role wiring.  Each of the three roles is a sibling module under
         # lib/masterlink_*.py with the same shape: __init__(pc2), start(loop),
@@ -272,6 +334,9 @@ class PC2Device:
         elif ML_ROLE == "link":
             self.OUR_NODE_ID = 0xC2
             self._role = LinkRole(self)
+        elif ML_ROLE == "none":
+            self.OUR_NODE_ID = 0x82
+            self._role = PassiveRole(self)
         else:  # "master" (default) — anything unknown collapses to master
             self._role = MasterRole(self)
 
@@ -354,8 +419,10 @@ class PC2Device:
         behaved as a master, which is why control messages flowed but audio
         didn't.
         Constants from libpc2 set_address_filter() (no code copied)."""
-        self.send_message([0xF6, 0x10, 0xC1, 0x80, 0x83, 0x05, 0x00, 0x00])
-        logger.info("Address filter set (Audio Master mode)")
+        payload = address_filter_payload_for_role(self._address_filter_role)
+        self.send_message(payload)
+        mode = "Beoport passive mode" if self._address_filter_role == "none" else "Audio Master mode"
+        logger.info("Address filter set (%s)", mode)
 
     def start_sniffing(self):
         """Start sniffing USB messages and sending them via webhook"""
@@ -1565,9 +1632,11 @@ if __name__ == "__main__":
 
         pc2.start_sniffing()
 
-        logger.info("Master Link config: role=%s ir_audio=%s ir_video=%s "
+        logger.info("Master Link config: role=%s%s ir_audio=%s ir_video=%s "
                     "provider.nmusic=%r provider.nradio=%r link.sources=%s",
-                    ML_ROLE, ML_IR_AUDIO, ML_IR_VIDEO,
+                    ML_ROLE,
+                    f" (from {ML_ROLE_RAW!r})" if normalize_masterlink_role(ML_ROLE_RAW) != str(ML_ROLE_RAW).strip().lower() else "",
+                    ML_IR_AUDIO, ML_IR_VIDEO,
                     ML_PROVIDER_NMUSIC, ML_PROVIDER_NRADIO, ML_LINK_SOURCES)
 
         if pc2_ready:

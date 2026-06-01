@@ -262,9 +262,9 @@
       "properties": {
         "role": {
           "type": "string",
-          "enum": ["master", "provider", "link"],
+          "enum": ["master", "provider", "link", "none", "audio_slave", "slave", "off", "passive", "disabled"],
           "default": "master",
-          "description": "Which side of the ML bus the BS5c plays. 'master' = audio master (default; standalone collapses into this). 'provider' = N.MUSIC/N.RADIO source-center for an external master like a BS9000 (N.MUSIC verified against BC2; N.RADIO unverified). 'link' = link room receiving sources from a remote master."
+          "description": "Which side of the ML bus the BS5c plays. 'master' = audio master (default; standalone collapses into this). 'provider' = N.MUSIC/N.RADIO source-center for an external master like a BS9000 (N.MUSIC verified against BC2; N.RADIO unverified). 'link' = link room / audio-slave receiving sources from a remote master. 'none' disables active ML role handling while keeping IR decode + mixer/tone control. 'audio_slave'/'slave' and 'off'/'passive'/'disabled' are accepted aliases for 'link' and 'none'."
         },
         "ir": {
           "type": "object",
