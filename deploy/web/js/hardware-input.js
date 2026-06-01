@@ -183,8 +183,11 @@ function routeNavToView(page, data, uiStore) {
 
     // Playing page — active source owns nav
     if (page === 'menu/playing' && uiStore.activeSource) {
-        const ctrl = window.SourcePresets?.[uiStore.activeSource]?.controller;
-        if (ctrl?.isActive && ctrl.handleNavEvent && ctrl.handleNavEvent(data)) return true;
+        const useMainMenuWheel = uiStore?.view?.menuVisible !== false;
+        if (!useMainMenuWheel) {
+            const ctrl = window.SourcePresets?.[uiStore.activeSource]?.controller;
+            if (ctrl?.isActive && ctrl.handleNavEvent && ctrl.handleNavEvent(data)) return true;
+        }
     }
 
     if (page === 'menu/queue') {
@@ -364,6 +367,10 @@ function handleButtonEvent(uiStore, data) {
 }
 
 function routeButtonToView(page, button, uiStore) {
+    if (uiStore?.tryHandleContextButton?.(button)) {
+        return true;
+    }
+
     const viewId = page.startsWith('menu/') ? page.slice(5) : null;
 
     // Source page — controller owns all buttons

@@ -203,6 +203,8 @@ class MassSource(SourceBase):
         self._connected   = False
         self._futures     = {}
         self._library_data = []
+        self._library_node_by_id = {}
+        self._library_node_by_uri = {}
         self._is_syncing  = False
         self._http_session = None
         self._preferred_player_id = ""
@@ -245,6 +247,8 @@ class MassSource(SourceBase):
                 with open(cache_path, 'r') as f:
                     self._library_data = json.load(f)
                 self._normalize_library_tree(self._library_data)
+                self._upgrade_cached_library_identities(self._library_data)
+                self._rebuild_library_indexes()
                 self._write_json_file(CACHE_FILE, self._library_data)
                 self._write_json_file(LEGACY_CACHE_FILE, self._library_data)
                 logger.info("Local library cache loaded from %s.", cache_path)
@@ -422,6 +426,63 @@ class MassSource(SourceBase):
             return track_artist
         return ""
 
+    def _get_album_name(self, item, default=""):
+        album = item.get("album") if isinstance(item, dict) else None
+        if isinstance(album, dict):
+            return str(album.get("name") or default or "").strip()
+        if isinstance(album, str):
+            return str(album or default or "").strip()
+        return str(default or "").strip()
+
+    @staticmethod
+    def _normalize_lookup_text(value):
+        return " ".join(str(value or "").split()).strip().casefold()
+
+    @staticmethod
+    def _track_album_item_id(item):
+        album = item.get("album") if isinstance(item, dict) else None
+        if isinstance(album, dict):
+            return str(album.get("item_id") or "").strip()
+        return ""
+
+    @staticmethod
+    def _item_artist_refs(item):
+        artists = item.get("artists") if isinstance(item, dict) else None
+        refs = []
+        if not isinstance(artists, list):
+            return refs
+        for artist in artists:
+            if not isinstance(artist, dict):
+                continue
+            item_id = str(artist.get("item_id") or "").strip()
+            name = str(artist.get("name") or "").strip()
+            uri = str(artist.get("uri") or "").strip()
+            if item_id or name or uri:
+                refs.append({
+                    "item_id": item_id,
+                    "name": name,
+                    "uri": uri,
+                })
+        return refs
+
+    @staticmethod
+    def _album_track_sort_key(item):
+        if not isinstance(item, dict):
+            return (0, 0, "", "")
+
+        def as_int(value):
+            try:
+                return int(value or 0)
+            except (TypeError, ValueError):
+                return 0
+
+        return (
+            as_int(item.get("disc_number")),
+            as_int(item.get("track_number")),
+            str(item.get("sort_name") or item.get("name") or "").casefold(),
+            str(item.get("item_id") or "").strip(),
+        )
+
     @staticmethod
     def _sort_name_key(value):
         text = " ".join(str(value or "").split()).strip()
@@ -437,6 +498,32 @@ class MassSource(SourceBase):
             items,
             key=lambda node: self._sort_name_key(node.get("name") if isinstance(node, dict) else ""),
         )
+
+    @staticmethod
+    def _typed_media_node_id(media_type, item_id):
+        media = str(media_type or "").strip().lower()
+        raw_item_id = str(item_id or "").strip()
+        if not media or not raw_item_id:
+            return raw_item_id
+        return f"{media}:{raw_item_id}"
+
+    def _apply_media_identity(self, node, *, media_type="", item_id="", provider="", provider_item_id=""):
+        if not isinstance(node, dict):
+            return node
+        raw_item_id = str(item_id or "").strip()
+        normalized_type = str(media_type or "").strip().lower()
+        current_id = str(node.get("id") or "").strip()
+        if raw_item_id:
+            node["item_id"] = raw_item_id
+        if normalized_type:
+            node["media_type"] = normalized_type
+        if provider:
+            node["provider"] = str(provider).strip()
+        if provider_item_id:
+            node["provider_item_id"] = str(provider_item_id).strip()
+        if raw_item_id and normalized_type and (not current_id or current_id == raw_item_id):
+            node["id"] = self._typed_media_node_id(normalized_type, raw_item_id)
+        return node
 
     def _normalize_library_tree(self, tree):
         if not isinstance(tree, list):
@@ -472,6 +559,87 @@ class MassSource(SourceBase):
                     root_node["name"] = MASS_MIXES_PLAYLIST_TITLE
                 elif root_id == MASS_PODCASTS_ROOT_ID:
                     root_node["name"] = MASS_PODCASTS_ROOT_TITLE
+
+    def _upgrade_cached_library_identities(self, tree):
+        if not isinstance(tree, list):
+            return
+
+        def legacy_raw_id(node):
+            if not isinstance(node, dict):
+                return ""
+            existing_item_id = str(node.get("item_id") or "").strip()
+            if existing_item_id:
+                return existing_item_id
+            node_id = str(node.get("id") or "").strip()
+            if not node_id:
+                return ""
+            if node_id in ROOT_CATEGORY_IDS or self._is_local_queue_item_id(node_id):
+                return ""
+            if ":" in node_id:
+                prefix, _, remainder = node_id.partition(":")
+                if prefix and remainder:
+                    return remainder
+            return node_id
+
+        def walk(node, root_id="", depth=0):
+            if not isinstance(node, dict):
+                return
+            node_id = str(node.get("id") or "").strip()
+            next_root_id = root_id or node_id
+            children = node.get("tracks")
+            has_children = isinstance(children, list) and bool(children)
+            media_type = ""
+            if next_root_id == "artists":
+                media_type = "artist" if depth == 1 else ("album" if depth == 2 and has_children else "track")
+            elif next_root_id == "albums":
+                media_type = "album" if depth == 1 and has_children else "track"
+            elif next_root_id == "songs":
+                media_type = "track"
+            elif next_root_id == "playlists":
+                media_type = "playlist" if depth == 1 and has_children else "track"
+            elif next_root_id == MASS_MIXES_PLAYLIST_ROOT_ID:
+                media_type = "playlist" if depth == 0 else "track"
+            elif next_root_id == MASS_PODCASTS_ROOT_ID:
+                media_type = "podcast" if depth == 1 and has_children else "podcast_episode"
+            elif next_root_id == MASS_RADIO_ROOT_ID:
+                media_type = "radio"
+
+            raw_item_id = legacy_raw_id(node)
+            if media_type and raw_item_id:
+                self._apply_media_identity(
+                    node,
+                    media_type=media_type,
+                    item_id=raw_item_id,
+                    provider=node.get("provider", ""),
+                    provider_item_id=node.get("provider_item_id", ""),
+                )
+
+            if isinstance(children, list):
+                for child in children:
+                    walk(child, next_root_id, depth + 1)
+
+        for root in tree:
+            walk(root)
+
+    def _rebuild_library_indexes(self):
+        node_by_id = {}
+        node_by_uri = {}
+        stack = list(self._library_data or [])
+        while stack:
+            node = stack.pop()
+            if not isinstance(node, dict):
+                continue
+            node_id = str(node.get("id") or "").strip()
+            if node_id and node_id not in node_by_id:
+                node_by_id[node_id] = node
+            uri = str(node.get("url") or node.get("play_url") or "").strip()
+            if uri and uri not in node_by_uri:
+                node_by_uri[uri] = node
+            children = node.get("tracks")
+            if isinstance(children, list):
+                stack.extend(reversed(children))
+        self._library_node_by_id = node_by_id
+        self._library_node_by_uri = node_by_uri
 
     @staticmethod
     def _art_cache_basename(image_url):
@@ -593,7 +761,7 @@ class MassSource(SourceBase):
     #         `play_url` is kept by _finalize_node and used by handle_command.
     # LEAF:   has `url` (direct playback URI), NO `tracks`.
 
-    def _make_folder_node(self, id_, name, artist="", image="", url=""):
+    def _make_folder_node(self, id_, name, artist="", image="", url="", album=""):
         """Navigable folder node. Stores the MA URI as `url`; _finalize_node
         renames it to `play_url` so ArcList does not auto-play on navigation."""
         node = {
@@ -602,11 +770,12 @@ class MassSource(SourceBase):
             "tracks": [],
         }
         if artist: node["artist"] = artist
+        if album:  node["album"]  = album
         if image:  node["image"]  = image
         if url:    node["url"]    = url   # renamed to play_url by _finalize_node
         return node
 
-    def _make_leaf_node(self, id_, name, artist="", url="", image=""):
+    def _make_leaf_node(self, id_, name, artist="", url="", image="", album=""):
         """Playable leaf. Has `url`, no `tracks`."""
         node = {
             "id":   id_,
@@ -614,6 +783,7 @@ class MassSource(SourceBase):
             "url":  url,
         }
         if artist: node["artist"] = artist
+        if album:  node["album"]  = album
         if image:  node["image"]  = image
         return node
 
@@ -649,13 +819,27 @@ class MassSource(SourceBase):
             image=self._get_img(playlist, base),
             url=str(playlist.get("uri") or self._playlist_uri(item_id, provider)),
         )
+        self._apply_media_identity(
+            folder,
+            media_type="playlist",
+            item_id=item_id,
+            provider=provider,
+            provider_item_id=playlist.get("provider_item_id") or item_id,
+        )
         folder["tracks"] = [
-            self._make_leaf_node(
-                id_=track.get("item_id", ""),
-                name=track.get("name", "Unknown Track"),
-                artist=self._get_artist_name(track, ""),
-                url=track.get("uri", ""),
-                image=self._get_img(track, base),
+            self._apply_media_identity(
+                self._make_leaf_node(
+                    id_=track.get("item_id", ""),
+                    name=track.get("name", "Unknown Track"),
+                    artist=self._get_artist_name(track, ""),
+                    album=self._get_album_name(track, ""),
+                    url=track.get("uri", ""),
+                    image=self._get_img(track, base),
+                ),
+                media_type="track",
+                item_id=track.get("item_id", ""),
+                provider=track.get("provider", "library"),
+                provider_item_id=track.get("provider_item_id") or track.get("uri") or track.get("item_id"),
             )
             for track in (tracks or [])
         ]
@@ -678,17 +862,188 @@ class MassSource(SourceBase):
             image=podcast_image,
             url=podcast.get("uri", ""),
         )
+        self._apply_media_identity(
+            folder,
+            media_type="podcast",
+            item_id=podcast.get("item_id", ""),
+            provider=podcast.get("provider", "library"),
+            provider_item_id=podcast.get("provider_item_id") or podcast.get("uri") or podcast.get("item_id"),
+        )
         folder["tracks"] = [
-            self._make_leaf_node(
-                id_=episode.get("item_id", ""),
-                name=episode.get("name", "Unknown Episode"),
-                artist=self._get_artist_name(episode, podcast_name) or podcast_name,
-                url=episode.get("uri", ""),
-                image=self._get_img(episode, base) or podcast_image,
+            self._apply_media_identity(
+                self._make_leaf_node(
+                    id_=episode.get("item_id", ""),
+                    name=episode.get("name", "Unknown Episode"),
+                    artist=self._get_artist_name(episode, podcast_name) or podcast_name,
+                    url=episode.get("uri", ""),
+                    image=self._get_img(episode, base) or podcast_image,
+                ),
+                media_type="podcast_episode",
+                item_id=episode.get("item_id", ""),
+                provider=episode.get("provider", podcast.get("provider", "library")),
+                provider_item_id=episode.get("provider_item_id") or episode.get("uri") or episode.get("item_id"),
             )
             for episode in (episodes or [])
         ]
         return folder
+
+    async def _fetch_bulk_music_library_items(self):
+        artists = await self.fetch_paginated("music/artists/library_items")
+        albums = await self.fetch_paginated("music/albums/library_items")
+        songs = await self.fetch_paginated("music/tracks/library_items")
+        logger.info(
+            "Fetched MASS bulk library payloads: artists=%d albums=%d tracks=%d",
+            len(artists),
+            len(albums),
+            len(songs),
+        )
+        return artists, albums, songs
+
+    def _build_bulk_music_roots(self, *, artists, albums, songs, base):
+        tracks_by_album_id = {}
+        for track in songs or []:
+            album_id = self._track_album_item_id(track)
+            if album_id:
+                tracks_by_album_id.setdefault(album_id, []).append(track)
+        for album_id in list(tracks_by_album_id.keys()):
+            tracks_by_album_id[album_id].sort(key=self._album_track_sort_key)
+
+        def build_track_leaf(track, *, artist_name="", album_name="", collapse_album_artist=False):
+            resolved_artist = (
+                self._get_track_artist_for_album(artist_name, track)
+                if collapse_album_artist
+                else self._get_artist_name(track, artist_name)
+            )
+            return self._apply_media_identity(
+                self._make_leaf_node(
+                    id_=track.get("item_id", ""),
+                    name=track.get("name", "Unknown Track"),
+                    artist=resolved_artist,
+                    album=self._get_album_name(track, album_name),
+                    url=track.get("uri", ""),
+                ),
+                media_type="track",
+                item_id=track.get("item_id", ""),
+                provider=track.get("provider", "library"),
+                provider_item_id=track.get("provider_item_id") or track.get("uri") or track.get("item_id"),
+            )
+
+        songs_nodes = [build_track_leaf(track) for track in (songs or [])]
+
+        albums_nodes = []
+        albums_by_artist_id = {}
+        albums_by_artist_name = {}
+        for album in albums or []:
+            album_id = str(album.get("item_id") or "").strip()
+            album_name = str(album.get("name") or "Unknown Album").strip() or "Unknown Album"
+            album_artist = self._get_artist_name(album, "Various")
+            album_tracks = tracks_by_album_id.get(album_id) or []
+            if not album_tracks:
+                continue
+
+            album_node = self._make_folder_node(
+                id_=album.get("item_id", ""),
+                name=album_name,
+                artist=album_artist,
+                image=self._get_img(album, base),
+                url=album.get("uri", ""),
+            )
+            self._apply_media_identity(
+                album_node,
+                media_type="album",
+                item_id=album.get("item_id", ""),
+                provider=album.get("provider", "library"),
+                provider_item_id=album.get("provider_item_id") or album.get("uri") or album.get("item_id"),
+            )
+            album_node["tracks"] = [
+                build_track_leaf(
+                    track,
+                    artist_name=album_artist,
+                    album_name=album_name,
+                    collapse_album_artist=True,
+                )
+                for track in album_tracks
+            ]
+            if album_node["tracks"]:
+                albums_nodes.append(album_node)
+
+            for artist_ref in self._item_artist_refs(album):
+                artist_ref_id = str(artist_ref.get("item_id") or "").strip()
+                artist_ref_name = str(artist_ref.get("name") or "").strip()
+                if artist_ref_id:
+                    albums_by_artist_id.setdefault(artist_ref_id, []).append(album)
+                if artist_ref_name:
+                    albums_by_artist_name.setdefault(
+                        self._normalize_lookup_text(artist_ref_name),
+                        []
+                    ).append(album)
+
+        artist_nodes = []
+        for artist in artists or []:
+            artist_id = str(artist.get("item_id") or "").strip()
+            artist_name = str(artist.get("name") or "Unknown Artist").strip() or "Unknown Artist"
+            grouped_albums = list(albums_by_artist_id.get(artist_id) or [])
+            if not grouped_albums:
+                grouped_albums = list(
+                    albums_by_artist_name.get(self._normalize_lookup_text(artist_name)) or []
+                )
+            if not grouped_albums:
+                continue
+
+            artist_node = self._make_folder_node(
+                id_=artist.get("item_id", ""),
+                name=artist_name,
+                image=self._get_img(artist, base),
+                url=artist.get("uri", ""),
+            )
+            self._apply_media_identity(
+                artist_node,
+                media_type="artist",
+                item_id=artist.get("item_id", ""),
+                provider=artist.get("provider", "library"),
+                provider_item_id=artist.get("provider_item_id") or artist.get("uri") or artist.get("item_id"),
+            )
+
+            seen_album_ids = set()
+            for album in grouped_albums:
+                album_id = str(album.get("item_id") or "").strip()
+                if not album_id or album_id in seen_album_ids:
+                    continue
+                seen_album_ids.add(album_id)
+                album_name = str(album.get("name") or "Unknown Album").strip() or "Unknown Album"
+                album_tracks = tracks_by_album_id.get(album_id) or []
+                if not album_tracks:
+                    continue
+
+                album_node = self._make_folder_node(
+                    id_=album.get("item_id", ""),
+                    name=album_name,
+                    artist=artist_name,
+                    image=self._get_img(album, base),
+                    url=album.get("uri", ""),
+                )
+                self._apply_media_identity(
+                    album_node,
+                    media_type="album",
+                    item_id=album.get("item_id", ""),
+                    provider=album.get("provider", "library"),
+                    provider_item_id=album.get("provider_item_id") or album.get("uri") or album.get("item_id"),
+                )
+                album_node["tracks"] = [
+                    build_track_leaf(
+                        track,
+                        artist_name=artist_name,
+                        album_name=album_name,
+                    )
+                    for track in album_tracks
+                ]
+                if album_node["tracks"]:
+                    artist_node["tracks"].append(album_node)
+
+            if artist_node["tracks"]:
+                artist_nodes.append(artist_node)
+
+        return artist_nodes, albums_nodes, songs_nodes
 
     def _finalize_node(self, node):
         """
@@ -751,7 +1106,18 @@ class MassSource(SourceBase):
 
         try:
             # ── 1. ARTISTS: Artists → Artist → Album → Track ─────────────────
-            artists = await self.fetch_paginated("music/artists/library_items")
+            artists, albums, songs = await self._fetch_bulk_music_library_items()
+            (
+                artists_root["tracks"],
+                albums_root["tracks"],
+                songs_root["tracks"],
+            ) = self._build_bulk_music_roots(
+                artists=artists,
+                albums=albums,
+                songs=songs,
+                base=base,
+            )
+            artists = []
             for a in artists:
                 try:
                     a_node = self._make_folder_node(
@@ -759,6 +1125,13 @@ class MassSource(SourceBase):
                         name=a.get('name', 'Unknown Artist'),
                         image=self._get_img(a, base),
                         url=a.get('uri', ''),
+                    )
+                    self._apply_media_identity(
+                        a_node,
+                        media_type="artist",
+                        item_id=a.get("item_id", ""),
+                        provider=a.get("provider", "library"),
+                        provider_item_id=a.get("provider_item_id") or a.get("uri") or a.get("item_id"),
                     )
                     albs = await self.fetch_list(
                         "music/artists/artist_albums",
@@ -773,16 +1146,31 @@ class MassSource(SourceBase):
                             image=self._get_img(alb, base),
                             url=alb.get('uri', ''),
                         )
+                        self._apply_media_identity(
+                            alb_node,
+                            media_type="album",
+                            item_id=alb.get("item_id", ""),
+                            provider=alb.get("provider", "library"),
+                            provider_item_id=alb.get("provider_item_id") or alb.get("uri") or alb.get("item_id"),
+                        )
                         trks = await self.fetch_list(
                             "music/albums/album_tracks",
                             item_id=alb.get('item_id'),
                             provider_instance_id_or_domain=alb.get("provider", "library"),
                         )
                         alb_node["tracks"] = [
-                            self._make_leaf_node(
-                                id_=t.get('item_id', ''),
-                                name=t.get('name', 'Unknown Track'),
-                                url=t.get('uri', ''),
+                            self._apply_media_identity(
+                                self._make_leaf_node(
+                                    id_=t.get('item_id', ''),
+                                    name=t.get('name', 'Unknown Track'),
+                                    artist=self._get_artist_name(t, a.get('name', '')),
+                                    album=self._get_album_name(t, alb.get('name', '')),
+                                    url=t.get('uri', ''),
+                                ),
+                                media_type="track",
+                                item_id=t.get("item_id", ""),
+                                provider=t.get("provider", "library"),
+                                provider_item_id=t.get("provider_item_id") or t.get("uri") or t.get("item_id"),
                             )
                             for t in trks
                         ]
@@ -794,7 +1182,7 @@ class MassSource(SourceBase):
                     logger.error(f"Error parsing artist {a.get('name')}: {e}")
 
             # ── 2. ALBUMS: Albums → Album → Track ────────────────────────────
-            albums = await self.fetch_paginated("music/albums/library_items")
+            albums = []
             for alb in albums:
                 try:
                     a_name = self._get_artist_name(alb, "Various")
@@ -806,15 +1194,30 @@ class MassSource(SourceBase):
                     alb_node = self._make_folder_node(
                         id_=alb.get('item_id', ''),
                         name=alb.get('name', 'Unknown Album'),
+                        artist=a_name,
                         image=self._get_img(alb, base),
                         url=alb.get('uri', ''),
                     )
+                    self._apply_media_identity(
+                        alb_node,
+                        media_type="album",
+                        item_id=alb.get("item_id", ""),
+                        provider=alb.get("provider", "library"),
+                        provider_item_id=alb.get("provider_item_id") or alb.get("uri") or alb.get("item_id"),
+                    )
                     alb_node["tracks"] = [
-                        self._make_leaf_node(
-                            id_=t.get('item_id', ''),
-                            name=t.get('name', 'Unknown Track'),
-                            artist=self._get_track_artist_for_album(a_name, t),
-                            url=t.get('uri', ''),
+                        self._apply_media_identity(
+                            self._make_leaf_node(
+                                id_=t.get('item_id', ''),
+                                name=t.get('name', 'Unknown Track'),
+                                artist=self._get_track_artist_for_album(a_name, t),
+                                album=self._get_album_name(t, alb.get('name', '')),
+                                url=t.get('uri', ''),
+                            ),
+                            media_type="track",
+                            item_id=t.get("item_id", ""),
+                            provider=t.get("provider", "library"),
+                            provider_item_id=t.get("provider_item_id") or t.get("uri") or t.get("item_id"),
                         )
                         for t in trks
                     ]
@@ -825,13 +1228,20 @@ class MassSource(SourceBase):
 
             # ── 3. SONGS: flat track list ────────────────────────────────────
             try:
-                songs = await self.fetch_paginated("music/tracks/library_items")
-                songs_root["tracks"] = [
-                    self._make_leaf_node(
-                        id_=s.get('item_id', ''),
-                        name=s.get('name', 'Unknown Track'),
-                        artist=self._get_artist_name(s, ""),
-                        url=s.get('uri', ''),
+                songs = []
+                songs_root["tracks"] = songs_root["tracks"] or [
+                    self._apply_media_identity(
+                        self._make_leaf_node(
+                            id_=s.get('item_id', ''),
+                            name=s.get('name', 'Unknown Track'),
+                            artist=self._get_artist_name(s, ""),
+                            album=self._get_album_name(s, ""),
+                            url=s.get('uri', ''),
+                        ),
+                        media_type="track",
+                        item_id=s.get("item_id", ""),
+                        provider=s.get("provider", "library"),
+                        provider_item_id=s.get("provider_item_id") or s.get("uri") or s.get("item_id"),
                     )
                     for s in songs
                 ]
@@ -908,11 +1318,17 @@ class MassSource(SourceBase):
                 radios = await self.fetch_paginated("music/radios/library_items")
                 for r in radios:
                     radio_root["tracks"].append(
-                        self._make_leaf_node(
-                            id_=r.get('item_id', ''),
-                            name=r.get('name', 'Unknown Radio'),
-                            url=r.get('uri', ''),
-                            image=self._get_img(r, base),
+                        self._apply_media_identity(
+                            self._make_leaf_node(
+                                id_=r.get('item_id', ''),
+                                name=r.get('name', 'Unknown Radio'),
+                                url=r.get('uri', ''),
+                                image=self._get_img(r, base),
+                            ),
+                            media_type="radio",
+                            item_id=r.get("item_id", ""),
+                            provider=r.get("provider", "library"),
+                            provider_item_id=r.get("provider_item_id") or r.get("uri") or r.get("item_id"),
                         )
                     )
             except Exception as e:
@@ -926,6 +1342,7 @@ class MassSource(SourceBase):
             self._normalize_library_tree(tree)
             await self._incremental_save(tree)
             self._library_data = tree
+            self._rebuild_library_indexes()
             logger.info("Hierarchy Sync Complete.")
 
         except Exception as e:
@@ -1099,17 +1516,11 @@ class MassSource(SourceBase):
         target = str(uri or "").strip()
         if not target:
             return None
-        stack = list(self._library_data or [])
-        while stack:
-            node = stack.pop()
-            if not isinstance(node, dict):
-                continue
-            if str(node.get("url") or node.get("play_url") or "").strip() == target:
-                return node
-            children = node.get("tracks")
-            if isinstance(children, list):
-                stack.extend(reversed(children))
-        return None
+        indexed = self._library_node_by_uri.get(target)
+        if isinstance(indexed, dict):
+            return indexed
+        self._rebuild_library_indexes()
+        return self._library_node_by_uri.get(target)
 
     def _find_command_node(self, data, uri=""):
         node = self._find_node_by_id(self._command_node_id(data))
@@ -1864,15 +2275,11 @@ class MassSource(SourceBase):
     def _find_node_by_id(self, node_id):
         if not node_id:
             return None
-        stack = list(self._library_data or [])
-        while stack:
-            node = stack.pop()
-            if node.get("id") == node_id:
-                return node
-            children = node.get("tracks")
-            if isinstance(children, list):
-                stack.extend(reversed(children))
-        return None
+        indexed = self._library_node_by_id.get(node_id)
+        if isinstance(indexed, dict):
+            return indexed
+        self._rebuild_library_indexes()
+        return self._library_node_by_id.get(node_id)
 
     def _resolve_command_url(self, data):
         """
