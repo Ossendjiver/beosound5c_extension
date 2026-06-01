@@ -19,6 +19,7 @@ class UIStore {
         this._activeContextRoute = '';
         this._contextAffinityRoute = '';
         this._openContextRoutes = new Set();
+        this._suppressedContextRoutes = new Set();
         this._contextResetTimers = new Map();
         this._contextMenuAnchors = new Map();
 
@@ -52,6 +53,7 @@ class UIStore {
             origNav(path);
             const nextRoute = this.view.currentRoute;
             this.menu._currentRoute = nextRoute;
+            const nextUsesContextMenu = this._routeUsesContextMenu(nextRoute);
 
             const nextIsTransientContextRoute = this._routeUsesContextAffinity(nextRoute);
             if (nextIsTransientContextRoute && previousVisibleContextRoute) {
@@ -65,10 +67,19 @@ class UIStore {
                 && (nextIsTransientContextRoute || nextRoute === previousVisibleContextRoute);
 
             if (previousRoute && previousRoute !== nextRoute && !preservePreviousContext) {
-                this._closeContextMenuForRoute(previousVisibleContextRoute || previousRoute, { sync: false });
+                this._closeContextMenuForRoute(previousVisibleContextRoute || previousRoute, {
+                    sync: false,
+                    markSuppressed: false,
+                });
             }
-            if (this._routeUsesContextMenu(nextRoute) && nextRoute !== previousVisibleContextRoute) {
+            if (nextUsesContextMenu) {
+                this._suppressedContextRoutes.delete(nextRoute);
+            }
+            if (nextUsesContextMenu && nextRoute !== previousVisibleContextRoute) {
                 this._openContextRoutes.delete(nextRoute);
+            }
+            if (this._shouldAutoOpenContextRoute(nextRoute)) {
+                this._openContextRoutes.add(nextRoute);
             }
             this._syncContextMenuForRoute(nextRoute);
             const shouldResetContextRoute = nextRoute
@@ -381,6 +392,18 @@ class UIStore {
         return route === 'menu/playing';
     }
 
+    _routeHasContextMenuData(route) {
+        const context = this._contextMenusByRoute.get(String(route || '').trim());
+        return !!(context && Array.isArray(context.items) && context.items.length);
+    }
+
+    _shouldAutoOpenContextRoute(route) {
+        const normalizedRoute = String(route || '').trim();
+        return this._routeUsesContextMenu(normalizedRoute)
+            && this._routeHasContextMenuData(normalizedRoute)
+            && !this._suppressedContextRoutes.has(normalizedRoute);
+    }
+
     _resolveVisibleContextRoute(route) {
         const normalizedRoute = String(route || '').trim();
         if (this._routeUsesContextMenu(normalizedRoute) && this._openContextRoutes.has(normalizedRoute)) {
@@ -428,6 +451,7 @@ class UIStore {
 
         this._captureContextMenuAnchor(normalizedRoute, visibleItems, { contextId: requestedId });
 
+        this._suppressedContextRoutes.delete(normalizedRoute);
         this._openContextRoutes.add(normalizedRoute);
         this._syncContextMenuForRoute(normalizedRoute);
 
@@ -448,8 +472,18 @@ class UIStore {
         const normalizedRoute = String(route || '').trim();
         if (!normalizedRoute) return false;
 
+        const currentVisibleContextRoute = this._resolveVisibleContextRoute(this.view.currentRoute);
+        const shouldMarkSuppressed = options.markSuppressed !== false
+            && this._routeUsesContextMenu(normalizedRoute)
+            && (normalizedRoute === this.view.currentRoute || normalizedRoute === currentVisibleContextRoute);
+
         const wasOpen = this._openContextRoutes.delete(normalizedRoute);
         this._contextMenuAnchors.delete(normalizedRoute);
+        if (shouldMarkSuppressed) {
+            this._suppressedContextRoutes.add(normalizedRoute);
+        } else {
+            this._suppressedContextRoutes.delete(normalizedRoute);
+        }
         if (this._contextAffinityRoute === normalizedRoute) {
             this._contextAffinityRoute = '';
         }
@@ -457,7 +491,6 @@ class UIStore {
             this._activeContextRoute = '';
         }
 
-        const currentVisibleContextRoute = this._resolveVisibleContextRoute(this.view.currentRoute);
         if (options.sync !== false
             && (normalizedRoute === this.view.currentRoute || currentVisibleContextRoute === normalizedRoute)) {
             this._syncContextMenuForRoute(this.view.currentRoute);
@@ -515,6 +548,9 @@ class UIStore {
             });
         }
 
+        if (route === this.view.currentRoute && this._shouldAutoOpenContextRoute(route)) {
+            this._openContextRoutes.add(route);
+        }
         const currentVisibleContextRoute = this._resolveVisibleContextRoute(this.view.currentRoute);
         if (route === this.view.currentRoute || route === currentVisibleContextRoute) {
             this._syncContextMenuForRoute(this.view.currentRoute);

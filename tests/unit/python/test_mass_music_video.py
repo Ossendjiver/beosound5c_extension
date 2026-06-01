@@ -221,7 +221,7 @@ class TestMassLibraryMenu:
         assert node["url"] == "playlist://library/98"
         assert node["tracks"][0]["url"] == "mass://track-one"
 
-    def test_normalize_renames_and_sorts_podcasts_root(self):
+    def test_normalize_renames_and_preserves_podcasts_root_order(self):
         source = _make_mass_source()
         tree = [
             {
@@ -237,7 +237,7 @@ class TestMassLibraryMenu:
         source._normalize_library_tree(tree)
 
         assert tree[0]["name"] == "Podcasts"
-        assert [item["name"] for item in tree[0]["tracks"]] == ["Alpha", "Zulu"]
+        assert [item["name"] for item in tree[0]["tracks"]] == ["Zulu", "Alpha"]
 
     def test_library_status_includes_podcasts(self):
         source = _make_mass_source()

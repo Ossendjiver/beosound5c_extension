@@ -33,6 +33,7 @@ import re
 import sys
 import urllib.parse
 import websockets
+from email.utils import parsedate_to_datetime
 from aiohttp import web, ClientSession, ClientTimeout
 
 # ── Path bootstrap ────────────────────────────────────────────────────────────
@@ -86,6 +87,8 @@ LEGACY_CACHE_FILE = "/home/thomas/beosound5c/web/json/mass_playlists.json"
 ART_CACHE_DIR    = "/media/local/cache/mass_art"
 ART_ROUTE_PREFIX = "/art"
 ART_FETCH_CONCURRENCY = 6
+PLAYLIST_CHILD_FETCH_CONCURRENCY = 8
+PODCAST_CHILD_FETCH_CONCURRENCY = 4
 PLAYBACK_PRE_KICK_ATTEMPTS = 1
 PLAYBACK_PRE_KICK_DELAY = 0.12
 PLAYBACK_POST_KICK_ATTEMPTS = 6
@@ -552,7 +555,10 @@ class MassSource(SourceBase):
         ):
             root_node = roots.get(root_id)
             if isinstance(root_node, dict):
-                root_node["tracks"] = self._sorted_nodes(root_node.get("tracks"))
+                if root_id == MASS_PODCASTS_ROOT_ID:
+                    root_node["tracks"] = list(root_node.get("tracks") or [])
+                else:
+                    root_node["tracks"] = self._sorted_nodes(root_node.get("tracks"))
                 if root_id == MASS_RADIO_ROOT_ID:
                     root_node["name"] = MASS_RADIO_ROOT_TITLE
                 elif root_id == MASS_MIXES_PLAYLIST_ROOT_ID:
@@ -809,6 +815,23 @@ class MassSource(SourceBase):
             )
         )
 
+    @staticmethod
+    def _provider_item_lookup_key(item_id="", provider="library"):
+        item_value = str(item_id or "").strip()
+        if not item_value:
+            return ""
+        provider_value = str(provider or "library").strip() or "library"
+        return f"{provider_value}::{item_value}"
+
+    @classmethod
+    def _item_provider_lookup_key(cls, item, default_provider="library"):
+        if not isinstance(item, dict):
+            return ""
+        return cls._provider_item_lookup_key(
+            item.get("item_id", ""),
+            item.get("provider", default_provider),
+        )
+
     def _build_playlist_folder_node(self, playlist, tracks, base, *, root_id="", root_name=""):
         playlist = playlist if isinstance(playlist, dict) else {}
         provider = str(playlist.get("provider") or MASS_MIXES_PLAYLIST_PROVIDER).strip() or MASS_MIXES_PLAYLIST_PROVIDER
@@ -869,6 +892,7 @@ class MassSource(SourceBase):
             provider=podcast.get("provider", "library"),
             provider_item_id=podcast.get("provider_item_id") or podcast.get("uri") or podcast.get("item_id"),
         )
+        sorted_episodes = self._sort_podcast_episodes(episodes)
         folder["tracks"] = [
             self._apply_media_identity(
                 self._make_leaf_node(
@@ -883,9 +907,64 @@ class MassSource(SourceBase):
                 provider=episode.get("provider", podcast.get("provider", "library")),
                 provider_item_id=episode.get("provider_item_id") or episode.get("uri") or episode.get("item_id"),
             )
-            for episode in (episodes or [])
+            for episode in sorted_episodes
         ]
-        return folder
+        latest_episode_dt = self._extract_item_datetime(sorted_episodes[0]) if sorted_episodes else None
+        latest_episode_ts = latest_episode_dt.timestamp() if latest_episode_dt else float("-inf")
+        return folder, latest_episode_ts
+
+    async def _fetch_child_item_lists(
+        self,
+        *,
+        items,
+        command,
+        media_label,
+        provider_default="library",
+        concurrency=4,
+    ):
+        keyed_items = {}
+        for item in items or []:
+            lookup_key = self._item_provider_lookup_key(item, provider_default)
+            if lookup_key and lookup_key not in keyed_items:
+                keyed_items[lookup_key] = item
+
+        if not keyed_items:
+            return {}
+
+        semaphore = asyncio.Semaphore(concurrency)
+        child_lists = {}
+
+        async def fetch_one(lookup_key, item):
+            item_id = str(item.get("item_id") or "").strip()
+            provider = str(item.get("provider") or provider_default).strip() or provider_default
+            try:
+                async with semaphore:
+                    child_lists[lookup_key] = await self.fetch_list(
+                        command,
+                        item_id=item_id,
+                        provider_instance_id_or_domain=provider,
+                    )
+            except Exception as e:
+                logger.error(
+                    "Error fetching MASS %s children for %s/%s via %s: %s",
+                    media_label,
+                    provider,
+                    item_id,
+                    command,
+                    e,
+                )
+                child_lists[lookup_key] = []
+
+        await asyncio.gather(
+            *(fetch_one(lookup_key, item) for lookup_key, item in keyed_items.items())
+        )
+        logger.info(
+            "Fetched MASS %s child payloads: parents=%d child_lists=%d",
+            media_label,
+            len(items or []),
+            len(child_lists),
+        )
+        return child_lists
 
     async def _fetch_bulk_music_library_items(self):
         artists = await self.fetch_paginated("music/artists/library_items")
@@ -898,6 +977,34 @@ class MassSource(SourceBase):
             len(songs),
         )
         return artists, albums, songs
+
+    async def _fetch_bulk_playlist_library_items(self):
+        playlists = await self.fetch_paginated("music/playlists/library_items")
+        logger.info("Fetched MASS bulk playlist payloads: playlists=%d", len(playlists))
+        return playlists
+
+    async def _fetch_bulk_playlist_track_lists(self, playlists):
+        return await self._fetch_child_item_lists(
+            items=playlists,
+            command="music/playlists/playlist_tracks",
+            media_label="playlist",
+            provider_default="library",
+            concurrency=PLAYLIST_CHILD_FETCH_CONCURRENCY,
+        )
+
+    async def _fetch_bulk_podcast_library_items(self):
+        podcasts = await self.fetch_paginated("music/podcasts/library_items")
+        logger.info("Fetched MASS bulk podcast payloads: podcasts=%d", len(podcasts))
+        return podcasts
+
+    async def _fetch_bulk_podcast_episode_lists(self, podcasts):
+        return await self._fetch_child_item_lists(
+            items=podcasts,
+            command="music/podcasts/podcast_episodes",
+            media_label="podcast",
+            provider_default="library",
+            concurrency=PODCAST_CHILD_FETCH_CONCURRENCY,
+        )
 
     def _build_bulk_music_roots(self, *, artists, albums, songs, base):
         tracks_by_album_id = {}
@@ -1044,6 +1151,48 @@ class MassSource(SourceBase):
                 artist_nodes.append(artist_node)
 
         return artist_nodes, albums_nodes, songs_nodes
+
+    def _build_bulk_playlist_roots(self, *, playlists, tracks_by_playlist_key, base):
+        playlist_nodes = []
+        mixes_playlist_root = None
+
+        for playlist in playlists or []:
+            lookup_key = self._item_provider_lookup_key(
+                playlist,
+                MASS_MIXES_PLAYLIST_PROVIDER,
+            )
+            tracks = tracks_by_playlist_key.get(lookup_key) or []
+            playlist_node = self._build_playlist_folder_node(playlist, tracks, base)
+            if not playlist_node["tracks"]:
+                continue
+            playlist_nodes.append(playlist_node)
+            if self._is_mixes_playlist(playlist):
+                mixes_playlist_root = self._build_playlist_folder_node(
+                    playlist,
+                    tracks,
+                    base,
+                    root_id=MASS_MIXES_PLAYLIST_ROOT_ID,
+                    root_name=MASS_MIXES_PLAYLIST_TITLE,
+                )
+
+        return playlist_nodes, mixes_playlist_root
+
+    def _build_bulk_podcast_roots(self, *, podcasts, episodes_by_podcast_key, base):
+        podcast_entries = []
+        for podcast in podcasts or []:
+            lookup_key = self._item_provider_lookup_key(podcast, "library")
+            episodes = episodes_by_podcast_key.get(lookup_key) or []
+            podcast_node, latest_episode_ts = self._build_podcast_folder_node(
+                podcast,
+                episodes,
+                base,
+            )
+            if podcast_node["tracks"]:
+                podcast_entries.append((latest_episode_ts, podcast_node))
+
+        podcast_entries.sort(key=lambda entry: str(entry[1].get("name") or "").lower())
+        podcast_entries.sort(key=lambda entry: entry[0], reverse=True)
+        return [podcast_node for _, podcast_node in podcast_entries]
 
     def _finalize_node(self, node):
         """
@@ -1250,24 +1399,16 @@ class MassSource(SourceBase):
 
             # ── 4. PLAYLISTS: Playlists → Playlist → Track ───────────────────
             try:
-                pls = await self.fetch_paginated("music/playlists/library_items")
-                for p in pls:
-                    trks = await self.fetch_list(
-                        "music/playlists/playlist_tracks",
-                        item_id=p.get('item_id'),
-                        provider_instance_id_or_domain=p.get("provider", "library"),
-                    )
-                    pl_node = self._build_playlist_folder_node(p, trks, base)
-                    if pl_node["tracks"]:
-                        playlists_root["tracks"].append(pl_node)
-                        if self._is_mixes_playlist(p):
-                            mixes_playlist_root = self._build_playlist_folder_node(
-                                p,
-                                trks,
-                                base,
-                                root_id=MASS_MIXES_PLAYLIST_ROOT_ID,
-                                root_name=MASS_MIXES_PLAYLIST_TITLE,
-                            )
+                playlists = await self._fetch_bulk_playlist_library_items()
+                playlist_tracks_by_key = await self._fetch_bulk_playlist_track_lists(playlists)
+                (
+                    playlists_root["tracks"],
+                    mixes_playlist_root,
+                ) = self._build_bulk_playlist_roots(
+                    playlists=playlists,
+                    tracks_by_playlist_key=playlist_tracks_by_key,
+                    base=base,
+                )
             except Exception as e:
                 logger.error(f"Error parsing playlists: {e}")
 
@@ -1300,16 +1441,13 @@ class MassSource(SourceBase):
 
             # Podcasts -> Podcast -> Episode
             try:
-                podcasts = await self.fetch_paginated("music/podcasts/library_items")
-                for podcast in podcasts:
-                    episodes = await self.fetch_list(
-                        "music/podcasts/podcast_episodes",
-                        item_id=podcast.get("item_id"),
-                        provider_instance_id_or_domain=podcast.get("provider", "library"),
-                    )
-                    podcast_node = self._build_podcast_folder_node(podcast, episodes, base)
-                    if podcast_node["tracks"]:
-                        podcasts_root["tracks"].append(podcast_node)
+                podcasts = await self._fetch_bulk_podcast_library_items()
+                podcast_episodes_by_key = await self._fetch_bulk_podcast_episode_lists(podcasts)
+                podcasts_root["tracks"] = self._build_bulk_podcast_roots(
+                    podcasts=podcasts,
+                    episodes_by_podcast_key=podcast_episodes_by_key,
+                    base=base,
+                )
             except Exception as e:
                 logger.error(f"Error parsing podcasts: {e}")
 
@@ -2706,6 +2844,75 @@ class MassSource(SourceBase):
             return str(year) if 1000 <= year <= 9999 else ""
         match = re.search(r"\b(19|20)\d{2}\b", str(value))
         return match.group(0) if match else ""
+
+    @classmethod
+    def _extract_item_datetime(cls, item):
+        value = cls._extract_first_scalar(
+            item,
+            (
+                "published_at",
+                "publish_date",
+                "published",
+                "release_date",
+                "date",
+                "timestamp",
+                "created_at",
+                "added_at",
+                "year",
+                "release_year",
+            ),
+        )
+        if value in (None, ""):
+            return None
+
+        if isinstance(value, (int, float)):
+            numeric = float(value)
+            if numeric <= 0:
+                return None
+            if numeric >= 1_000_000_000_000:
+                numeric /= 1000.0
+            if numeric >= 1_000_000_000:
+                return datetime.datetime.fromtimestamp(numeric, tz=datetime.timezone.utc)
+            year = int(numeric)
+            if 1000 <= year <= 9999:
+                return datetime.datetime(year, 1, 1, tzinfo=datetime.timezone.utc)
+            return None
+
+        text = str(value).strip()
+        if not text:
+            return None
+
+        normalized = text.replace("Z", "+00:00") if text.endswith("Z") else text
+        parsed = None
+        try:
+            parsed = datetime.datetime.fromisoformat(normalized)
+        except ValueError:
+            try:
+                parsed = parsedate_to_datetime(text)
+            except (TypeError, ValueError, IndexError):
+                match = re.search(r"\b(19|20)\d{2}\b", text)
+                if match:
+                    parsed = datetime.datetime(int(match.group(0)), 1, 1, tzinfo=datetime.timezone.utc)
+
+        if parsed is None:
+            return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=datetime.timezone.utc)
+        return parsed.astimezone(datetime.timezone.utc)
+
+    @classmethod
+    def _sort_podcast_episodes(cls, episodes):
+        entries = list(episodes or [])
+        dated = []
+        undated = []
+        for index, episode in enumerate(entries):
+            parsed = cls._extract_item_datetime(episode)
+            if parsed is None:
+                undated.append((index, episode))
+            else:
+                dated.append((parsed.timestamp(), index, episode))
+        dated.sort(key=lambda entry: (entry[0], -entry[1]), reverse=True)
+        return [episode for _, _, episode in dated] + [episode for _, episode in undated]
 
     @staticmethod
     def _coerce_duration_to_ms(value, *, assume_ms=False):
