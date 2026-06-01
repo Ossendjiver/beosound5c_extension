@@ -19,7 +19,6 @@ class UIStore {
         this._activeContextRoute = '';
         this._contextAffinityRoute = '';
         this._openContextRoutes = new Set();
-        this._suppressedContextRoutes = new Set();
         this._contextResetTimers = new Map();
         this._contextMenuAnchors = new Map();
 
@@ -69,17 +68,10 @@ class UIStore {
             if (previousRoute && previousRoute !== nextRoute && !preservePreviousContext) {
                 this._closeContextMenuForRoute(previousVisibleContextRoute || previousRoute, {
                     sync: false,
-                    markSuppressed: false,
                 });
-            }
-            if (nextUsesContextMenu) {
-                this._suppressedContextRoutes.delete(nextRoute);
             }
             if (nextUsesContextMenu && nextRoute !== previousVisibleContextRoute) {
                 this._openContextRoutes.delete(nextRoute);
-            }
-            if (this._shouldAutoOpenContextRoute(nextRoute)) {
-                this._openContextRoutes.add(nextRoute);
             }
             this._syncContextMenuForRoute(nextRoute);
             const shouldResetContextRoute = nextRoute
@@ -219,16 +211,6 @@ class UIStore {
         this.menu.renderMenuItems();
     }
 
-    _resolvePointerAngle() {
-        if (Number.isFinite(Number(this.wheelPointerAngle))) {
-            return Number(this.wheelPointerAngle);
-        }
-        if (window.LaserPositionMapper?.laserPositionToAngle && Number.isFinite(Number(this.laserPosition))) {
-            return Number(window.LaserPositionMapper.laserPositionToAngle(Number(this.laserPosition)));
-        }
-        return 180;
-    }
-
     _captureContextMenuAnchor(route, items, options = {}) {
         const normalizedRoute = String(route || '').trim();
         if (!normalizedRoute || !Array.isArray(items) || !items.length) return null;
@@ -269,29 +251,39 @@ class UIStore {
         const anchor = {
             route: normalizedRoute,
             anchorPath: String(anchorItem.path || '').trim(),
-            pointerAngle: this._resolvePointerAngle(),
         };
         const firstContextIndex = items.findIndex((item) => String(item.kind || '').trim() === 'context');
         const contextItems = items.filter((item) => String(item.kind || '').trim() === 'context');
         const anchorContextIndex = contextItems.findIndex((item) => String(item.path || '').trim() === anchor.anchorPath);
         if (firstContextIndex >= 0 && contextItems.length > 0 && anchorContextIndex >= 0) {
-            const step = Number(this.menu?.angleStep || window.Constants?.arc?.menuAngleStep || 5);
-            if (Number.isFinite(step) && step > 0) {
-                const totalSpan = step * Math.max(0, items.length - 1);
-                const fixedStartAngle = 180 - (totalSpan / 2);
-                const unclampedSlotIndex = Math.round((Number(anchor.pointerAngle) - fixedStartAngle) / step);
-                const targetSlotIndex = Math.max(firstContextIndex, Math.min(items.length - 1, unclampedSlotIndex));
-                const targetContextIndex = Math.max(0, Math.min(contextItems.length - 1, targetSlotIndex - firstContextIndex));
-                const rotateFromIndex = ((anchorContextIndex - targetContextIndex) % contextItems.length + contextItems.length) % contextItems.length;
-                anchor.orderedContextPaths = contextItems
-                    .slice(rotateFromIndex)
-                    .concat(contextItems.slice(0, rotateFromIndex))
-                    .map((item) => String(item.path || '').trim())
-                    .filter(Boolean);
-            }
+            const preferredSelectedSlotIndex = this._getPreferredContextMenuSlotIndex(normalizedRoute);
+            const targetSlotIndex = Math.max(firstContextIndex, Math.min(items.length - 1, preferredSelectedSlotIndex));
+            const targetContextIndex = Math.max(0, Math.min(contextItems.length - 1, targetSlotIndex - firstContextIndex));
+            const rotateFromIndex = ((anchorContextIndex - targetContextIndex) % contextItems.length + contextItems.length) % contextItems.length;
+            anchor.orderedContextPaths = contextItems
+                .slice(rotateFromIndex)
+                .concat(contextItems.slice(0, rotateFromIndex))
+                .map((item) => String(item.path || '').trim())
+                .filter(Boolean);
         }
         this._contextMenuAnchors.set(normalizedRoute, anchor);
         return anchor;
+    }
+
+    _getPreferredContextMenuSlotIndex(route) {
+        const normalizedRoute = String(route || '').trim();
+        // Live kiosk verification shows each source route reuses a fixed
+        // zero-based context slot that matches where its root selection needs
+        // to land under the parent pointer when LEFT opens the context arc.
+        const preferredSlotByRoute = {
+            'menu/mass': 1,
+            'menu/kodi': 2,
+            'menu/scenes': 5,
+        };
+        if (Number.isInteger(preferredSlotByRoute[normalizedRoute])) {
+            return preferredSlotByRoute[normalizedRoute];
+        }
+        return 1;
     }
 
     _orderContextMenuItems(route, items) {
@@ -392,18 +384,6 @@ class UIStore {
         return route === 'menu/playing';
     }
 
-    _routeHasContextMenuData(route) {
-        const context = this._contextMenusByRoute.get(String(route || '').trim());
-        return !!(context && Array.isArray(context.items) && context.items.length);
-    }
-
-    _shouldAutoOpenContextRoute(route) {
-        const normalizedRoute = String(route || '').trim();
-        return this._routeUsesContextMenu(normalizedRoute)
-            && this._routeHasContextMenuData(normalizedRoute)
-            && !this._suppressedContextRoutes.has(normalizedRoute);
-    }
-
     _resolveVisibleContextRoute(route) {
         const normalizedRoute = String(route || '').trim();
         if (this._routeUsesContextMenu(normalizedRoute) && this._openContextRoutes.has(normalizedRoute)) {
@@ -451,7 +431,6 @@ class UIStore {
 
         this._captureContextMenuAnchor(normalizedRoute, visibleItems, { contextId: requestedId });
 
-        this._suppressedContextRoutes.delete(normalizedRoute);
         this._openContextRoutes.add(normalizedRoute);
         this._syncContextMenuForRoute(normalizedRoute);
 
@@ -473,17 +452,8 @@ class UIStore {
         if (!normalizedRoute) return false;
 
         const currentVisibleContextRoute = this._resolveVisibleContextRoute(this.view.currentRoute);
-        const shouldMarkSuppressed = options.markSuppressed !== false
-            && this._routeUsesContextMenu(normalizedRoute)
-            && (normalizedRoute === this.view.currentRoute || normalizedRoute === currentVisibleContextRoute);
-
         const wasOpen = this._openContextRoutes.delete(normalizedRoute);
         this._contextMenuAnchors.delete(normalizedRoute);
-        if (shouldMarkSuppressed) {
-            this._suppressedContextRoutes.add(normalizedRoute);
-        } else {
-            this._suppressedContextRoutes.delete(normalizedRoute);
-        }
         if (this._contextAffinityRoute === normalizedRoute) {
             this._contextAffinityRoute = '';
         }
@@ -548,9 +518,6 @@ class UIStore {
             });
         }
 
-        if (route === this.view.currentRoute && this._shouldAutoOpenContextRoute(route)) {
-            this._openContextRoutes.add(route);
-        }
         const currentVisibleContextRoute = this._resolveVisibleContextRoute(this.view.currentRoute);
         if (route === this.view.currentRoute || route === currentVisibleContextRoute) {
             this._syncContextMenuForRoute(this.view.currentRoute);
