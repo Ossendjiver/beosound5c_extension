@@ -23,14 +23,15 @@
         /* Labels and inputs */
         label { display: block; color: #555; font-size: 12px; margin: 14px 0 5px; }
         label:first-of-type { margin-top: 0; }
-        input[type=text], input[type=number], input[type=password] {
+        input[type=text], input[type=number], input[type=password], textarea {
             background: #111; color: #eee; border: 1px solid #252525;
             border-radius: 8px; padding: 11px 12px; font-size: 15px;
             width: 100%; outline: none; font-family: inherit;
             -webkit-appearance: none; appearance: none;
         }
-        input[type=text]:focus, input[type=number]:focus { border-color: #0af; }
-        input::placeholder { color: #2a2a2a; }
+        textarea { resize: vertical; min-height: 82px; }
+        input[type=text]:focus, input[type=number]:focus, input[type=password]:focus, textarea:focus { border-color: #0af; }
+        input::placeholder, textarea::placeholder { color: #2a2a2a; }
         select {
             background: #111; color: #eee; border: 1px solid #252525;
             border-radius: 8px; padding: 11px 12px; font-size: 15px;
@@ -448,6 +449,7 @@ function render(cfg) {
         renderPlayer(cfg) +
         renderVolume(cfg) +
         renderHA(cfg) +
+        renderScreen(cfg) +
         renderSystemSettings(cfg) +
         renderMasterlink(cfg) +
         renderRadioFavorites(cfg) +
@@ -675,6 +677,50 @@ function renderHA(cfg) {
                 </div>
             </div>
         </div>
+    </div>`;
+}
+
+function formatEntityList(values) {
+    return Array.isArray(values) ? values.filter(Boolean).join('\n') : '';
+}
+
+function parseEntityList(raw) {
+    return Array.from(new Set(String(raw || '')
+        .split(/[\n,]+/)
+        .map(v => v.trim())
+        .filter(Boolean)));
+}
+
+function renderScreen(cfg) {
+    const screen = cfg.screen || {};
+    return `<div class="cfg-card">
+        <h2>Screen</h2>
+        <div class="row-2" style="margin-top:10px">
+            <div>
+                <label for="cfg-screen-immersive-delay">Immersive delay (seconds)</label>
+                <input id="cfg-screen-immersive-delay" type="number" min="0" value="${screen.immersive_delay_s ?? 180}">
+            </div>
+            <div>
+                <label for="cfg-screen-local-wake">Local input wake (seconds)</label>
+                <input id="cfg-screen-local-wake" type="number" min="0" value="${screen.local_input_wake_s ?? 30}">
+            </div>
+        </div>
+        <div class="row-2" style="margin-top:10px">
+            <div>
+                <label for="cfg-screen-presence-poll">Presence poll (seconds)</label>
+                <input id="cfg-screen-presence-poll" type="number" min="1" value="${screen.presence_poll_s ?? 5}">
+            </div>
+            <div>
+                <label for="cfg-screen-presence-off-delay">Presence off delay (seconds)</label>
+                <input id="cfg-screen-presence-off-delay" type="number" min="0" value="${screen.presence_off_delay_s ?? 600}">
+            </div>
+        </div>
+        <label for="cfg-screen-wake-entities">Wake entity IDs</label>
+        <textarea id="cfg-screen-wake-entities" rows="3" placeholder="One entity per line, e.g. binary_sensor.bs5c_macro">${esc(formatEntityList(screen.wake_entities))}</textarea>
+        <div class="hint">These Home Assistant binary sensors can wake the display even when nothing is playing. Use one entity per line.</div>
+        <label for="cfg-screen-presence-entities">Presence entity IDs</label>
+        <textarea id="cfg-screen-presence-entities" rows="4" placeholder="One entity per line">${esc(formatEntityList(screen.presence_entities))}</textarea>
+        <div class="hint">These Home Assistant binary sensors control display blanking while playback is active. Use one entity per line.</div>
     </div>`;
 }
 
@@ -1809,6 +1855,17 @@ function buildConfig() {
     cfg.home_assistant = cfg.home_assistant || {};
     cfg.home_assistant.url = document.getElementById('cfg-ha-url')?.value || '';
     cfg.home_assistant.webhook_url = document.getElementById('cfg-ha-webhook')?.value || '';
+    cfg.screen = cfg.screen || {};
+    const immersiveDelay = parseInt(document.getElementById('cfg-screen-immersive-delay')?.value);
+    cfg.screen.immersive_delay_s = Number.isFinite(immersiveDelay) ? immersiveDelay : 180;
+    const localInputWake = parseInt(document.getElementById('cfg-screen-local-wake')?.value);
+    cfg.screen.local_input_wake_s = Number.isFinite(localInputWake) ? localInputWake : 30;
+    const presencePoll = parseFloat(document.getElementById('cfg-screen-presence-poll')?.value);
+    cfg.screen.presence_poll_s = Number.isFinite(presencePoll) ? presencePoll : 5;
+    const presenceOffDelay = parseFloat(document.getElementById('cfg-screen-presence-off-delay')?.value);
+    cfg.screen.presence_off_delay_s = Number.isFinite(presenceOffDelay) ? presenceOffDelay : 600;
+    cfg.screen.wake_entities = parseEntityList(document.getElementById('cfg-screen-wake-entities')?.value);
+    cfg.screen.presence_entities = parseEntityList(document.getElementById('cfg-screen-presence-entities')?.value);
     const tm = document.getElementById('cfg-transport-mode')?.value;
     cfg.transport = cfg.transport || {}; cfg.transport.mode = tm;
     if (['mqtt','both'].includes(tm)) {

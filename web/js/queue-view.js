@@ -13,6 +13,7 @@
     let message = '';
     let confirm = null;
     let refreshTimer = null;
+    let pendingSelectionReveal = false;
 
     function itemId(item) {
         return item?.queue_item_id || item?.item_id || item?.id || `index:${item?.index ?? 0}`;
@@ -44,6 +45,23 @@
         message = '';
     }
 
+    function requestSelectionReveal() {
+        pendingSelectionReveal = true;
+    }
+
+    function revealSelectedItem() {
+        if (!pendingSelectionReveal || !container) return;
+        pendingSelectionReveal = false;
+        const selectedIndexSnapshot = selectedIndex;
+        requestAnimationFrame(() => {
+            if (!container) return;
+            const list = container.querySelector('.queue-view-list');
+            const selected = list?.querySelector(`.queue-view-item[data-index="${selectedIndexSnapshot}"]`)
+                || list?.querySelector('.queue-view-item.selected');
+            selected?.scrollIntoView({ block: 'nearest' });
+        });
+    }
+
     function render() {
         if (!container) return;
         const list = container.querySelector('.queue-view-list');
@@ -58,6 +76,7 @@
         if (!list) return;
         list.innerHTML = '';
         if (!items.length) {
+            pendingSelectionReveal = false;
             list.innerHTML = '<div class="queue-view-empty">Queue empty</div>';
             return;
         }
@@ -78,11 +97,13 @@
             `;
             row.addEventListener('click', () => {
                 selectedIndex = index;
+                requestSelectionReveal();
                 clearConfirm();
                 render();
             });
             list.appendChild(row);
         });
+        revealSelectedItem();
     }
 
     async function refresh() {
@@ -98,9 +119,12 @@
                 currentIndex = -1;
                 message = 'Queue unavailable';
             } else {
-                items = Array.isArray(data.tracks) ? data.tracks : [];
+                const nextItems = Array.isArray(data.tracks) ? data.tracks : [];
+                const nextSelectedIndex = Math.max(0, Math.min(selectedIndex, Math.max(0, nextItems.length - 1)));
+                if (nextSelectedIndex !== selectedIndex) requestSelectionReveal();
+                items = nextItems;
                 currentIndex = Number.isFinite(Number(data.current_index)) ? Number(data.current_index) : -1;
-                selectedIndex = Math.max(0, Math.min(selectedIndex, Math.max(0, items.length - 1)));
+                selectedIndex = nextSelectedIndex;
                 message = items.length ? '' : 'Queue empty';
             }
         } catch (error) {
@@ -160,6 +184,7 @@
         if (!items.length) return true;
         const delta = String(data?.direction || '').toLowerCase() === 'counter' ? -1 : 1;
         selectedIndex = Math.max(0, Math.min(items.length - 1, selectedIndex + delta));
+        requestSelectionReveal();
         clearConfirm();
         render();
         return true;
@@ -186,6 +211,7 @@
         busy = false;
         message = 'Loading queue...';
         confirm = null;
+        pendingSelectionReveal = true;
         render();
         void refresh();
         refreshTimer = setInterval(() => { void refresh(); }, 5000);

@@ -34,6 +34,20 @@
     "webhook_url": "http://homeassistant.local:8123/api/webhook/beosound5c"
   },
   "transport": { "mode": "webhook" },
+  "screen": {
+    "immersive_delay_s": 180,
+    "presence_poll_s": 5,
+    "presence_off_delay_s": 600,
+    "local_input_wake_s": 30,
+    "wake_entities": [
+      "binary_sensor.bs5c_macro"
+    ],
+    "presence_entities": [
+      "binary_sensor.lounge_hlk_presence_stable",
+      "binary_sensor.desk_room_presence",
+      "binary_sensor.dining_hlk_presence_stable"
+    ]
+  },
   "volume": {
     "type": "sonos",
     "host": "192.168.1.100",

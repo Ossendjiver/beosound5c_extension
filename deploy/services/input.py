@@ -46,13 +46,11 @@ SHOWING_RELAY_ID = 'showing'
 SHOWING_RELAY_ACTIVE_STATES = {'playing', 'paused', 'buffering'}
 SHOWING_RELAY_IDLE_STATES = {'', 'idle', 'unknown', 'off', 'standby', 'unavailable'}
 SCREEN_ACTIVE_PLAYBACK_STATES = {'playing', 'buffering', 'transitioning'}
-DEFAULT_SCREEN_PRESENCE_ENTITIES = [
-    'binary_sensor.lounge_hlk_presence_stable',
-    'binary_sensor.desk_room_presence',
-    'binary_sensor.dining_hlk_presence_stable',
-]
+DEFAULT_SCREEN_PRESENCE_ENTITIES = []
+DEFAULT_SCREEN_WAKE_ENTITIES = []
 DEFAULT_SCREEN_PRESENCE_POLL_SECONDS = 5.0
 DEFAULT_SCREEN_PRESENCE_OFF_DELAY_SECONDS = 600.0
+DEFAULT_SCREEN_LOCAL_INPUT_WAKE_SECONDS = 30.0
 
 # ——— Update management ———
 
@@ -116,9 +114,13 @@ def _new_screen_policy_state() -> dict:
         'all_off_since': None,
         'last_target': None,
         'last_reason': 'startup',
+        'last_local_input_at': 0.0,
         'last_playing': False,
         'last_presence': 'unknown',
         'last_presence_states': {},
+        'last_wake': 'unknown',
+        'last_wake_states': {},
+        'local_wake_until': 0.0,
         'last_tick_monotonic': 0.0,
     }
 
@@ -1282,16 +1284,24 @@ def _screen_config() -> dict:
     return configured if isinstance(configured, dict) else {}
 
 
-def _screen_presence_entities() -> list[str]:
-    raw = _screen_config().get('presence_entities', DEFAULT_SCREEN_PRESENCE_ENTITIES)
+def _screen_config_entities(key: str, defaults: list[str]) -> list[str]:
+    raw = _screen_config().get(key, defaults)
     if not isinstance(raw, list):
-        raw = DEFAULT_SCREEN_PRESENCE_ENTITIES
+        raw = defaults
     entities: list[str] = []
     for value in raw:
         entity_id = str(value or '').strip()
         if entity_id:
             entities.append(entity_id)
     return entities
+
+
+def _screen_presence_entities() -> list[str]:
+    return _screen_config_entities('presence_entities', DEFAULT_SCREEN_PRESENCE_ENTITIES)
+
+
+def _screen_wake_entities() -> list[str]:
+    return _screen_config_entities('wake_entities', DEFAULT_SCREEN_WAKE_ENTITIES)
 
 
 def _screen_presence_poll_interval_seconds() -> float:
@@ -1308,6 +1318,35 @@ def _screen_presence_off_delay_seconds() -> float:
     except (TypeError, ValueError):
         seconds = DEFAULT_SCREEN_PRESENCE_OFF_DELAY_SECONDS
     return max(0.0, seconds)
+
+
+def _screen_local_input_wake_seconds() -> float:
+    try:
+        seconds = float(_screen_config().get('local_input_wake_s', DEFAULT_SCREEN_LOCAL_INPUT_WAKE_SECONDS))
+    except (TypeError, ValueError):
+        seconds = DEFAULT_SCREEN_LOCAL_INPUT_WAKE_SECONDS
+    return max(0.0, seconds)
+
+
+def _screen_policy_local_input_active(now: float | None = None) -> bool:
+    if now is None:
+        now = time.monotonic()
+    return now < float(_screen_policy_state.get('local_wake_until') or 0.0)
+
+
+def _note_local_screen_activity(source: str = 'hid'):
+    hold_seconds = _screen_local_input_wake_seconds()
+    if hold_seconds <= 0:
+        return
+
+    now = time.monotonic()
+    _screen_policy_state['last_local_input_at'] = now
+    _screen_policy_state['local_wake_until'] = now + hold_seconds
+    logger.debug('Screen local wake hold -> %.1fs (%s)', hold_seconds, source)
+
+
+def _clear_local_screen_activity():
+    _screen_policy_state['local_wake_until'] = 0.0
 
 
 def _screen_policy_normalize_state(state) -> str:
@@ -1361,12 +1400,20 @@ def _screen_policy_presence_snapshot(states_by_entity: dict | None) -> dict:
 
 def _screen_policy_target_state(
     *,
+    local_input_active: bool,
+    wake_snapshot: dict,
     playing: bool,
     presence_snapshot: dict,
     all_off_since: float | None,
     now: float,
     off_delay_seconds: float,
 ) -> str | None:
+    if local_input_active:
+        return 'on'
+
+    if wake_snapshot.get('any_on'):
+        return 'on'
+
     if not playing:
         return 'off'
 
@@ -1389,12 +1436,18 @@ def _screen_policy_target_state(
 
 def _screen_policy_status_snapshot() -> dict:
     all_off_since = _screen_policy_state.get('all_off_since')
+    local_wake_until = float(_screen_policy_state.get('local_wake_until') or 0.0)
     now = time.monotonic()
     return {
         'applied_target': _screen_policy_state.get('applied_target'),
         'last_target': _screen_policy_state.get('last_target'),
         'last_reason': _screen_policy_state.get('last_reason'),
+        'local_input_active': _screen_policy_local_input_active(now),
+        'local_wake_for_s': round(max(0.0, local_wake_until - now), 1) if local_wake_until > now else None,
+        'local_input_wake_s': _screen_local_input_wake_seconds(),
         'playing': bool(_screen_policy_state.get('last_playing')),
+        'wake': _screen_policy_state.get('last_wake'),
+        'wake_states': dict(_screen_policy_state.get('last_wake_states') or {}),
         'presence': _screen_policy_state.get('last_presence'),
         'presence_states': dict(_screen_policy_state.get('last_presence_states') or {}),
         'all_off_for_s': round(max(0.0, now - all_off_since), 1) if all_off_since is not None else None,
@@ -1443,6 +1496,9 @@ async def _screen_policy_tick() -> str:
         return 'router_status_unavailable'
 
     playing = _screen_policy_router_is_playing(status)
+    local_input_active = _screen_policy_local_input_active(now)
+    wake_states = await _fetch_screen_presence_states(_screen_wake_entities())
+    wake_snapshot = _screen_policy_presence_snapshot(wake_states)
     presence_states = await _fetch_screen_presence_states(_screen_presence_entities())
     presence_snapshot = _screen_policy_presence_snapshot(presence_states)
 
@@ -1454,6 +1510,8 @@ async def _screen_policy_tick() -> str:
 
     off_delay_seconds = _screen_presence_off_delay_seconds()
     target = _screen_policy_target_state(
+        local_input_active=local_input_active,
+        wake_snapshot=wake_snapshot,
         playing=playing,
         presence_snapshot=presence_snapshot,
         all_off_since=_screen_policy_state.get('all_off_since'),
@@ -1461,7 +1519,11 @@ async def _screen_policy_tick() -> str:
         off_delay_seconds=off_delay_seconds,
     )
 
-    if not playing:
+    if local_input_active:
+        reason = 'local_input'
+    elif wake_snapshot.get('any_on'):
+        reason = 'wake_on'
+    elif not playing:
         reason = 'not_playing'
     elif not (presence_snapshot.get('states') or {}):
         reason = 'playing_no_presence_config'
@@ -1478,6 +1540,8 @@ async def _screen_policy_tick() -> str:
         'last_target': target,
         'last_reason': reason,
         'last_playing': playing,
+        'last_wake': wake_snapshot.get('state'),
+        'last_wake_states': dict(wake_snapshot.get('states') or {}),
         'last_presence': presence_snapshot.get('state'),
         'last_presence_states': dict(presence_snapshot.get('states') or {}),
         'last_tick_monotonic': now,
@@ -1524,11 +1588,13 @@ async def process_command(data: dict) -> dict:
 
     elif command == 'screen_off':
         logger.info('Turning screen OFF')
+        _clear_local_screen_activity()
         await _set_display_awake(False, power_audio=True)
         return {'status': 'ok', 'screen': 'off'}
 
     elif command == 'display_off':
         logger.info('Turning display OFF (panel only)')
+        _clear_local_screen_activity()
         await _set_display_awake(False)
         return {'status': 'ok', 'screen': 'off'}
 
@@ -2307,6 +2373,7 @@ def parse_report(rep: list, loop=None):
             go_press_started_at = time.time()
             go_long_sent = False
             _cancel_go_long_timer()
+            _note_local_screen_activity('hid_button:go_press')
             if loop is not None:
                 go_long_timer_handle = loop.call_later(GO_LONG_PRESS_TIME, _fire_go_long, loop)
             logger.debug("GO button pressed")
@@ -2339,6 +2406,10 @@ def parse_report(rep: list, loop=None):
                 logger.info("Power button action triggered")
                 toggle_backlight()
                 do_click()
+                if is_backlight_on():
+                    _note_local_screen_activity('hid_button:power_on')
+                else:
+                    _clear_local_screen_activity()
                 # Power off speakers when screen turns off (speakers power on via playback)
                 if not is_backlight_on():
                     try:
@@ -2351,6 +2422,11 @@ def parse_report(rep: list, loop=None):
                 btn_evt = {'button': 'power'}
             else:
                 logger.debug("Power button debounced (pressed too soon)")
+
+    if nav_evt or vol_evt:
+        _note_local_screen_activity('hid_rotary')
+    if btn_evt and btn_evt.get('button') != 'power':
+        _note_local_screen_activity(f"hid_button:{btn_evt.get('button')}")
 
     return nav_evt, vol_evt, btn_evt, laser_pos
 
@@ -2415,6 +2491,8 @@ def scan_loop(loop):
                             )
 
                     if first or laser_pos != last_laser:
+                        if not first and laser_pos != last_laser:
+                            _note_local_screen_activity('hid_laser')
                         asyncio.run_coroutine_threadsafe(
                             broadcast(json.dumps({'type':'laser','data':{'position':laser_pos}})),
                             loop
