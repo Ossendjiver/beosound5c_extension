@@ -40,11 +40,19 @@ BS5C_BASE_PATH = os.getenv('BS5C_BASE_PATH', os.path.dirname(os.path.dirname(os.
 
 ROUTER_BROADCAST_URL = ROUTER_BROADCAST
 ROUTER_MEDIA_URL = ROUTER_MEDIA
-ROUTER_STATUS_URL = router_url('/status')
+ROUTER_STATUS_URL = router_url('/router/status')
 
 SHOWING_RELAY_ID = 'showing'
 SHOWING_RELAY_ACTIVE_STATES = {'playing', 'paused', 'buffering'}
 SHOWING_RELAY_IDLE_STATES = {'', 'idle', 'unknown', 'off', 'standby', 'unavailable'}
+SCREEN_ACTIVE_PLAYBACK_STATES = {'playing', 'buffering', 'transitioning'}
+DEFAULT_SCREEN_PRESENCE_ENTITIES = [
+    'binary_sensor.lounge_hlk_presence_stable',
+    'binary_sensor.desk_room_presence',
+    'binary_sensor.dining_hlk_presence_stable',
+]
+DEFAULT_SCREEN_PRESENCE_POLL_SECONDS = 5.0
+DEFAULT_SCREEN_PRESENCE_OFF_DELAY_SECONDS = 600.0
 
 # ——— Update management ———
 
@@ -100,6 +108,22 @@ async def get_http_session():
     if _http_session is None or _http_session.closed:
         _http_session = ClientSession()
     return _http_session
+
+
+def _new_screen_policy_state() -> dict:
+    return {
+        'applied_target': None,
+        'all_off_since': None,
+        'last_target': None,
+        'last_reason': 'startup',
+        'last_playing': False,
+        'last_presence': 'unknown',
+        'last_presence_states': {},
+        'last_tick_monotonic': 0.0,
+    }
+
+
+_screen_policy_state = _new_screen_policy_state()
 
 # ——— track current "byte1" state (LED/backlight bits) ———
 state_byte1 = 0x00
@@ -177,6 +201,17 @@ def toggle_backlight():
     new_state = not current
     logger.info("Toggling backlight from %s to %s", current, new_state)
     set_backlight(new_state)
+
+
+async def _set_display_awake(on: bool, *, power_audio: bool = False):
+    """Control the panel backlight, optionally powering audio output down."""
+    set_backlight(bool(on))
+    if power_audio and not on:
+        try:
+            s = await get_http_session()
+            await s.post(ROUTER_OUTPUT_OFF, timeout=aiohttp.ClientTimeout(total=2))
+        except Exception:
+            pass
 
 def _emit_button_event(loop, button: str):
     """Broadcast a synthetic button event from the HID state machine."""
@@ -1247,6 +1282,238 @@ async def _forward_to_router(event_type: str, data: dict):
         logger.warning('Router broadcast %s failed: %s', event_type, e)
 
 
+def _screen_config() -> dict:
+    configured = cfg('screen', default={}) or {}
+    return configured if isinstance(configured, dict) else {}
+
+
+def _screen_presence_entities() -> list[str]:
+    raw = _screen_config().get('presence_entities', DEFAULT_SCREEN_PRESENCE_ENTITIES)
+    if not isinstance(raw, list):
+        raw = DEFAULT_SCREEN_PRESENCE_ENTITIES
+    entities: list[str] = []
+    for value in raw:
+        entity_id = str(value or '').strip()
+        if entity_id:
+            entities.append(entity_id)
+    return entities
+
+
+def _screen_presence_poll_interval_seconds() -> float:
+    try:
+        seconds = float(_screen_config().get('presence_poll_s', DEFAULT_SCREEN_PRESENCE_POLL_SECONDS))
+    except (TypeError, ValueError):
+        seconds = DEFAULT_SCREEN_PRESENCE_POLL_SECONDS
+    return max(1.0, seconds)
+
+
+def _screen_presence_off_delay_seconds() -> float:
+    try:
+        seconds = float(_screen_config().get('presence_off_delay_s', DEFAULT_SCREEN_PRESENCE_OFF_DELAY_SECONDS))
+    except (TypeError, ValueError):
+        seconds = DEFAULT_SCREEN_PRESENCE_OFF_DELAY_SECONDS
+    return max(0.0, seconds)
+
+
+def _screen_policy_normalize_state(state) -> str:
+    return str(state or '').strip().lower()
+
+
+def _screen_policy_state_is_playing(state) -> bool:
+    return _screen_policy_normalize_state(state) in SCREEN_ACTIVE_PLAYBACK_STATES
+
+
+def _screen_policy_router_is_playing(status: dict | None) -> bool:
+    status = status or {}
+    media_state = _screen_policy_normalize_state((status.get('media') or {}).get('state'))
+    if media_state:
+        return _screen_policy_state_is_playing(media_state)
+
+    active_source_id = str(status.get('active_source') or '').strip()
+    active_source = ((status.get('sources') or {}).get(active_source_id) or {})
+    return _screen_policy_state_is_playing(active_source.get('state'))
+
+
+def _screen_policy_presence_snapshot(states_by_entity: dict | None) -> dict:
+    normalized: dict[str, str] = {}
+    for entity_id, state in (states_by_entity or {}).items():
+        normalized_id = str(entity_id or '').strip()
+        if not normalized_id:
+            continue
+        normalized[normalized_id] = _screen_policy_normalize_state(state)
+
+    if not normalized:
+        return {
+            'state': 'unconfigured',
+            'known': False,
+            'any_on': False,
+            'all_off': False,
+            'states': {},
+        }
+
+    any_on = any(state == 'on' for state in normalized.values())
+    known = all(state in {'on', 'off'} for state in normalized.values())
+    all_off = known and all(state == 'off' for state in normalized.values())
+    state = 'on' if any_on else ('off' if all_off else 'unknown')
+    return {
+        'state': state,
+        'known': known,
+        'any_on': any_on,
+        'all_off': all_off,
+        'states': normalized,
+    }
+
+
+def _screen_policy_target_state(
+    *,
+    playing: bool,
+    presence_snapshot: dict,
+    all_off_since: float | None,
+    now: float,
+    off_delay_seconds: float,
+) -> str | None:
+    if not playing:
+        return 'off'
+
+    if not (presence_snapshot.get('states') or {}):
+        return 'on'
+
+    if presence_snapshot.get('any_on'):
+        return 'on'
+
+    if presence_snapshot.get('all_off'):
+        if off_delay_seconds <= 0:
+            return 'off'
+        if all_off_since is None:
+            return None
+        if now - all_off_since >= off_delay_seconds:
+            return 'off'
+
+    return None
+
+
+def _screen_policy_status_snapshot() -> dict:
+    all_off_since = _screen_policy_state.get('all_off_since')
+    now = time.monotonic()
+    return {
+        'applied_target': _screen_policy_state.get('applied_target'),
+        'last_target': _screen_policy_state.get('last_target'),
+        'last_reason': _screen_policy_state.get('last_reason'),
+        'playing': bool(_screen_policy_state.get('last_playing')),
+        'presence': _screen_policy_state.get('last_presence'),
+        'presence_states': dict(_screen_policy_state.get('last_presence_states') or {}),
+        'all_off_for_s': round(max(0.0, now - all_off_since), 1) if all_off_since is not None else None,
+        'poll_interval_s': _screen_presence_poll_interval_seconds(),
+        'off_delay_s': _screen_presence_off_delay_seconds(),
+    }
+
+
+async def _fetch_screen_presence_states(entities: list[str]) -> dict[str, str | None]:
+    if not entities:
+        return {}
+
+    ha_url = cfg('home_assistant', 'url', default='http://homeassistant.local:8123')
+    headers = _showing_ha_headers()
+    session = await get_http_session()
+
+    async def _fetch_one(entity_id: str) -> tuple[str, str | None]:
+        try:
+            async with session.get(
+                f'{ha_url}/api/states/{entity_id}',
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=2.0),
+            ) as resp:
+                if resp.status != 200:
+                    logger.debug('Screen presence fetch failed for %s (HTTP %d)', entity_id, resp.status)
+                    return entity_id, None
+                payload = await resp.json()
+                return entity_id, payload.get('state')
+        except Exception as e:
+            logger.debug('Screen presence fetch error for %s: %s', entity_id, e)
+            return entity_id, None
+
+    results = await asyncio.gather(*(_fetch_one(entity_id) for entity_id in entities))
+    return {entity_id: state for entity_id, state in results}
+
+
+async def _screen_policy_tick() -> str:
+    status = await _fetch_router_status_snapshot()
+    now = time.monotonic()
+    if status is None:
+        _screen_policy_state.update({
+            'last_target': None,
+            'last_reason': 'router_status_unavailable',
+            'last_tick_monotonic': now,
+        })
+        return 'router_status_unavailable'
+
+    playing = _screen_policy_router_is_playing(status)
+    presence_states = await _fetch_screen_presence_states(_screen_presence_entities())
+    presence_snapshot = _screen_policy_presence_snapshot(presence_states)
+
+    if presence_snapshot.get('all_off'):
+        if _screen_policy_state.get('all_off_since') is None:
+            _screen_policy_state['all_off_since'] = now
+    else:
+        _screen_policy_state['all_off_since'] = None
+
+    off_delay_seconds = _screen_presence_off_delay_seconds()
+    target = _screen_policy_target_state(
+        playing=playing,
+        presence_snapshot=presence_snapshot,
+        all_off_since=_screen_policy_state.get('all_off_since'),
+        now=now,
+        off_delay_seconds=off_delay_seconds,
+    )
+
+    if not playing:
+        reason = 'not_playing'
+    elif not (presence_snapshot.get('states') or {}):
+        reason = 'playing_no_presence_config'
+    elif presence_snapshot.get('any_on'):
+        reason = 'presence_on'
+    elif presence_snapshot.get('all_off'):
+        all_off_since = _screen_policy_state.get('all_off_since')
+        elapsed = 0.0 if all_off_since is None else max(0.0, now - all_off_since)
+        reason = 'presence_off_timeout' if off_delay_seconds <= 0 or elapsed >= off_delay_seconds else 'presence_off_grace'
+    else:
+        reason = 'presence_unknown'
+
+    _screen_policy_state.update({
+        'last_target': target,
+        'last_reason': reason,
+        'last_playing': playing,
+        'last_presence': presence_snapshot.get('state'),
+        'last_presence_states': dict(presence_snapshot.get('states') or {}),
+        'last_tick_monotonic': now,
+    })
+
+    if target is None:
+        return f'hold:{reason}'
+
+    if target == _screen_policy_state.get('applied_target'):
+        return f'unchanged:{target}:{reason}'
+
+    await _set_display_awake(target == 'on')
+    _screen_policy_state['applied_target'] = target
+    logger.info('Screen policy -> %s (%s)', target, reason)
+    return f'{target}:{reason}'
+
+
+async def _screen_policy_loop():
+    last_state = None
+    while True:
+        try:
+            state = await _screen_policy_tick()
+            if state != last_state:
+                logger.info('Screen policy: %s', state)
+                last_state = state
+        except Exception as e:
+            logger.warning('Screen policy error: %s', e)
+            last_state = 'error'
+        await asyncio.sleep(_screen_presence_poll_interval_seconds())
+
+
 async def process_command(data: dict) -> dict:
     """Process an incoming command (from HTTP webhook or MQTT).
 
@@ -1255,20 +1522,19 @@ async def process_command(data: dict) -> dict:
     command = data.get('command', '')
     params = data.get('params', {})
 
-    if command == 'screen_on':
+    if command in ('screen_on', 'display_on'):
         logger.info('Turning screen ON')
-        set_backlight(True)
+        await _set_display_awake(True)
         return {'status': 'ok', 'screen': 'on'}
 
     elif command == 'screen_off':
         logger.info('Turning screen OFF')
-        set_backlight(False)
-        # Also power off audio output (BeoLab 5 etc.)
-        try:
-            s = await get_http_session()
-            await s.post(ROUTER_OUTPUT_OFF, timeout=aiohttp.ClientTimeout(total=2))
-        except Exception:
-            pass
+        await _set_display_awake(False, power_audio=True)
+        return {'status': 'ok', 'screen': 'off'}
+
+    elif command == 'display_off':
+        logger.info('Turning display OFF (panel only)')
+        await _set_display_awake(False)
         return {'status': 'ok', 'screen': 'off'}
 
     elif command == 'screen_toggle':
@@ -1294,7 +1560,7 @@ async def process_command(data: dict) -> dict:
     elif command == 'wake':
         page = params.get('page', 'now_playing')
         logger.info('Waking up and showing: %s', page)
-        set_backlight(True)
+        await _set_display_awake(True)
         await _forward_to_router('navigate', {'page': page})
         return {'status': 'ok', 'screen': 'on', 'page': page}
 
@@ -1303,17 +1569,18 @@ async def process_command(data: dict) -> dict:
         # second timeouts; stay off the event loop.
         info = await asyncio.get_running_loop().run_in_executor(None, get_system_info)
         info['screen'] = 'on' if is_backlight_on() else 'off'
+        info['screen_policy'] = _screen_policy_status_snapshot()
         return {'status': 'ok', **info}
 
     elif command == 'next_screen':
         logger.info('Next screen')
-        set_backlight(True)
+        await _set_display_awake(True)
         await _forward_to_router('navigate', {'page': 'next'})
         return {'status': 'ok', 'action': 'next_screen'}
 
     elif command == 'prev_screen':
         logger.info('Previous screen')
-        set_backlight(True)
+        await _set_display_awake(True)
         await _forward_to_router('navigate', {'page': 'previous'})
         return {'status': 'ok', 'action': 'prev_screen'}
 
@@ -1324,7 +1591,7 @@ async def process_command(data: dict) -> dict:
         actions = params.get('actions', {})
 
         logger.info('Showing camera overlay: %s (%s)', title, camera_entity)
-        set_backlight(True)
+        await _set_display_awake(True)
         await _forward_to_router('camera_overlay', {
             'action': 'show',
             'title': title,
@@ -2226,7 +2493,8 @@ async def main():
     # Start HID scanning thread
     threading.Thread(target=scan_loop, args=(asyncio.get_running_loop(),), daemon=True).start()
 
-    # Turn screen on at startup so the display is always visible after boot
+    # Start with the display visible while services settle; the screen policy
+    # loop below will blank or wake it based on playback + presence.
     set_backlight(True)
 
     # Startup beacon (fire-and-forget, opt-out via NO_TELEMETRY file)
@@ -2234,6 +2502,7 @@ async def main():
 
     # Backend SHOWING relay: feed idle PLAYING/immersive from the configured entity.
     _background_tasks.spawn(_showing_relay_loop(), name="showing_relay")
+    _background_tasks.spawn(_screen_policy_loop(), name="screen_policy")
 
     # Start systemd watchdog heartbeat
     asyncio.create_task(watchdog_loop())

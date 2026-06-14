@@ -53,7 +53,8 @@ from lib.correlation import install_logging
 from lib.endpoints import INPUT_LED_PULSE, ROUTER_EVENT
 from lib.loop_monitor import LoopMonitor
 from lib.masterlink_link import LinkRole
-from lib.masterlink_master import MasterRole
+from lib.masterlink_common import forward_to_router
+from lib.masterlink_master import ML_SOURCE_LABELS, ML_SOURCE_TO_ACTION, MasterRole
 from lib.masterlink_provider import (
     PC2_SESSION_AUDIO,
     PC2_SESSION_ML,
@@ -134,9 +135,10 @@ VOL_DEFAULT = int(cfg("volume", "default", default=30))
 #       Receives sources, decodes track metadata for the UI.  Handler:
 #       lib/masterlink_link.LinkRole.
 #
-#   (5) Passive / none role — keep IR decoding + mixer HTTP, but don't claim
-#       audio-master on the ML bus or answer source requests.  Useful when ML
-#       should not compete with external HA / MLGW / A.AUX routing.
+#   (5) Passive / none role — true no-bus mode. Keep the HTTP side alive
+#       (tone endpoints etc.) but do not open/init the PC2, do not set an
+#       address filter, and do not participate in ML traffic at all. Useful
+#       when ML should not compete with external HA / MLGW / A.AUX routing.
 #
 # Roles 2/3/4/5 are mutually exclusive — pick exactly one via masterlink.role.
 # IR decoding (1) runs alongside whichever role is selected.  Outstanding
@@ -153,6 +155,11 @@ ML_PROVIDER_NMUSIC = _ML_PROVIDER.get("nmusic_source", "") or ""
 ML_PROVIDER_NRADIO = _ML_PROVIDER.get("nradio_source", "") or ""
 ML_LINK_SOURCES = (_ML_CFG.get("link") or {}).get("sources") or []
 
+_VIDEO_SOURCE_ACTIONS = {
+    "tv", "v.aux", "vmem", "dvd", "dtv", "pc", "youtube", "doorcam",
+    "photo", "usb2", "media", "camera", "text",
+}
+
 # Message processing settings
 MESSAGE_TIMEOUT = 2.0  # Discard messages older than 2 seconds
 DEDUP_COMMANDS = ["volup", "voldown", "left", "right"]  # Commands to deduplicate
@@ -162,20 +169,86 @@ sys.stdout.reconfigure(line_buffering=True)
 
 
 class PassiveRole:
-    """Passive ML mode: keep IR decoding and mixer HTTP, but do not handle
-    ML telegrams or claim audio-master behaviour in software."""
+    """Passive ML mode: no ML bus participation in software.
+
+    When ``masterlink.role = none`` we should not see telegrams at all,
+    because the PC2 bring-up path is skipped. This role remains as a safe
+    no-op fallback for any code paths that still consult ``self._role``.
+    """
 
     def __init__(self, pc2):
         self.pc2 = pc2
+        self._last_forwarded_action = None
+        self._last_forwarded_at = 0.0
 
     def start(self, loop):
-        logger.info("ML passive role: IR/mixer only, ML telegram handling disabled")
+        logger.info("ML passive role: no ML bus participation")
 
     def handle_telegram(self, ttype, ptype, src_node, dest_node, src_src, payload):
+        if ttype == 0x14 and ptype == 0x87:
+            self._forward_status_info(src_node, src_src, payload)
+            return
         logger.debug(
             "ML passive role: ignoring telegram src=0x%02X dest=0x%02X t=0x%02X p=0x%02X",
             src_node, dest_node, ttype, ptype,
         )
+
+    def _forward_status_info(self, src_node, src_src, payload):
+        """Mirror source announcements to the router without claiming ML.
+
+        Passive mode should not answer or assert anything on the bus, but we
+        still want HA routing to see the externally selected source. The
+        broadcast STATUS_INFO packets from real masters are the cleanest signal:
+        they say what source is actually active without requiring us to claim
+        SOURCE_CENTER ownership.
+        """
+        source_id = src_src or (payload[0] if payload else 0)
+        action = ML_SOURCE_TO_ACTION.get(source_id)
+        if not action or not self.pc2.session:
+            return
+
+        now = time.monotonic()
+        if action == self._last_forwarded_action and (now - self._last_forwarded_at) < 1.5:
+            logger.debug(
+                "ML passive role: dedupe source status 0x%02X (%s) from 0x%02X",
+                source_id, action, src_node,
+            )
+            return
+
+        self._last_forwarded_action = action
+        self._last_forwarded_at = now
+        device_type = "Video" if action in _VIDEO_SOURCE_ACTIONS else "Audio"
+        source_label = ML_SOURCE_LABELS.get(source_id, f"0x{source_id:02X}")
+        link_name = self.pc2.node_label(src_node)
+        logger.info(
+            "ML passive role: forward STATUS_INFO source=0x%02X (%s) from %s as %s (%s)",
+            source_id, source_label, link_name, action, device_type,
+        )
+        self._schedule_router_forward(
+            forward_to_router(
+                self.pc2.session,
+                source="masterlink",
+                action=action,
+                device_type=device_type,
+                link=link_name,
+            ),
+            name=f"passive_status_{action}",
+        )
+
+    def _schedule_router_forward(self, coro, *, name):
+        """Run a router-forward coroutine on the sender loop.
+
+        ML telegrams are decoded on the USB sniff thread, which has no current
+        asyncio loop. Hand off to the sender loop when available; fall back to
+        the current-thread task tracker in tests.
+        """
+        loop = getattr(self.pc2, "loop", None)
+        if loop:
+            async def _spawn():
+                self.pc2._background_tasks.spawn(coro, name=name)
+            asyncio.run_coroutine_threadsafe(_spawn(), loop)
+            return
+        self.pc2._background_tasks.spawn(coro, name=name)
 
 class MessageQueue:
     """Thread-safe queue with lossy behavior and deduplication."""
@@ -295,6 +368,7 @@ class PC2Device:
         self.dev = None
         self.running = False
         self.connected = False
+        self._ml_bus_enabled = (ML_ROLE != "none")
         self.message_queue = MessageQueue()
         self.sniffer_thread = None
         self.sender_thread = None
@@ -375,6 +449,9 @@ class PC2Device:
 
     def _reconnect(self):
         """Try to reconnect to the PC2 device with exponential backoff."""
+        if not self._ml_bus_enabled:
+            logger.info("PC2 reconnect skipped: ML bus disabled for role=%s", ML_ROLE)
+            return False
         self._release_device()
         delay = self.RECONNECT_BASE_DELAY
 
@@ -405,6 +482,10 @@ class PC2Device:
 
     def send_message(self, message):
         """Send a message to the device"""
+        if not self.dev or not self.connected:
+            logger.warning("Ignoring PC2 message while device is unavailable: %s",
+                           " ".join([f"{x:02X}" for x in message]))
+            return
         telegram = [0x60, len(message)] + list(message) + [0x61]
         logger.debug("Sending: %s", " ".join([f"{x:02X}" for x in telegram]))
         self.dev.write(self.EP_OUT, telegram, 0)
@@ -429,15 +510,19 @@ class PC2Device:
         self.running = True
         self.loop = asyncio.new_event_loop()
 
-        self.sniffer_thread = threading.Thread(target=self._sniff_loop)
-        self.sniffer_thread.daemon = True
-        self.sniffer_thread.start()
+        if self._ml_bus_enabled:
+            self.sniffer_thread = threading.Thread(target=self._sniff_loop)
+            self.sniffer_thread.daemon = True
+            self.sniffer_thread.start()
 
         self.sender_thread = threading.Thread(target=self._sender_loop_wrapper)
         self.sender_thread.daemon = True
         self.sender_thread.start()
 
-        logger.info("USB message sniffer and sender threads started")
+        if self._ml_bus_enabled:
+            logger.info("USB message sniffer and sender threads started")
+        else:
+            logger.info("Sender thread started (ML bus disabled)")
 
     def _sniff_loop(self):
         """Background thread to continuously read USB messages and add to queue.
@@ -1619,15 +1704,20 @@ if __name__ == "__main__":
         pc2.sniff_mode = ml_sniff
         # PC2 dongle is optional — devices without it (e.g. Sonos-only setups
         # like Church) still need masterlink running for the mixer HTTP API
-        # (tone controls). If open() fails we skip init/filter, but still
-        # start_sniffing() so the sender thread boots the mixer HTTP and the
-        # sniffer thread enters its reconnect loop in case a PC2 appears later.
-        try:
-            pc2.open()
-            pc2_ready = True
-        except Exception as e:
-            logger.warning("PC2 open failed: %s — running tone API only; "
-                           "sniffer will retry in background", e)
+        # (tone controls). In true passive ``role=none`` mode we intentionally
+        # do not touch the PC2 at all: no open(), no init(), no address-filter,
+        # and no reconnect loop. That keeps the BS5c fully off the ML bus.
+        if pc2._ml_bus_enabled:
+            try:
+                pc2.open()
+                pc2_ready = True
+            except Exception as e:
+                logger.warning("PC2 open failed: %s — running tone API only; "
+                               "sniffer will retry in background", e)
+                pc2_ready = False
+        else:
+            logger.info("Skipping PC2 open/init/filter: ML bus disabled for role=%s",
+                        ML_ROLE)
             pc2_ready = False
 
         pc2.start_sniffing()
@@ -1684,7 +1774,10 @@ if __name__ == "__main__":
                 else:
                     print(f"Unknown command: {cmd}")
         else:
-            logger.info("Device initialized. Sniffing USB messages... (Ctrl+C to exit)")
+            if pc2._ml_bus_enabled:
+                logger.info("Device initialized. Sniffing USB messages... (Ctrl+C to exit)")
+            else:
+                logger.info("Service initialized with ML bus disabled. HTTP/tone endpoints only. (Ctrl+C to exit)")
             while True:
                 time.sleep(1)
 

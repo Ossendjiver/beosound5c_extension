@@ -83,6 +83,62 @@
             transform: translateX(-50%) translateY(0);
         }
 
+        .touch-nav-rail {
+            position: fixed;
+            right: 16px;
+            bottom: 16px;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            z-index: 3900;
+        }
+
+        .touch-nav-wheel,
+        .touch-nav-actions {
+            display: grid;
+            gap: 8px;
+        }
+
+        .touch-nav-actions {
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+
+        .touch-nav-btn {
+            min-width: 74px;
+            min-height: 44px;
+            border: 1px solid rgba(255, 255, 255, 0.16);
+            border-radius: 16px;
+            background: rgba(10, 10, 10, 0.84);
+            box-shadow: 0 16px 36px rgba(0, 0, 0, 0.34);
+            backdrop-filter: blur(14px);
+            color: #f8fbff;
+            font: 600 11px/1 Arial, sans-serif;
+            letter-spacing: 1.1px;
+            text-transform: uppercase;
+            cursor: pointer;
+            touch-action: manipulation;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        .touch-nav-btn:active {
+            background: rgba(80, 140, 255, 0.28);
+            border-color: rgba(148, 199, 255, 0.42);
+        }
+
+        .touch-nav-btn:disabled {
+            opacity: 0.42;
+            cursor: default;
+        }
+
+        .touch-nav-btn:disabled:active {
+            background: rgba(10, 10, 10, 0.84);
+            border-color: rgba(255, 255, 255, 0.16);
+        }
+
+        .touch-nav-btn--nav {
+            min-height: 40px;
+        }
+
         .options-view {
             position: absolute;
             inset: 0;
@@ -476,6 +532,95 @@
             actionToastState.hideTimer = setTimeout(hideActionToast, waitMs);
         };
 
+        const TOUCH_NAV_STEP_SPEED = 20;
+        const touchUiEnabled = (() => {
+            try {
+                return /(?:\?|&)touch=1(?:&|$)/.test(window.location.search)
+                    || window.matchMedia?.('(pointer: coarse)')?.matches
+                    || window.matchMedia?.('(hover: none)')?.matches
+                    || Number(window.navigator?.maxTouchPoints || 0) > 0;
+            } catch (_error) {
+                return false;
+            }
+        })();
+        let touchNavArcList = null;
+
+        const bindTouchRailPress = (element, handler) => {
+            if (!element || typeof handler !== 'function') return;
+            let lastPointerPressAt = 0;
+            const run = (event) => {
+                if (element.disabled || Date.now() - lastPointerPressAt < 120) {
+                    event.preventDefault();
+                    return;
+                }
+                event.preventDefault();
+                lastPointerPressAt = Date.now();
+                handler();
+            };
+            if (window.PointerEvent) {
+                element.addEventListener('pointerup', run);
+            }
+            element.addEventListener('touchend', run, { passive: false });
+            element.addEventListener('click', (event) => {
+                if (element.disabled || Date.now() - lastPointerPressAt < 450) {
+                    event.preventDefault();
+                    return;
+                }
+                event.preventDefault();
+                handler();
+            });
+        };
+
+        const updateTouchNavRailState = () => {
+            const rail = document.getElementById('touch-nav-rail');
+            if (!rail) return;
+            const isReady = Boolean(touchNavArcList);
+            rail.querySelectorAll('[data-touch-action]').forEach((button) => {
+                button.disabled = !isReady;
+            });
+        };
+
+        const ensureTouchNavRail = () => {
+            if (!touchUiEnabled || document.getElementById('touch-nav-rail')) return;
+
+            const rail = document.createElement('div');
+            rail.id = 'touch-nav-rail';
+            rail.className = 'touch-nav-rail';
+            rail.innerHTML = `
+                <div class="touch-nav-wheel">
+                    <button type="button" class="touch-nav-btn touch-nav-btn--nav" data-touch-action="up">Up</button>
+                    <button type="button" class="touch-nav-btn touch-nav-btn--nav" data-touch-action="down">Down</button>
+                </div>
+                <div class="touch-nav-actions">
+                    <button type="button" class="touch-nav-btn" data-touch-action="open">Open</button>
+                    <button type="button" class="touch-nav-btn" data-touch-action="play">Play</button>
+                    <button type="button" class="touch-nav-btn" data-touch-action="back">Back</button>
+                    <button type="button" class="touch-nav-btn" data-touch-action="more">More</button>
+                </div>
+            `;
+            document.body.appendChild(rail);
+
+            const actionMap = {
+                up: () => touchNavArcList?.handleNavFromParent?.({ direction: 'counter', speed: TOUCH_NAV_STEP_SPEED }),
+                down: () => touchNavArcList?.handleNavFromParent?.({ direction: 'clock', speed: TOUCH_NAV_STEP_SPEED }),
+                open: () => touchNavArcList?.handleButtonFromParent?.('left'),
+                play: () => touchNavArcList?.handleButtonFromParent?.('go'),
+                back: () => touchNavArcList?.handleButtonFromParent?.('right'),
+                more: () => touchNavArcList?.handleButtonFromParent?.('go_hold'),
+            };
+
+            rail.querySelectorAll('[data-touch-action]').forEach((button) => {
+                const actionId = String(button.dataset.touchAction || '').trim();
+                bindTouchRailPress(button, () => actionMap[actionId]?.());
+            });
+            updateTouchNavRailState();
+        };
+
+        const attachTouchNavArcList = (arcList) => {
+            touchNavArcList = arcList || null;
+            updateTouchNavRailState();
+        };
+
         async function loadStaticLibrary() {
             const raw = await fetchJson(STATIC_CACHE_URL, {
                 timeoutMs: 2500,
@@ -509,6 +654,7 @@
         // Boot sequence
         // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         document.addEventListener('DOMContentLoaded', async () => {
+            ensureTouchNavRail();
             const MASS_URL = getServiceUrl('massServiceUrl', 8783);
             const cachedLibrary = await loadStaticLibrary();
 
@@ -898,6 +1044,7 @@
             };
 
             const arcList = new ArcList(massConfig);
+            attachTouchNavArcList(arcList);
 
             // â”€â”€ Stash original methods before override â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
             const folderStack = [];

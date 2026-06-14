@@ -459,6 +459,14 @@
             applyMusicVideoPreference();
         });
 
+        document.addEventListener('bs5c:immersive-visibility', function(e) {
+            if (e.detail.visible) {
+                setTimeout(function() { tryStartCycle(); }, 200);
+            } else {
+                stopCycle();
+            }
+        });
+
         // Update text mirror when metadata changes during video
         document.addEventListener('bs5c:media-text-updated', function() {
             if (active) syncTextMirror();
@@ -471,6 +479,12 @@
 
         // Menu open → pause cycle; menu close → resume
         document.addEventListener('bs5c:menu-visibility', function(e) {
+            if (window.ImmersiveMode && window.ImmersiveMode.active) {
+                if (!e.detail.visible) {
+                    setTimeout(function() { tryStartCycle(); }, 200);
+                }
+                return;
+            }
             if (e.detail.visible) {
                 stopCycle();
             } else {
@@ -480,10 +494,10 @@
 
         // View change — stop when leaving now playing
         document.addEventListener('bs5c:view-change', function(e) {
-            if (e.detail.to !== 'menu/playing') {
+            if (e.detail.to !== 'menu/playing' && !(window.ImmersiveMode && window.ImmersiveMode.active)) {
                 stopCycle();
             }
-            if (e.detail.to === 'menu/playing') {
+            if (e.detail.to === 'menu/playing' || (window.ImmersiveMode && window.ImmersiveMode.active)) {
                 var info = uiStore.mediaInfo;
                 if (info) {
                     if (info.canvas_url)       canvasUrl = info.canvas_url;

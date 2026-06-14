@@ -121,6 +121,44 @@
       "additionalProperties": false
     },
 
+    "screen": {
+      "type": "object",
+      "description": "Display blanking + immersive policy. The frontend uses immersive_delay_s; beo-input uses the presence sensors and blanking timers.",
+      "properties": {
+        "immersive_delay_s": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Seconds of user inactivity before the immersive now-playing overlay appears while media is actively playing.",
+          "default": 180
+        },
+        "presence_poll_s": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Seconds between Home Assistant presence checks for display blanking/wake decisions.",
+          "default": 5
+        },
+        "presence_off_delay_s": {
+          "type": "number",
+          "minimum": 0,
+          "description": "How long all configured presence sensors must stay off before the display blanks while something is still playing.",
+          "default": 600
+        },
+        "presence_entities": {
+          "type": "array",
+          "description": "Home Assistant binary_sensor entity IDs used for display presence. The screen wakes only when at least one of these sensors is on and playback is active.",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "binary_sensor.lounge_hlk_presence_stable",
+            "binary_sensor.desk_room_presence",
+            "binary_sensor.dining_hlk_presence_stable"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+
     "volume": {
       "type": "object",
       "description": "Volume output adapter configuration. Each BS5c has one audio output controlled by a pluggable volume adapter.",

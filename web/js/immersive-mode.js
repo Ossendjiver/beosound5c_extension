@@ -1,391 +1,273 @@
 (function() {
     'use strict';
 
-    // ── Configuration ──
-    const IDLE_TIMEOUT = 30000;       // 30s inactivity before immersive
-    const ARTWORK_MS = 600;           // transition duration for idle enter/exit
-    const OVERLAY_ANGLE_START = 200;  // laser angle where immersive starts
-    const OVERLAY_ANGLE_END = 210;    // laser angle where immersive is fully active
-    const OVERLAY_RANGE = OVERLAY_ANGLE_END - OVERLAY_ANGLE_START; // 10 degrees
+    const DEFAULT_IMMERSIVE_DELAY_MS = 180000;
+    const ACTIVE_PLAYBACK_STATES = new Set(['playing', 'buffering', 'transitioning']);
 
-    // Transform targets at full immersive (progress = 1)
-    const TX = -243, TY = 50, SCALE_EXTRA = 0.21;
-
-    // ── State ──
-    let progress = 0;           // 0 = normal, 1 = fully immersive
     let idleTimer = null;
-    let isTracking = false;     // true while laser is actively driving progress
+    let overlayVisible = false;
+    let overlayRoot = null;
     let lastOverlayText = { title: '', artist: '', album: '' };
-    let transitionCleanup = null;  // setTimeout ID for post-transition cleanup
+    let lastPlaybackActive = false;
 
-    function isFullyImmersive() { return progress >= 1; }
-    function isPartiallyImmersive() { return progress > 0; }
-
-    // ── Playback state check ──
-    function isPlaying() {
-        const state = window.uiStore?.mediaInfo?.state;
-        return state === 'playing' || state === 'TRANSITIONING';
+    function normalizePlaybackState(state) {
+        return String(state || '').trim().toLowerCase();
     }
 
-    // ── DOM helpers ──
+    function immersiveDelayMs() {
+        const seconds = Number(window.AppConfig?.screen?.immersiveDelaySeconds || 0);
+        if (Number.isFinite(seconds) && seconds > 0) {
+            return Math.max(5000, seconds * 1000);
+        }
+        return DEFAULT_IMMERSIVE_DELAY_MS;
+    }
 
-    function getContainer() {
-        return document.getElementById('now-playing');
+    function mediaInfo() {
+        return window.uiStore?.mediaInfo || {};
+    }
+
+    function isPlaybackActive() {
+        return ACTIVE_PLAYBACK_STATES.has(normalizePlaybackState(mediaInfo().state));
+    }
+
+    function shouldArmImmersive() {
+        if (!isPlaybackActive()) return false;
+        if (window.CameraOverlayManager?.isActive) return false;
+        const splash = document.getElementById('splash-overlay');
+        if (splash && !splash.classList.contains('hidden')) return false;
+        return true;
     }
 
     function ensureOverlay() {
-        const container = getContainer();
-        if (!container) return null;
-        let el = container.querySelector('.immersive-info');
-        if (!el) {
-            el = document.createElement('div');
-            el.className = 'immersive-info';
-            el.innerHTML =
-                '<div class="immersive-info-title"></div>' +
-                '<div class="immersive-info-artist"></div>' +
-                '<div class="immersive-info-album"></div>';
-            container.appendChild(el);
-        }
-        return el;
+        if (overlayRoot) return overlayRoot;
+
+        overlayRoot = document.createElement('div');
+        overlayRoot.id = 'immersive-overlay';
+        overlayRoot.setAttribute('aria-hidden', 'true');
+        overlayRoot.innerHTML = [
+            '<div class="immersive-vignette"></div>',
+            '<div class="immersive-shell">',
+            '  <div class="immersive-artwork-slot">',
+            '    <img class="immersive-artwork" alt="">',
+            '  </div>',
+            '  <div class="immersive-info">',
+            '    <div class="immersive-info-title"></div>',
+            '    <div class="immersive-info-artist"></div>',
+            '    <div class="immersive-info-album"></div>',
+            '  </div>',
+            '</div>'
+        ].join('');
+        document.body.appendChild(overlayRoot);
+        return overlayRoot;
     }
-
-    // ── Apply visual state from progress value ──
-
-    function applyProgress(p) {
-        const container = getContainer();
-        if (!container) return;
-
-        const artwork = container.querySelector('.media-view-artwork');
-        const info = container.querySelector('.media-view-info');
-        const overlay = ensureOverlay();
-
-        if (p <= 0) {
-            // Fully normal
-            container.classList.remove('immersive-active');
-            if (artwork) artwork.style.transform = '';
-            if (info) { info.style.opacity = ''; info.style.pointerEvents = ''; }
-            if (overlay) overlay.style.opacity = '0';
-            return;
-        }
-
-        // Partially or fully immersive
-        container.classList.add('immersive-active');
-
-        // Artwork transform: interpolate from identity to full immersive
-        if (artwork) {
-            artwork.style.transform = `translate(${TX * p}px, ${TY * p}px) scale(${1 + SCALE_EXTRA * p})`;
-        }
-
-        // Info fades out in the first half of progress
-        if (info) {
-            const infoOpacity = Math.max(0, 1 - p * 2);
-            info.style.opacity = String(infoOpacity);
-            info.style.pointerEvents = infoOpacity < 0.1 ? 'none' : '';
-        }
-
-        // Sync overlay text just before it becomes visible
-        if (p > 0.4) {
-            syncOverlayText(false);
-        }
-
-        // Overlay fades in during the second half of progress
-        if (overlay) {
-            const overlayOpacity = p > 0.5 ? (p - 0.5) * 2 : 0;
-            overlay.style.opacity = String(overlayOpacity);
-        }
-    }
-
-    // ── Canvas / music-video indicator dots ──
 
     function syncOverlayDots() {
         const overlay = ensureOverlay();
-        if (!overlay) return;
-        const mi = window.uiStore && window.uiStore.mediaInfo;
+        const info = mediaInfo();
+        const titleEl = overlay.querySelector('.immersive-info-title');
+        const artistEl = overlay.querySelector('.immersive-info-artist');
         const musicVideoEnabled = !window.MusicVideoPreference
             || window.MusicVideoPreference.enabled !== false;
-        const hasCanvas = !!(mi && mi.canvas_url);
-        const hasVideo  = musicVideoEnabled && !!(mi && mi.music_video_url);
-        const titleEl  = overlay.querySelector('.immersive-info-title');
-        const artistEl = overlay.querySelector('.immersive-info-artist');
-        if (titleEl)  titleEl.classList.toggle('has-canvas', hasCanvas);
-        if (artistEl) artistEl.classList.toggle('has-video',  hasVideo);
+        if (titleEl) titleEl.classList.toggle('has-canvas', !!info.canvas_url);
+        if (artistEl) artistEl.classList.toggle('has-video', musicVideoEnabled && !!info.music_video_url);
     }
 
-    // ── Smooth text update with per-field fade ──
-
-    function syncOverlayText(animate) {
+    function renderArtwork() {
         const overlay = ensureOverlay();
-        if (!overlay) return;
+        const image = overlay.querySelector('.immersive-artwork');
+        if (!image) return;
 
-        const mi = window.uiStore?.mediaInfo;
-        const newText = {
-            title: mi?.title || '',
-            artist: mi?.artist || '',
-            album: mi?.album || ''
-        };
-
-        const fields = [
-            { key: 'title', el: overlay.querySelector('.immersive-info-title') },
-            { key: 'artist', el: overlay.querySelector('.immersive-info-artist') },
-            { key: 'album', el: overlay.querySelector('.immersive-info-album') }
-        ];
-
-        for (const f of fields) {
-            if (!f.el) continue;
-            if (newText[f.key] === lastOverlayText[f.key]) continue;
-
-            if (animate && isPartiallyImmersive()) {
-                // Fade out, swap text, fade in
-                f.el.style.opacity = '0';
-                const newVal = newText[f.key];
-                setTimeout(() => {
-                    f.el.textContent = newVal;
-                    f.el.style.opacity = '';
-                }, 250);
-            } else {
-                // Instant update
-                f.el.textContent = newText[f.key];
-            }
-        }
-
-        lastOverlayText = { ...newText };
-        syncOverlayDots();
-    }
-
-    // ── Laser-driven progressive animation ──
-
-    function updateFromLaser() {
-        const uiStore = window.uiStore;
-        if (!uiStore || uiStore.currentRoute !== 'menu/playing') return;
-
-        // Menu always wins — never track or transform artwork while the
-        // menu is visible, or the large artwork overlaps menu items.
-        if (uiStore.menuVisible) {
-            if (isTracking) {
-                isTracking = false;
-                progress = 0;
-                setTrackingMode(false);
-                applyProgress(0);
-            }
+        const artwork = String(mediaInfo().artwork || '').trim();
+        if (window.ArtworkManager) {
+            window.ArtworkManager.displayArtwork(
+                image,
+                artwork,
+                isPlaybackActive() ? 'noArtwork' : 'blank'
+            );
             return;
         }
 
-        const angle = uiStore.wheelPointerAngle;
+        if (artwork) {
+            image.src = artwork;
+        }
+    }
 
-        if (angle >= OVERLAY_ANGLE_START) {
-            // Laser is in overlay zone — track progressively
-            const newProgress = Math.min(1, (angle - OVERLAY_ANGLE_START) / OVERLAY_RANGE);
+    function syncOverlayText(animate = false) {
+        const overlay = ensureOverlay();
+        const info = mediaInfo();
+        const nextText = {
+            title: info.title || '',
+            artist: info.artist || '',
+            album: info.album || ''
+        };
+        const fields = [
+            { key: 'title', element: overlay.querySelector('.immersive-info-title') },
+            { key: 'artist', element: overlay.querySelector('.immersive-info-artist') },
+            { key: 'album', element: overlay.querySelector('.immersive-info-album') }
+        ];
 
-            if (!isTracking && newProgress > 0) {
-                isTracking = true;
-                clearIdleTimer();
-                // Enable short tracking transitions to smooth discrete laser steps
-                setTrackingMode(true);
+        fields.forEach(({ key, element }) => {
+            if (!element) return;
+            if (nextText[key] === lastOverlayText[key]) return;
+
+            if (animate && overlayVisible) {
+                element.style.opacity = '0';
+                const value = nextText[key];
+                window.setTimeout(() => {
+                    element.textContent = value;
+                    element.style.removeProperty('opacity');
+                }, 150);
+            } else {
+                element.textContent = nextText[key];
+                element.style.removeProperty('opacity');
             }
+        });
 
-            progress = newProgress;
-            applyProgress(progress);
-        } else if (isTracking) {
-            // Laser moved back into menu zone — exit tracking
-            isTracking = false;
-            progress = 0;
-            setTrackingMode(false);
-            applyProgress(0);
-            resetIdleTimer();
-        }
+        lastOverlayText = { ...nextText };
+        syncOverlayDots();
     }
 
-    // ── Transition mode control ──
-
-    function setTrackingMode(on) {
-        const container = getContainer();
-        if (!container) return;
-        container.classList.remove('immersive-transitioning');
-        if (on) {
-            container.classList.add('immersive-tracking');
-        } else {
-            container.classList.remove('immersive-tracking');
-        }
-    }
-
-    function enableIdleTransitions() {
-        const container = getContainer();
-        if (!container) return;
-        container.classList.remove('immersive-tracking');
-        container.classList.add('immersive-transitioning');
-    }
-
-    function clearTransitions() {
-        const container = getContainer();
-        if (!container) return;
-        container.classList.remove('immersive-transitioning', 'immersive-tracking');
-    }
-
-    // ── Animated enter/exit (for idle timer) ──
-
-    function scheduleTransitionCleanup() {
-        clearTimeout(transitionCleanup);
-        transitionCleanup = setTimeout(() => {
-            const c = getContainer();
-            if (c) c.classList.remove('immersive-transitioning');
-            transitionCleanup = null;
-        }, ARTWORK_MS);
-    }
-
-    function animatedEnter() {
-        if (isFullyImmersive() || isTracking) return;
-        const container = getContainer();
-        if (!container) return;
-
-        syncOverlayText(false);
-        enableIdleTransitions();
-
-        // Force reflow so the transition actually animates from current state
-        container.offsetHeight;
-
-        progress = 1;
-        applyProgress(1);
-        scheduleTransitionCleanup();
-
-        console.log('[IMMERSIVE] Entered (idle)');
-    }
-
-    function animatedExit() {
-        if (!isPartiallyImmersive() || isTracking) return;
-        const container = getContainer();
-        if (!container) return;
-
-        enableIdleTransitions();
-        container.offsetHeight;
-
-        progress = 0;
-        applyProgress(0);
-        scheduleTransitionCleanup();
-
-        console.log('[IMMERSIVE] Exited (animated)');
-    }
-
-    function instantExit() {
-        if (!isPartiallyImmersive()) return;
-        isTracking = false;
-        progress = 0;
-        clearTimeout(transitionCleanup);
-        transitionCleanup = null;
-        clearTransitions();
-        applyProgress(0);
-    }
-
-    // ── Idle timer ──
-
-    function resetIdleTimer() {
-        clearTimeout(idleTimer);
-        idleTimer = null;
-        const uiStore = window.uiStore;
-        if (!uiStore || uiStore.currentRoute !== 'menu/playing') return;
-        if (isFullyImmersive() || isTracking) return;
-
-        idleTimer = setTimeout(() => {
-            if (!uiStore || uiStore.currentRoute !== 'menu/playing') return;
-            if (isFullyImmersive() || isTracking) return;
-            if (!isPlaying()) return;  // only go immersive if something is playing
-            uiStore.setMenuVisible(false);
-            animatedEnter();
-        }, IDLE_TIMEOUT);
+    function renderOverlay(animateText = false) {
+        ensureOverlay();
+        renderArtwork();
+        syncOverlayText(animateText);
     }
 
     function clearIdleTimer() {
-        clearTimeout(idleTimer);
+        window.clearTimeout(idleTimer);
         idleTimer = null;
     }
 
-    // ── Init: listen for UIStore events ──
+    function armIdleTimer() {
+        clearIdleTimer();
+        if (overlayVisible || !shouldArmImmersive()) return;
+
+        idleTimer = window.setTimeout(() => {
+            if (!shouldArmImmersive()) return;
+            showOverlay();
+        }, immersiveDelayMs());
+    }
+
+    function showOverlay() {
+        if (overlayVisible || !shouldArmImmersive()) return false;
+        const overlay = ensureOverlay();
+        renderOverlay(false);
+        overlayVisible = true;
+        overlay.setAttribute('aria-hidden', 'false');
+        overlay.classList.add('active');
+        document.dispatchEvent(new CustomEvent('bs5c:immersive-visibility', {
+            detail: { visible: true }
+        }));
+        return true;
+    }
+
+    function hideOverlay() {
+        const overlay = ensureOverlay();
+        const wasVisible = overlayVisible || overlay.classList.contains('active');
+        overlayVisible = false;
+        overlay.setAttribute('aria-hidden', 'true');
+        overlay.classList.remove('active');
+        if (wasVisible) {
+            document.dispatchEvent(new CustomEvent('bs5c:immersive-visibility', {
+                detail: { visible: false }
+            }));
+        }
+        return wasVisible;
+    }
+
+    function consumeUserActivity(kind = '') {
+        const normalized = String(kind || '').trim().toLowerCase();
+        if (!overlayVisible) return false;
+        if (normalized === 'pointer' || normalized === 'nav') {
+            hideOverlay();
+            armIdleTimer();
+            return true;
+        }
+        return false;
+    }
+
+    function handlePlaybackUpdate() {
+        const activeNow = isPlaybackActive();
+        renderOverlay(true);
+
+        if (!activeNow) {
+            clearIdleTimer();
+            hideOverlay();
+        } else if (!lastPlaybackActive) {
+            armIdleTimer();
+        }
+
+        lastPlaybackActive = activeNow;
+    }
+
+    function handleDocumentPointerActivity() {
+        if (!overlayVisible) return;
+        hideOverlay();
+        armIdleTimer();
+    }
 
     function init() {
-        const uiStore = window.uiStore;
-        if (!uiStore) { setTimeout(init, 200); return; }
+        if (!window.uiStore) {
+            window.setTimeout(init, 200);
+            return;
+        }
 
-        // 1. Menu visibility: exit immersive when menu reappears.
-        // Menu always wins — if laser happens to be in the tracking zone
-        // when the menu is unhidden, force isTracking=false so the large
-        // transformed artwork doesn't overlap the menu.
-        document.addEventListener('bs5c:menu-visibility', (e) => {
-            if (e.detail.visible && isPartiallyImmersive()) {
-                if (isTracking) {
-                    isTracking = false;
-                    setTrackingMode(false);
-                }
-                animatedExit();
+        ensureOverlay();
+        renderOverlay(false);
+        lastPlaybackActive = isPlaybackActive();
+        if (lastPlaybackActive) {
+            armIdleTimer();
+        }
+
+        document.addEventListener('bs5c:user-interaction', () => {
+            if (!overlayVisible) {
+                armIdleTimer();
             }
         });
 
-        // 2. Wheel change: laser tracking + idle timer reset
         document.addEventListener('bs5c:wheel-change', () => {
-            updateFromLaser();
-            if (!isTracking) resetIdleTimer();
-        });
-
-        // 3. View change: cleanup on navigation
-        document.addEventListener('bs5c:view-change', (e) => {
-            const { from, to } = e.detail;
-            const wasPlaying = from === 'menu/playing';
-            const wasImmersive = isPartiallyImmersive();
-
-            if (wasPlaying && to !== 'menu/playing') {
-                clearIdleTimer();
-                instantExit();
-            }
-            if (to === 'menu/playing') {
-                // DOM was rebuilt by updateView() — overlay is gone, text cache is stale
-                lastOverlayText = { title: '', artist: '', album: '' };
-                if (wasImmersive && wasPlaying) {
-                    // Re-apply immersive state after DOM rebuild (e.g. spurious wake)
-                    setTimeout(() => {
-                        ensureOverlay();
-                        syncOverlayText(false);
-                        applyProgress(progress);
-                    }, 100);
-                }
-                resetIdleTimer();
-                setTimeout(() => ensureOverlay(), 100);
+            if (!overlayVisible) {
+                armIdleTimer();
             }
         });
 
-        // 4. Media text updated: sync overlay text on track change
+        document.addEventListener('bs5c:view-change', () => {
+            hideOverlay();
+            armIdleTimer();
+        });
+
+        document.addEventListener('bs5c:media-update', handlePlaybackUpdate);
+
         document.addEventListener('bs5c:media-text-updated', () => {
-            syncOverlayText(true);
-        });
-
-        // 5. Media update: sync dots when canvas/video URLs arrive (async injection,
-        //    may not change title/artist so bs5c:media-text-updated won't fire)
-        document.addEventListener('bs5c:media-update', () => {
-            syncOverlayDots();
+            if (overlayVisible) {
+                syncOverlayText(true);
+            }
         });
 
         document.addEventListener('bs5c:music-video-preference', () => {
-            syncOverlayDots();
+            renderOverlay(false);
         });
 
-        // Initial setup
-        if (uiStore.currentRoute === 'menu/playing') {
-            resetIdleTimer();
-            ensureOverlay();
-        }
+        document.addEventListener('mousemove', handleDocumentPointerActivity, true);
+        document.addEventListener('mousedown', handleDocumentPointerActivity, true);
+        document.addEventListener('touchstart', handleDocumentPointerActivity, { capture: true, passive: true });
+        document.addEventListener('touchmove', handleDocumentPointerActivity, { capture: true, passive: true });
 
-        console.log('[IMMERSIVE] Module initialized (v6.0)');
+        console.log('[IMMERSIVE] Overlay manager initialized');
     }
 
-    // Expose for debugging / manual toggle
     window.ImmersiveMode = {
-        enter: animatedEnter,
-        exit: animatedExit,
-        get active() { return isPartiallyImmersive(); },
-        get progress() { return progress; },
-        syncText: () => syncOverlayText(false)
+        enter: showOverlay,
+        exit: hideOverlay,
+        consumeUserActivity,
+        syncText: () => renderOverlay(false),
+        get active() { return overlayVisible; },
+        get progress() { return overlayVisible ? 1 : 0; }
     };
 
     if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', () => setTimeout(init, 200));
+        document.addEventListener('DOMContentLoaded', () => window.setTimeout(init, 200));
     } else {
-        setTimeout(init, 200);
+        window.setTimeout(init, 200);
     }
 })();

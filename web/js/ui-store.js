@@ -44,7 +44,7 @@ class UIStore {
             if (window.LaserPositionMapper) {
                 this.laserPosition = Math.round(window.LaserPositionMapper.angleToLaserPosition(angle));
             }
-            this.handleWheelChange();
+            this._scheduleWheelChange();
         };
 
         // Keep menu manager informed of current route for removeMenuItem
@@ -95,6 +95,8 @@ class UIStore {
         this.wheelPointerAngle = 180;
         this.topWheelPosition = 0;
         this.laserPosition = window.Constants?.laser?.defaultPosition || 93;
+        this._wheelChangeFrame = 0;
+        this._pointerAngleDeadband = 0.3;
 
         // ── Debug ──
         this.debugEnabled = true;
@@ -749,10 +751,32 @@ class UIStore {
         }
     }
 
+    _angleDistance(left, right) {
+        return Math.abs((((left - right) % 360) + 540) % 360 - 180);
+    }
+
+    _scheduleWheelChange() {
+        if (this._wheelChangeFrame) return;
+        this._wheelChangeFrame = window.requestAnimationFrame(() => {
+            this._wheelChangeFrame = 0;
+            this.handleWheelChange();
+        });
+    }
+
     // ── Input handling ──
 
     handleWheelChange() {
+        if (this._wheelChangeFrame) {
+            window.cancelAnimationFrame(this._wheelChangeFrame);
+            this._wheelChangeFrame = 0;
+        }
         this.wheelPointerAngle = Math.max(150, Math.min(210, this.wheelPointerAngle));
+
+        if (window.ImmersiveMode?.consumeUserActivity?.('pointer')) {
+            this.updatePointer();
+            this.topWheelPosition = 0;
+            return;
+        }
 
         if (!this.laserPosition || !window.LaserPositionMapper) {
             console.error('[UI] Laser position system required but not available');
@@ -821,6 +845,9 @@ class UIStore {
         this.updatePointer();
         this.topWheelPosition = 0;
 
+        document.dispatchEvent(new CustomEvent('bs5c:user-interaction', {
+            detail: { kind: 'pointer', angle: this.wheelPointerAngle }
+        }));
         document.dispatchEvent(new CustomEvent('bs5c:wheel-change'));
     }
 
@@ -922,11 +949,14 @@ class UIStore {
             if ((angle >= 158 && angle <= 202) ||
                 (angle >= 0 && angle <= 30) ||
                 (angle >= 330 && angle <= 360)) {
+                if (this._angleDistance(angle, this.wheelPointerAngle) < this._pointerAngleDeadband) {
+                    return true;
+                }
                 this.wheelPointerAngle = angle;
                 if (window.LaserPositionMapper) {
                     this.laserPosition = Math.round(window.LaserPositionMapper.angleToLaserPosition(angle));
                 }
-                this.handleWheelChange();
+                this._scheduleWheelChange();
                 return true;
             }
             return false;

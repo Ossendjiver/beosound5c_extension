@@ -8,7 +8,7 @@
  *  - Menu element visibility (show/hide the arc + pointer + items)
  *
  * Requires (wired by UIStore):
- *  - this.menuManager  — for views{}, attachPreloadedIframe, reloadAllSourceIframes
+ *  - this.menuManager  — for views{}, attachPreloadedIframe, and source iframe refresh
  *  - this.mediaManager — for setActivePlayingPreset, updateNowPlayingView
  */
 
@@ -51,8 +51,9 @@ class ViewManager {
 
         const isOverlayTransition = path === 'menu/playing' || path === 'menu/showing';
 
-        if (path === 'menu/playing') {
-            this.menuManager.reloadAllSourceIframes();
+        if (path === 'menu/playing' && from !== 'menu/playing') {
+            this.menuManager.markSourceIframeDirty(from);
+            this.menuManager.reloadDirtySourceIframes([from]);
         }
 
         if (isOverlayTransition) {

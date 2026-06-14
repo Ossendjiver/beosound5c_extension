@@ -677,7 +677,7 @@ class EventRouter:
 
     async def _set_backlight(self, on: bool):
         try:
-            cmd = "screen_on" if on else "screen_off"
+            cmd = "display_on" if on else "display_off"
             async with self._session.post(
                 INPUT_WEBHOOK_URL,
                 json={"command": cmd},

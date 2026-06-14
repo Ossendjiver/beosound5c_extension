@@ -399,6 +399,95 @@ html, body {
   transition: opacity 0.25s ease;
 }
 
+/* Global immersive overlay shown above the current page without changing
+   the underlying route. */
+#immersive-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 99988;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity 280ms ease, visibility 0s linear 280ms;
+  background:
+    radial-gradient(circle at 18% 28%, rgba(67, 116, 172, 0.2), transparent 38%),
+    radial-gradient(circle at 82% 18%, rgba(255, 255, 255, 0.06), transparent 24%),
+    linear-gradient(180deg, rgba(0, 0, 0, 0.88), rgba(0, 0, 0, 0.96));
+}
+
+#immersive-overlay.active {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+  transition: opacity 280ms ease;
+}
+
+#immersive-overlay .immersive-vignette {
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(90deg, rgba(0, 0, 0, 0.12), transparent 36%, rgba(0, 0, 0, 0.42) 100%),
+    radial-gradient(circle at center, transparent 48%, rgba(0, 0, 0, 0.32) 100%);
+}
+
+#immersive-overlay .immersive-shell {
+  position: absolute;
+  inset: 0;
+  transform: scale(0.985);
+  transition: transform 280ms ease;
+}
+
+#immersive-overlay.active .immersive-shell {
+  transform: scale(1);
+}
+
+#immersive-overlay .immersive-artwork-slot {
+  position: absolute;
+  left: clamp(40px, 5vw, 56px);
+  top: clamp(54px, 8vh, 78px);
+  width: min(58vw, 610px);
+  aspect-ratio: 1;
+  border-radius: 22px;
+  overflow: hidden;
+  background: rgba(12, 12, 12, 0.92);
+  box-shadow:
+    0 30px 70px rgba(0, 0, 0, 0.5),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+}
+
+#immersive-overlay .immersive-artwork {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: cover;
+}
+
+#immersive-overlay .immersive-info {
+  left: min(69vw, 700px);
+  right: 54px;
+  bottom: 94px;
+  width: auto;
+  max-width: 280px;
+  opacity: 1;
+}
+
+#immersive-overlay .immersive-info-title {
+  font-size: 30px;
+  font-weight: 600;
+  margin-bottom: 14px;
+}
+
+#immersive-overlay .immersive-info-artist {
+  font-size: 19px;
+  margin-bottom: 10px;
+  color: rgba(255, 255, 255, 0.92);
+}
+
+#immersive-overlay .immersive-info-album {
+  font-size: 15px;
+  color: rgba(255, 255, 255, 0.68);
+}
+
 /* PLAYING + CD view backgrounds */
 #now-playing,
 #cd-view {

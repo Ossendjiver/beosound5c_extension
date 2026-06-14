@@ -35,6 +35,12 @@ let eventsProcessed = 0;
 // Pointer state
 let lastKnownPointerAngle = 180; // Default middle position
 
+function notifyUserInteraction(kind, detail = {}) {
+    document.dispatchEvent(new CustomEvent('bs5c:user-interaction', {
+        detail: { kind, ...detail }
+    }));
+}
+
 // ── Cursor Visibility ──
 
 function showCursor() {
@@ -140,6 +146,20 @@ function updateViaStore(angle, laserPosition) {
     const uiStore = window.uiStore;
     if (!uiStore) return;
 
+    const angleDistance = typeof uiStore._angleDistance === 'function'
+        ? uiStore._angleDistance(angle, uiStore.wheelPointerAngle)
+        : Math.abs(Number(angle || 0) - Number(uiStore.wheelPointerAngle || 0));
+    const pointerAngleDeadband = Number(uiStore._pointerAngleDeadband || 0);
+    if (pointerAngleDeadband > 0 && angleDistance < pointerAngleDeadband) {
+        if (laserPosition !== undefined) {
+            uiStore.laserPosition = laserPosition;
+            if (uiStore.setLaserPosition) {
+                uiStore.setLaserPosition(laserPosition);
+            }
+        }
+        return;
+    }
+
     uiStore.wheelPointerAngle = angle;
 
     if (laserPosition !== undefined) {
@@ -162,6 +182,9 @@ function updateViaStore(angle, laserPosition) {
 // ── Navigation Wheel ──
 
 function handleNavEvent(uiStore, data) {
+    notifyUserInteraction('nav', data || {});
+    if (window.ImmersiveMode?.consumeUserActivity?.('nav')) return;
+
     const page = uiStore.currentRoute || 'unknown';
 
     if (routeNavToView(page, data, uiStore)) return;
@@ -305,6 +328,7 @@ function updateVolumeArc(volume) {
 
 function handleVolumeEvent(uiStore, data) {
     if (!uiStore) return;
+    notifyUserInteraction('volume', data || {});
 
     const speed = data.speed || 10;
     const direction = data.direction === 'clock' ? 1 : -1;
@@ -350,6 +374,7 @@ function getWebhookContext(page) {
 
 function handleButtonEvent(uiStore, data) {
     if (!data.button) return;
+    notifyUserInteraction('button', { button: data.button });
     const page = uiStore.currentRoute || 'unknown';
     const rawButton = data.button.toLowerCase();
     const button = rawButton === 'go_hold' ? 'go_long' : rawButton;

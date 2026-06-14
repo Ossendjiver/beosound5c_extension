@@ -100,6 +100,9 @@ class MenuManager {
         this._menuRetries = 0;
         this._lastSelectedPath = null;
         this._menuLayout = null;
+        this._renderedMenuNodes = new Map();
+        this._renderedOrderedNodes = [];
+        this._dirtySourceRoutes = new Set();
 
         // Callbacks wired by UIStore
         this.onNavigate = null;      // (path) => void
@@ -269,15 +272,58 @@ class MenuManager {
         console.log(`[PRELOAD] Loading source iframe: ${src}`);
     }
 
-    reloadAllSourceIframes() {
-        for (const sp of Object.values(window.SourcePresets || {})) {
-            if (sp.view?.preloadId) {
-                const iframe = document.getElementById(sp.view.preloadId);
-                if (iframe?.contentWindow) {
-                    iframe.contentWindow.postMessage({ type: 'reload-data' }, '*');
-                }
+    _getSourcePresetForRoute(route) {
+        for (const preset of Object.values(window.SourcePresets || {})) {
+            if (preset?.item?.path === route) {
+                return preset;
             }
         }
+        return null;
+    }
+
+    markSourceIframeDirty(route) {
+        const normalizedRoute = String(route || '').trim();
+        if (!normalizedRoute) return false;
+        const preset = this._getSourcePresetForRoute(normalizedRoute);
+        if (!preset?.view?.preloadId) return false;
+        this._dirtySourceRoutes.add(normalizedRoute);
+        return true;
+    }
+
+    reloadSourceIframe(route, options = {}) {
+        const normalizedRoute = String(route || '').trim();
+        if (!normalizedRoute) return false;
+        const preset = this._getSourcePresetForRoute(normalizedRoute);
+        const preloadId = preset?.view?.preloadId;
+        if (!preloadId) return false;
+
+        const iframe = document.getElementById(preloadId);
+        if (!iframe?.contentWindow) return false;
+
+        iframe.contentWindow.postMessage({ type: 'reload-data' }, '*');
+        if (options.clearDirty !== false) {
+            this._dirtySourceRoutes.delete(normalizedRoute);
+        }
+        return true;
+    }
+
+    reloadDirtySourceIframes(routes = null) {
+        const targetRoutes = Array.isArray(routes) ? routes : Array.from(this._dirtySourceRoutes);
+        let reloaded = 0;
+        targetRoutes.forEach((route) => {
+            if (this.reloadSourceIframe(route)) {
+                reloaded += 1;
+            }
+        });
+        return reloaded;
+    }
+
+    reloadAllSourceIframes() {
+        const allRoutes = Object.values(window.SourcePresets || {})
+            .map((preset) => String(preset?.item?.path || '').trim())
+            .filter(Boolean);
+        allRoutes.forEach((route) => this.markSourceIframeDirty(route));
+        return this.reloadDirtySourceIframes(allRoutes);
     }
 
     attachPreloadedIframe(preloadId) {
@@ -375,58 +421,88 @@ class MenuManager {
         });
     }
 
+    _createMenuItemElement(item) {
+        const itemElement = document.createElement('div');
+        itemElement.className = 'list-item';
+        itemElement.dataset.path = item.path;
+        itemElement.textContent = item.title;
+        return itemElement;
+    }
+
+    _applyMenuItemLayout(itemElement, item, index, visibleItems) {
+        itemElement.dataset.path = item.path;
+        if (itemElement.textContent !== item.title) {
+            itemElement.textContent = item.title;
+        }
+
+        const itemAngle = this.getStartItemAngle() + (visibleItems.length - 1 - index) * this.angleStep;
+        const position = arcs.getArcPoint(this.radius, 20, itemAngle);
+        itemElement.dataset.angle = String(itemAngle);
+
+        Object.assign(itemElement.style, {
+            position: 'absolute',
+            left: `${position.x - 100}px`,
+            top: `${position.y - 25}px`,
+            width: '100px',
+            height: '50px',
+            cursor: 'pointer'
+        });
+
+        if (item.path === this._lastSelectedPath) {
+            itemElement.classList.add('selectedItem');
+        } else {
+            itemElement.classList.remove('selectedItem');
+        }
+    }
+
     renderMenuItems() {
         const menuContainer = document.getElementById('menuItems');
         if (!menuContainer) return;
         this._ensureHoverDelegation(menuContainer);
-        menuContainer.innerHTML = '';
-
         const visibleItems = this.menuItems;
-        visibleItems.forEach((item, index) => {
-            const itemElement = document.createElement('div');
-            itemElement.className = 'list-item';
-            itemElement.dataset.path = item.path;
-            itemElement.textContent = item.title;
-
-            const itemAngle = this.getStartItemAngle() + (visibleItems.length - 1 - index) * this.angleStep;
-            const position = arcs.getArcPoint(this.radius, 20, itemAngle);
-            itemElement.dataset.angle = String(itemAngle);
-
-            Object.assign(itemElement.style, {
-                position: 'absolute',
-                left: `${position.x - 100}px`,
-                top: `${position.y - 25}px`,
-                width: '100px',
-                height: '50px',
-                cursor: 'pointer'
-            });
-
-            if (item.path === this._lastSelectedPath) {
-                itemElement.classList.add('selectedItem');
+        const visiblePaths = new Set(visibleItems.map((item) => item.path));
+        this._renderedMenuNodes.forEach((itemElement, path) => {
+            if (!visiblePaths.has(path)) {
+                itemElement.remove();
+                this._renderedMenuNodes.delete(path);
             }
-
-            menuContainer.appendChild(itemElement);
         });
+
+        const orderedNodes = [];
+        visibleItems.forEach((item, index) => {
+            let itemElement = this._renderedMenuNodes.get(item.path);
+            if (!itemElement) {
+                itemElement = this._createMenuItemElement(item);
+                this._renderedMenuNodes.set(item.path, itemElement);
+            }
+            this._applyMenuItemLayout(itemElement, item, index, visibleItems);
+            orderedNodes.push(itemElement);
+        });
+
+        orderedNodes.forEach((itemElement, index) => {
+            const currentNode = menuContainer.children[index];
+            if (currentNode !== itemElement) {
+                menuContainer.insertBefore(itemElement, currentNode || null);
+            }
+        });
+
+        this._renderedOrderedNodes = orderedNodes;
     }
 
     /**
      * Bold the menu item at selectedIndex; click when selectedPath changes.
      */
     applyMenuHighlight(selectedIndex, selectedPath) {
-        const menuContainer = document.getElementById('menuItems');
-        if (!menuContainer) return;
-
-        const menuElements = menuContainer.querySelectorAll('.list-item');
-        menuElements.forEach((el, i) => {
-            if (i === selectedIndex) {
-                el.classList.add('selectedItem');
-            } else {
-                el.classList.remove('selectedItem');
-            }
-        });
+        const previousPath = this._lastSelectedPath;
+        if (previousPath && previousPath !== selectedPath) {
+            this._renderedMenuNodes.get(previousPath)?.classList.remove('selectedItem');
+        }
+        if (selectedPath) {
+            this._renderedMenuNodes.get(selectedPath)?.classList.add('selectedItem');
+        }
 
         // Click exactly when the bolded item changes — one click per highlight change
-        const changed = selectedPath && selectedPath !== this._lastSelectedPath;
+        const changed = selectedPath && selectedPath !== previousPath;
         this._lastSelectedPath = selectedPath;
         return changed; // caller sends click command
     }
@@ -495,37 +571,11 @@ class MenuManager {
             oldPositions[el.dataset.path] = { left: rect.left, top: rect.top };
         });
 
-        // --- Rebuild DOM ---
-        menuContainer.innerHTML = '';
-        const visibleItems = this.menuItems;
-        visibleItems.forEach((item, index) => {
-            const itemElement = document.createElement('div');
-            itemElement.className = 'list-item';
-            itemElement.dataset.path = item.path;
-            itemElement.textContent = item.title;
-
-            const itemAngle = this.getStartItemAngle() + (visibleItems.length - 1 - index) * this.angleStep;
-            const position = arcs.getArcPoint(this.radius, 20, itemAngle);
-            itemElement.dataset.angle = String(itemAngle);
-
-            Object.assign(itemElement.style, {
-                position: 'absolute',
-                left: `${position.x - 100}px`,
-                top: `${position.y - 25}px`,
-                width: '100px',
-                height: '50px',
-                cursor: 'pointer'
-            });
-
-            if (item.path === this._lastSelectedPath) {
-                itemElement.classList.add('selectedItem');
-            }
-
-            menuContainer.appendChild(itemElement);
-        });
+        // --- Reuse DOM nodes and move them into their new positions ---
+        this.renderMenuItems();
 
         // --- LAST + INVERT + PLAY ---
-        menuContainer.querySelectorAll('.list-item[data-path]').forEach(el => {
+        this._renderedOrderedNodes.forEach((el) => {
             const path = el.dataset.path;
             const newRect = el.getBoundingClientRect();
 
