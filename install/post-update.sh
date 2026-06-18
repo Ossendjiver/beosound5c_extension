@@ -15,6 +15,8 @@
 #   sudo <base>/install/post-update.sh
 # Can also be run manually after a git pull:
 #   sudo ./install/post-update.sh
+#
+# Keep this script LF-only. CRLF breaks direct execution on Linux.
 
 set -e
 

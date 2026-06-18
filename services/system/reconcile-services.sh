@@ -1,4 +1,5 @@
 #!/bin/bash
+# Keep this script LF-only. CRLF breaks direct execution on Linux.
 # Reconcile BeoSound 5c services with /etc/beosound5c/config.json.
 #
 # Idempotent — safe to re-run any time the config changes:

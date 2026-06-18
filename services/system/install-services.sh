@@ -1,5 +1,6 @@
 #!/bin/bash
 set -e
+# Keep this script LF-only. CRLF breaks direct execution on Linux.
 
 # BeoSound 5C Service Installation Script
 # This script installs, enables, and starts all BeoSound 5C services
