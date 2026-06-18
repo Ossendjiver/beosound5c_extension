@@ -36,8 +36,9 @@ echo ""
 #   tty           - xinit console access
 #   input         - HID input devices
 #   audio         - audio device access
+#   dialout       - UART / USB serial access for local HLK sensors
 echo "👥 Ensuring required group memberships for $INSTALL_USER..."
-for group in video render tty input audio; do
+for group in video render tty input audio dialout; do
     if getent group "$group" &>/dev/null; then
         if id -nG "$INSTALL_USER" | grep -qw "$group"; then
             echo "  ✅ Already in group: $group"
@@ -222,6 +223,8 @@ echo "🚀 Enabling and starting services..."
 # Always-on infrastructure services (independent of player.type / menu).
 echo "  🌐 Starting HTTP server..."
 start_service beo-http.service
+echo "  📡 Starting local HLK sensor..."
+start_service beo-hlk.service
 echo "  🎮 Starting input server..."
 start_service beo-input.service
 echo "  🔀 Starting Event Router..."

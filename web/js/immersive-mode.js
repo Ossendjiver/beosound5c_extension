@@ -3,6 +3,7 @@
 
     const DEFAULT_IMMERSIVE_DELAY_MS = 180000;
     const ACTIVE_PLAYBACK_STATES = new Set(['playing', 'buffering', 'transitioning']);
+    const PLAYING_OVERLAY_START_ANGLE = Number(window.Constants?.overlays?.bottomOverlayStart || 200);
 
     let idleTimer = null;
     let overlayVisible = false;
@@ -36,6 +37,16 @@
         const splash = document.getElementById('splash-overlay');
         if (splash && !splash.classList.contains('hidden')) return false;
         return true;
+    }
+
+    function shouldEnterImmediatelyFromLaserZone() {
+        if (!shouldArmImmersive()) return false;
+        const uiStore = window.uiStore;
+        if (!uiStore) return false;
+        if (String(uiStore.currentRoute || '').trim().toLowerCase() !== 'menu/playing') return false;
+        if (uiStore.menuVisible !== false) return false;
+        const angle = Number(uiStore.wheelPointerAngle);
+        return Number.isFinite(angle) && angle >= PLAYING_OVERLAY_START_ANGLE;
     }
 
     function ensureOverlay() {
@@ -178,7 +189,12 @@
     function consumeUserActivity(kind = '') {
         const normalized = String(kind || '').trim().toLowerCase();
         if (!overlayVisible) return false;
-        if (normalized === 'pointer' || normalized === 'nav') {
+        if (normalized === 'pointer') {
+            hideOverlay();
+            armIdleTimer();
+            return false;
+        }
+        if (normalized === 'nav') {
             hideOverlay();
             armIdleTimer();
             return true;
@@ -226,9 +242,13 @@
         });
 
         document.addEventListener('bs5c:wheel-change', () => {
-            if (!overlayVisible) {
-                armIdleTimer();
+            if (overlayVisible) return;
+            if (shouldEnterImmediatelyFromLaserZone()) {
+                clearIdleTimer();
+                showOverlay();
+                return;
             }
+            armIdleTimer();
         });
 
         document.addEventListener('bs5c:view-change', () => {

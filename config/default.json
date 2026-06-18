@@ -36,17 +36,32 @@
   "transport": { "mode": "webhook" },
   "screen": {
     "immersive_delay_s": 180,
-    "presence_poll_s": 5,
-    "presence_off_delay_s": 600,
-    "local_input_wake_s": 30,
-    "wake_entities": [
-      "binary_sensor.bs5c_macro"
-    ],
-    "presence_entities": [
-      "binary_sensor.lounge_hlk_presence_stable",
-      "binary_sensor.desk_room_presence",
-      "binary_sensor.dining_hlk_presence_stable"
-    ]
+    "presence_off_delay_s": 180,
+    "idle_off_delay_s": 180,
+    "wake_hold_s": 30
+  },
+  "hlk": {
+    "enabled": false,
+    "port": "/dev/serial0",
+    "baudrate": 256000,
+    "engineering_mode": true,
+    "reconnect_delay_s": 5,
+    "availability_timeout_s": 10,
+    "publish_heartbeat_s": 30,
+    "serial_timeout_s": 0.2,
+    "publish_raw_frames": true,
+    "mqtt_discovery": true,
+    "entity_prefix": "bs5c",
+    "sensor_name": "BS5c Screen HLK",
+    "wake_distance_min_cm": 25,
+    "wake_distance_max_cm": 150,
+    "wake_moving_energy_min": 18,
+    "presence_distance_min_cm": 25,
+    "presence_distance_max_cm": 450,
+    "presence_moving_energy_min": 18,
+    "presence_still_energy_min": 12,
+    "presence_delay_off_s": 20,
+    "manual_override_timeout_s": 300
   },
   "volume": {
     "type": "sonos",

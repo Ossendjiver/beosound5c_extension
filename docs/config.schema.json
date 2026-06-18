@@ -123,7 +123,7 @@
 
     "screen": {
       "type": "object",
-      "description": "Display blanking + immersive policy. The frontend uses immersive_delay_s; beo-input uses the presence sensors and blanking timers.",
+      "description": "Display blanking + immersive policy. The frontend uses immersive_delay_s; beo-input uses local BS5 activity plus the local HLK wake and stable-presence signals.",
       "properties": {
         "immersive_delay_s": {
           "type": "number",
@@ -131,39 +131,147 @@
           "description": "Seconds of user inactivity before the immersive now-playing overlay appears while media is actively playing.",
           "default": 180
         },
-        "presence_poll_s": {
-          "type": "number",
-          "exclusiveMinimum": 0,
-          "description": "Seconds between Home Assistant presence checks for display blanking/wake decisions.",
-          "default": 5
-        },
         "presence_off_delay_s": {
           "type": "number",
           "minimum": 0,
-          "description": "How long all configured presence sensors must stay off before the display blanks while something is still playing.",
-          "default": 600
+          "description": "How long the local HLK stable-presence signal must stay off before the display blanks during playback.",
+          "default": 180
+        },
+        "idle_off_delay_s": {
+          "type": "number",
+          "minimum": 0,
+          "description": "How long the display stays on after the last local BS5 hardware interaction when nothing is actively playing.",
+          "default": 180
+        },
+        "wake_hold_s": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Seconds that the local HLK wake signal keeps the display awake after it stops detecting motion.",
+          "default": 30
         },
         "local_input_wake_s": {
           "type": "number",
           "minimum": 0,
-          "description": "Seconds that local BS5 hardware input keeps the display awake after the last physical interaction.",
+          "description": "Legacy alias for wake_hold_s. Retained for backward compatibility with older config files.",
+          "default": 30
+        }
+      },
+      "additionalProperties": false
+    },
+
+    "hlk": {
+      "type": "object",
+      "description": "Local HLK / LD2410 UART sensor settings. beo-hlk derives two signals from this sensor: immediate wake (macro movement) and longer-lived stable presence.",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Enable the local HLK sensor service and include its signals in display policy.",
+          "default": false
+        },
+        "port": {
+          "type": "string",
+          "description": "UART device path for the local HLK sensor. The default matches the lounge wiring profile: /dev/serial0 on GPIO14 TXD0 / GPIO15 RXD0 with dtoverlay=miniuart-bt.",
+          "default": "/dev/serial0"
+        },
+        "baudrate": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "UART baudrate. LD2410-class sensors use 256000.",
+          "default": 256000
+        },
+        "engineering_mode": {
+          "type": "boolean",
+          "description": "Keep the sensor in engineering mode so distance and energy fields remain available.",
+          "default": true
+        },
+        "reconnect_delay_s": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "default": 5
+        },
+        "availability_timeout_s": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "default": 10
+        },
+        "publish_heartbeat_s": {
+          "type": "number",
+          "exclusiveMinimum": 0,
           "default": 30
         },
-        "wake_entities": {
-          "type": "array",
-          "description": "Home Assistant binary_sensor entity IDs that can wake the display even when playback is idle. Configure these per device in config.json or the config UI.",
-          "items": {
-            "type": "string"
-          },
-          "default": []
+        "serial_timeout_s": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "default": 0.2
         },
-        "presence_entities": {
-          "type": "array",
-          "description": "Home Assistant binary_sensor entity IDs used for display presence. Configure these per device in config.json or the config UI.",
-          "items": {
-            "type": "string"
-          },
-          "default": []
+        "publish_raw_frames": {
+          "type": "boolean",
+          "description": "Publish raw UART report/command frames to MQTT for diagnostics.",
+          "default": true
+        },
+        "mqtt_discovery": {
+          "type": "boolean",
+          "description": "Publish MQTT discovery entities for the local HLK sensor into Home Assistant.",
+          "default": true
+        },
+        "entity_prefix": {
+          "type": "string",
+          "description": "Prefix used when publishing MQTT discovery entities such as binary_sensor.<prefix>_macro.",
+          "default": "bs5c"
+        },
+        "sensor_name": {
+          "type": "string",
+          "description": "Friendly device name exposed via MQTT discovery.",
+          "default": "BS5c Screen HLK"
+        },
+        "wake_distance_min_cm": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 25
+        },
+        "wake_distance_max_cm": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Maximum moving-target distance for the immediate wake/macro signal.",
+          "default": 150
+        },
+        "wake_moving_energy_min": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 18
+        },
+        "presence_distance_min_cm": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 25
+        },
+        "presence_distance_max_cm": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Maximum distance for stable-presence evaluation. Matches the room HLK template logic by default.",
+          "default": 450
+        },
+        "presence_moving_energy_min": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 18
+        },
+        "presence_still_energy_min": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 12
+        },
+        "presence_delay_off_s": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Delay-off for the stable presence signal, matching the existing lounge/dining HLK template behavior.",
+          "default": 20
+        },
+        "manual_override_timeout_s": {
+          "type": "number",
+          "minimum": 0,
+          "description": "How long a manual display-off action suppresses automatic wake from the local HLK sensor.",
+          "default": 300
         }
       },
       "additionalProperties": false

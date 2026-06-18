@@ -58,7 +58,22 @@
             const list = container.querySelector('.queue-view-list');
             const selected = list?.querySelector(`.queue-view-item[data-index="${selectedIndexSnapshot}"]`)
                 || list?.querySelector('.queue-view-item.selected');
-            selected?.scrollIntoView({ block: 'nearest' });
+            if (!list || !selected) return;
+
+            const itemTop = selected.offsetTop;
+            const itemBottom = itemTop + selected.offsetHeight;
+            const viewportTop = list.scrollTop;
+            const viewportBottom = viewportTop + list.clientHeight;
+            const padding = Math.max(12, Math.round(selected.offsetHeight * 0.35));
+
+            if (itemTop < viewportTop + padding) {
+                list.scrollTop = Math.max(0, itemTop - padding);
+                return;
+            }
+
+            if (itemBottom > viewportBottom - padding) {
+                list.scrollTop = Math.max(0, itemBottom - list.clientHeight + padding);
+            }
         });
     }
 

@@ -79,6 +79,8 @@
             display: flex;
             align-items: center;
             justify-content: center;
+            flex-direction: column;
+            gap: 18px;
         }
 
         /* Info section */
@@ -925,6 +927,102 @@
         .config-section * { cursor: auto; }
         .config-section input, .config-section select, .config-section button { cursor: pointer; }
         .config-section input[type=text], .config-section input[type=number], .config-section input[type=password] { cursor: text; }
+        .config-shell {
+            width: 100%;
+            max-width: 860px;
+            display: grid;
+            grid-template-columns: minmax(300px, 360px) minmax(320px, 1fr);
+            gap: 26px;
+            align-items: stretch;
+        }
+        .hlk-card {
+            border: 1px solid #1e1e1e;
+            background: #0b0b0b;
+            border-radius: 10px;
+            padding: 26px 28px;
+            min-height: 100%;
+        }
+        .hlk-card-title {
+            font-size: 11px;
+            color: #666;
+            text-transform: uppercase;
+            letter-spacing: 1.8px;
+            margin-bottom: 10px;
+        }
+        .hlk-card-status {
+            font-size: 14px;
+            color: #888;
+            min-height: 18px;
+            margin-bottom: 18px;
+        }
+        .hlk-live {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 10px 18px;
+            margin-bottom: 22px;
+        }
+        .hlk-live-item {
+            border-bottom: 1px solid #171717;
+            padding-bottom: 8px;
+        }
+        .hlk-live-label {
+            font-size: 10px;
+            color: #555;
+            text-transform: uppercase;
+            letter-spacing: 1.2px;
+            margin-bottom: 5px;
+        }
+        .hlk-live-value {
+            font-size: 18px;
+            color: #f2f2f2;
+            font-family: 'Monaco', 'Consolas', monospace;
+        }
+        .hlk-live-value.dim { color: #666; }
+        .hlk-live-value.ok { color: #7ad27a; }
+        .hlk-live-value.warn { color: #f2c25a; }
+        .hlk-fields {
+            display: grid;
+            gap: 10px;
+            margin-bottom: 16px;
+        }
+        .hlk-field {
+            border: 1px solid #1f1f1f;
+            background: #111;
+            border-radius: 8px;
+            padding: 14px 16px;
+            transition: border-color 120ms ease, background 120ms ease;
+        }
+        .hlk-field.selected {
+            border-color: #8bc6ff;
+            background: #132130;
+        }
+        .hlk-field-label {
+            font-size: 11px;
+            color: #777;
+            text-transform: uppercase;
+            letter-spacing: 1.2px;
+            margin-bottom: 7px;
+        }
+        .hlk-field-value {
+            font-size: 24px;
+            color: #fff;
+            font-family: 'Monaco', 'Consolas', monospace;
+        }
+        .hlk-field-hint {
+            margin-top: 6px;
+            font-size: 11px;
+            color: #555;
+        }
+        .hlk-meta {
+            font-size: 12px;
+            color: #666;
+            line-height: 1.6;
+        }
+        .hlk-note {
+            margin-top: 14px;
+            font-size: 12px;
+            color: #555;
+        }
     </style>
 </head>
 <body>
@@ -1050,14 +1148,24 @@
 
         <!-- Config Section -->
         <div class="section-content config-section" id="config">
-            <div class="splash-card" style="text-align:center;">
-                <h2 style="color:#fff;font-size:22px;font-weight:300;letter-spacing:3px;margin-bottom:12px;">CONFIGURE</h2>
-                <p style="font-size:13px;color:#666;margin-bottom:20px;">Scan with your phone<br>or tap below to configure this device</p>
-                <div class="setup-qr" id="cfg-qr-container"></div>
-                <div class="setup-url" id="cfg-qr-url" style="margin-top:12px;font-size:12px;color:#555;word-break:break-all;max-width:280px;"></div>
-                <div style="margin-top:16px;">
-                    <a id="cfg-open-link" href="/config" target="_top" rel="noreferrer" style="display:inline-flex;align-items:center;justify-content:center;min-width:220px;min-height:46px;padding:0 20px;border-radius:999px;border:1px solid rgba(255,255,255,0.18);background:rgba(255,255,255,0.05);color:#f4f7fb;font-size:12px;font-weight:600;letter-spacing:1.3px;text-transform:uppercase;text-decoration:none;cursor:pointer;">Open Setup In This Browser</a>
+            <div class="config-shell">
+                <div class="splash-card" style="text-align:center;">
+                    <h2 style="color:#fff;font-size:22px;font-weight:300;letter-spacing:3px;margin-bottom:12px;">CONFIGURE</h2>
+                    <p style="font-size:13px;color:#666;margin-bottom:20px;">Scan with your phone<br>or tap below to configure this device</p>
+                    <div class="setup-qr" id="cfg-qr-container"></div>
+                    <div class="setup-url" id="cfg-qr-url" style="margin-top:12px;font-size:12px;color:#555;word-break:break-all;max-width:280px;"></div>
+                    <div style="margin-top:16px;">
+                        <a id="cfg-open-link" href="/config" target="_top" rel="noreferrer" style="display:inline-flex;align-items:center;justify-content:center;min-width:220px;min-height:46px;padding:0 20px;border-radius:999px;border:1px solid rgba(255,255,255,0.18);background:rgba(255,255,255,0.05);color:#f4f7fb;font-size:12px;font-weight:600;letter-spacing:1.3px;text-transform:uppercase;text-decoration:none;cursor:pointer;">Open Setup In This Browser</a>
+                    </div>
                 </div>
+                <div class="hlk-card" id="hlk-card">
+                    <div class="hlk-card-title">Local HLK</div>
+                    <div class="hlk-card-status">Loading sensor state...</div>
+                </div>
+            </div>
+            <div class="section-hint" id="config-section-hint">
+                <span class="key">GO</span> Next setting &nbsp;
+                <span class="key">WHEEL</span> Adjust wake distance / wake hold
             </div>
         </div>
 
@@ -1641,6 +1749,15 @@
                 this.playbackItems = [];
                 this.currentPlaybackItem = 0;
 
+                // Local HLK tuning
+                this.hlkState = null;
+                this.hlkFields = ['wake_distance_max_cm', 'wake_hold_s'];
+                this.currentHLKField = 0;
+                this.hlkRefreshTimer = null;
+                this.hlkSaveTimer = null;
+                this.hlkSaveInFlight = false;
+                this.hlkSaveQueued = false;
+
                 // Debouncing
                 this.lastButtonTime = 0;
                 this.buttonDebounceMs = 200;
@@ -1849,6 +1966,8 @@
                         }
                     } else if (section === 'playback') {
                         this.activatePlaybackItem();
+                    } else if (section === 'config') {
+                        this.advanceHLKField();
                     }
                 }
             }
@@ -1892,8 +2011,12 @@
                         this.updatePlaybackSelection();
                     }
                 } else if (section === 'config') {
-                    document.getElementById('config').scrollTop +=
-                        (direction === 'clock' ? 1 : -1) * speed * 8;
+                    if (this.hlkState?.config) {
+                        this.adjustHLKField(direction, speed);
+                    } else {
+                        document.getElementById('config').scrollTop +=
+                            (direction === 'clock' ? 1 : -1) * speed * 8;
+                    }
                 }
             }
 
@@ -1936,6 +2059,9 @@
 
                 if (section === 'config') {
                     this.loadConfig();
+                    this.startHLKRefresh();
+                } else {
+                    this.stopHLKRefresh();
                 }
             }
 
@@ -2404,36 +2530,199 @@
             // ── Config ──
 
             async loadConfig() {
-                if (this._cfgQrDone) return;
-                this._cfgQrDone = true;
-                const container = document.getElementById('cfg-qr-container');
-                const urlEl = document.getElementById('cfg-qr-url');
-                if (!container) return;
-                try {
-                    const resp = await fetch('http://localhost:8767/info');
-                    const data = await resp.json();
-                    const ip = data.ip_address || location.hostname;
-                    const hostname = data.hostname;
-                    const url = `http://${ip}/config`;
-                    const displayUrl = hostname
-                        ? `http://${hostname}.local/config`
-                        : url;
-                    if (typeof QRCode !== 'undefined') {
-                        new QRCode(container, {
-                            text: url,
-                            width: 180,
-                            height: 180,
-                            colorDark: '#000000',
-                            colorLight: '#ffffff',
-                            correctLevel: QRCode.CorrectLevel.M,
-                        });
-                    } else {
-                        container.innerHTML = `<img src="http://localhost:8767/qrcode" style="width:180px;height:180px;">`;
+                if (!this._cfgQrDone) {
+                    this._cfgQrDone = true;
+                    const container = document.getElementById('cfg-qr-container');
+                    const urlEl = document.getElementById('cfg-qr-url');
+                    if (container) {
+                        try {
+                            const resp = await fetch('http://localhost:8767/info');
+                            const data = await resp.json();
+                            const ip = data.ip_address || location.hostname;
+                            const hostname = data.hostname;
+                            const url = `http://${ip}/config`;
+                            const displayUrl = hostname
+                                ? `http://${hostname}.local/config`
+                                : url;
+                            if (typeof QRCode !== 'undefined') {
+                                new QRCode(container, {
+                                    text: url,
+                                    width: 180,
+                                    height: 180,
+                                    colorDark: '#000000',
+                                    colorLight: '#ffffff',
+                                    correctLevel: QRCode.CorrectLevel.M,
+                                });
+                            } else {
+                                container.innerHTML = `<img src="http://localhost:8767/qrcode" style="width:180px;height:180px;">`;
+                            }
+                            if (urlEl) urlEl.textContent = displayUrl;
+                        } catch (e) {
+                            if (container) container.innerHTML = `<img src="http://localhost:8767/qrcode" style="width:180px;height:180px;">`;
+                            if (urlEl) urlEl.textContent = 'Scan to configure';
+                        }
                     }
-                    if (urlEl) urlEl.textContent = displayUrl;
+                }
+                this.fetchHLKState();
+            }
+
+            startHLKRefresh() {
+                this.stopHLKRefresh();
+                this.fetchHLKState();
+                this.hlkRefreshTimer = setInterval(() => this.fetchHLKState(), 5000);
+            }
+
+            stopHLKRefresh() {
+                if (this.hlkRefreshTimer) {
+                    clearInterval(this.hlkRefreshTimer);
+                    this.hlkRefreshTimer = null;
+                }
+            }
+
+            async fetchHLKState() {
+                try {
+                    const resp = await fetch(API + '/hlk/state', { cache: 'no-store' });
+                    if (!resp.ok) throw new Error('offline');
+                    this.hlkState = await resp.json();
                 } catch (e) {
-                    if (container) container.innerHTML = `<img src="http://localhost:8767/qrcode" style="width:180px;height:180px;">`;
-                    if (urlEl) urlEl.textContent = 'Scan to configure';
+                    this.hlkState = null;
+                }
+                this.renderHLKCard();
+            }
+
+            renderHLKCard() {
+                const card = document.getElementById('hlk-card');
+                if (!card) return;
+                const state = this.hlkState || {};
+                const cfg = state.config || {};
+                const runtime = state.runtime || {};
+                const detection = Number.isFinite(Number(runtime.detection_distance_cm))
+                    ? `${Number(runtime.detection_distance_cm)} cm`
+                    : '—';
+                const wakeValue = Number.isFinite(Number(cfg.wake_distance_max_cm)) ? Number(cfg.wake_distance_max_cm) : 150;
+                const holdValue = Number.isFinite(Number(cfg.wake_hold_s)) ? Number(cfg.wake_hold_s) : 30;
+                const macro = runtime.macro_movement ? 'On' : 'Off';
+                const stable = runtime.presence_stable ? 'On' : 'Off';
+                const available = runtime.available === true;
+                const lastError = runtime.last_error;
+                const statusText = !this.hlkState
+                    ? 'Unable to reach HLK state'
+                    : cfg.enabled === false
+                        ? 'Sensor disabled in config'
+                        : available
+                            ? `Live on ${cfg.port || runtime.serial_port || '—'}`
+                            : (lastError ? `Offline: ${lastError}` : 'Waiting for reports...');
+                const statusColor = cfg.enabled === false ? '#666' : available ? '#7ad27a' : '#f2c25a';
+                const note = cfg.enabled === false
+                    ? 'Enable Local HLK in the setup page to use live sensor tuning here.'
+                    : 'Lounge pinout: GPIO14 TXD0 / GPIO15 RXD0 on header pins 8/10.';
+
+                card.innerHTML = `
+                    <div class="hlk-card-title">Local HLK</div>
+                    <div class="hlk-card-status" style="color:${statusColor}">${statusText}</div>
+                    <div class="hlk-live">
+                        <div class="hlk-live-item">
+                            <div class="hlk-live-label">Detection</div>
+                            <div class="hlk-live-value ${available ? '' : 'dim'}">${detection}</div>
+                        </div>
+                        <div class="hlk-live-item">
+                            <div class="hlk-live-label">Target</div>
+                            <div class="hlk-live-value ${available ? '' : 'dim'}">${runtime.target_state || '—'}</div>
+                        </div>
+                        <div class="hlk-live-item">
+                            <div class="hlk-live-label">Macro Wake</div>
+                            <div class="hlk-live-value ${runtime.macro_movement ? 'ok' : 'dim'}">${macro}</div>
+                        </div>
+                        <div class="hlk-live-item">
+                            <div class="hlk-live-label">Presence Stable</div>
+                            <div class="hlk-live-value ${runtime.presence_stable ? 'ok' : 'dim'}">${stable}</div>
+                        </div>
+                    </div>
+                    <div class="hlk-fields">
+                        <div class="hlk-field ${this.currentHLKField === 0 ? 'selected' : ''}" data-field-index="0">
+                            <div class="hlk-field-label">Wake Distance Max</div>
+                            <div class="hlk-field-value">${wakeValue} cm</div>
+                            <div class="hlk-field-hint">Immediate macro wake range</div>
+                        </div>
+                        <div class="hlk-field ${this.currentHLKField === 1 ? 'selected' : ''}" data-field-index="1">
+                            <div class="hlk-field-label">Wake Hold</div>
+                            <div class="hlk-field-value">${holdValue}s</div>
+                            <div class="hlk-field-hint">Short screen-on hold after wake clears</div>
+                        </div>
+                    </div>
+                    <div class="hlk-meta">UART ${cfg.port || '—'} at ${cfg.baudrate || '—'} baud</div>
+                    <div class="hlk-note">${note}</div>
+                `;
+                card.querySelectorAll('[data-field-index]').forEach((el) => {
+                    el.addEventListener('click', () => {
+                        this.currentHLKField = Number(el.dataset.fieldIndex) || 0;
+                        this.renderHLKCard();
+                    });
+                });
+            }
+
+            advanceHLKField() {
+                this.currentHLKField = (this.currentHLKField + 1) % this.hlkFields.length;
+                this.renderHLKCard();
+            }
+
+            adjustHLKField(direction, speed) {
+                const state = this.hlkState;
+                if (!state?.config) return;
+                const delta = (direction === 'clock' ? 1 : -1) * Math.max(1, speed || 1);
+                const field = this.hlkFields[this.currentHLKField] || this.hlkFields[0];
+                const cfg = state.config;
+                if (field === 'wake_distance_max_cm') {
+                    const current = Number.isFinite(Number(cfg.wake_distance_max_cm)) ? Number(cfg.wake_distance_max_cm) : 150;
+                    const next = Math.max(0, Math.min(600, current + delta));
+                    cfg.wake_distance_max_cm = next;
+                } else if (field === 'wake_hold_s') {
+                    const current = Number.isFinite(Number(cfg.wake_hold_s)) ? Number(cfg.wake_hold_s) : 30;
+                    const next = Math.max(0, Math.min(600, current + delta));
+                    cfg.wake_hold_s = next;
+                }
+                this.renderHLKCard();
+                this.queueHLKTuneSave();
+            }
+
+            queueHLKTuneSave() {
+                if (this.hlkSaveTimer) clearTimeout(this.hlkSaveTimer);
+                this.hlkSaveTimer = setTimeout(() => this.saveHLKTune(), 180);
+            }
+
+            async saveHLKTune() {
+                if (!this.hlkState?.config) return;
+                if (this.hlkSaveInFlight) {
+                    this.hlkSaveQueued = true;
+                    return;
+                }
+                this.hlkSaveInFlight = true;
+                this.hlkSaveQueued = false;
+                try {
+                    const payload = {
+                        wake_distance_max_cm: this.hlkState.config.wake_distance_max_cm,
+                        wake_hold_s: this.hlkState.config.wake_hold_s,
+                    };
+                    const resp = await fetch(API + '/hlk/tune', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload),
+                    });
+                    if (!resp.ok) throw new Error('save failed');
+                    this.hlkState = await resp.json();
+                    this.renderHLKCard();
+                } catch (e) {
+                    const card = document.getElementById('hlk-card');
+                    if (card) {
+                        const status = card.querySelector('.hlk-card-status');
+                        if (status) {
+                            status.textContent = 'Unable to save HLK tuning';
+                            status.style.color = '#a44';
+                        }
+                    }
+                } finally {
+                    this.hlkSaveInFlight = false;
+                    if (this.hlkSaveQueued) this.queueHLKTuneSave();
                 }
             }
 
@@ -2447,6 +2736,11 @@
                     this.remotesRefreshInterval = null;
                 }
                 this.stopSubcardRefresh();
+                this.stopHLKRefresh();
+                if (this.hlkSaveTimer) {
+                    clearTimeout(this.hlkSaveTimer);
+                    this.hlkSaveTimer = null;
+                }
                 if (this._messageHandler) {
                     window.removeEventListener('message', this._messageHandler);
                     this._messageHandler = null;

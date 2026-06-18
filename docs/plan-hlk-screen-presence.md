@@ -248,6 +248,13 @@ Add a new top-level config block:
 }
 ```
 
+The current repo defaults assume the lounge-style primary UART wiring:
+
+- `/dev/serial0`
+- `GPIO14 TXD0` on header pin `8`
+- `GPIO15 RXD0` on header pin `10`
+- `dtoverlay=miniuart-bt`
+
 ## Hardware Recommendation For BS5c
 
 Preferred UART strategy on BS5c:
@@ -258,6 +265,8 @@ Preferred UART strategy on BS5c:
    Good option if we confirm the actual pin map on the target build.
 3. Reclaim primary GPIO14/GPIO15 UART
    Only if we knowingly accept the Bluetooth tradeoff or confirm the target build does not depend on it.
+
+For the current BS5c HLK rollout, the default config and setup UI now target this third option so they match the existing lounge deployment pinout.
 
 Why this matters:
 

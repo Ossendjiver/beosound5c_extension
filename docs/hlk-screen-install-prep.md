@@ -44,6 +44,13 @@ Do this only if:
 - the target unit does not rely on Bluetooth remote support, or
 - we have explicitly verified that the chosen UART remap does not break that path
 
+Current repo defaults now assume this lounge-style wiring profile:
+
+- `/dev/serial0`
+- `GPIO14 TXD0` on header pin `8`
+- `GPIO15 RXD0` on header pin `10`
+- `dtoverlay=miniuart-bt`
+
 ## Wiring Notes
 
 Minimum electrical connections:

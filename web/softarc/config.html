@@ -450,6 +450,7 @@ function render(cfg) {
         renderVolume(cfg) +
         renderHA(cfg) +
         renderScreen(cfg) +
+        renderHLK(cfg) +
         renderSystemSettings(cfg) +
         renderMasterlink(cfg) +
         renderRadioFavorites(cfg) +
@@ -680,15 +681,12 @@ function renderHA(cfg) {
     </div>`;
 }
 
-function formatEntityList(values) {
-    return Array.isArray(values) ? values.filter(Boolean).join('\n') : '';
-}
-
-function parseEntityList(raw) {
-    return Array.from(new Set(String(raw || '')
-        .split(/[\n,]+/)
-        .map(v => v.trim())
-        .filter(Boolean)));
+function boolOptions(value) {
+    const enabled = value !== false;
+    return `
+        <option value="true" ${enabled ? 'selected' : ''}>Enabled</option>
+        <option value="false" ${enabled ? '' : 'selected'}>Disabled</option>
+    `;
 }
 
 function renderScreen(cfg) {
@@ -701,26 +699,100 @@ function renderScreen(cfg) {
                 <input id="cfg-screen-immersive-delay" type="number" min="0" value="${screen.immersive_delay_s ?? 180}">
             </div>
             <div>
-                <label for="cfg-screen-local-wake">Local input wake (seconds)</label>
-                <input id="cfg-screen-local-wake" type="number" min="0" value="${screen.local_input_wake_s ?? 30}">
+                <label for="cfg-screen-wake-hold">Wake hold (seconds)</label>
+                <input id="cfg-screen-wake-hold" type="number" min="0" value="${screen.wake_hold_s ?? screen.local_input_wake_s ?? 30}">
             </div>
         </div>
         <div class="row-2" style="margin-top:10px">
             <div>
-                <label for="cfg-screen-presence-poll">Presence poll (seconds)</label>
-                <input id="cfg-screen-presence-poll" type="number" min="1" value="${screen.presence_poll_s ?? 5}">
+                <label for="cfg-screen-idle-off-delay">Idle off delay (seconds)</label>
+                <input id="cfg-screen-idle-off-delay" type="number" min="0" value="${screen.idle_off_delay_s ?? 180}">
             </div>
             <div>
                 <label for="cfg-screen-presence-off-delay">Presence off delay (seconds)</label>
-                <input id="cfg-screen-presence-off-delay" type="number" min="0" value="${screen.presence_off_delay_s ?? 600}">
+                <input id="cfg-screen-presence-off-delay" type="number" min="0" value="${screen.presence_off_delay_s ?? 180}">
             </div>
         </div>
-        <label for="cfg-screen-wake-entities">Wake entity IDs</label>
-        <textarea id="cfg-screen-wake-entities" rows="3" placeholder="One entity per line, e.g. binary_sensor.bs5c_macro">${esc(formatEntityList(screen.wake_entities))}</textarea>
-        <div class="hint">These Home Assistant binary sensors can wake the display even when nothing is playing. Use one entity per line.</div>
-        <label for="cfg-screen-presence-entities">Presence entity IDs</label>
-        <textarea id="cfg-screen-presence-entities" rows="4" placeholder="One entity per line">${esc(formatEntityList(screen.presence_entities))}</textarea>
-        <div class="hint">These Home Assistant binary sensors control display blanking while playback is active. Use one entity per line.</div>
+        <div class="hint" style="margin-top:10px">Display blanking now uses local BS5 activity plus the local HLK sensor. External Home Assistant PIR and presence entities are not part of screen policy.</div>
+    </div>`;
+}
+
+function renderHLK(cfg) {
+    const hlk = cfg.hlk || {};
+    return `<div class="cfg-card">
+        <h2>Local HLK</h2>
+        <div class="row-2" style="margin-top:10px">
+            <div>
+                <label for="cfg-hlk-enabled">Sensor</label>
+                <select id="cfg-hlk-enabled">${boolOptions(hlk.enabled)}</select>
+            </div>
+            <div>
+                <label for="cfg-hlk-port">UART port</label>
+                <input id="cfg-hlk-port" type="text" value="${esc(hlk.port ?? '/dev/serial0')}" placeholder="/dev/serial0">
+                <div class="hint">Default BS5c wiring matches the lounge deployment: <code>/dev/serial0</code> on GPIO14 TXD0 / GPIO15 RXD0 (header pins 8/10) with <code>dtoverlay=miniuart-bt</code>.</div>
+            </div>
+        </div>
+        <div class="row-2" style="margin-top:10px">
+            <div>
+                <label for="cfg-hlk-baudrate">Baudrate</label>
+                <input id="cfg-hlk-baudrate" type="number" min="1" value="${hlk.baudrate ?? 256000}">
+            </div>
+            <div>
+                <label for="cfg-hlk-entity-prefix">MQTT entity prefix</label>
+                <input id="cfg-hlk-entity-prefix" type="text" value="${esc(hlk.entity_prefix ?? '')}" placeholder="bs5c">
+            </div>
+        </div>
+        <div class="row-2" style="margin-top:10px">
+            <div>
+                <label for="cfg-hlk-wake-distance-min">Wake min distance (cm)</label>
+                <input id="cfg-hlk-wake-distance-min" type="number" min="0" value="${hlk.wake_distance_min_cm ?? 25}">
+            </div>
+            <div>
+                <label for="cfg-hlk-wake-distance-max">Wake max distance (cm)</label>
+                <input id="cfg-hlk-wake-distance-max" type="number" min="0" value="${hlk.wake_distance_max_cm ?? 150}">
+            </div>
+        </div>
+        <div class="row-2" style="margin-top:10px">
+            <div>
+                <label for="cfg-hlk-wake-moving-energy">Wake moving energy min</label>
+                <input id="cfg-hlk-wake-moving-energy" type="number" min="0" value="${hlk.wake_moving_energy_min ?? 18}">
+            </div>
+            <div>
+                <label for="cfg-hlk-presence-delay-off">Stable presence delay-off (seconds)</label>
+                <input id="cfg-hlk-presence-delay-off" type="number" min="0" value="${hlk.presence_delay_off_s ?? 20}">
+            </div>
+        </div>
+        <div class="row-2" style="margin-top:10px">
+            <div>
+                <label for="cfg-hlk-presence-distance-min">Presence min distance (cm)</label>
+                <input id="cfg-hlk-presence-distance-min" type="number" min="0" value="${hlk.presence_distance_min_cm ?? 25}">
+            </div>
+            <div>
+                <label for="cfg-hlk-presence-distance-max">Presence max distance (cm)</label>
+                <input id="cfg-hlk-presence-distance-max" type="number" min="0" value="${hlk.presence_distance_max_cm ?? 450}">
+            </div>
+        </div>
+        <div class="row-2" style="margin-top:10px">
+            <div>
+                <label for="cfg-hlk-presence-moving-energy">Presence moving energy min</label>
+                <input id="cfg-hlk-presence-moving-energy" type="number" min="0" value="${hlk.presence_moving_energy_min ?? 18}">
+            </div>
+            <div>
+                <label for="cfg-hlk-presence-still-energy">Presence still energy min</label>
+                <input id="cfg-hlk-presence-still-energy" type="number" min="0" value="${hlk.presence_still_energy_min ?? 12}">
+            </div>
+        </div>
+        <div class="row-2" style="margin-top:10px">
+            <div>
+                <label for="cfg-hlk-publish-raw">Publish raw serial frames</label>
+                <select id="cfg-hlk-publish-raw">${boolOptions(hlk.publish_raw_frames)}</select>
+            </div>
+            <div>
+                <label for="cfg-hlk-mqtt-discovery">MQTT discovery</label>
+                <select id="cfg-hlk-mqtt-discovery">${boolOptions(hlk.mqtt_discovery)}</select>
+            </div>
+        </div>
+        <div class="hint" style="margin-top:10px"><code>binary_sensor.&lt;prefix&gt;_macro</code> mirrors the immediate wake signal. <code>binary_sensor.&lt;prefix&gt;_hlk_presence_stable</code> mirrors the longer-lived blanking presence signal.</div>
     </div>`;
 }
 
@@ -1858,14 +1930,40 @@ function buildConfig() {
     cfg.screen = cfg.screen || {};
     const immersiveDelay = parseInt(document.getElementById('cfg-screen-immersive-delay')?.value);
     cfg.screen.immersive_delay_s = Number.isFinite(immersiveDelay) ? immersiveDelay : 180;
-    const localInputWake = parseInt(document.getElementById('cfg-screen-local-wake')?.value);
-    cfg.screen.local_input_wake_s = Number.isFinite(localInputWake) ? localInputWake : 30;
-    const presencePoll = parseFloat(document.getElementById('cfg-screen-presence-poll')?.value);
-    cfg.screen.presence_poll_s = Number.isFinite(presencePoll) ? presencePoll : 5;
+    const wakeHold = parseInt(document.getElementById('cfg-screen-wake-hold')?.value);
+    cfg.screen.wake_hold_s = Number.isFinite(wakeHold) ? wakeHold : 30;
+    delete cfg.screen.local_input_wake_s;
+    const idleOffDelay = parseFloat(document.getElementById('cfg-screen-idle-off-delay')?.value);
+    cfg.screen.idle_off_delay_s = Number.isFinite(idleOffDelay) ? idleOffDelay : 180;
     const presenceOffDelay = parseFloat(document.getElementById('cfg-screen-presence-off-delay')?.value);
-    cfg.screen.presence_off_delay_s = Number.isFinite(presenceOffDelay) ? presenceOffDelay : 600;
-    cfg.screen.wake_entities = parseEntityList(document.getElementById('cfg-screen-wake-entities')?.value);
-    cfg.screen.presence_entities = parseEntityList(document.getElementById('cfg-screen-presence-entities')?.value);
+    cfg.screen.presence_off_delay_s = Number.isFinite(presenceOffDelay) ? presenceOffDelay : 180;
+    delete cfg.screen.presence_poll_s;
+    delete cfg.screen.wake_entities;
+    delete cfg.screen.presence_entities;
+    cfg.hlk = cfg.hlk || {};
+    cfg.hlk.enabled = document.getElementById('cfg-hlk-enabled')?.value !== 'false';
+    cfg.hlk.port = document.getElementById('cfg-hlk-port')?.value?.trim() || '/dev/serial0';
+    const hlkBaudrate = parseInt(document.getElementById('cfg-hlk-baudrate')?.value);
+    cfg.hlk.baudrate = Number.isFinite(hlkBaudrate) ? hlkBaudrate : 256000;
+    cfg.hlk.entity_prefix = document.getElementById('cfg-hlk-entity-prefix')?.value?.trim() || '';
+    const wakeDistanceMin = parseInt(document.getElementById('cfg-hlk-wake-distance-min')?.value);
+    cfg.hlk.wake_distance_min_cm = Number.isFinite(wakeDistanceMin) ? wakeDistanceMin : 25;
+    const wakeDistanceMax = parseInt(document.getElementById('cfg-hlk-wake-distance-max')?.value);
+    cfg.hlk.wake_distance_max_cm = Number.isFinite(wakeDistanceMax) ? wakeDistanceMax : 150;
+    const wakeMovingEnergy = parseInt(document.getElementById('cfg-hlk-wake-moving-energy')?.value);
+    cfg.hlk.wake_moving_energy_min = Number.isFinite(wakeMovingEnergy) ? wakeMovingEnergy : 18;
+    const presenceDelayOff = parseFloat(document.getElementById('cfg-hlk-presence-delay-off')?.value);
+    cfg.hlk.presence_delay_off_s = Number.isFinite(presenceDelayOff) ? presenceDelayOff : 20;
+    const presenceDistanceMin = parseInt(document.getElementById('cfg-hlk-presence-distance-min')?.value);
+    cfg.hlk.presence_distance_min_cm = Number.isFinite(presenceDistanceMin) ? presenceDistanceMin : 25;
+    const presenceDistanceMax = parseInt(document.getElementById('cfg-hlk-presence-distance-max')?.value);
+    cfg.hlk.presence_distance_max_cm = Number.isFinite(presenceDistanceMax) ? presenceDistanceMax : 450;
+    const presenceMovingEnergy = parseInt(document.getElementById('cfg-hlk-presence-moving-energy')?.value);
+    cfg.hlk.presence_moving_energy_min = Number.isFinite(presenceMovingEnergy) ? presenceMovingEnergy : 18;
+    const presenceStillEnergy = parseInt(document.getElementById('cfg-hlk-presence-still-energy')?.value);
+    cfg.hlk.presence_still_energy_min = Number.isFinite(presenceStillEnergy) ? presenceStillEnergy : 12;
+    cfg.hlk.publish_raw_frames = document.getElementById('cfg-hlk-publish-raw')?.value !== 'false';
+    cfg.hlk.mqtt_discovery = document.getElementById('cfg-hlk-mqtt-discovery')?.value !== 'false';
     const tm = document.getElementById('cfg-transport-mode')?.value;
     cfg.transport = cfg.transport || {}; cfg.transport.mode = tm;
     if (['mqtt','both'].includes(tm)) {

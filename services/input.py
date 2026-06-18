@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import asyncio, threading, json, time, sys
+import asyncio, threading, json, time, sys, re
 import hid, websockets
 import subprocess
 import os
@@ -8,7 +8,7 @@ import aiohttp
 from aiohttp import web, ClientSession
 from lib.background_tasks import BackgroundTaskSet
 from lib.transport import Transport
-from lib.config import cfg
+from lib.config import cfg, reload_config
 from lib.correlation import install_logging
 from lib.endpoints import (
     ROUTER_BROADCAST,
@@ -46,11 +46,15 @@ SHOWING_RELAY_ID = 'showing'
 SHOWING_RELAY_ACTIVE_STATES = {'playing', 'paused', 'buffering'}
 SHOWING_RELAY_IDLE_STATES = {'', 'idle', 'unknown', 'off', 'standby', 'unavailable'}
 SCREEN_ACTIVE_PLAYBACK_STATES = {'playing', 'buffering', 'transitioning'}
-DEFAULT_SCREEN_PRESENCE_ENTITIES = []
-DEFAULT_SCREEN_WAKE_ENTITIES = []
-DEFAULT_SCREEN_PRESENCE_POLL_SECONDS = 5.0
-DEFAULT_SCREEN_PRESENCE_OFF_DELAY_SECONDS = 600.0
-DEFAULT_SCREEN_LOCAL_INPUT_WAKE_SECONDS = 30.0
+DEFAULT_SCREEN_POLICY_POLL_SECONDS = 1.0
+DEFAULT_SCREEN_PRESENCE_OFF_DELAY_SECONDS = 180.0
+DEFAULT_SCREEN_IDLE_OFF_DELAY_SECONDS = 180.0
+DEFAULT_SCREEN_WAKE_HOLD_SECONDS = 30.0
+DEFAULT_SCREEN_MANUAL_OVERRIDE_SECONDS = 300.0
+HLK_STATE_URL = 'http://127.0.0.1:8784/state'
+HLK_RELOAD_URL = 'http://127.0.0.1:8784/reload'
+LOCAL_HLK_WAKE_ENTITY_ID = 'local_hlk.wake'
+LOCAL_HLK_PRESENCE_ENTITY_ID = 'local_hlk.presence_stable'
 
 # ——— Update management ———
 
@@ -120,7 +124,9 @@ def _new_screen_policy_state() -> dict:
         'last_presence_states': {},
         'last_wake': 'unknown',
         'last_wake_states': {},
-        'local_wake_until': 0.0,
+        'last_wake_sensor_state': 'unknown',
+        'manual_off_until': 0.0,
+        'wake_hold_until': 0.0,
         'last_tick_monotonic': 0.0,
     }
 
@@ -829,6 +835,162 @@ async def _write_secrets(updates: dict) -> None:
         logger.error('Secrets write error: %s', e)
 
 
+def _load_current_config_json() -> dict:
+    for path in ['/etc/beosound5c/config.json', 'config.json']:
+        try:
+            if os.path.exists(path):
+                with open(path) as f:
+                    data = json.load(f)
+                if isinstance(data, dict):
+                    return data
+        except Exception as e:
+            logger.warning('Config read failed from %s: %s', path, e)
+    return {}
+
+
+async def _write_config_json(body: dict) -> tuple[bool, str | None]:
+    config_path = '/etc/beosound5c/config.json'
+    config_json = json.dumps(body, indent=2, ensure_ascii=False)
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            'sudo', 'tee', config_path,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await asyncio.wait_for(proc.communicate(config_json.encode()), timeout=10)
+        if proc.returncode != 0:
+            msg = stderr.decode().strip() if stderr else 'sudo tee failed'
+            logger.error('Config write failed: %s', msg)
+            return False, msg
+        return True, None
+    except asyncio.TimeoutError:
+        return False, 'Timeout writing config'
+    except Exception as e:
+        logger.error('Config write error: %s', e)
+        return False, str(e)
+
+
+async def _reload_local_hlk_service(*, reconnect: bool = False):
+    if not _hlk_enabled():
+        return
+    session = await get_http_session()
+    try:
+        await session.post(
+            HLK_RELOAD_URL,
+            json={'reconnect': reconnect},
+            timeout=aiohttp.ClientTimeout(total=2.0),
+        )
+    except Exception as e:
+        logger.debug('Local HLK reload failed: %s', e)
+
+
+def _reload_runtime_config_safe():
+    try:
+        reload_config()
+    except Exception as e:
+        logger.warning('Runtime config reload failed: %s', e)
+
+
+def _hlk_state_response_payload(hlk_state: dict | None) -> dict:
+    hlk_cfg = dict(_hlk_config())
+    screen_cfg = dict(_screen_config())
+    runtime = (hlk_state or {}).get('runtime') if isinstance(hlk_state, dict) else None
+    return {
+        'status': 'ok',
+        'config': {
+            **hlk_cfg,
+            'wake_hold_s': screen_cfg.get('wake_hold_s', screen_cfg.get('local_input_wake_s', DEFAULT_SCREEN_WAKE_HOLD_SECONDS)),
+        },
+        'runtime': runtime if isinstance(runtime, dict) else {},
+    }
+
+
+async def handle_hlk_state(request):
+    if request.method == 'OPTIONS':
+        return web.Response(headers={
+            'Access-Control-Allow-Origin': '*',
+            'Access-Control-Allow-Methods': 'GET, OPTIONS',
+            'Access-Control-Allow-Headers': 'Content-Type',
+        })
+    payload = _hlk_state_response_payload(await _fetch_local_hlk_state())
+    return web.json_response(payload, headers={'Access-Control-Allow-Origin': '*'})
+
+
+async def handle_hlk_tune(request):
+    if request.method == 'OPTIONS':
+        return web.Response(headers={
+            'Access-Control-Allow-Origin': '*',
+            'Access-Control-Allow-Methods': 'POST, OPTIONS',
+            'Access-Control-Allow-Headers': 'Content-Type',
+        })
+
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response(
+            {'status': 'error', 'message': 'Invalid JSON'},
+            status=400,
+            headers={'Access-Control-Allow-Origin': '*'},
+        )
+
+    if not isinstance(body, dict):
+        return web.json_response(
+            {'status': 'error', 'message': 'Expected JSON object'},
+            status=400,
+            headers={'Access-Control-Allow-Origin': '*'},
+        )
+
+    current = _load_current_config_json()
+    if not current.get('device'):
+        current['device'] = cfg('device', default='BeoSound5c')
+    hlk_cfg = current.setdefault('hlk', {})
+    screen_cfg = current.setdefault('screen', {})
+
+    changed = False
+    if 'wake_distance_max_cm' in body:
+        try:
+            hlk_cfg['wake_distance_max_cm'] = max(0, int(body.get('wake_distance_max_cm')))
+            changed = True
+        except (TypeError, ValueError):
+            return web.json_response(
+                {'status': 'error', 'message': 'wake_distance_max_cm must be a number'},
+                status=400,
+                headers={'Access-Control-Allow-Origin': '*'},
+            )
+    if 'wake_hold_s' in body:
+        try:
+            screen_cfg['wake_hold_s'] = max(0.0, float(body.get('wake_hold_s')))
+            changed = True
+        except (TypeError, ValueError):
+            return web.json_response(
+                {'status': 'error', 'message': 'wake_hold_s must be a number'},
+                status=400,
+                headers={'Access-Control-Allow-Origin': '*'},
+            )
+
+    if not changed:
+        return web.json_response(
+            _hlk_state_response_payload(await _fetch_local_hlk_state()),
+            headers={'Access-Control-Allow-Origin': '*'},
+        )
+
+    ok, error = await _write_config_json(current)
+    if not ok:
+        return web.json_response(
+            {'status': 'error', 'message': error or 'Config write failed'},
+            status=500,
+            headers={'Access-Control-Allow-Origin': '*'},
+        )
+
+    _reload_runtime_config_safe()
+    await _reload_local_hlk_service(reconnect=False)
+    return web.json_response(
+        _hlk_state_response_payload(await _fetch_local_hlk_state()),
+        headers={'Access-Control-Allow-Origin': '*'},
+    )
+
+
 async def handle_config_save(request):
     """POST /config — write a new config.json and restart all beo-* services."""
     if request.method == 'OPTIONS':
@@ -882,29 +1044,10 @@ async def handle_config_save(request):
         if k in _SECRET_KEY_MAP and v
     }
 
-    config_path = '/etc/beosound5c/config.json'
-    config_json = json.dumps(body, indent=2, ensure_ascii=False)
-
-    try:
-        # Write via sudo tee so the service user doesn't need direct write access
-        proc = await asyncio.create_subprocess_exec(
-            'sudo', 'tee', config_path,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        _, stderr = await asyncio.wait_for(proc.communicate(config_json.encode()), timeout=10)
-        if proc.returncode != 0:
-            msg = stderr.decode().strip() if stderr else 'sudo tee failed'
-            logger.error('Config write failed: %s', msg)
-            return web.json_response(
-                {'status': 'error', 'message': msg},
-                status=500,
-                headers={'Access-Control-Allow-Origin': '*'},
-            )
-    except asyncio.TimeoutError:
+    ok, error = await _write_config_json(body)
+    if not ok:
         return web.json_response(
-            {'status': 'error', 'message': 'Timeout writing config'},
+            {'status': 'error', 'message': error or 'Config write failed'},
             status=500,
             headers={'Access-Control-Allow-Origin': '*'},
         )
@@ -913,7 +1056,10 @@ async def handle_config_save(request):
         await _write_secrets(secrets_to_write)
         logger.info('Secrets updated: %s', ', '.join(secrets_to_write.keys()))
 
-    logger.info('Config saved to %s — scheduling reconcile', config_path)
+    _reload_runtime_config_safe()
+    await _reload_local_hlk_service(reconnect=True)
+
+    logger.info('Config saved to /etc/beosound5c/config.json — scheduling reconcile')
 
     # Reconcile services after a short delay so the HTTP response can be sent
     # before this process is itself restarted. reconcile-services.sh enables/
@@ -1289,32 +1435,8 @@ def _screen_config() -> dict:
     return configured if isinstance(configured, dict) else {}
 
 
-def _screen_config_entities(key: str, defaults: list[str]) -> list[str]:
-    raw = _screen_config().get(key, defaults)
-    if not isinstance(raw, list):
-        raw = defaults
-    entities: list[str] = []
-    for value in raw:
-        entity_id = str(value or '').strip()
-        if entity_id:
-            entities.append(entity_id)
-    return entities
-
-
-def _screen_presence_entities() -> list[str]:
-    return _screen_config_entities('presence_entities', DEFAULT_SCREEN_PRESENCE_ENTITIES)
-
-
-def _screen_wake_entities() -> list[str]:
-    return _screen_config_entities('wake_entities', DEFAULT_SCREEN_WAKE_ENTITIES)
-
-
-def _screen_presence_poll_interval_seconds() -> float:
-    try:
-        seconds = float(_screen_config().get('presence_poll_s', DEFAULT_SCREEN_PRESENCE_POLL_SECONDS))
-    except (TypeError, ValueError):
-        seconds = DEFAULT_SCREEN_PRESENCE_POLL_SECONDS
-    return max(1.0, seconds)
+def _screen_policy_poll_interval_seconds() -> float:
+    return DEFAULT_SCREEN_POLICY_POLL_SECONDS
 
 
 def _screen_presence_off_delay_seconds() -> float:
@@ -1325,33 +1447,105 @@ def _screen_presence_off_delay_seconds() -> float:
     return max(0.0, seconds)
 
 
-def _screen_local_input_wake_seconds() -> float:
+def _screen_idle_off_delay_seconds() -> float:
     try:
-        seconds = float(_screen_config().get('local_input_wake_s', DEFAULT_SCREEN_LOCAL_INPUT_WAKE_SECONDS))
+        seconds = float(_screen_config().get('idle_off_delay_s', DEFAULT_SCREEN_IDLE_OFF_DELAY_SECONDS))
     except (TypeError, ValueError):
-        seconds = DEFAULT_SCREEN_LOCAL_INPUT_WAKE_SECONDS
+        seconds = DEFAULT_SCREEN_IDLE_OFF_DELAY_SECONDS
     return max(0.0, seconds)
 
 
-def _screen_policy_local_input_active(now: float | None = None) -> bool:
+def _screen_wake_hold_seconds() -> float:
+    screen_cfg = _screen_config()
+    raw = screen_cfg.get('wake_hold_s', screen_cfg.get('local_input_wake_s', DEFAULT_SCREEN_WAKE_HOLD_SECONDS))
+    try:
+        seconds = float(raw)
+    except (TypeError, ValueError):
+        seconds = DEFAULT_SCREEN_WAKE_HOLD_SECONDS
+    return max(0.0, seconds)
+
+
+def _hlk_config() -> dict:
+    configured = cfg('hlk', default={})
+    return configured if isinstance(configured, dict) else {}
+
+
+def _hlk_enabled() -> bool:
+    raw = _hlk_config().get('enabled', False)
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, (int, float)):
+        return raw != 0
+    return str(raw or '').strip().lower() in {'1', 'true', 'yes', 'on'}
+
+
+def _screen_manual_override_seconds() -> float:
+    try:
+        seconds = float(_hlk_config().get('manual_override_timeout_s', DEFAULT_SCREEN_MANUAL_OVERRIDE_SECONDS))
+    except (TypeError, ValueError):
+        seconds = DEFAULT_SCREEN_MANUAL_OVERRIDE_SECONDS
+    return max(0.0, seconds)
+
+
+def _screen_policy_local_input_recent(now: float | None = None) -> bool:
     if now is None:
         now = time.monotonic()
-    return now < float(_screen_policy_state.get('local_wake_until') or 0.0)
+    idle_off_delay_seconds = _screen_idle_off_delay_seconds()
+    if idle_off_delay_seconds <= 0:
+        return False
+    last_input_at = float(_screen_policy_state.get('last_local_input_at') or 0.0)
+    return last_input_at > 0.0 and max(0.0, now - last_input_at) < idle_off_delay_seconds
+
+
+def _screen_policy_wake_hold_active(now: float | None = None) -> bool:
+    if now is None:
+        now = time.monotonic()
+    return now < float(_screen_policy_state.get('wake_hold_until') or 0.0)
+
+
+def _screen_policy_manual_override_active(now: float | None = None) -> bool:
+    if now is None:
+        now = time.monotonic()
+    return now < float(_screen_policy_state.get('manual_off_until') or 0.0)
+
+
+def _clear_screen_manual_override(reason: str = 'local_input'):
+    if _screen_policy_state.get('manual_off_until'):
+        logger.debug('Screen manual override cleared (%s)', reason)
+    _screen_policy_state['manual_off_until'] = 0.0
+
+
+def _set_screen_manual_override(source: str = 'manual_off'):
+    seconds = _screen_manual_override_seconds()
+    if seconds <= 0:
+        _screen_policy_state['manual_off_until'] = 0.0
+        return
+    _screen_policy_state['manual_off_until'] = time.monotonic() + seconds
+    logger.info('Screen manual override -> %.1fs (%s)', seconds, source)
 
 
 def _note_local_screen_activity(source: str = 'hid'):
-    hold_seconds = _screen_local_input_wake_seconds()
+    now = time.monotonic()
+    canceled_wake_hold = _screen_policy_wake_hold_active(now)
+    _clear_screen_manual_override(source)
+    _screen_policy_state['last_local_input_at'] = now
+    _screen_policy_state['wake_hold_until'] = 0.0
+    logger.debug('Screen local activity -> %s%s', source, ' (wake hold canceled)' if canceled_wake_hold else '')
+
+
+def _arm_screen_wake_hold(source: str = 'wake_sensor'):
+    hold_seconds = _screen_wake_hold_seconds()
     if hold_seconds <= 0:
+        _screen_policy_state['wake_hold_until'] = 0.0
         return
 
-    now = time.monotonic()
-    _screen_policy_state['last_local_input_at'] = now
-    _screen_policy_state['local_wake_until'] = now + hold_seconds
-    logger.debug('Screen local wake hold -> %.1fs (%s)', hold_seconds, source)
+    _screen_policy_state['wake_hold_until'] = time.monotonic() + hold_seconds
+    logger.debug('Screen wake hold -> %.1fs (%s)', hold_seconds, source)
 
 
 def _clear_local_screen_activity():
-    _screen_policy_state['local_wake_until'] = 0.0
+    _screen_policy_state['last_local_input_at'] = 0.0
+    _screen_policy_state['wake_hold_until'] = 0.0
 
 
 def _screen_policy_normalize_state(state) -> str:
@@ -1405,92 +1599,134 @@ def _screen_policy_presence_snapshot(states_by_entity: dict | None) -> dict:
 
 def _screen_policy_target_state(
     *,
-    local_input_active: bool,
+    manual_override_active: bool,
     wake_snapshot: dict,
+    wake_hold_active: bool,
+    local_input_recent: bool,
     playing: bool,
     presence_snapshot: dict,
     all_off_since: float | None,
     now: float,
-    off_delay_seconds: float,
+    presence_off_delay_seconds: float,
 ) -> str | None:
-    if local_input_active:
-        return 'on'
+    if manual_override_active:
+        return 'off'
 
     if wake_snapshot.get('any_on'):
+        return 'on'
+
+    if wake_hold_active:
+        return 'on'
+
+    if local_input_recent:
         return 'on'
 
     if not playing:
         return 'off'
 
-    if not (presence_snapshot.get('states') or {}):
-        return 'on'
-
     if presence_snapshot.get('any_on'):
         return 'on'
 
+    if not (presence_snapshot.get('states') or {}):
+        return 'on'
+
     if presence_snapshot.get('all_off'):
-        if off_delay_seconds <= 0:
+        if presence_off_delay_seconds <= 0:
             return 'off'
         if all_off_since is None:
-            return None
-        if now - all_off_since >= off_delay_seconds:
+            return 'on'
+        if now - all_off_since >= presence_off_delay_seconds:
             return 'off'
+        return 'on'
 
     return None
 
 
 def _screen_policy_status_snapshot() -> dict:
     all_off_since = _screen_policy_state.get('all_off_since')
-    local_wake_until = float(_screen_policy_state.get('local_wake_until') or 0.0)
+    last_local_input_at = float(_screen_policy_state.get('last_local_input_at') or 0.0)
+    manual_off_until = float(_screen_policy_state.get('manual_off_until') or 0.0)
+    wake_hold_until = float(_screen_policy_state.get('wake_hold_until') or 0.0)
     now = time.monotonic()
+    local_input_recent = _screen_policy_local_input_recent(now)
+    manual_override_active = _screen_policy_manual_override_active(now)
+    wake_hold_active = _screen_policy_wake_hold_active(now)
+    idle_for_s = round(max(0.0, now - last_local_input_at), 1) if last_local_input_at > 0.0 else None
+    manual_override_for_s = round(max(0.0, manual_off_until - now), 1) if manual_off_until > now else None
+    wake_hold_for_s = round(max(0.0, wake_hold_until - now), 1) if wake_hold_until > now else None
+    presence_off_for_s = round(max(0.0, now - all_off_since), 1) if all_off_since is not None else None
     return {
         'applied_target': _screen_policy_state.get('applied_target'),
         'last_target': _screen_policy_state.get('last_target'),
         'last_reason': _screen_policy_state.get('last_reason'),
-        'local_input_active': _screen_policy_local_input_active(now),
-        'local_wake_for_s': round(max(0.0, local_wake_until - now), 1) if local_wake_until > now else None,
-        'local_input_wake_s': _screen_local_input_wake_seconds(),
+        'manual_override_active': manual_override_active,
+        'manual_override_for_s': manual_override_for_s,
+        'manual_override_timeout_s': _screen_manual_override_seconds(),
+        'local_input_recent': local_input_recent,
+        'local_input_active': local_input_recent,
+        'idle_for_s': idle_for_s,
+        'idle_off_delay_s': _screen_idle_off_delay_seconds(),
+        'wake_hold_active': wake_hold_active,
+        'wake_hold_for_s': wake_hold_for_s,
+        'wake_hold_s': _screen_wake_hold_seconds(),
+        'local_wake_for_s': wake_hold_for_s,
+        'local_input_wake_s': _screen_wake_hold_seconds(),
         'playing': bool(_screen_policy_state.get('last_playing')),
         'wake': _screen_policy_state.get('last_wake'),
         'wake_states': dict(_screen_policy_state.get('last_wake_states') or {}),
         'presence': _screen_policy_state.get('last_presence'),
         'presence_states': dict(_screen_policy_state.get('last_presence_states') or {}),
-        'all_off_for_s': round(max(0.0, now - all_off_since), 1) if all_off_since is not None else None,
-        'poll_interval_s': _screen_presence_poll_interval_seconds(),
+        'presence_off_for_s': presence_off_for_s,
+        'all_off_for_s': presence_off_for_s,
+        'poll_interval_s': _screen_policy_poll_interval_seconds(),
+        'presence_off_delay_s': _screen_presence_off_delay_seconds(),
         'off_delay_s': _screen_presence_off_delay_seconds(),
     }
 
 
-async def _fetch_screen_presence_states(entities: list[str]) -> dict[str, str | None]:
-    if not entities:
+async def _fetch_local_hlk_state() -> dict | None:
+    if not _hlk_enabled():
+        return None
+    session = await get_http_session()
+    try:
+        async with session.get(
+            HLK_STATE_URL,
+            timeout=aiohttp.ClientTimeout(total=1.5),
+        ) as resp:
+            if resp.status != 200:
+                logger.debug('Local HLK state fetch failed (HTTP %d)', resp.status)
+                return None
+            payload = await resp.json()
+            return payload if isinstance(payload, dict) else None
+    except Exception as e:
+        logger.debug('Local HLK state fetch error: %s', e)
+        return None
+
+
+def _screen_policy_local_hlk_states(
+    hlk_state: dict | None,
+    *,
+    field: str,
+    entity_id: str,
+) -> dict[str, str | None]:
+    if not _hlk_enabled():
         return {}
 
-    ha_url = cfg('home_assistant', 'url', default='http://homeassistant.local:8123')
-    headers = _showing_ha_headers()
-    session = await get_http_session()
+    runtime = (hlk_state or {}).get('runtime') if isinstance(hlk_state, dict) else None
+    config = (hlk_state or {}).get('config') if isinstance(hlk_state, dict) else None
+    if isinstance(config, dict) and config.get('enabled') is False:
+        return {}
 
-    async def _fetch_one(entity_id: str) -> tuple[str, str | None]:
-        try:
-            async with session.get(
-                f'{ha_url}/api/states/{entity_id}',
-                headers=headers,
-                timeout=aiohttp.ClientTimeout(total=2.0),
-            ) as resp:
-                if resp.status != 200:
-                    logger.debug('Screen presence fetch failed for %s (HTTP %d)', entity_id, resp.status)
-                    return entity_id, None
-                payload = await resp.json()
-                return entity_id, payload.get('state')
-        except Exception as e:
-            logger.debug('Screen presence fetch error for %s: %s', entity_id, e)
-            return entity_id, None
+    if not isinstance(runtime, dict) or not runtime.get('available'):
+        return {entity_id: None}
 
-    results = await asyncio.gather(*(_fetch_one(entity_id) for entity_id in entities))
-    return {entity_id: state for entity_id, state in results}
+    return {entity_id: 'on' if runtime.get(field) else 'off'}
 
 
 async def _screen_policy_tick() -> str:
-    status = await _fetch_router_status_snapshot()
+    router_task = asyncio.create_task(_fetch_router_status_snapshot())
+    hlk_task = asyncio.create_task(_fetch_local_hlk_state()) if _hlk_enabled() else None
+    status = await router_task
     now = time.monotonic()
     if status is None:
         _screen_policy_state.update({
@@ -1501,10 +1737,26 @@ async def _screen_policy_tick() -> str:
         return 'router_status_unavailable'
 
     playing = _screen_policy_router_is_playing(status)
-    local_input_active = _screen_policy_local_input_active(now)
-    wake_states = await _fetch_screen_presence_states(_screen_wake_entities())
+    hlk_state = await hlk_task if hlk_task is not None else None
+    wake_states = _screen_policy_local_hlk_states(
+        hlk_state,
+        field='wake',
+        entity_id=LOCAL_HLK_WAKE_ENTITY_ID,
+    )
     wake_snapshot = _screen_policy_presence_snapshot(wake_states)
-    presence_states = await _fetch_screen_presence_states(_screen_presence_entities())
+    previous_wake_state = str(_screen_policy_state.get('last_wake_sensor_state') or 'unknown')
+    current_wake_state = str(wake_snapshot.get('state') or 'unknown')
+    if previous_wake_state == 'on' and current_wake_state == 'off':
+        _arm_screen_wake_hold('wake_sensor_off')
+    elif current_wake_state == 'on':
+        _screen_policy_state['wake_hold_until'] = 0.0
+    _screen_policy_state['last_wake_sensor_state'] = current_wake_state
+
+    presence_states = _screen_policy_local_hlk_states(
+        hlk_state,
+        field='presence_stable',
+        entity_id=LOCAL_HLK_PRESENCE_ENTITY_ID,
+    )
     presence_snapshot = _screen_policy_presence_snapshot(presence_states)
 
     if presence_snapshot.get('all_off'):
@@ -1513,31 +1765,44 @@ async def _screen_policy_tick() -> str:
     else:
         _screen_policy_state['all_off_since'] = None
 
-    off_delay_seconds = _screen_presence_off_delay_seconds()
+    local_input_recent = _screen_policy_local_input_recent(now)
+    manual_override_active = _screen_policy_manual_override_active(now)
+    wake_hold_active = _screen_policy_wake_hold_active(now)
+    presence_off_delay_seconds = _screen_presence_off_delay_seconds()
     target = _screen_policy_target_state(
-        local_input_active=local_input_active,
+        manual_override_active=manual_override_active,
         wake_snapshot=wake_snapshot,
+        wake_hold_active=wake_hold_active,
+        local_input_recent=local_input_recent,
         playing=playing,
         presence_snapshot=presence_snapshot,
         all_off_since=_screen_policy_state.get('all_off_since'),
         now=now,
-        off_delay_seconds=off_delay_seconds,
+        presence_off_delay_seconds=presence_off_delay_seconds,
     )
 
-    if local_input_active:
-        reason = 'local_input'
+    if manual_override_active:
+        reason = 'manual_override'
     elif wake_snapshot.get('any_on'):
         reason = 'wake_on'
+    elif wake_hold_active:
+        reason = 'wake_grace'
+    elif local_input_recent:
+        reason = 'local_input_recent'
     elif not playing:
-        reason = 'not_playing'
-    elif not (presence_snapshot.get('states') or {}):
-        reason = 'playing_no_presence_config'
+        reason = 'idle_timeout'
     elif presence_snapshot.get('any_on'):
         reason = 'presence_on'
+    elif not (presence_snapshot.get('states') or {}):
+        reason = 'playing_no_presence_sensor'
     elif presence_snapshot.get('all_off'):
         all_off_since = _screen_policy_state.get('all_off_since')
         elapsed = 0.0 if all_off_since is None else max(0.0, now - all_off_since)
-        reason = 'presence_off_timeout' if off_delay_seconds <= 0 or elapsed >= off_delay_seconds else 'presence_off_grace'
+        reason = (
+            'presence_off_timeout'
+            if presence_off_delay_seconds <= 0 or elapsed >= presence_off_delay_seconds
+            else 'presence_off_grace'
+        )
     else:
         reason = 'presence_unknown'
 
@@ -1575,7 +1840,7 @@ async def _screen_policy_loop():
         except Exception as e:
             logger.warning('Screen policy error: %s', e)
             last_state = 'error'
-        await asyncio.sleep(_screen_presence_poll_interval_seconds())
+        await asyncio.sleep(_screen_policy_poll_interval_seconds())
 
 
 async def process_command(data: dict) -> dict:
@@ -1588,17 +1853,20 @@ async def process_command(data: dict) -> dict:
 
     if command in ('screen_on', 'display_on'):
         logger.info('Turning screen ON')
+        _note_local_screen_activity('command:screen_on')
         await _set_display_awake(True)
         return {'status': 'ok', 'screen': 'on'}
 
     elif command == 'screen_off':
         logger.info('Turning screen OFF')
+        _set_screen_manual_override('command:screen_off')
         _clear_local_screen_activity()
         await _set_display_awake(False, power_audio=True)
         return {'status': 'ok', 'screen': 'off'}
 
     elif command == 'display_off':
         logger.info('Turning display OFF (panel only)')
+        _set_screen_manual_override('command:display_off')
         _clear_local_screen_activity()
         await _set_display_awake(False)
         return {'status': 'ok', 'screen': 'off'}
@@ -2414,6 +2682,7 @@ def parse_report(rep: list, loop=None):
                 if is_backlight_on():
                     _note_local_screen_activity('hid_button:power_on')
                 else:
+                    _set_screen_manual_override('hid_button:power_off')
                     _clear_local_screen_activity()
                 # Power off speakers when screen turns off (speakers power on via playback)
                 if not is_backlight_on():
@@ -2560,6 +2829,10 @@ async def main():
     app.router.add_get('/qrcode', handle_qrcode)
     app.router.add_get('/discover/sonos', handle_discover_sonos)
     app.router.add_get('/discover/bluesound', handle_discover_bluesound)
+    app.router.add_get('/hlk/state', handle_hlk_state)
+    app.router.add_options('/hlk/state', handle_hlk_state)
+    app.router.add_post('/hlk/tune', handle_hlk_tune)
+    app.router.add_options('/hlk/tune', handle_hlk_tune)
     app.router.add_post('/config', handle_config_save)
     app.router.add_options('/config', handle_config_save)
     runner = web.AppRunner(app, access_log=None)
@@ -2574,6 +2847,7 @@ async def main():
     # Start with the display visible while services settle; the screen policy
     # loop below will blank or wake it based on playback + presence.
     set_backlight(True)
+    _screen_policy_state['last_local_input_at'] = time.monotonic()
 
     # Startup beacon (fire-and-forget, opt-out via NO_TELEMETRY file)
     asyncio.create_task(send_beacon(BS5C_BASE_PATH))
