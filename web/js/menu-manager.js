@@ -103,6 +103,8 @@ class MenuManager {
         this._renderedMenuNodes = new Map();
         this._renderedOrderedNodes = [];
         this._dirtySourceRoutes = new Set();
+        this._fetchMenuPromise = null;
+        this._sourceScriptPromises = new Map();
 
         // Callbacks wired by UIStore
         this.onNavigate = null;      // (path) => void
@@ -112,102 +114,128 @@ class MenuManager {
     // ── Router menu fetch ──
 
     async fetchMenu() {
-        try {
-            const resp = await fetch(`${window.AppConfig?.routerUrl || 'http://localhost:8770'}/router/menu`);
-            const data = await resp.json();
-            if (!data || !data.items) return;
+        if (this._fetchMenuPromise) return this._fetchMenuPromise;
 
-            // Load source view scripts on demand
-            for (const item of data.items) {
-                if (item.dynamic && item.preset && !window.SourcePresets?.[item.preset]) {
-                    await this.loadSourceScript(item.preset);
-                }
-            }
+        this._fetchMenuPromise = (async () => {
+            try {
+                const resp = await fetch(`${window.AppConfig?.routerUrl || 'http://localhost:8770'}/router/menu`);
+                const data = await resp.json();
+                if (!data || !data.items) return;
 
-            // Rebuild menu items from router response
-            const newItems = [];
-            for (const item of data.items) {
-                const path = `menu/${item.id}`;
-
-                // Webpage items: iframe view (preserved across navigations via rescue logic)
-                if (item.type === 'webpage' && item.url) {
-                    const containerId = `webpage-container-${item.id}`;
-                    this.views[path] = {
-                        title: item.title,
-                        content: `<div id="${containerId}" class="webpage-container" style="position:absolute;top:0;left:0;width:100%;height:100%;"></div>`,
-                        _webpage: { iframeId: `preload-webpage-${item.id}`, containerId, url: item.url }
-                    };
-                    newItems.push({ title: item.title, path });
-                }
-                // Dynamic sources: always register view from preset (even if menu item already exists)
-                else if (item.dynamic && item.preset) {
-                    if (!window.SourcePresets?.[item.preset]) {
+                // Load source view scripts on demand
+                for (const item of data.items) {
+                    if (item.dynamic && item.preset && !window.SourcePresets?.[item.preset]) {
                         await this.loadSourceScript(item.preset);
                     }
-                    const preset = window.SourcePresets?.[item.preset];
-                    if (preset) {
-                        newItems.push({ title: item.title, path: preset.item.path, dynamic: true });
-                        if (preset.view) {
-                            this.views[preset.item.path] = preset.view;
+                }
+
+                // Rebuild menu items from router response
+                const newItems = [];
+                for (const item of data.items) {
+                    const path = `menu/${item.id}`;
+
+                    // Webpage items: iframe view (preserved across navigations via rescue logic)
+                    if (item.type === 'webpage' && item.url) {
+                        const containerId = `webpage-container-${item.id}`;
+                        this.views[path] = {
+                            title: item.title,
+                            content: `<div id="${containerId}" class="webpage-container" style="position:absolute;top:0;left:0;width:100%;height:100%;"></div>`,
+                            _webpage: { iframeId: `preload-webpage-${item.id}`, containerId, url: item.url }
+                        };
+                        newItems.push({ title: item.title, path });
+                    }
+                    // Dynamic sources: always register view from preset (even if menu item already exists)
+                    else if (item.dynamic && item.preset) {
+                        if (!window.SourcePresets?.[item.preset]) {
+                            await this.loadSourceScript(item.preset);
+                        }
+                        const preset = window.SourcePresets?.[item.preset];
+                        if (preset) {
+                            newItems.push({ title: item.title, path: preset.item.path, dynamic: true });
+                            if (preset.view) {
+                                this.views[preset.item.path] = preset.view;
+                            }
+                        } else {
+                            newItems.push({ title: item.title, path, dynamic: true });
                         }
                     } else {
-                        newItems.push({ title: item.title, path, dynamic: true });
+                        const existing = this.menuItems.find(m => m.path === path);
+                        newItems.push(existing || { title: item.title, path });
                     }
-                } else {
-                    const existing = this.menuItems.find(m => m.path === path);
-                    newItems.push(existing || { title: item.title, path });
                 }
-            }
-            if (data.active_has_queue && !newItems.some((item) => item.path === 'menu/queue')) {
-                const playingIndex = newItems.findIndex((item) => item.path === 'menu/playing');
-                const queueItem = { title: 'QUEUE', path: 'menu/queue' };
-                if (playingIndex >= 0) {
-                    newItems.splice(playingIndex + 1, 0, queueItem);
-                } else {
-                    newItems.unshift(queueItem);
+                if (data.active_has_queue && !newItems.some((item) => item.path === 'menu/queue')) {
+                    const playingIndex = newItems.findIndex((item) => item.path === 'menu/playing');
+                    const queueItem = { title: 'QUEUE', path: 'menu/queue' };
+                    if (playingIndex >= 0) {
+                        newItems.splice(playingIndex + 1, 0, queueItem);
+                    } else {
+                        newItems.unshift(queueItem);
+                    }
                 }
+
+                this.menuItems = newItems;
+
+                // Sync to laser position mapper
+                if (window.LaserPositionMapper?.updateMenuItems) {
+                    window.LaserPositionMapper.updateMenuItems(this.menuItems);
+                }
+
+                this._menuLoaded = true;
+                this._menuRetries = 0;
+
+                // Notify UIStore so it can restore active source
+                if (this.onMenuLoaded) this.onMenuLoaded(data);
+
+                this.renderMenuItems();
+                console.log(`[MENU] Loaded ${newItems.length} items from router (active: ${data.active_source || 'none'})`);
+            } catch (e) {
+                this._menuLoaded = true;
+                const attempt = (this._menuRetries = (this._menuRetries || 0) + 1);
+                if (attempt <= 15) {
+                    const delay = Math.min(attempt * 2000, 10000);
+                    console.log(`[MENU] Router unavailable, retrying in ${delay / 1000}s (attempt ${attempt})`);
+                    setTimeout(() => this.fetchMenu(), delay);
+                } else {
+                    console.log('[MENU] Router unavailable after 15 attempts, using defaults');
+                }
+            } finally {
+                this._fetchMenuPromise = null;
             }
+        })();
 
-            this.menuItems = newItems;
-
-            // Sync to laser position mapper
-            if (window.LaserPositionMapper?.updateMenuItems) {
-                window.LaserPositionMapper.updateMenuItems(this.menuItems);
-            }
-
-            this._menuLoaded = true;
-            this._menuRetries = 0;
-
-            // Notify UIStore so it can restore active source
-            if (this.onMenuLoaded) this.onMenuLoaded(data);
-
-            this.renderMenuItems();
-            console.log(`[MENU] Loaded ${newItems.length} items from router (active: ${data.active_source || 'none'})`);
-        } catch (e) {
-            this._menuLoaded = true;
-            const attempt = (this._menuRetries = (this._menuRetries || 0) + 1);
-            if (attempt <= 15) {
-                const delay = Math.min(attempt * 2000, 10000);
-                console.log(`[MENU] Router unavailable, retrying in ${delay / 1000}s (attempt ${attempt})`);
-                setTimeout(() => this.fetchMenu(), delay);
-            } else {
-                console.log('[MENU] Router unavailable after 15 attempts, using defaults');
-            }
-        }
+        return this._fetchMenuPromise;
     }
 
     /**
      * Dynamically load a source's view script (web/sources/{preset}/view.js).
      */
     loadSourceScript(preset) {
-        return new Promise(resolve => {
+        if (window.SourcePresets?.[preset]) {
+            return Promise.resolve(window.SourcePresets[preset]);
+        }
+
+        const existingPromise = this._sourceScriptPromises.get(preset);
+        if (existingPromise) return existingPromise;
+
+        const promise = new Promise(resolve => {
             const existing = document.head.querySelector(`script[data-preset="${preset}"]`);
-            if (existing) existing.remove();
+            if (existing) {
+                if (existing.dataset.loaded === 'true' || existing.dataset.loaded === 'error') {
+                    resolve(window.SourcePresets?.[preset]);
+                    return;
+                }
+
+                const finish = () => resolve(window.SourcePresets?.[preset]);
+                existing.addEventListener('load', finish, { once: true });
+                existing.addEventListener('error', finish, { once: true });
+                return;
+            }
 
             const script = document.createElement('script');
             script.src = `sources/${preset}/view.js`;
             script.dataset.preset = preset;
             script.onload = () => {
+                script.dataset.loaded = 'true';
                 console.log(`[MENU] Loaded source script: ${preset}`);
                 const sp = window.SourcePresets?.[preset];
                 if (sp?.view?.preloadId && sp.view.iframeSrc) {
@@ -216,14 +244,24 @@ class MenuManager {
                         window.IframeMessenger?.registerIframe(sp.item.path, sp.view.preloadId);
                     }
                 }
-                resolve();
+                resolve(sp);
             };
             script.onerror = () => {
+                script.dataset.loaded = 'error';
                 console.warn(`[MENU] Source script not found: ${preset}`);
                 resolve();
             };
             document.head.appendChild(script);
         });
+
+        this._sourceScriptPromises.set(
+            preset,
+            promise.finally(() => {
+                this._sourceScriptPromises.delete(preset);
+            })
+        );
+
+        return this._sourceScriptPromises.get(preset);
     }
 
     // ── Iframe preloading ──
