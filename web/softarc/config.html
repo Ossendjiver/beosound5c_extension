@@ -260,6 +260,20 @@
         .cfg-rf-custom-err { color: #c0392b; font-size: 12px; min-height: 16px; margin-top: 6px; }
         .cfg-rf-custom-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
 
+        /* Spotify favourites — fixed digit slot rows (1-9, 0) */
+        .cfg-sf-slot-row {
+            display: grid;
+            grid-template-columns: 56px minmax(0, 1fr);
+            gap: 10px; align-items: center;
+            padding: 5px 0; border-bottom: 1px solid #111;
+        }
+        .cfg-sf-slot-row:last-child { border-bottom: none; }
+        .cfg-sf-slot-row select {
+            padding: 6px 32px 6px 10px; font-size: 13px;
+            background-position: right 10px center;
+        }
+        .cfg-sf-slot-select-auto { color: #555; }
+        .cfg-sf-save-row { display: flex; align-items: center; gap: 10px; margin-top: 12px; }
     </style>
 </head>
 <body>
@@ -454,12 +468,14 @@ function render(cfg) {
         renderSystemSettings(cfg) +
         renderMasterlink(cfg) +
         renderRadioFavorites(cfg) +
+        renderSpotifyFavorites(cfg) +
         renderSources(cfg) +
         `<div class="cfg-save-bar"><button class="btn-save" id="cfg-save">Save &amp; Restart Services</button></div>`;
     setupListeners();
     updateIrDropdowns();
     updateVolumeOptions();
     loadRadioFavourites();
+    loadSpotifyFavourites();
 }
 
 function renderDevice(cfg) {
@@ -795,7 +811,6 @@ function renderHLK(cfg) {
         <div class="hint" style="margin-top:10px"><code>binary_sensor.&lt;prefix&gt;_macro</code> mirrors the immediate wake signal. <code>binary_sensor.&lt;prefix&gt;_hlk_presence_stable</code> mirrors the longer-lived blanking presence signal.</div>
     </div>`;
 }
-
 // Sources we let the user pick as the N.MUSIC / N.RADIO feed when the
 // BS5c is acting as a SourceCenter for another audio master.  Restricted
 // to keys that produce a continuous music stream.
@@ -874,7 +889,7 @@ function renderMasterlink(cfg) {
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px 18px;margin:4px 0 8px">
                 ${linkChecks}
             </div>
-            <div class="hint">This is the existing link-room role. "Audio slave" is just a clearer label for the same ML behaviour: another device is the master, and this BS5c listens as a link room.</div>
+            <div class="hint">Another device is the master, and this BS5c listens as a link room. The LINK page shows whichever of these sources the master currently provides, plus its track metadata.</div>
         </div>
 
         <div style="margin-top:18px; padding-top:14px; border-top:1px solid #1a1a1a">
@@ -1076,6 +1091,140 @@ function refreshRadioFavouritesList() {
     };
 
     list.innerHTML = RADIO_BUTTON_SLOTS.map(renderRow).join('');
+}
+
+// ── Spotify favourites: pin playlists to digit buttons (1-9, 0) ──
+//
+// Pins are stored by the spotify service at
+// /etc/beosound5c/spotify_favourites.json and saved via its own
+// endpoints (GET/POST :8771/favourites) — independent of config.json,
+// so no service restart is needed. Unpinned digits keep the automatic
+// mapping ("5: Dinner" naming convention, then alphabetical fill).
+
+const SPOTIFY_DIGIT_SLOTS = ['1','2','3','4','5','6','7','8','9','0'];
+const SPOTIFY_URL_PREFIX = () => `http://${location.hostname}:8771`;
+
+let _spotifyPlaylists = [];   // [{id, name}] from the spotify service
+let _spotifyPins = {};        // { "5": {id, name}, ... } — edits live here until saved
+
+function renderSpotifyFavorites(cfg) {
+    return `<div class="cfg-card">
+        <h2>Spotify Favourites</h2>
+        <div class="hint" style="margin:0 0 12px">
+            Pin playlists to BeoRemote digit buttons (1–9, 0).
+            Digits left on auto keep the automatic mapping: playlists
+            named like "5: Dinner" pin to their digit, the rest fill
+            alphabetically.
+        </div>
+        <div id="cfg-sf-list"><div class="cfg-rf-empty-hint">Loading…</div></div>
+    </div>`;
+}
+
+async function loadSpotifyFavourites() {
+    const list = document.getElementById('cfg-sf-list');
+    if (!list) return;
+    const note = (msg) => { list.innerHTML = `<div class="cfg-rf-empty-hint">${esc(msg)}</div>`; };
+    let pls;
+    try {
+        const [favResp, plResp] = await Promise.all([
+            fetch(`${SPOTIFY_URL_PREFIX()}/favourites`, { signal: AbortSignal.timeout(3000) }),
+            fetch(`${SPOTIFY_URL_PREFIX()}/playlists`,  { signal: AbortSignal.timeout(3000) }),
+        ]);
+        if (!favResp.ok || !plResp.ok) throw new Error('HTTP error');
+        const fav = await favResp.json();
+        pls = await plResp.json();
+        _spotifyPins = (fav && fav.favourites) || {};
+    } catch (e) {
+        note('Spotify service not reachable — enable the Spotify source to edit favourites.');
+        return;
+    }
+    // /playlists returns {setup_needed|needs_reauth|loading} objects
+    // instead of an array until Spotify is set up and fetched.
+    if (!Array.isArray(pls)) {
+        note(pls && pls.loading
+            ? 'Spotify playlists are still loading — reopen this page in a minute.'
+            : 'Spotify is not set up yet — authenticate under Sources first.');
+        return;
+    }
+    _spotifyPlaylists = pls.map(p => ({ id: p.id, name: p.name }));
+    refreshSpotifyFavouritesList();
+}
+
+function refreshSpotifyFavouritesList() {
+    const list = document.getElementById('cfg-sf-list');
+    if (!list) return;
+
+    const knownIds = new Set(_spotifyPlaylists.map(p => p.id));
+
+    const rows = SPOTIFY_DIGIT_SLOTS.map(slot => {
+        const pin = _spotifyPins[slot];
+        const pinId = (pin && pin.id) ? pin.id : '';
+        // A pin whose playlist no longer exists is kept selectable so the
+        // user sees it (the service skips it at mapping time).
+        const missingOpt = (pinId && !knownIds.has(pinId))
+            ? `<option value="${esc(pinId)}" selected>(missing — ${esc(pin.name || pinId.slice(0, 12))})</option>`
+            : '';
+        const opts = `<option value=""${pinId ? '' : ' selected'}>— auto —</option>`
+            + missingOpt
+            + _spotifyPlaylists.map(p =>
+                `<option value="${esc(p.id)}"${p.id === pinId ? ' selected' : ''}>${esc(p.name)}</option>`
+            ).join('');
+        return `<div class="cfg-sf-slot-row">
+            <div class="cfg-rf-slot-label">${esc(slot)}</div>
+            <select class="cfg-sf-slot-select${pinId ? '' : ' cfg-sf-slot-select-auto'}"
+                    data-slot="${esc(slot)}">${opts}</select>
+        </div>`;
+    }).join('');
+
+    list.innerHTML = rows + `<div class="cfg-sf-save-row">
+        <button type="button" class="btn-subtle" id="cfg-sf-save">Save favourites</button>
+        <span id="cfg-sf-status" class="hint" style="margin:0"></span>
+    </div>`;
+
+    list.querySelectorAll('.cfg-sf-slot-select').forEach(sel => {
+        sel.addEventListener('change', () => {
+            const slot = sel.dataset.slot;
+            const id = sel.value;
+            if (!id) {
+                delete _spotifyPins[slot];
+            } else {
+                const pl = _spotifyPlaylists.find(p => p.id === id);
+                _spotifyPins[slot] = {
+                    id,
+                    name: pl ? pl.name : ((_spotifyPins[slot] || {}).name || ''),
+                };
+            }
+            sel.classList.toggle('cfg-sf-slot-select-auto', !id);
+        });
+    });
+    document.getElementById('cfg-sf-save').addEventListener('click', saveSpotifyFavourites);
+}
+
+async function saveSpotifyFavourites() {
+    const btn = document.getElementById('cfg-sf-save');
+    const status = document.getElementById('cfg-sf-status');
+    btn.disabled = true;
+    btn.classList.remove('ok', 'fail');
+    status.textContent = 'Saving…';
+    try {
+        const resp = await fetch(`${SPOTIFY_URL_PREFIX()}/favourites`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ favourites: _spotifyPins }),
+            signal: AbortSignal.timeout(5000),
+        });
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const d = await resp.json();
+        btn.classList.add('ok');
+        status.textContent = d.rebuilt
+            ? 'Saved — digit buttons updated.'
+            : 'Saved — takes effect after the next playlist refresh.';
+    } catch (e) {
+        btn.classList.add('fail');
+        status.textContent = 'Save failed — could not reach the Spotify service.';
+    } finally {
+        btn.disabled = false;
+    }
 }
 
 // Picker state: stack of {path, name, items} so back-navigation has the
@@ -1760,7 +1909,9 @@ async function discoverPlayer(event) {
     btn.textContent = 'Scanning...'; btn.disabled = true;
     resultEl.classList.remove('show');
     try {
-        const resp = await fetch(API + endpoint, { signal: AbortSignal.timeout(12000) });
+        // Generous timeout: SSDP + subnet IP-scan fallback (see /discover/sonos)
+        // can take ~20s on networks where multicast is blocked.
+        const resp = await fetch(API + endpoint, { signal: AbortSignal.timeout(28000) });
         const devices = await resp.json();
         if (!Array.isArray(devices) || !devices.length) {
             resultEl.innerHTML = '<span class="cfg-discover-empty">No devices found — enter IP manually</span>';
@@ -2065,28 +2216,38 @@ async function saveConfig() {
             const d = await resp.json().catch(() => ({}));
             status.textContent = d.message || 'Save failed';
             status.style.color = '#a44';
+            // The popup has no close button — auto-dismiss so the view
+            // isn't blocked behind a dead full-screen overlay.
+            setTimeout(() => popup.classList.remove('active'), 4000);
         }
     } catch(e) {
         status.textContent = 'Could not reach device';
         status.style.color = '#a44';
+        setTimeout(() => popup.classList.remove('active'), 4000);
     }
 }
 
 function pollReconnect() {
     let attempts = 0;
+    let sawDown = false;
     const status = document.getElementById('restart-status');
     const poll = async () => {
         try {
             const resp = await fetch(API + '/update/check', { signal: AbortSignal.timeout(2000) });
             if (resp.ok) {
                 const data = await resp.json();
-                if (!data.update_in_progress) {
+                // Config-save restarts services but never sets
+                // update_in_progress, so the very first poll would hit the
+                // OLD still-running backend and reload mid-restart into a
+                // Chromium error page.  Require a down→up transition, or
+                // ~20s of stable OKs as the restarted-too-fast fallback.
+                if (!data.update_in_progress && (sawDown || attempts >= 10)) {
                     status.style.color = '#4a4'; status.textContent = 'Done — reloading...';
                     setTimeout(() => location.reload(), 1500);
                     return;
                 }
             }
-        } catch(e) { if (status) status.textContent = 'Waiting for device...'; }
+        } catch(e) { sawDown = true; if (status) status.textContent = 'Waiting for device...'; }
         attempts++;
         if (attempts < 60) setTimeout(poll, 2000);
         else { status.style.color = '#a44'; status.textContent = 'Taking too long — reload manually'; }

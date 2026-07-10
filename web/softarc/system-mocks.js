@@ -13,13 +13,13 @@
     };
 
     const system = {
-        hostname: 'beosound5c-church', ip_address: '192.168.0.163',
+        hostname: 'beosound5c-demo', ip_address: '192.168.1.42',
         uptime: '3d 14h 22m', cpu_temp: '48.2°C', memory: '1.2G / 3.8G (32%)',
         git_tag: 'v0.9.2-dev',
-        device_id: '8e671b06-063c-4fd2-a16f-e9105475c60f',
+        device_id: '00000000-0000-4000-8000-000000000000',
     };
 
-    const config = { device: 'Church' };
+    const config = { device: 'Demo' };
 
     const router = {
         active_source: 'spotify', active_source_name: 'Spotify',
@@ -46,14 +46,14 @@
     ];
 
     const fullConfig = {
-        device: 'Church',
+        device: 'Demo',
         menu: {
             'PLAYING': 'playing', 'JOIN': 'join', 'SPOTIFY': 'spotify',
             'RADIO': 'radio', 'TIDAL': 'tidal', 'SCENES': 'scenes',
             'SECURITY': { url: 'http://homeassistant.local:8123/cameras' },
             'SYSTEM': 'system', 'SHOWING': 'showing',
         },
-        player: { type: 'sonos', ip: '192.168.0.190' },
+        player: { type: 'sonos', ip: '192.168.1.50' },
         bluetooth: { remote_mac: 'AA:BB:CC:DD:EE:FF' },
         remote: { default_source: 'spotify' },
         home_assistant: {
@@ -63,7 +63,7 @@
         transport: { mode: 'mqtt', mqtt_broker: 'homeassistant.local' },
         volume: { type: 'beolab5', host: 'beolab5-controller.local', max: 80, step: 3, output_name: 'BeoLab 5' },
         join: { default_player: 'Kitchen and Dining' },
-        spotify: { client_id: '6420bddd82d046adb24b3009960c5d81', source: 'radio' },
+        spotify: { client_id: '00000000000000000000000000000000', source: 'radio' },
         tidal: { source: 'amem' },
         showing: { entity_id: 'media_player.cinema_appletv' },
     };
@@ -123,7 +123,7 @@
 
     function mockResponse(url) {
         if (url.includes(':8767/webhook'))       return statusResponse();
-        if (url.includes(':8767/info'))          return { ip_address: '192.168.0.163', hostname: 'beosound5c-dev' };
+        if (url.includes(':8767/info'))          return { ip_address: '192.168.1.42', hostname: 'beosound5c-dev' };
         if (url.includes(':8770/router/status'))  return router;
         if (url.includes(':8766/player/status'))  return player;
         if (url.includes(':8767/bt/remotes'))     return btRemotes;
@@ -135,9 +135,9 @@
         if (url.includes('json/config.json'))      return fullConfig;
         if (url.includes(':8767/config'))          return { ok: true };
         if (url.includes('/discover/sonos'))    return [
-            { ip: '192.168.0.190', name: 'Church Living' },
-            { ip: '192.168.1.118', name: 'Kitchen' },
-            { ip: '192.168.1.200', name: 'Office' },
+            { ip: '192.168.1.50', name: 'Living Room' },
+            { ip: '192.168.1.51', name: 'Kitchen' },
+            { ip: '192.168.1.52', name: 'Office' },
         ];
         return null;
     }

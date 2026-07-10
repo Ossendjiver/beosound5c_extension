@@ -93,7 +93,11 @@ done
 SUDOERS_FILE="/etc/sudoers.d/beosound5c"
 POST_UPDATE_PATH="$BASE_DIR/install/post-update.sh"
 
-cat > /tmp/beo-sudoers-new << EOF
+# Stage in a private root-owned mktemp file (mode 600) under /run — NOT a
+# fixed /tmp path, which a local process could swap between the visudo
+# check and the install (TOCTOU).
+SUDOERS_TMP=$(mktemp /run/beo-sudoers.XXXXXX)
+cat > "$SUDOERS_TMP" << EOF
 # BeoSound 5c — UI kiosk and config management
 $SERVICE_USER ALL=(ALL) NOPASSWD: /usr/bin/pkill, /usr/bin/fbi, /usr/bin/plymouth, /sbin/reboot, /usr/sbin/reboot
 $SERVICE_USER ALL=(ALL) NOPASSWD: /usr/bin/tee /etc/beosound5c/config.json
@@ -104,11 +108,34 @@ $SERVICE_USER ALL=(ALL) NOPASSWD: $POST_UPDATE_PATH
 $SERVICE_USER ALL=(ALL) NOPASSWD: /bin/bash $BASE_DIR/services/system/reconcile-services.sh
 EOF
 
-visudo -c -f /tmp/beo-sudoers-new
-cp /tmp/beo-sudoers-new "$SUDOERS_FILE"
-chmod 440 "$SUDOERS_FILE"
-rm /tmp/beo-sudoers-new
+visudo -c -f "$SUDOERS_TMP"
+install -m 440 -o root -g root "$SUDOERS_TMP" "$SUDOERS_FILE"
+rm "$SUDOERS_TMP"
 log "Sudoers updated"
+
+# ── 2b. Service-writable state files ─────────────────────────────────────────
+# Token/state files under /etc/beosound5c must stay owned by the service
+# user. A root-run script (sudo fetch.py, manual auth flow) can rewrite one
+# as root:root, after which every token refresh fails with EACCES — and once
+# the service restarts it can't even read its credentials (Church, Jul 2026).
+# Self-heal ownership on every update.
+CONFIG_DIR="/etc/beosound5c"
+if [ -d "$CONFIG_DIR" ]; then
+    OWNER_FIXED=0
+    for f in "$CONFIG_DIR"/*_tokens.json "$CONFIG_DIR"/*_tokens.json.lock \
+             "$CONFIG_DIR"/*_last_played.json "$CONFIG_DIR"/*_last_station.json \
+             "$CONFIG_DIR"/*_favourites.json "$CONFIG_DIR"/config.json; do
+        [ -e "$f" ] || continue
+        if [ "$(stat -c '%U' "$f")" != "$SERVICE_USER" ]; then
+            chown "$SERVICE_USER:$SERVICE_USER" "$f"
+            log "Fixed ownership: $f"
+            OWNER_FIXED=$((OWNER_FIXED + 1))
+        fi
+    done
+    if [ "$OWNER_FIXED" -eq 0 ]; then
+        log "State file ownership OK"
+    fi
+fi
 
 # ── 3. PipeWire tone filter-chain ────────────────────────────────────────────
 # Keep /etc/pipewire/filter-chain.conf.d/53-beosound5c-tone.conf in sync
@@ -146,6 +173,84 @@ if [ -f "$REQUIREMENTS" ]; then
     pip3 install -r "$REQUIREMENTS" -q --break-system-packages 2>/dev/null \
         || pip3 install -r "$REQUIREMENTS" -q
     log "pip packages up to date"
+fi
+
+# ── 6. yt-dlp (music video feature) ──────────────────────────────────────────
+# Devices installed before v0.9.1 carry either the apt yt-dlp (stale — broken
+# by YouTube's player changes) or the PyInstaller standalone (leaks its ~70MB
+# /tmp extraction on every killed run, eventually filling the sd-hardening
+# tmpfs and breaking the feature). Switch the fleet to the pip package: runs
+# in place (no /tmp extraction), always current from PyPI. Also install the
+# weekly self-update timer from install/modules/ytdlp.sh. Failure-tolerant —
+# a PyPI hiccup must not abort the OTA update.
+YTDLP_BIN="/usr/local/bin/yt-dlp"
+# The standalone is >20MB; pip's entry point is a tiny script. Remove the
+# legacy standalone so pip's entry point takes over.
+if [ -f "$YTDLP_BIN" ] && [ "$(stat -c %s "$YTDLP_BIN" 2>/dev/null || echo 0)" -gt 1000000 ]; then
+    rm -f "$YTDLP_BIN"
+    log "Removed legacy standalone yt-dlp binary"
+fi
+if pip3 install -U -q --ignore-installed --break-system-packages "yt-dlp[default]" 2>/dev/null \
+        || pip3 install -U -q --ignore-installed "yt-dlp[default]" 2>/dev/null; then
+    log "yt-dlp up to date: $(yt-dlp --version 2>/dev/null || echo '?')"
+else
+    log "yt-dlp pip install failed — will retry on next update"
+fi
+# JS runtime for YouTube player solving (see install/modules/ytdlp.sh).
+# No armv7 build — those devices keep using yt-dlp's fallback clients.
+if ! command -v deno >/dev/null 2>&1; then
+    DENO_ASSET=""
+    case "$(uname -m)" in
+        aarch64) DENO_ASSET="deno-aarch64-unknown-linux-gnu.zip" ;;
+        x86_64)  DENO_ASSET="deno-x86_64-unknown-linux-gnu.zip" ;;
+    esac
+    if [ -n "$DENO_ASSET" ]; then
+        # `|| true`-style guards throughout: this whole step must never abort
+        # the OTA update (set -e is active) — a missing download or changed
+        # zip layout just means yt-dlp keeps using its fallback clients.
+        DENO_TMP=$(mktemp -d || true)
+        if [ -n "$DENO_TMP" ] \
+                && curl -fsSL --max-time 300 \
+                "https://github.com/denoland/deno/releases/latest/download/$DENO_ASSET" \
+                -o "$DENO_TMP/deno.zip" 2>/dev/null \
+                && python3 -m zipfile -e "$DENO_TMP/deno.zip" "$DENO_TMP" 2>/dev/null \
+                && install -m 755 "$DENO_TMP/deno" /usr/local/bin/deno 2>/dev/null; then
+            log "deno installed (yt-dlp JS runtime)"
+        else
+            log "deno install failed — yt-dlp will use fallback clients"
+        fi
+        rm -rf "$DENO_TMP"
+    fi
+fi
+
+if [ ! -f /etc/systemd/system/beo-ytdlp-update.timer ] \
+        || ! grep -q 'pip3 install' /etc/systemd/system/beo-ytdlp-update.service 2>/dev/null; then
+    cat > /etc/systemd/system/beo-ytdlp-update.service << 'EOF'
+[Unit]
+Description=BeoSound 5c — update yt-dlp (music video)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash -c 'pip3 install -U -q --ignore-installed --break-system-packages "yt-dlp[default]" || pip3 install -U -q --ignore-installed "yt-dlp[default]"'
+EOF
+    cat > /etc/systemd/system/beo-ytdlp-update.timer << 'EOF'
+[Unit]
+Description=BeoSound 5c — weekly yt-dlp update
+
+[Timer]
+OnCalendar=weekly
+Persistent=true
+RandomizedDelaySec=1h
+
+[Install]
+WantedBy=timers.target
+EOF
+    systemctl daemon-reload
+    systemctl enable --now beo-ytdlp-update.timer >/dev/null 2>&1 \
+        && log "yt-dlp weekly update timer installed" \
+        || log "could not enable yt-dlp update timer"
 fi
 
 log "Done"

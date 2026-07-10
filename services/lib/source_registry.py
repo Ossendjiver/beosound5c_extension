@@ -260,11 +260,26 @@ class SourceRegistry:
                 if action_ts and action_ts < router._latest_action_ts:
                     logger.info("Rejected stale register from %s (ts=%.3f < latest=%.3f)",
                                 id, action_ts, router._latest_action_ts)
+                    # Rejected activation must not leave the "playing"
+                    # commit above in place — a never-activated source
+                    # stuck in "playing" ghosts /router/status, misdirects
+                    # stop routing and blocks paused-adoption. Revert to
+                    # the previous state ("available" for a fresh
+                    # registration: the source did just register and is
+                    # reachable, it's just not active).
+                    source._state = "available" if old_state == "gone" else old_state
                     return {"actions": actions, "old_state": old_state, "new_state": state}
 
                 if self._resync_in_progress and self._active_id:
                     logger.info("Resync: %s wants active but %s is current — skipping",
                                 id, self._active_id)
+                    # Deliberately NO state revert here (unlike the
+                    # stale-rejection path above): the source really is
+                    # playing, it just isn't being activated *yet*.
+                    # restore_persisted_active() runs after the resync
+                    # completes and requires the persisted source to
+                    # still be in "playing"/"paused" to promote it back
+                    # to active — reverting here would break that.
                     return {"actions": actions, "old_state": old_state, "new_state": state}
 
                 # Atomic source switch: await old source stop before activating new

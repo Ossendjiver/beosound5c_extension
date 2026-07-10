@@ -334,6 +334,20 @@ class SourceBase:
         body["action_ts"] = ts
         return await self._player_post("play", body)
 
+    async def player_play_track_radio(self, track_uri, action_ts=None) -> bool:
+        """Ask the player to start a radio station seeded by *track_uri*
+        (e.g. Spotify track radio). Returns False if the player doesn't
+        support it."""
+        ts = action_ts or _action_ts_ctx.get() or self._action_ts or time.monotonic()
+        return await self._player_post(
+            "play_track_radio",
+            {"track_uri": track_uri, "action_ts": ts})
+
+    async def player_set_shuffle(self, enabled: bool) -> bool:
+        """Enable/disable shuffle on the player. Returns False if the
+        player doesn't support it."""
+        return await self._player_post("shuffle", {"enabled": bool(enabled)})
+
     async def player_pause(self) -> bool:
         return await self._player_post("pause")
 
@@ -550,8 +564,13 @@ class SourceBase:
         return {"tracks": [], "current_index": -1, "total": 0}
 
     async def _handle_queue_route(self, request):
-        start = int(request.query.get("start", "0"))
-        max_items = int(request.query.get("max_items", "50"))
+        try:
+            start = int(request.query.get("start", "0"))
+            max_items = int(request.query.get("max_items", "50"))
+        except ValueError:
+            return web.json_response(
+                {"error": "start and max_items must be integers"},
+                status=400, headers=self._cors_headers())
         result = await self.get_queue(start, max_items)
         return web.json_response(result, headers=self._cors_headers())
 

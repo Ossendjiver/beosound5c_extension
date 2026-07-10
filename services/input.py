@@ -2,6 +2,7 @@
 import asyncio, threading, json, time, sys, re
 import hid, websockets
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
 import os
 import logging
 import aiohttp
@@ -13,7 +14,9 @@ from lib.correlation import install_logging
 from lib.endpoints import (
     ROUTER_BROADCAST,
     ROUTER_MEDIA,
+    ROUTER_EVENT,
     ROUTER_OUTPUT_OFF,
+    ROUTER_TOUCH,
     ROUTER_RESYNC,
     router_url,
 )
@@ -143,6 +146,10 @@ go_button_state = 0  # 0 = released, 1 = pressed
 go_press_started_at = 0.0
 go_long_sent = False
 go_long_timer_handle = None
+power_button_pressed_at = 0.0  # wall time of the current press (long-press detection)
+# Hold the power button this long to send ALL-STANDBY (local standby +
+# ML broadcast so link speakers in other rooms power down too).
+POWER_LONGPRESS_ALL_STANDBY = 5.0
 
 def is_backlight_on():
     """Check backlight state from the hardware state byte."""
@@ -176,17 +183,13 @@ def set_led(mode: str):
         state_byte1 |= 0x10
     bs5_send_cmd(state_byte1)
 
-def set_backlight(on: bool):
-    """Turn backlight bit on/off."""
-    global state_byte1
+# Single worker so on/off xrandr calls can't reorder; running them off
+# the caller's thread keeps a slow HDMI mode-set (up to the 2s timeout)
+# from freezing the event loop that serves the hardware-event WebSocket.
+_xrandr_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="xrandr")
 
-    if on:
-        state_byte1 |= 0x40
-    else:
-        state_byte1 &= ~0x40
-    bs5_send_cmd(state_byte1)
-
-    # Control screen using xrandr (Linux only, skip on Mac)
+def _run_xrandr(on: bool):
+    """Control screen using xrandr (Linux only, skip on Mac)."""
     try:
         env = os.environ.copy()
         env["DISPLAY"] = ":0"
@@ -202,6 +205,20 @@ def set_backlight(on: bool):
     except FileNotFoundError:
         # xrandr not available (e.g., on macOS) - skip screen control
         pass
+    except Exception as e:
+        logger.warning("xrandr failed: %s", e)
+
+def set_backlight(on: bool):
+    """Turn backlight bit on/off."""
+    global state_byte1
+
+    if on:
+        state_byte1 |= 0x40
+    else:
+        state_byte1 &= ~0x40
+    bs5_send_cmd(state_byte1)
+
+    _xrandr_pool.submit(_run_xrandr, on)
 
 def toggle_backlight():
     """Toggle backlight state."""
@@ -586,10 +603,13 @@ async def _run_update():
         _update_step = 'restarting'
 
         # Discover active beo-* services
-        res = subprocess.run(
-            ['systemctl', 'list-units', 'beo-*.service', '--state=active',
-             '--no-legend', '--no-pager', '--plain'],
-            capture_output=True, text=True, timeout=5,
+        res = await asyncio.get_running_loop().run_in_executor(
+            None,
+            lambda: subprocess.run(
+                ['systemctl', 'list-units', 'beo-*.service', '--state=active',
+                 '--no-legend', '--no-pager', '--plain'],
+                capture_output=True, text=True, timeout=5,
+            ),
         )
         services = [
             line.split()[0].removesuffix('.service')
@@ -611,12 +631,33 @@ async def _run_update():
             stderr=subprocess.DEVNULL,
         )
 
+        # _update_in_progress deliberately stays True here: the restart is
+        # imminent and this process is about to be killed. But if the
+        # detached restart never happens (e.g. missing sudoers entry, so
+        # the `sudo systemctl restart` inside the bash -c fails), the flag
+        # would otherwise stay True forever and /update/run would 409 on
+        # every retry. Clear it after a generous deadline — if we're still
+        # alive by then, the restart didn't happen.
+        _background_tasks.spawn(_clear_update_flag_after_deadline(),
+                                name='update_restart_deadline')
+
     except Exception as e:
         logger.error('[update] Failed: %s', e)
         _update_in_progress = False
         _update_step = 'idle'
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+async def _clear_update_flag_after_deadline(deadline: float = 120.0):
+    """Reset the update flag if the scheduled restart never killed us."""
+    global _update_in_progress, _update_step
+    await asyncio.sleep(deadline)
+    if _update_in_progress:
+        logger.warning('[update] Service restart did not happen within %.0fs '
+                       '— clearing update-in-progress flag', deadline)
+        _update_in_progress = False
+        _update_step = 'idle'
 
 
 async def handle_update_check(request):
@@ -737,7 +778,27 @@ async def handle_discover_sonos(request):
     try:
         import soco
         loop = asyncio.get_event_loop()
-        devices = await loop.run_in_executor(None, lambda: soco.discover(timeout=5) or set())
+
+        def _find():
+            # SSDP multicast — fast when it works.
+            devices = soco.discover(timeout=5) or set()
+            if not devices:
+                # Multicast is routinely blocked on WiFi (client isolation)
+                # and across VLANs/subnets, so discover() comes back empty on
+                # plenty of real networks. Fall back to a direct IP scan of the
+                # local subnet, which only needs unicast to reach the speakers.
+                try:
+                    from soco import discovery as _disc
+                    devices = _disc.scan_network(
+                        multi_household=False,
+                        scan_timeout=0.5,
+                        max_threads=256,
+                    ) or set()
+                except Exception as e:
+                    logger.debug('Sonos scan_network fallback failed: %s', e)
+            return devices
+
+        devices = await loop.run_in_executor(None, _find)
         result = sorted(
             [{'ip': d.ip_address, 'name': d.player_name} for d in devices],
             key=lambda x: x['name'],
@@ -1016,6 +1077,10 @@ async def handle_config_save(request):
             headers={'Access-Control-Allow-Origin': '*'},
         )
 
+    # Saving via the web UI implies setup is done — flip the first-boot flag so
+    # the BS5 stops auto-opening System/Config on the next reload.
+    body['setup_complete'] = True
+
     # Extract secrets — they go to secrets.env, not config.json
     raw_secrets = body.pop('_secrets', None) or {}
     _SECRET_KEY_MAP = {
@@ -1043,6 +1108,29 @@ async def handle_config_save(request):
         for k, v in raw_secrets.items()
         if k in _SECRET_KEY_MAP and v
     }
+
+    # Fill in the real Sonos zone name when it's missing or the generic
+    # default. Picking a speaker from discovery auto-fills output_name, but
+    # typing the IP manually leaves it as "Sonos" — query the speaker itself
+    # so the UI shows e.g. "Sheep Lounge" instead. Never overrides a name the
+    # user chose; never blocks the save (5s cap, best-effort).
+    volume_cfg = body.get('volume')
+    player_cfg = body.get('player') or {}
+    if (isinstance(volume_cfg, dict)
+            and player_cfg.get('type') == 'sonos' and player_cfg.get('ip')
+            and (volume_cfg.get('output_name') or '').strip().lower() in ('', 'sonos')):
+        try:
+            import soco
+            zone_name = await asyncio.wait_for(
+                asyncio.get_event_loop().run_in_executor(
+                    None, lambda: soco.SoCo(player_cfg['ip']).player_name),
+                timeout=5,
+            )
+            if zone_name:
+                volume_cfg['output_name'] = zone_name
+                logger.info('Sonos output_name auto-derived: %s', zone_name)
+        except Exception as e:
+            logger.info('Could not derive Sonos zone name: %r', e)
 
     ok, error = await _write_config_json(body)
     if not ok:
@@ -1072,6 +1160,23 @@ async def handle_config_save(request):
 
     async def _reconcile():
         await asyncio.sleep(1.5)
+
+        # Reload the kiosk FIRST so it re-reads the new config. reconcile-
+        # services.sh deliberately skips beo-ui (the arc menu re-fetches on
+        # media-WS reconnect), but a config *save* also changes menu visibility
+        # and the setup_complete flag — both of which the kiosk only evaluates
+        # at page load. This must run *before* the reconcile below, because
+        # reconcile-services.sh restarts beo-input last (this very process), and
+        # anything after that call would be killed with our own cgroup. The
+        # kiosk's menu-manager retries /router/menu with backoff, so reloading
+        # ahead of the backend reconcile is safe.
+        try:
+            await asyncio.create_subprocess_exec(
+                'sudo', 'systemctl', 'restart', 'beo-ui',
+            )
+        except Exception as e:
+            logger.error('beo-ui restart after config save failed: %s', e)
+
         try:
             await asyncio.create_subprocess_exec(
                 'sudo', 'bash', reconcile_script,
@@ -1341,6 +1446,7 @@ async def handle_camera_stream(request):
     # Get camera entity from query params, default to doorbell
     entity = request.query.get('entity', 'camera.doorbell_medium_resolution_channel')
 
+    response = None
     try:
         session = await get_http_session()
         headers = _showing_ha_headers()
@@ -1348,7 +1454,13 @@ async def handle_camera_stream(request):
         camera_url = f'{ha_url}/api/camera_proxy_stream/{entity}'
         logger.info('Proxying camera stream from: %s', camera_url)
 
-        async with session.get(camera_url, headers=headers) as resp:
+        # Per-request timeout: the shared session's default total=300 would
+        # kill the MJPEG stream at exactly 5 minutes. No total limit while
+        # streaming — only a per-read timeout so a dead camera still errors.
+        async with session.get(
+            camera_url, headers=headers,
+            timeout=aiohttp.ClientTimeout(total=None, sock_connect=10, sock_read=30),
+        ) as resp:
             if resp.status == 200:
                 response = web.StreamResponse(
                     status=200,
@@ -1373,6 +1485,10 @@ async def handle_camera_stream(request):
                 )
     except Exception as e:
         logger.error('Camera error: %s', e)
+        if response is not None and response.prepared:
+            # Stream already started — headers are sent, so a second
+            # (JSON) response is impossible. Just end the stream.
+            return response
         return web.json_response(
             {'error': str(e)},
             status=500,
@@ -1895,6 +2011,15 @@ async def process_command(data: dict) -> dict:
         page = params.get('page', 'now_playing')
         logger.info('Waking up and showing: %s', page)
         await _set_display_awake(True)
+        # Tell the router this is user/HA activity so its auto-standby
+        # idle clock resets. Otherwise `_standby_dispatched` stays True
+        # forever after the first dispatch (HA's wake/screen_on commands
+        # bypass /router/event and /router/volume).
+        try:
+            s = await get_http_session()
+            await s.post(ROUTER_TOUCH, timeout=aiohttp.ClientTimeout(total=2))
+        except Exception:
+            pass
         await _forward_to_router('navigate', {'page': page})
         return {'status': 'ok', 'screen': 'on', 'page': page}
 
@@ -2466,6 +2591,14 @@ async def handle_people(request):
     ha_url = cfg("home_assistant", "url", default="http://homeassistant.local:8123")
     ha_token = os.getenv('HA_TOKEN', '')
 
+    # No HA token means Home Assistant was never configured — don't probe
+    # (the system page polls this every 30s, which on an HA-less device
+    # produced an error log line every cycle, forever).
+    if not ha_token:
+        response = web.json_response([])
+        response.headers['Access-Control-Allow-Origin'] = '*'
+        return response
+
     try:
         session = await get_http_session()
         headers = {'Authorization': f'Bearer {ha_token}'} if ha_token else {}
@@ -2609,6 +2742,7 @@ async def receive_commands(ws):
 def parse_report(rep: list, loop=None):
     global last_power_press_time, power_button_state
     global go_button_state, go_press_started_at, go_long_sent, go_long_timer_handle
+    global power_button_pressed_at
     if len(rep) < 4:
         logger.warning("Truncated HID report (%d bytes), ignoring", len(rep))
         return None, None, None, None
@@ -2666,16 +2800,30 @@ def parse_report(rep: list, loop=None):
         # Button is pressed
         if power_button_state == 0:  # Was released before
             power_button_state = 1  # Now pressed
+            power_button_pressed_at = time.time()
             logger.info("Power button pressed")
     else:
         # Button is released
         if power_button_state == 1:  # Was pressed before
             power_button_state = 0  # Now released
-            logger.info("Power button released")
-            
-            # Check debounce time
+            held = time.time() - power_button_pressed_at if power_button_pressed_at else 0.0
+            logger.info("Power button released (held %.1fs)", held)
+
             current_time = time.time()
-            if current_time - last_power_press_time > POWER_DEBOUNCE_TIME:
+            if held >= POWER_LONGPRESS_ALL_STANDBY:
+                # Long-press → ALL STANDBY: screen off + local standby +
+                # ML broadcast (the router handles the fan-out on 'alloff').
+                logger.info("Power long-press (%.1fs) -> ALL STANDBY", held)
+                do_click()
+                if is_backlight_on():
+                    set_backlight(False)
+                try:
+                    asyncio.run_coroutine_threadsafe(_send_all_standby(), loop)
+                except Exception:
+                    pass
+                last_power_press_time = current_time
+            # Check debounce time
+            elif current_time - last_power_press_time > POWER_DEBOUNCE_TIME:
                 logger.info("Power button action triggered")
                 toggle_backlight()
                 do_click()
@@ -2703,6 +2851,26 @@ def parse_report(rep: list, loop=None):
         _note_local_screen_activity(f"hid_button:{btn_evt.get('button')}")
 
     return nav_evt, vol_evt, btn_evt, laser_pos
+
+async def _send_all_standby():
+    """Forward an 'alloff' event to the router (long-press power).
+
+    The router does the local standby (player stop, output power off,
+    screen off), broadcasts STANDBY on the ML bus, and falls through to
+    HA so automations can react too.
+    """
+    try:
+        s = await get_http_session()
+        await s.post(ROUTER_EVENT, json={
+            'device_name': 'BeoSound5c',
+            'source': 'input',
+            'action': 'alloff',
+            'device_type': 'All',
+            'count': 1,
+        }, timeout=aiohttp.ClientTimeout(total=2))
+    except Exception as e:
+        logger.warning('All-standby forward failed: %s', e)
+
 
 async def _output_power(url):
     """Fire-and-forget call to router output power endpoint."""

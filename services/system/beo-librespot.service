@@ -14,7 +14,10 @@ Group=__USER__
 WorkingDirectory=/etc/beosound5c
 Environment=XDG_RUNTIME_DIR=/run/user/__UID__
 ExecStart=/usr/local/bin/go-librespot --config_dir /etc/beosound5c/librespot
-ExecStartPost=/bin/sh -c 'until curl -sf http://localhost:3678/status >/dev/null 2>&1; do sleep 0.2; done'
+# Wait for the API to come up, but BOUNDED (30s): an unbounded loop hangs
+# until TimeoutStartSec (90s default) on bad credentials. Failing here marks
+# the unit failed deliberately — Restart=on-failure + StartLimit take over.
+ExecStartPost=/bin/sh -c 'timeout 30 sh -c "until curl -sf http://localhost:3678/status >/dev/null 2>&1; do sleep 0.2; done" || { echo "go-librespot API not reachable after 30s" >&2; exit 1; }'
 Restart=on-failure
 RestartSec=5
 StandardOutput=journal

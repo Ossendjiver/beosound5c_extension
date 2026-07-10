@@ -7,6 +7,13 @@
  */
 
 /**
+ * Runtime override of the menu items (set via updateMenuItems).
+ * In the browser this mirrors window._dynamicMenuItems; in Node.js it
+ * allows tests to exercise different menu sizes.
+ */
+let _menuItemsOverride = null;
+
+/**
  * Configuration constants for laser position mapping
  * Uses centralized Constants when available (browser), falls back to local values (Node.js testing)
  */
@@ -41,13 +48,15 @@ const LASER_MAPPING_CONFIG = (function() {
         MAX_ANGLE: 210,
         TOP_OVERLAY_START: 160,
         BOTTOM_OVERLAY_START: 200,
-        MENU_ITEMS: [
-            { title: 'PLAYING', path: 'menu/playing' },
-            { title: 'SPOTIFY', path: 'menu/spotify' },
-            { title: 'SCENES', path: 'menu/scenes' },
-            { title: 'SYSTEM', path: 'menu/system' },
-            { title: 'SHOWING', path: 'menu/showing' }
-        ],
+        get MENU_ITEMS() {
+            return _menuItemsOverride || [
+                { title: 'PLAYING', path: 'menu/playing' },
+                { title: 'SPOTIFY', path: 'menu/spotify' },
+                { title: 'SCENES', path: 'menu/scenes' },
+                { title: 'SYSTEM', path: 'menu/system' },
+                { title: 'SHOWING', path: 'menu/showing' }
+            ];
+        },
         MENU_ANGLE_STEP: 5
     };
 })();
@@ -57,8 +66,9 @@ const LASER_MAPPING_CONFIG = (function() {
  * @param {Array} items - Array of {title, path} menu item objects
  */
 function updateMenuItems(items) {
+    _menuItemsOverride = items.map(i => ({ title: i.title, path: i.path }));
     if (typeof window !== 'undefined') {
-        window._dynamicMenuItems = items.map(i => ({ title: i.title, path: i.path }));
+        window._dynamicMenuItems = _menuItemsOverride;
     }
 }
 
@@ -70,6 +80,34 @@ function updateMenuLayout(layout) {
     } else {
         delete window._dynamicMenuLayout;
     }
+}
+
+/**
+ * Compute the angle step between menu items for a given item count.
+ * Default is MENU_ANGLE_STEP (5°), but the spacing compresses when the menu
+ * grows: the full span including each edge item's ±step/2 ownership zone
+ * (= step * count) must stay strictly inside the overlay thresholds
+ * (TOP_OVERLAY_START..BOTTOM_OVERLAY_START) with a safety margin, or edge
+ * items land on/past the thresholds and resolve as overlay (unselectable).
+ * Shared by the laser resolver and the visual arc rendering (MenuManager).
+ * @param {number} itemCount - Number of menu items
+ * @returns {number} Angle step in degrees
+ */
+const MENU_EDGE_MARGIN = 1; // degrees kept clear inside each overlay threshold
+
+function getMenuAngleStepFor(itemCount) {
+    const { MENU_ANGLE_STEP, TOP_OVERLAY_START, BOTTOM_OVERLAY_START } = LASER_MAPPING_CONFIG;
+    if (itemCount <= 0) return MENU_ANGLE_STEP;
+    const usableSpan = (BOTTOM_OVERLAY_START - TOP_OVERLAY_START) - 2 * MENU_EDGE_MARGIN;
+    return Math.min(MENU_ANGLE_STEP, usableSpan / itemCount);
+}
+
+/**
+ * Angle step for the current menu items.
+ * @returns {number} Angle step in degrees
+ */
+function getMenuAngleStep() {
+    return getMenuAngleStepFor(LASER_MAPPING_CONFIG.MENU_ITEMS.length);
 }
 
 /**
@@ -115,8 +153,8 @@ function getMenuStartAngle() {
             return dynamicStart;
         }
     }
-    const { MENU_ITEMS, MENU_ANGLE_STEP } = LASER_MAPPING_CONFIG;
-    const totalSpan = MENU_ANGLE_STEP * (MENU_ITEMS.length - 1);
+    const { MENU_ITEMS } = LASER_MAPPING_CONFIG;
+    const totalSpan = getMenuAngleStep() * (MENU_ITEMS.length - 1);
     return 180 - totalSpan / 2;
 }
 
@@ -126,8 +164,8 @@ function getMenuStartAngle() {
  * @returns {number} Angle for the menu item
  */
 function getMenuItemAngle(index) {
-    const { MENU_ITEMS, MENU_ANGLE_STEP } = LASER_MAPPING_CONFIG;
-    return getMenuStartAngle() + (MENU_ITEMS.length - 1 - index) * MENU_ANGLE_STEP;
+    const { MENU_ITEMS } = LASER_MAPPING_CONFIG;
+    return getMenuStartAngle() + (MENU_ITEMS.length - 1 - index) * getMenuAngleStep();
 }
 
 /**
@@ -137,13 +175,13 @@ function getMenuItemAngle(index) {
  * @returns {object} { selectedIndex, path, angle, isOverlay }
  */
 function resolveMenuSelection(position) {
-    const { TOP_OVERLAY_START, BOTTOM_OVERLAY_START, MENU_ITEMS, MENU_ANGLE_STEP } = LASER_MAPPING_CONFIG;
+    const { TOP_OVERLAY_START, BOTTOM_OVERLAY_START, MENU_ITEMS } = LASER_MAPPING_CONFIG;
     const angle = laserPositionToAngle(position);
 
     if (angle <= TOP_OVERLAY_START)  return { selectedIndex: -1, path: null, angle, isOverlay: true };
     if (angle >= BOTTOM_OVERLAY_START) return { selectedIndex: -1, path: null, angle, isOverlay: true };
 
-    const halfStep = MENU_ANGLE_STEP / 2;
+    const halfStep = getMenuAngleStep() / 2;
     for (let i = 0; i < MENU_ITEMS.length; i++) {
         if (Math.abs(angle - getMenuItemAngle(i)) <= halfStep)
             return { selectedIndex: i, path: MENU_ITEMS[i].path, angle, isOverlay: false };
@@ -180,6 +218,8 @@ if (typeof module !== 'undefined' && module.exports) {
         angleToLaserPosition,
         getMenuItemAngle,
         getMenuStartAngle,
+        getMenuAngleStep,
+        getMenuAngleStepFor,
         updateMenuItems,
         updateMenuLayout,
         LASER_MAPPING_CONFIG
@@ -192,6 +232,8 @@ if (typeof module !== 'undefined' && module.exports) {
         angleToLaserPosition,
         getMenuItemAngle,
         getMenuStartAngle,
+        getMenuAngleStep,
+        getMenuAngleStepFor,
         updateMenuItems,
         updateMenuLayout,
         LASER_MAPPING_CONFIG

@@ -11,9 +11,12 @@ User token: obtained via MusicKit JS authorization in the browser.
   - Expires after ~180 days; service detects 401 and sets revoked=True.
 """
 
+import base64
+import json
 import logging
 import os
 import sys
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from apple_music_tokens import load_tokens
@@ -22,15 +25,40 @@ log = logging.getLogger('beo-source-apple-music')
 
 # ── Developer Token ──
 # Extracted from Music Assistant (Apache 2.0) — music_assistant/helpers/app_vars.py, app_var(8)
-# Last updated: 2026-02-23
-# Expires: 2026-04-23
+# (verified from release 2.9.5; live-checked against api.music.apple.com)
+# Last updated: 2026-07-07
+# Expires: 2026-10-22
 # To refresh: check https://github.com/music-assistant/server for latest release,
 #   find music_assistant/helpers/app_vars.py, decode app_var(8) and paste here.
+#   Note: MA's dev branch is moving credentials into a build-time app_secrets.json
+#   (key "apple_music_token") bundled in the PyPI wheel/Docker image — if
+#   app_vars.py no longer contains the blob, extract from the wheel instead.
 DEVELOPER_TOKEN = (
     "eyJhbGciOiJFUzI1NiIsImtpZCI6IkFSRzJSN0xEOTkiLCJ0eXAiOiJKV1QifQ."
-    "eyJpc3MiOiJHVVlGQUs4REM2IiwiZXhwIjoxNzc2OTExNzI1LCJpYXQiOjE3NjExMzQ3MjV9."
-    "AS3xyKE5NnQh6EmKJD2MmFk4JLX-mxmBnfi3_4Kl2S0cgP5wn4JCtMUuQeNs2xnc1fWX0M3-T0FVX6NJMbtcdw"
+    "eyJpc3MiOiJHVVlGQUs4REM2IiwiZXhwIjoxNzkyNzA0NTEzLCJpYXQiOjE3NzY5Mjc1MTN9."
+    "MMnlSyXIrg5zWrogOunqcYgTzGBMr7otVBtGqU-ATbkvydnHydyWbhw-IJZV4pvE41OdyNrdLuC8Vd9oSPbC6Q"
 )
+
+
+def _resolve_developer_token():
+    """Return the developer token, preferring a user-supplied override.
+
+    ``APPLE_MUSIC_DEV_TOKEN`` (secrets.env) lets a device get a fresh
+    token without a software update when the bundled one expires.
+    """
+    return os.environ.get('APPLE_MUSIC_DEV_TOKEN', '').strip() or DEVELOPER_TOKEN
+
+
+def developer_token_expiry(token=None):
+    """Return the JWT ``exp`` epoch of the developer token, or None if
+    it can't be decoded."""
+    token = token or _resolve_developer_token()
+    try:
+        seg = token.split('.')[1]
+        seg += '=' * (-len(seg) % 4)
+        return json.loads(base64.urlsafe_b64decode(seg)).get('exp')
+    except Exception:
+        return None
 
 
 class AppleMusicAuth:
@@ -39,8 +67,22 @@ class AppleMusicAuth:
     def __init__(self):
         self._user_token = None
         self._storefront = None
-        self.developer_token_valid = True
         self.revoked = False
+        # Check the bundled/override developer token's exp up front — an
+        # expired developer token 401s every request, which looks exactly
+        # like user-token revocation but is NOT fixable by re-auth.
+        exp = developer_token_expiry()
+        self.developer_token_valid = bool(exp and exp > time.time())
+        if not self.developer_token_valid:
+            log.error(
+                "Apple Music developer token is EXPIRED (exp=%s). Re-auth "
+                "will NOT fix this. Provide a fresh token via "
+                "APPLE_MUSIC_DEV_TOKEN in /etc/beosound5c/secrets.env, or "
+                "update BeoSound 5c.", exp)
+        elif exp and exp - time.time() < 30 * 86400:
+            log.warning("Apple Music developer token expires in %d days — "
+                        "update BeoSound 5c or set APPLE_MUSIC_DEV_TOKEN "
+                        "before it lapses.", int((exp - time.time()) / 86400))
 
     def load(self):
         """Load user token from token store. Returns True if valid credentials found."""
@@ -68,8 +110,8 @@ class AppleMusicAuth:
         self._storefront = None
 
     def get_developer_token(self):
-        """Return the developer token string."""
-        return DEVELOPER_TOKEN
+        """Return the developer token string (override-aware)."""
+        return _resolve_developer_token()
 
     def get_user_token(self):
         """Return the stored user token."""

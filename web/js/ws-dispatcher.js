@@ -225,6 +225,16 @@ function handleExternalNavigation(uiStore, data) {
     // Explicit mapping first, then auto-prefix bare names with "menu/"
     const route = pageRoutes[page] || (page.startsWith('menu/') ? page : `menu/${page}`);
 
+    // External wake to the playing view (HA fires this when something
+    // starts playing on the active source). The media_update that
+    // triggered HA's automation usually races with this navigate, so
+    // isPlaying() may still be false when view-change fires. Arm
+    // immersive entry so the navigate lands directly in the immersive
+    // overlay instead of flashing the menu for ~1s.
+    if (route === 'menu/playing' && window.ImmersiveMode?.armEagerEntry) {
+        window.ImmersiveMode.armEagerEntry();
+    }
+
     if (uiStore.navigateToView) {
         uiStore.navigateToView(route);
         console.log(`[NAVIGATE] Navigated to: ${route}`);
@@ -485,11 +495,25 @@ function initMediaWebSocket() {
         return;
     }
 
+    // Close any existing socket first — two live sockets would dispatch
+    // every event twice. Detach it from the global before closing so its
+    // handlers (identity-guarded below) become no-ops.
+    const existingWs = window.mediaWebSocket;
+    if (existingWs && existingWs.readyState !== WebSocket.CLOSED) {
+        window.mediaWebSocket = null;
+        try { existingWs.close(); } catch (e) { /* already closing */ }
+    }
+
     try {
         const mediaWs = new WebSocket(AppConfig.websocket.media);
         window.mediaWebSocket = mediaWs;
 
+        // All handlers no-op if this socket has been superseded (a racing
+        // ensureMediaWsConnected/initMediaWebSocket replaced the global) —
+        // otherwise a stale socket's onclose would null the healthy socket's
+        // global and schedule a duplicate reconnect loop.
         mediaWs.onerror = () => {
+            if (window.mediaWebSocket !== mediaWs) return;
             // Auto-activate demo mode on media server failure if autoDetect enabled
             if (window.AppConfig?.demo?.autoDetect && window.EmulatorModeManager && !window.EmulatorModeManager.isActive) {
                 window.EmulatorModeManager.activate('media server unavailable');
@@ -497,6 +521,7 @@ function initMediaWebSocket() {
         };
 
         mediaWs.onopen = () => {
+            if (window.mediaWebSocket !== mediaWs) return;
             _mediaBackoffMs = window.WsBackoff.WS_RECONNECT_BASE_MS;
             console.log('[MEDIA] Router media WS connected');
             if (window.uiStore && window.uiStore.logWebsocketMessage) {
@@ -508,9 +533,16 @@ function initMediaWebSocket() {
             if (window.uiStore) {
                 window.uiStore.menu?.fetchMenu();
             }
+            // Re-sync volume too — it may have changed while the WS was
+            // down, and the initial page-load fetch can race a cold router
+            // boot (see fetchVolumeFromRouter in hardware-input.js).
+            if (typeof fetchVolumeFromRouter === 'function') {
+                fetchVolumeFromRouter();
+            }
         };
 
         mediaWs.onclose = () => {
+            if (window.mediaWebSocket !== mediaWs) return; // superseded — no reconnect
             window.mediaWebSocket = null;
             if (_mediaReconnectCount > 0) {
                 console.log('[MEDIA] Router media WS disconnected - will reconnect');
@@ -521,6 +553,7 @@ function initMediaWebSocket() {
         };
 
         mediaWs.onmessage = (event) => {
+            if (window.mediaWebSocket !== mediaWs) return; // stale socket must not dispatch
             try {
                 const msg = JSON.parse(event.data);
                 // Router WS: handles all state events (media, source, navigate, menu, etc.)

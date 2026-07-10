@@ -51,22 +51,30 @@ class MediaState:
     async def _send_all(self, msg: str) -> None:
         """Send ``msg`` to every WS client with a per-client timeout.
 
-        A hung or slow client is dropped rather than allowed to block the
-        broadcast loop.  Iterates a snapshot so concurrent add/discard from
-        handle_ws() cannot mutate the set mid-loop.
+        Sends run concurrently so N hung clients cost one timeout window
+        total, not one each — awaited broadcasts sit on the event routing
+        path.  A hung or slow client is dropped rather than allowed to
+        block the broadcast.  Operates on a snapshot so concurrent
+        add/discard from handle_ws() cannot mutate the set mid-send.
         """
         if not self._ws_clients:
             return
-        dead: set[web.WebSocketResponse] = set()
-        for ws in list(self._ws_clients):
+
+        async def _send_one(ws: web.WebSocketResponse) -> web.WebSocketResponse | None:
+            """Return the client if it should be dropped, else None."""
             try:
                 await asyncio.wait_for(ws.send_str(msg), timeout=_WS_SEND_TIMEOUT)
+                return None
             except asyncio.TimeoutError:
                 logger.warning("WS client send timed out — dropping client")
-                dead.add(ws)
+                return ws
             except Exception as e:
                 logger.debug("WS client send failed: %s — dropping client", e)
-                dead.add(ws)
+                return ws
+
+        results = await asyncio.gather(
+            *(_send_one(ws) for ws in list(self._ws_clients)))
+        dead = {ws for ws in results if ws is not None}
         if dead:
             self._ws_clients -= dead
             # Best-effort close so the underlying socket is released.

@@ -25,6 +25,18 @@ if [ ! -f "$CONFIG_FILE" ]; then
     exit 1
 fi
 
+# Individual start/stop failures must NOT abort the reconcile mid-way
+# (set -e is active): this script runs live from config-save, and bailing
+# halfway would leave the old player stopped and the new one absent.
+# Collect failures, keep going, report at the end — but distinguish:
+#   REQUIRED_FAILED — the configured player and core-service restarts.
+#     These failing means the device won't play; exit 1 so callers
+#     (install-services.sh) see a real failure.
+#   OPTIONAL_FAILED — menu-driven optional sources. Warn but exit 0 so
+#     one broken optional source doesn't abort an install.
+REQUIRED_FAILED=()
+OPTIONAL_FAILED=()
+
 # --- Determine desired player set ----------------------------------------
 PLAYER_TYPE=$(python3 -c "import json;print(json.load(open('$CONFIG_FILE')).get('player',{}).get('type','sonos'))" 2>/dev/null || echo "sonos")
 echo "ℹ️  Configured player type: $PLAYER_TYPE"
@@ -71,7 +83,7 @@ done
 # --- Enable/start wanted players -----------------------------------------
 for svc in "${WANT_PLAYERS[@]}"; do
     systemctl enable "$svc.service" 2>/dev/null || true
-    systemctl start  "$svc.service"
+    systemctl start  "$svc.service" || REQUIRED_FAILED+=("$svc.service")
 done
 
 # --- Optional sources (driven by config.json menu) -----------------------
@@ -79,7 +91,7 @@ for entry in "${OPTIONAL_SOURCES[@]}"; do
     IFS='|' read -r menu_key service _ _ <<< "$entry"
     if grep -q "\"$menu_key\"" "$CONFIG_FILE"; then
         systemctl enable "$service" 2>/dev/null || true
-        systemctl start  "$service"
+        systemctl start  "$service" || OPTIONAL_FAILED+=("$service")
     else
         systemctl disable "$service" 2>/dev/null || true
         systemctl stop    "$service" 2>/dev/null || true
@@ -96,10 +108,19 @@ ACTIVE=$(systemctl list-units --state=active --no-legend --plain 'beo-*.service'
 
 if [ -n "$ACTIVE" ]; then
     # shellcheck disable=SC2086
-    systemctl try-restart $ACTIVE
+    systemctl try-restart $ACTIVE || REQUIRED_FAILED+=("try-restart")
 fi
 
-systemctl try-restart beo-hlk.service
-systemctl try-restart beo-input.service
+systemctl try-restart beo-hlk.service || true
+systemctl try-restart beo-input.service || REQUIRED_FAILED+=("beo-input.service")
+
+if [ ${#OPTIONAL_FAILED[@]} -gt 0 ]; then
+    echo "⚠️  Optional source(s) failed to start: ${OPTIONAL_FAILED[*]} (check journalctl -u <service>)"
+fi
+
+if [ ${#REQUIRED_FAILED[@]} -gt 0 ]; then
+    echo "❌ Reconcile FAILED — required service(s) did not start: ${REQUIRED_FAILED[*]} (check journalctl -u <service>)"
+    exit 1
+fi
 
 echo "✅ Reconcile complete"

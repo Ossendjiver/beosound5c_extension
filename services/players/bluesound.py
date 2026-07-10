@@ -59,8 +59,14 @@ class BluesoundPlayer(PlayerBase):
 
     # ── BluOS HTTP helpers ──
 
-    async def _bluos_get(self, path: str, timeout: float = 10) -> ElementTree.Element | None:
-        """GET a BluOS endpoint, parse XML response. Returns root Element or None."""
+    async def _bluos_get(self, path: str, timeout: float = 10,
+                         log_errors: bool = True) -> ElementTree.Element | None:
+        """GET a BluOS endpoint, parse XML response. Returns root Element or None.
+
+        ``log_errors=False`` demotes the failure log to DEBUG — used by the
+        monitor loop, which does its own first-error/summary logging so an
+        unreachable speaker doesn't flood the journal.
+        """
         if self._http_session is None or self._http_session.closed:
             return None
         url = f"{self.base_url}{path}"
@@ -74,7 +80,10 @@ class BluesoundPlayer(PlayerBase):
         except asyncio.TimeoutError:
             return None
         except Exception as e:
-            logger.warning("BluOS request failed (%s): %s", path, e)
+            if log_errors:
+                logger.warning("BluOS request failed (%s): %s", path, e)
+            else:
+                logger.debug("BluOS request failed (%s): %s", path, e)
             return None
 
     def _xml_text(self, root: ElementTree.Element, tag: str, default: str = "") -> str:
@@ -177,8 +186,22 @@ class BluesoundPlayer(PlayerBase):
 
     async def on_start(self):
         if not BLUESOUND_IP:
-            logger.error("No BlueSound IP configured (set player.ip in config)")
-            sys.exit(1)
+            # Exit 0, not 1 — with Restart=on-failure this keeps the
+            # misconfigured service stopped instead of crash-looping
+            # (same convention as the player-type guard in
+            # PlayerBase.start()).
+            logger.error("No BlueSound IP configured (set player.ip in "
+                         "config) — exiting")
+            # Tell systemd we started and are stopping. READY=1 must be
+            # sent before exiting: the unit is Type=notify and the normal
+            # READY=1 comes from watchdog_loop, which never runs on this
+            # path — exiting without it makes systemd record
+            # Result=protocol (a failure) and Restart=on-failure
+            # crash-loops the service despite the exit code 0.
+            from lib.watchdog import sd_notify
+            sd_notify("READY=1\nSTATUS=No player.ip configured, exiting")
+            sd_notify("STOPPING=1")
+            sys.exit(0)
         logger.info("Starting BlueSound player for %s", self.base_url)
         self._monitor_task = self._spawn(self._monitor_bluos(), name="bluos_monitor")
 
@@ -187,6 +210,7 @@ class BluesoundPlayer(PlayerBase):
     async def _monitor_bluos(self):
         """Long-poll /Status for state changes."""
         logger.info("Starting BluOS monitoring for %s", self.base_url)
+        consecutive_failures = 0
 
         while self.running:
             try:
@@ -196,12 +220,31 @@ class BluesoundPlayer(PlayerBase):
                     path += f"&etag={self._etag}"
 
                 root = await self._bluos_get(
-                    path, timeout=LONG_POLL_TIMEOUT + 10)
+                    path, timeout=LONG_POLL_TIMEOUT + 10, log_errors=False)
 
                 if root is None:
-                    # Timeout or error — retry
-                    await asyncio.sleep(1)
+                    # Back off while the speaker is unreachable. With a
+                    # wrong/offline player.ip every cycle fails — at a 1s
+                    # retry that's a warning per second into the journal
+                    # forever. Log the first failure, back off to 30s,
+                    # emit a periodic summary, and resume the fast poll
+                    # as soon as a cycle succeeds (mirrors sonos.py).
+                    consecutive_failures += 1
+                    if consecutive_failures == 1:
+                        logger.error("Error in BluOS monitoring: /Status "
+                                     "poll failed (speaker unreachable?)")
+                    elif consecutive_failures % 120 == 0:
+                        logger.warning("BluOS still unreachable (%d "
+                                       "consecutive failed polls)",
+                                       consecutive_failures)
+                    await asyncio.sleep(
+                        min(2 ** min(consecutive_failures, 5), 30.0))
                     continue
+
+                if consecutive_failures:
+                    logger.info("BluOS reachable again after %d failed polls",
+                                consecutive_failures)
+                    consecutive_failures = 0
 
                 # Update etag for next long-poll
                 self._etag = root.get("etag", self._etag)
@@ -213,6 +256,8 @@ class BluesoundPlayer(PlayerBase):
                     state = "paused"
                 else:
                     state = "stopped"
+
+                prev_state = self._current_playback_state
 
                 # Wake trigger on transition to playing
                 if state == "playing" and self._current_playback_state in (
@@ -234,6 +279,21 @@ class BluesoundPlayer(PlayerBase):
                             name="playback_override")
 
                 self._current_playback_state = state
+
+                # Broadcast on play<->pause/stop transitions with the same
+                # track — the track didn't change, so the track_change
+                # broadcast below won't fire (mirrors sonos.py). Both
+                # directions matter: pause/stop so the UI leaves the
+                # "playing" state, and resume so an externally-paused UI
+                # doesn't stay stuck on "paused" until the next track.
+                state_transition = (
+                    (prev_state == "playing" and state in ("paused", "stopped"))
+                    or (prev_state in ("paused", "stopped") and state == "playing")
+                )
+                if state_transition and self._cached_media_data:
+                    state_data = dict(self._cached_media_data)
+                    state_data["state"] = state
+                    await self.broadcast_media_update(state_data, "state_change")
 
                 # Volume reporting (base method deduplicates)
                 vol_str = self._xml_text(root, "volume")

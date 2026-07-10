@@ -1212,6 +1212,10 @@
         const HISTORY_MAX = 30;  // ~2.5 min at 5s refresh
 
         // ── Subcard definitions ──
+        // Reboot card state: 'idle' → GO → 'armed' (6s window) → GO → 'rebooting'
+        let rebootState = 'idle';
+        let rebootDisarmTimer = null;
+
         const SUBCARDS = [
             {
                 id: 'system',
@@ -1580,6 +1584,27 @@
                     return html;
                 },
             },
+            {
+                id: 'reboot',
+                title: 'RESTART',
+                service: null,
+                fetch: async () => ({}),
+                render: () => {
+                    let html = '<div class="subcard-body">';
+                    html += row('Action', 'Reboot the system');
+                    html += row('Effect', 'Full restart of all services and display');
+                    html += row('Duration', '~1 minute');
+                    html += '</div>';
+                    if (rebootState === 'rebooting') {
+                        html += '<div style="margin-top:18px;text-align:center;font-size:14px;color:#4a4;">Rebooting&hellip;</div>';
+                    } else if (rebootState === 'armed') {
+                        html += '<div style="margin-top:18px;text-align:center;font-size:14px;color:#fa0;">Press GO again to reboot</div>';
+                    } else {
+                        html += '<div style="margin-top:18px;text-align:center;font-size:13px;color:#666;">Press GO to reboot</div>';
+                    }
+                    return html;
+                },
+            },
         ];
 
         // ── Helper functions ──
@@ -1805,10 +1830,26 @@
                 this.fetchPeople();
                 this.fetchBTRemotes();
                 this.checkUpdate();
+                this.maybeOpenConfigTab();
 
                 this._intervals = [
                     setInterval(() => this.fetchPeople(), 30000),
                 ];
+            }
+
+            async maybeOpenConfigTab() {
+                try {
+                    const resp = await fetch('../json/config.json', { cache: 'no-store' });
+                    if (!resp.ok) return;
+                    const cfg = await resp.json();
+                    if (cfg.setup_complete === false) {
+                        const idx = this.sections.indexOf('config');
+                        if (idx >= 0) {
+                            this.currentSection = idx;
+                            this.updateSection();
+                        }
+                    }
+                } catch (e) { /* offline — leave on default tab */ }
             }
 
             // ── Subcards ──
@@ -1991,6 +2032,11 @@
                     } else if (direction === 'clock') {
                         this.currentSubcard = (this.currentSubcard + 1) % SUBCARDS.length;
                     }
+                    // Leaving the card disarms a pending reboot confirm
+                    if (rebootState === 'armed') {
+                        rebootState = 'idle';
+                        clearTimeout(rebootDisarmTimer);
+                    }
                     this.startSubcardRefresh();
                 } else if (section === 'remotes') {
                     if (this.remoteItems.length > 0) {
@@ -2041,6 +2087,12 @@
                 // Fetch remotes when entering remotes section
                 if (section === 'remotes') {
                     this.fetchBTRemotes();
+                    // Clear any existing poller first — updateSection() runs on
+                    // every tab click, including re-clicks of the active tab,
+                    // and stacked intervals would leak until iframe teardown.
+                    if (this.remotesRefreshInterval) {
+                        clearInterval(this.remotesRefreshInterval);
+                    }
                     this.remotesRefreshInterval = setInterval(() => this.fetchBTRemotes(), 10000);
                 } else {
                     if (this.remotesRefreshInterval) {
@@ -2370,6 +2422,30 @@
 
             restartSubcardService() {
                 const card = SUBCARDS[this.currentSubcard];
+                if (card.id === 'reboot') {
+                    // Two-press confirm: arm on first GO, reboot on second.
+                    if (rebootState === 'rebooting') return;
+                    if (rebootState !== 'armed') {
+                        rebootState = 'armed';
+                        clearTimeout(rebootDisarmTimer);
+                        rebootDisarmTimer = setTimeout(() => {
+                            rebootState = 'idle';
+                            if (SUBCARDS[this.currentSubcard].id === 'reboot') this.renderCurrentSubcard();
+                        }, 6000);
+                        this.renderCurrentSubcard();
+                        return;
+                    }
+                    clearTimeout(rebootDisarmTimer);
+                    rebootState = 'rebooting';
+                    this.renderCurrentSubcard();
+                    if (this.inputWs && this.inputWs.readyState === WebSocket.OPEN) {
+                        this.inputWs.send(JSON.stringify({
+                            type: 'command', command: 'restart_service',
+                            params: { action: 'reboot' }
+                        }));
+                    }
+                    return;
+                }
                 if (!card.service) {
                     // SYSTEM card — restart all
                     if (this.inputWs && this.inputWs.readyState === WebSocket.OPEN) {

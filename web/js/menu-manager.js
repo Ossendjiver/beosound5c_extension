@@ -99,12 +99,16 @@ class MenuManager {
         this._menuLoaded = false;
         this._menuRetries = 0;
         this._lastSelectedPath = null;
+        this._lastClickedPath = null;
         this._menuLayout = null;
         this._renderedMenuNodes = new Map();
         this._renderedOrderedNodes = [];
         this._dirtySourceRoutes = new Set();
         this._fetchMenuPromise = null;
         this._sourceScriptPromises = new Map();
+        this._evictionGraceMs = c.timeouts?.menuEvictionGrace || 12000;
+        this._evictionTimer = null;
+        this._evictionRoute = null;
 
         // Callbacks wired by UIStore
         this.onNavigate = null;      // (path) => void
@@ -179,6 +183,7 @@ class MenuManager {
                 if (window.LaserPositionMapper?.updateMenuItems) {
                     window.LaserPositionMapper.updateMenuItems(this.menuItems);
                 }
+                this._cleanupRemovedRoute();
 
                 this._menuLoaded = true;
                 this._menuRetries = 0;
@@ -427,13 +432,58 @@ class MenuManager {
 
     // ── Rendering ──
 
+    _cleanupRemovedRoute() {
+        const route = this._currentRoute;
+        if (!route || this.menuItems.some((m) => m.path === route)) {
+            this._cancelPendingEviction();
+            return;
+        }
+
+        if (this._evictionTimer) {
+            if (this._evictionRoute === route) return;
+            this._cancelPendingEviction();
+        }
+
+        console.log(`[MENU] Current view ${route} missing after menu rebuild — evicting in ${this._evictionGraceMs / 1000}s unless it returns`);
+        this._evictionRoute = route;
+        this._evictionTimer = setTimeout(() => {
+            this._evictionTimer = null;
+            const pending = this._evictionRoute;
+            this._evictionRoute = null;
+            if (this._currentRoute !== pending) return;
+            if (this.menuItems.some((m) => m.path === pending)) return;
+
+            console.log(`[MENU] Current view ${pending} still missing after grace period — navigating away`);
+            if (this.onNavigate) {
+                this.onNavigate('menu/playing');
+                this._currentRoute = 'menu/playing';
+            }
+            delete this.views[pending];
+        }, this._evictionGraceMs);
+    }
+
+    _cancelPendingEviction() {
+        if (this._evictionTimer) {
+            clearTimeout(this._evictionTimer);
+            this._evictionTimer = null;
+        }
+        this._evictionRoute = null;
+    }
+
+    getAngleStep() {
+        const mapper = (typeof window !== 'undefined' && window.LaserPositionMapper) || null;
+        return mapper?.getMenuAngleStepFor
+            ? mapper.getMenuAngleStepFor(this.menuItems.length)
+            : this.angleStep;
+    }
+
     getStartItemAngle() {
         const dynamicStart = Number(this._menuLayout?.startAngle);
         if (Number.isFinite(dynamicStart)) {
             return dynamicStart;
         }
         const visibleCount = this.menuItems.length;
-        const totalSpan = this.angleStep * (visibleCount - 1);
+        const totalSpan = this.getAngleStep() * (visibleCount - 1);
         return 180 - totalSpan / 2;
     }
 
@@ -473,7 +523,7 @@ class MenuManager {
             itemElement.textContent = item.title;
         }
 
-        const itemAngle = this.getStartItemAngle() + (visibleItems.length - 1 - index) * this.angleStep;
+        const itemAngle = this.getStartItemAngle() + (visibleItems.length - 1 - index) * this.getAngleStep();
         const position = arcs.getArcPoint(this.radius, 20, itemAngle);
         itemElement.dataset.angle = String(itemAngle);
 
@@ -540,9 +590,15 @@ class MenuManager {
         }
 
         // Click exactly when the bolded item changes — one click per highlight change
-        const changed = selectedPath && selectedPath !== previousPath;
         this._lastSelectedPath = selectedPath;
-        return changed; // caller sends click command
+        return this._shouldClick(selectedPath);
+    }
+
+    _shouldClick(selectedPath) {
+        const changed = !!(selectedPath && this._lastClickedPath &&
+                           selectedPath !== this._lastClickedPath);
+        if (selectedPath) this._lastClickedPath = selectedPath;
+        return changed;
     }
 
     // ── Dynamic add/remove ──
@@ -564,6 +620,7 @@ class MenuManager {
         if (window.LaserPositionMapper?.updateMenuItems) {
             window.LaserPositionMapper.updateMenuItems(this.menuItems);
         }
+        this._cleanupRemovedRoute();
 
         console.log(`[MENU] Added "${item.title}" after ${afterPath} (now ${this.menuItems.length} items)`);
         this.renderMenuItemsAnimated();
@@ -588,6 +645,7 @@ class MenuManager {
         if (window.LaserPositionMapper?.updateMenuItems) {
             window.LaserPositionMapper.updateMenuItems(this.menuItems);
         }
+        this._cleanupRemovedRoute();
 
         console.log(`[MENU] Removed "${path}" (now ${this.menuItems.length} items)`);
         this.renderMenuItemsAnimated();
@@ -636,4 +694,8 @@ class MenuManager {
     }
 }
 
-window.MenuManager = MenuManager;
+if (typeof module !== 'undefined' && module.exports) {
+    module.exports = { MenuManager };
+} else {
+    window.MenuManager = MenuManager;
+}

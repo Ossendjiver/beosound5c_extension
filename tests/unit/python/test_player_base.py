@@ -297,3 +297,40 @@ class TestCommandTiming:
 
         # At minimum two stamps recorded; the last one is the post-play stamp.
         assert p._last_internal_command >= 2.0
+
+
+# ── /player/queue query param validation ─────────────────────────────
+
+
+def _fake_query_request(query: dict):
+    """Minimal stand-in for an aiohttp Request that carries query params."""
+    class _R:
+        pass
+    r = _R()
+    r.query = query
+    return r
+
+
+class TestQueueParamValidation:
+    """Non-integer start/max_items must 400, not 500 via ValueError."""
+
+    def test_bad_start_returns_400(self):
+        p = _FakePlayer()
+        resp = _run(p._handle_queue(_fake_query_request({"start": "abc"})))
+        assert resp.status == 400
+
+    def test_bad_max_items_returns_400(self):
+        p = _FakePlayer()
+        resp = _run(p._handle_queue(_fake_query_request({"max_items": "lots"})))
+        assert resp.status == 400
+
+    def test_valid_params_return_200(self):
+        p = _FakePlayer()
+        resp = _run(p._handle_queue(_fake_query_request(
+            {"start": "5", "max_items": "10"})))
+        assert resp.status == 200
+
+    def test_defaults_when_params_missing(self):
+        p = _FakePlayer()
+        resp = _run(p._handle_queue(_fake_query_request({})))
+        assert resp.status == 200

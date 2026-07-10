@@ -245,6 +245,50 @@ class TestVolumeBalance:
         _run(r.route_event({"action": "off", "device_type": "Audio"}))
         assert "off_power" in r._spawned_names
 
+    def test_off_forwards_stop_to_active_source(self):
+        """Standby must also stop the active source directly — on
+        player.type "none" devices there is no player service on :8766,
+        so sources playing through their own local pipeline (in-process
+        mpv in USB/CD) would otherwise keep playing."""
+        r = _make_router()
+        _make_source(r.registry, "usb",
+                     handles={"play", "pause", "stop"}, state="playing")
+        r.registry._active_id = "usb"
+        _run(r.route_event({"action": "off", "device_type": "Audio"}))
+        assert "off_stop" in r._spawned_names  # player stop kept
+        assert "off_source_stop" in r._spawned_names
+        r._forward_to_source.assert_called_once()
+        args, _ = r._forward_to_source.call_args
+        assert args[0].id == "usb"
+        assert args[1]["action"] == "stop"
+
+    def test_alloff_forwards_stop_to_active_source(self):
+        r = _make_router()
+        _make_source(r.registry, "usb",
+                     handles={"play", "pause", "stop"}, state="playing")
+        r.registry._active_id = "usb"
+        _run(r.route_event({"action": "alloff", "device_type": "All"}))
+        assert "off_source_stop" in r._spawned_names
+        assert "alloff_ml" in r._spawned_names
+        r._forward_to_source.assert_called_once()
+        assert r._forward_to_source.call_args.args[1]["action"] == "stop"
+
+    def test_off_without_active_source_skips_source_stop(self):
+        r = _make_router()
+        _run(r.route_event({"action": "off", "device_type": "Audio"}))
+        assert "off_stop" in r._spawned_names
+        assert "off_source_stop" not in r._spawned_names
+        r._forward_to_source.assert_not_called()
+
+    def test_off_active_source_without_stop_handle_skipped(self):
+        r = _make_router()
+        _make_source(r.registry, "news",
+                     handles={"go", "left", "right"}, state="playing")
+        r.registry._active_id = "news"
+        _run(r.route_event({"action": "off", "device_type": "Audio"}))
+        assert "off_source_stop" not in r._spawned_names
+        r._forward_to_source.assert_not_called()
+
 
 # ── Fallthrough to HA ────────────────────────────────────────────────
 

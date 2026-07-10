@@ -324,3 +324,109 @@ class TestAllAvailable:
         s = reg.create_from_config("spotify", set())
         s._state = "gone"
         assert reg.all_available() == []
+
+
+class TestRejectedActivationStateRevert:
+    """A stale-rejected "playing" activation must not leave the source's
+    state committed as playing.
+
+    Regression: update() wrote ``source._state = state`` before the
+    stale-action_ts rejection path, so a rejected source stayed marked
+    "playing" forever without ever being activated — ghosting
+    /router/status, misdirecting the router's stop-with-no-active-source
+    routing, and blocking paused-adoption (which only adopts when the
+    current source isn't playing/paused).
+
+    The revert applies ONLY to the stale-action_ts path (two sources
+    racing a live activation).  The resync-in-progress skip path must
+    NOT revert: the skipped source really is playing, and
+    ``restore_persisted_active()`` needs it still in "playing"/"paused"
+    after the resync to promote it back to active.
+    """
+
+    def test_stale_rejection_reverts_state(self):
+        reg = SourceRegistry()
+        router = make_router_mock()
+        router._latest_action_ts = 200.0
+        asyncio.run(reg.update("radio", "available", router,
+                                name="Radio", command_url="http://localhost:8779/command"))
+        asyncio.run(reg.update("radio", "playing", router, action_ts=100))
+        assert reg.active_id is None
+        # Must NOT be left as a ghost "playing" source
+        assert reg.get("radio").state == "available"
+
+    def test_stale_rejection_on_fresh_register_leaves_available(self):
+        """gone→playing register rejected as stale: the source did just
+        register (menu item added), so it reverts to "available" rather
+        than back to "gone"."""
+        reg = SourceRegistry()
+        router = make_router_mock()
+        router._latest_action_ts = 200.0
+        asyncio.run(reg.update("radio", "playing", router,
+                                name="Radio", command_url="http://localhost:8779/command",
+                                action_ts=100))
+        assert reg.active_id is None
+        assert reg.get("radio").state == "available"
+        # Still listed for the UI menu
+        assert "radio" in {s.id for s in reg.all_available()}
+
+    def test_resync_skip_keeps_registered_state(self):
+        """Resync-in-progress skip: activation is deferred, NOT rejected.
+        The source keeps its registered "playing" state so
+        restore_persisted_active() can promote it after the resync."""
+        reg = SourceRegistry()
+        router = make_router_mock()
+        asyncio.run(reg.update("cd", "available", router,
+                                name="CD", command_url="http://localhost:8769/command"))
+        asyncio.run(reg.update("cd", "playing", router, action_ts=100))
+        assert reg.active_id == "cd"
+        reg._resync_in_progress = True
+        asyncio.run(reg.update("spotify", "playing", router,
+                                name="Spotify", command_url="http://localhost:8771/command",
+                                action_ts=0))
+        # cd stays active; spotify is not activated but keeps "playing"
+        assert reg.active_id == "cd"
+        assert reg.get("spotify").state == "playing"
+
+    def test_restore_persisted_active_after_resync_skip(self):
+        """Startup-resync scenario: Spotify was persisted-active before a
+        router restart, but CD probes first and activates.  Spotify's
+        register hits the resync-skip path; restore_persisted_active()
+        must still be able to promote it back to active afterwards."""
+        reg = SourceRegistry()
+        router = make_router_mock()
+        reg._resync_in_progress = True
+        # CD probes first — no active source yet, so it activates.
+        asyncio.run(reg.update("cd", "playing", router,
+                                name="CD", command_url="http://localhost:8769/command",
+                                action_ts=0))
+        assert reg.active_id == "cd"
+        # Spotify (the persisted-active source) re-registers as playing —
+        # skipped because CD is already current.
+        asyncio.run(reg.update("spotify", "playing", router,
+                                name="Spotify", command_url="http://localhost:8771/command",
+                                action_ts=0))
+        assert reg.active_id == "cd"
+        reg._resync_in_progress = False
+
+        restored = asyncio.run(reg.restore_persisted_active(
+            "spotify", ["cd", "spotify"], router))
+        assert restored is True
+        assert reg.active_id == "spotify"
+        # CD was demoted so only one source is playing.
+        assert reg.get("cd").state == "available"
+        assert reg.get("spotify").state == "playing"
+
+    def test_rejected_source_not_targeted_by_untargeted_stop(self):
+        """router.route_event's stop-with-no-active-source path targets
+        sources whose state is playing/paused — a rejected activation
+        must not make the source a stop target."""
+        reg = SourceRegistry()
+        router = make_router_mock()
+        router._latest_action_ts = 200.0
+        asyncio.run(reg.update("radio", "playing", router,
+                                name="Radio", command_url="http://localhost:8779/command",
+                                action_ts=100))
+        playing = [s for s in reg.all_available()
+                   if s.state in ("playing", "paused")]
+        assert playing == []

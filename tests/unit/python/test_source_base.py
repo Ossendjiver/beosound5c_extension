@@ -418,3 +418,33 @@ class TestCorrelationPropagation:
         _run(src._handle_command_route(_FakeRequest({"action": "play"})))
         # Whatever the default is, it must be stable (not "routerID").
         assert observed[0] != "routerID"
+
+
+# ── /queue query param validation ────────────────────────────────────
+
+
+class _FakeQueryRequest:
+    """Minimal duck-typed aiohttp Request carrying query params."""
+    def __init__(self, query: dict):
+        self.query = query
+
+
+class TestQueueRouteParamValidation:
+    """Non-integer start/max_items must 400, not 500 via ValueError."""
+
+    def test_bad_start_returns_400(self):
+        src = _FakeSource()
+        resp = _run(src._handle_queue_route(_FakeQueryRequest({"start": "abc"})))
+        assert resp.status == 400
+
+    def test_bad_max_items_returns_400(self):
+        src = _FakeSource()
+        resp = _run(src._handle_queue_route(
+            _FakeQueryRequest({"max_items": "many"})))
+        assert resp.status == 400
+
+    def test_valid_params_return_200(self):
+        src = _FakeSource()
+        resp = _run(src._handle_queue_route(
+            _FakeQueryRequest({"start": "0", "max_items": "50"})))
+        assert resp.status == 200

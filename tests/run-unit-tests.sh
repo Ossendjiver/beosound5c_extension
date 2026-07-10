@@ -4,7 +4,7 @@ set -e
 cd "$(dirname "$0")/.."
 
 echo "=== Python unit tests ==="
-python3 -m pytest tests/unit/python/ -v
+python3 -m pytest tests/unit/python/ tests/unit/spotify/ -v
 
 echo ""
 echo "=== JavaScript unit tests ==="

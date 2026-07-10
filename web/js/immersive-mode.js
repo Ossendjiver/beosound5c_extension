@@ -10,6 +10,8 @@
     let overlayRoot = null;
     let lastOverlayText = { title: '', artist: '', album: '' };
     let lastPlaybackActive = false;
+    let eagerEntryArmed = false;
+    let eagerEntryArmedTimer = null;
 
     function normalizePlaybackState(state) {
         return String(state || '').trim().toLowerCase();
@@ -210,7 +212,19 @@
             clearIdleTimer();
             hideOverlay();
         } else if (!lastPlaybackActive) {
-            armIdleTimer();
+            if (eagerEntryArmed && window.uiStore?.currentRoute === 'menu/playing') {
+                eagerEntryArmed = false;
+                window.clearTimeout(eagerEntryArmedTimer);
+                eagerEntryArmedTimer = null;
+                clearIdleTimer();
+                window.setTimeout(() => {
+                    if (window.uiStore?.currentRoute === 'menu/playing') {
+                        showOverlay();
+                    }
+                }, 120);
+            } else {
+                armIdleTimer();
+            }
         }
 
         lastPlaybackActive = activeNow;
@@ -220,6 +234,15 @@
         if (!overlayVisible) return;
         hideOverlay();
         armIdleTimer();
+    }
+
+    function armEagerEntry() {
+        eagerEntryArmed = true;
+        window.clearTimeout(eagerEntryArmedTimer);
+        eagerEntryArmedTimer = window.setTimeout(() => {
+            eagerEntryArmed = false;
+            eagerEntryArmedTimer = null;
+        }, 3000);
     }
 
     function init() {
@@ -251,8 +274,36 @@
             armIdleTimer();
         });
 
-        document.addEventListener('bs5c:view-change', () => {
+        document.addEventListener('bs5c:view-change', (event) => {
+            const detail = event.detail || {};
+            const from = String(detail.from || '');
+            const to = String(detail.to || '');
             hideOverlay();
+            lastOverlayText = { title: '', artist: '', album: '' };
+
+            if (to === 'menu/playing') {
+                const shouldEagerEnter = eagerEntryArmed || isPlaybackActive();
+                if (eagerEntryArmed) {
+                    eagerEntryArmed = false;
+                    window.clearTimeout(eagerEntryArmedTimer);
+                    eagerEntryArmedTimer = null;
+                }
+                if (shouldEagerEnter) {
+                    clearIdleTimer();
+                    window.setTimeout(() => {
+                        if (window.uiStore?.currentRoute === 'menu/playing') {
+                            showOverlay();
+                        }
+                    }, 200);
+                    return;
+                }
+            }
+
+            if (from === 'menu/playing' && to !== 'menu/playing') {
+                clearIdleTimer();
+                return;
+            }
+
             armIdleTimer();
         });
 
@@ -273,12 +324,29 @@
         document.addEventListener('touchstart', handleDocumentPointerActivity, { capture: true, passive: true });
         document.addEventListener('touchmove', handleDocumentPointerActivity, { capture: true, passive: true });
 
+        if (window.uiStore.currentRoute === 'menu/playing') {
+            let startupChecks = 0;
+            const startupCheck = () => {
+                if (window.uiStore?.currentRoute !== 'menu/playing') return;
+                if (isPlaybackActive()) {
+                    showOverlay();
+                    return;
+                }
+                startupChecks += 1;
+                if (startupChecks < 10) {
+                    window.setTimeout(startupCheck, 500);
+                }
+            };
+            window.setTimeout(startupCheck, 500);
+        }
+
         console.log('[IMMERSIVE] Overlay manager initialized');
     }
 
     window.ImmersiveMode = {
         enter: showOverlay,
         exit: hideOverlay,
+        armEagerEntry,
         consumeUserActivity,
         syncText: () => renderOverlay(false),
         get active() { return overlayVisible; },

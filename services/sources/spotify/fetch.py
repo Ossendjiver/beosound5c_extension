@@ -25,7 +25,12 @@ sys.path.insert(0, os.path.join(PROJECT_ROOT, 'services'))
 
 from spotify_auth import get_access_token, missing_scopes
 from spotify_tokens import load_tokens
-from lib.digit_playlists import detect_digit_playlist, build_digit_mapping
+from lib.digit_playlists import (
+    detect_digit_playlist,
+    build_digit_mapping,
+    load_digit_pins,
+    spotify_favourites_path,
+)
 
 # Scopes the app currently asks for.  Kept in sync with SPOTIFY_SCOPES in
 # service.py — duplicating the literal here keeps fetch.py runnable
@@ -88,6 +93,26 @@ DIGIT_PLAYLISTS_FILE = os.path.join(PROJECT_ROOT, 'web', 'json', 'digit_playlist
 DEFAULT_OUTPUT_FILE = os.path.join(PROJECT_ROOT, 'web', 'json', 'spotify_playlists.json')
 
 
+def should_refuse_shrink(force, cached_count, final_count, list_error,
+                         fetched_failed):
+    """Decide whether to refuse overwriting the cache with a much-smaller
+    playlist set.
+
+    Refuse only when the shrink is large (cache >= 4 and result < half of
+    it) AND this run actually had problems — a list-level error from
+    ``GET /me/playlists`` or failed per-playlist track fetches.  A *clean*
+    fetch that comes back much smaller means the user really pruned their
+    library, and we must write it: refusing would wedge the cache forever,
+    since every automatic refresh path (view-open, startup, nightly,
+    ``refresh_playlists`` command) runs without ``--force``.
+    """
+    if force:
+        return False
+    if not (cached_count >= 4 and final_count < cached_count // 2):
+        return False
+    return bool(list_error) or fetched_failed > 0
+
+
 def log(msg):
     """Log with timestamp to stdout (captured by systemd journal or parent process)."""
     timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -103,7 +128,12 @@ def fetch_playlist_tracks(token, playlist_id):
     tracks instead of overwriting them with an empty list.
     """
     tracks = []
-    url = f'https://api.spotify.com/v1/playlists/{playlist_id}/tracks?limit=100'
+    # Spotify's Feb/Mar 2026 Web API migration replaced /playlists/{id}/tracks
+    # with /playlists/{id}/items — the old endpoint returns 403 for apps in
+    # Development Mode (which is what third-party installs run as).  Each page
+    # entry carries the track under 'item'; during the transition Spotify also
+    # includes the legacy 'track' key, so read whichever is present.
+    url = f'https://api.spotify.com/v1/playlists/{playlist_id}/items?limit=100'
     while url:
         try:
             data = _spotify_get(token, url)
@@ -119,7 +149,7 @@ def fetch_playlist_tracks(token, playlist_id):
         skipped_local = 0
         skipped_no_url = 0
         for item in raw_items:
-            track = item.get('track')
+            track = item.get('item') or item.get('track')
             if not track:
                 continue
             if track.get('is_local'):
@@ -434,6 +464,7 @@ def main():
     fetched_ok = 0
     fetched_failed = 0
     kept_from_cache_on_error = 0
+    third_party_403 = 0
     if to_fetch:
         log(f"Fetching tracks for {len(to_fetch)} playlists in parallel...")
         with ThreadPoolExecutor(max_workers=2) as pool:
@@ -449,6 +480,10 @@ def main():
                     tracks, error = [], f"unexpected: {e}"
 
                 if error:
+                    if (error == "http_403" and my_user_id
+                            and pl.get('owner')
+                            and pl['owner'] != my_user_id):
+                        third_party_403 += 1
                     # Don't clobber cached tracks with an empty list when
                     # the fetch errored — the playlist is real, we just
                     # couldn't reach it this round.  Snapshot stays the
@@ -492,20 +527,29 @@ def main():
     cached_count = len(cache)
 
     # Refuse to overwrite a healthy cache with a result that's drastically
-    # smaller — a sudden drop almost always means an upstream auth/scope/
-    # rate-limit issue rather than the user actually deleting half their
-    # library.  The user can always force the write with --force.
-    if (not force and cached_count >= 4
-            and final_count < cached_count // 2):
+    # smaller — but only when this run actually had problems (list-level
+    # error or failed track fetches), i.e. the drop looks like an upstream
+    # auth/scope/rate-limit issue.  A clean run that returns far fewer
+    # playlists means the user really deleted them; refusing then would
+    # wedge the cache forever (no automatic refresh passes --force).
+    big_shrink = cached_count >= 4 and final_count < cached_count // 2
+    if should_refuse_shrink(force, cached_count, final_count,
+                            list_error, fetched_failed):
         log(f"WARNING: result has {final_count} playlists but cache had "
-            f"{cached_count} — refusing to overwrite (likely auth, scope, "
-            f"or rate-limit issue).  Re-run with --force to override.")
+            f"{cached_count} and this run had errors "
+            f"(list_error={list_error!r}, fetched_failed={fetched_failed}) "
+            f"— refusing to overwrite (likely auth, scope, or rate-limit "
+            f"issue).  Re-run with --force to override.")
         log(f"=== Summary: liked={1 if liked_playlist else 0}, "
             f"playlists_from_api={len(all_playlists)}, "
             f"fetched_ok={fetched_ok}, fetched_failed={fetched_failed}, "
             f"kept_from_cache={skipped + kept_from_cache_on_error}, "
             f"dropped_empty={dropped_empty}, written=0 (refused) ===")
         return 0
+    if big_shrink and not force:
+        log(f"NOTE: playlist count shrank {cached_count} -> {final_count} "
+            f"on a clean fetch — trusting Spotify (user pruned their "
+            f"library) and writing the smaller set.")
 
     # Skip write if nothing changed.  fetched_ok counts successful
     # network fetches; if none ran, none of `skipped` changed, and the
@@ -522,17 +566,29 @@ def main():
 
     # Save all playlists.
     os.makedirs(os.path.dirname(output_file), exist_ok=True)
-    with open(output_file, 'w') as f:
+    # Atomic write — a concurrent fetch (or a reader mid-write) must never
+    # see a truncated file; corrupt JSON means zero playlists until the
+    # next clean refresh.
+    _tmp = output_file + '.tmp'
+    with open(_tmp, 'w') as f:
         json.dump(playlists_with_tracks, f, indent=2)
+    os.replace(_tmp, output_file)
     log(f"Saved {final_count} playlists to {output_file}")
 
-    # Build digit mapping: pinned names first, then fill alphabetically.
-    digit_mapping = build_digit_mapping(playlists_with_tracks)
+    # Build digit mapping: explicit Config-UI pins first, then name-
+    # convention pins ("5: Dinner"), then fill alphabetically.
+    pins = load_digit_pins(spotify_favourites_path(SCRIPT_DIR))
+    digit_mapping = build_digit_mapping(playlists_with_tracks, pins=pins)
     with open(DIGIT_PLAYLISTS_FILE, 'w') as f:
         json.dump(digit_mapping, f, indent=2)
-    pinned = sum(1 for d in "0123456789"
-                 if d in digit_mapping and detect_digit_playlist(digit_mapping[d]['name']) is not None)
-    log(f"Saved digit playlists ({pinned} pinned, {len(digit_mapping) - pinned} auto-filled)")
+    explicit = sum(1 for d, e in digit_mapping.items()
+                   if pins.get(d, {}).get('id') == e['id'])
+    named = sum(1 for d, e in digit_mapping.items()
+                if pins.get(d, {}).get('id') != e['id']
+                and detect_digit_playlist(e['name']) is not None)
+    log(f"Saved digit playlists ({explicit} pinned via config, "
+        f"{named} pinned by name, "
+        f"{len(digit_mapping) - explicit - named} auto-filled)")
 
     # Single-line summary so support / log greps don't have to reconstruct
     # the run from a dozen scattered lines.
@@ -541,6 +597,19 @@ def main():
         f"fetched_ok={fetched_ok}, fetched_failed={fetched_failed}, "
         f"kept_from_cache={skipped + kept_from_cache_on_error}, "
         f"dropped_empty={dropped_empty}, written={final_count} ===")
+    if third_party_403:
+        log(f"NOTE: {third_party_403} playlist(s) owned by other users "
+            "returned 403. Spotify's dev-mode rules (Mar 2026) only allow "
+            "reading tracks from playlists you own or collaborate on. "
+            "Fix: duplicate them into your own account, or apply for "
+            "Extended Quota Mode at developer.spotify.com/dashboard.")
+    if len(all_playlists) <= 1:
+        log(f"WARNING: only {len(all_playlists)} playlist(s) returned by "
+            "Spotify. If you expected more, the most likely cause is a "
+            "stale OAuth grant missing 'playlist-read-private' / "
+            "'playlist-read-collaborative'. Fix: revoke at "
+            "https://www.spotify.com/account/apps, then re-auth via "
+            "the BeoSound 5c /setup page.")
     log("=== Done ===")
     return 0
 
