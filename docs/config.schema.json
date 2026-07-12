@@ -418,9 +418,9 @@
       "properties": {
         "role": {
           "type": "string",
-          "enum": ["master", "provider", "link", "none", "audio_slave", "slave", "off", "passive", "disabled"],
+          "enum": ["master", "provider", "link", "ir_only", "none", "audio_slave", "slave", "ir", "ir-only", "passive", "off", "disabled"],
           "default": "master",
-          "description": "Which side of the ML bus the BS5c plays. 'master' = audio master (default; standalone collapses into this). 'provider' = N.MUSIC/N.RADIO source-center for an external master like a BS9000 (N.MUSIC verified against BC2; N.RADIO unverified). 'link' = link room / audio-slave receiving sources from a remote master. 'none' disables active ML role handling while keeping IR decode + mixer/tone control. 'audio_slave'/'slave' and 'off'/'passive'/'disabled' are accepted aliases for 'link' and 'none'."
+          "description": "Which side of the ML bus the BS5c plays. 'master' = audio master (default; standalone collapses into this). 'provider' = N.MUSIC/N.RADIO source-center for an external master like a BS9000 (N.MUSIC verified against BC2; N.RADIO unverified). 'link' = link room / audio-slave receiving sources from a remote master. 'ir_only' opens the PC2 in passive Beoport mode so local IR keypresses still reach the router, but the BS5c ignores ML telegrams and never transmits on the bus. 'none' disables PC2 + ML handling entirely. 'audio_slave'/'slave' alias 'link'; 'ir'/'ir-only'/'passive' alias 'ir_only'; 'off'/'disabled' alias 'none'."
         },
         "ir": {
           "type": "object",
@@ -506,9 +506,9 @@
       "properties": {
         "role": {
           "type": "string",
-          "enum": ["master", "provider", "link"],
+          "enum": ["master", "provider", "link", "ir_only", "none", "audio_slave", "slave", "ir", "ir-only", "passive", "off", "disabled"],
           "default": "master",
-          "description": "Which side of the ML bus the BS5c plays. 'master' = audio master (default; standalone collapses into this). 'provider' = N.MUSIC/N.RADIO source-center for an external master like a BS9000 (N.MUSIC verified against BC2; N.RADIO unverified). 'link' = link room receiving sources from a remote master."
+          "description": "Which side of the ML bus the BS5c plays. 'master' = audio master (default; standalone collapses into this). 'provider' = N.MUSIC/N.RADIO source-center for an external master like a BS9000 (N.MUSIC verified against BC2; N.RADIO unverified). 'link' = link room receiving sources from a remote master. 'ir_only' opens the PC2 in passive Beoport mode so local IR keypresses still reach the router, but the BS5c ignores ML telegrams and never transmits on the bus. 'none' disables PC2 + ML handling entirely. 'audio_slave'/'slave' alias 'link'; 'ir'/'ir-only'/'passive' alias 'ir_only'; 'off'/'disabled' alias 'none'."
         },
         "ir": {
           "type": "object",

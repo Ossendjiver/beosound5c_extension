@@ -832,8 +832,9 @@ function normalizeMasterlinkRole(role) {
     const value = String(role || '').trim().toLowerCase();
     if (!value) return 'master';
     if (value === 'audio_slave' || value === 'slave') return 'link';
-    if (value === 'off' || value === 'passive' || value === 'disabled') return 'none';
-    return ['master', 'provider', 'link', 'none'].includes(value) ? value : 'master';
+    if (value === 'ir' || value === 'ir-only' || value === 'passive') return 'ir_only';
+    if (value === 'off' || value === 'disabled') return 'none';
+    return ['master', 'provider', 'link', 'ir_only', 'none'].includes(value) ? value : 'master';
 }
 
 function renderMasterlink(cfg) {
@@ -869,12 +870,13 @@ function renderMasterlink(cfg) {
         <h2>Master Link</h2>
         <label for="cfg-ml-role">Role</label>
         <select id="cfg-ml-role">
-            <option value="none"     ${role==='none'?'selected':''}>None / passive (IR only)</option>
             <option value="master"   ${role==='master'?'selected':''}>Audio master (default)</option>
             <option value="provider" ${role==='provider'?'selected':''}>N.MUSIC / N.RADIO provider</option>
             <option value="link"     ${role==='link'?'selected':''}>Audio slave / link room</option>
+            <option value="ir_only"  ${role==='ir_only'?'selected':''}>IR only (passive, no ML traffic)</option>
+            <option value="none"     ${role==='none'?'selected':''}>None / off (disable PC2 + ML)</option>
         </select>
-        <div class="hint">Use <strong>None / passive</strong> when another system should own ML source routing. The BS5c will still decode IR and expose mixer/tone control, but it will stop claiming the audio-master role and stop answering ML source requests.</div>
+        <div class="hint"><strong>IR only</strong> opens the PC2 in passive Beoport mode so local Beo4 IR keypresses still reach the router, but the BS5c ignores ML telegrams and never transmits on the bus. <strong>None / off</strong> disables PC2 + ML handling entirely.</div>
 
         <div id="cfg-ml-provider-cond" class="cfg-cond${role==='provider'?' show':''}">
             <label for="cfg-ml-nmusic">Source for N.MUSIC</label>

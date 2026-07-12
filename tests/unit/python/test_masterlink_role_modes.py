@@ -1,4 +1,3 @@
-import asyncio
 import importlib
 import json
 import sys
@@ -34,16 +33,32 @@ def test_masterlink_role_aliases_normalize(monkeypatch, tmp_path):
     mod = _load_masterlink(monkeypatch, tmp_path, "audio_slave")
     assert mod.ML_ROLE == "link"
     assert mod.normalize_masterlink_role("slave") == "link"
-    assert mod.normalize_masterlink_role("passive") == "none"
+    assert mod.normalize_masterlink_role("passive") == "ir_only"
+    assert mod.normalize_masterlink_role("ir-only") == "ir_only"
     assert mod.normalize_masterlink_role("disabled") == "none"
     assert mod.normalize_masterlink_role("unknown-role") == "master"
 
 
-def test_none_role_uses_passive_identity_and_filter(monkeypatch, tmp_path):
+def test_ir_only_role_uses_passive_identity_and_filter(monkeypatch, tmp_path):
+    mod = _load_masterlink(monkeypatch, tmp_path, "ir_only")
+    pc2 = mod.PC2Device()
+    assert pc2.OUR_NODE_ID == 0x82
+    assert pc2._address_filter_role == "ir_only"
+    assert pc2._pc2_enabled is True
+    assert pc2._ml_bus_enabled is False
+
+    sent = []
+    pc2.send_message = sent.append
+    pc2.set_address_filter()
+
+    assert sent == [[0xF6, 0x00, 0x82, 0x80, 0x83]]
+
+
+def test_none_role_disables_pc2(monkeypatch, tmp_path):
     mod = _load_masterlink(monkeypatch, tmp_path, "none")
     pc2 = mod.PC2Device()
     assert pc2.OUR_NODE_ID == 0x82
-    assert pc2._address_filter_role == "none"
+    assert pc2._pc2_enabled is False
     assert pc2._ml_bus_enabled is False
 
     sent = []
@@ -79,58 +94,55 @@ def test_none_role_starts_without_usb_sniffer(monkeypatch, tmp_path):
     assert created_targets == [pc2._sender_loop_wrapper]
 
 
-def test_none_role_passively_forwards_tv_status(monkeypatch, tmp_path):
-    mod = _load_masterlink(monkeypatch, tmp_path, "none")
+def test_ir_only_role_starts_usb_sniffer(monkeypatch, tmp_path):
+    mod = _load_masterlink(monkeypatch, tmp_path, "ir_only")
+    created_targets = []
 
-    forwarded = []
+    class FakeThread:
+        def __init__(self, target=None, *args, **kwargs):
+            self.target = target
+            self.daemon = False
+            created_targets.append(target)
 
-    async def fake_forward(session, source, action, device_type, link="", count=1):
-        forwarded.append({
-            "session": session,
-            "source": source,
-            "action": action,
-            "device_type": device_type,
-            "link": link,
-            "count": count,
-        })
-
-    monkeypatch.setattr(mod, "forward_to_router", fake_forward)
-
-    class FakeTasks:
-        def __init__(self):
-            self.spawned = []
-
-        def spawn(self, coro, *, name=None):
-            self.spawned.append((coro, name))
+        def start(self):
             return None
 
-    pc2 = types.SimpleNamespace(
-        session=object(),
-        _background_tasks=FakeTasks(),
-        node_label=lambda node_id: "VIDEO_MASTER" if node_id == 0xC0 else f"0x{node_id:02X}",
-    )
-    role = mod.PassiveRole(pc2)
+        def join(self, timeout=None):
+            return None
 
-    role.handle_telegram(
-        0x14, 0x87, 0xC0, 0x83, 0x0B,
-        [0x0B, 0x01, 0x00, 0x00, 0x40, 0x00, 0x01],
-    )
+    monkeypatch.setattr(mod.threading, "Thread", FakeThread)
 
-    assert len(pc2._background_tasks.spawned) == 1
-    coro, name = pc2._background_tasks.spawned[0]
-    assert name == "passive_status_tv"
-    asyncio.run(coro)
-    assert forwarded == [{
-        "session": pc2.session,
-        "source": "masterlink",
-        "action": "tv",
-        "device_type": "Video",
-        "link": "VIDEO_MASTER",
-        "count": 1,
-    }]
+    pc2 = mod.PC2Device()
+    pc2.start_sniffing()
 
-    role.handle_telegram(
-        0x14, 0x87, 0xC0, 0x83, 0x0B,
-        [0x0B, 0x01, 0x00, 0x00, 0x40, 0x00, 0x01],
-    )
-    assert len(pc2._background_tasks.spawned) == 1
+    assert pc2.sniffer_thread is not None
+    assert pc2.sender_thread is not None
+    assert created_targets == [pc2._sniff_loop, pc2._sender_loop_wrapper]
+
+
+def test_ir_only_role_ignores_ml_telegrams(monkeypatch, tmp_path):
+    mod = _load_masterlink(monkeypatch, tmp_path, "ir_only")
+    pc2 = mod.PC2Device()
+
+    handled = []
+    pc2._log_ml_telegram = handled.append
+    pc2._process_usb_frame([0x60, 0x00, 0x00, 0x61])
+
+    assert handled == []
+
+
+def test_ir_only_role_still_enqueues_ir(monkeypatch, tmp_path):
+    mod = _load_masterlink(monkeypatch, tmp_path, "ir_only")
+    pc2 = mod.PC2Device()
+
+    added = []
+    pc2.message_queue = types.SimpleNamespace(add=added.append)
+    pc2.process_beo4_keycode = lambda timestamp, message: {
+        "device_type": "Audio",
+        "key_name": "radio",
+    }
+    pc2._ir_passes_filter = lambda msg: True
+
+    pc2._process_usb_frame([0x60, 0x00, 0x02, 0x61])
+
+    assert added == [{"device_type": "Audio", "key_name": "radio"}]

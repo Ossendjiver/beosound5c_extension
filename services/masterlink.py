@@ -54,8 +54,7 @@ from lib.correlation import install_logging
 from lib.endpoints import INPUT_LED_PULSE, ROUTER_EVENT
 from lib.loop_monitor import LoopMonitor
 from lib.masterlink_link import LinkRole
-from lib.masterlink_common import forward_to_router
-from lib.masterlink_master import ML_SOURCE_LABELS, ML_SOURCE_TO_ACTION, MasterRole
+from lib.masterlink_master import MasterRole
 from lib.masterlink_provider import (
     PC2_SESSION_AUDIO,
     PC2_SESSION_ML,
@@ -68,12 +67,14 @@ logger = install_logging('beo-masterlink')
 # Supported role names. Canonical roles are what the runtime actually
 # implements; a couple of aliases are accepted so the config UI and hand-
 # edited configs can use more human language without breaking startup.
-_CANONICAL_ML_ROLES = {"master", "provider", "link", "none"}
+_CANONICAL_ML_ROLES = {"master", "provider", "link", "ir_only", "none"}
 _ML_ROLE_ALIASES = {
     "audio_slave": "link",
     "slave": "link",
+    "ir": "ir_only",
+    "ir-only": "ir_only",
+    "passive": "ir_only",
     "off": "none",
-    "passive": "none",
     "disabled": "none",
 }
 
@@ -92,7 +93,7 @@ def address_filter_payload_for_role(role):
     beoport: passive / local PC2 mode that does not claim audio-master.
     """
     canonical = normalize_masterlink_role(role)
-    if canonical == "none":
+    if canonical in ("none", "ir_only"):
         # Beoport PC2 mode from libpc2's set_address_filter().
         return [0xF6, 0x00, 0x82, 0x80, 0x83]
     # Master / provider / link keep today's audio-master filter because the
@@ -115,9 +116,11 @@ VOL_DEFAULT = int(cfg("volume", "default", default=30))
 # Four orthogonal concerns this service owns:
 #
 #   (1) Decode IR — every Beo4 keycode the PC2 sees on USB (msg type 0x02)
-#       is forwarded to beo-router.  Always on, regardless of role.  The
-#       only knobs are the per-device-class toggles ml.ir.{audio,video}
-#       which gate forwarding by device_type byte.
+#       is forwarded to beo-router whenever the PC2 is active. This runs
+#       in master/provider/link/ir_only. In true ``none`` mode the PC2 is
+#       disabled, so there is no local IR decode path. The only knobs are
+#       the per-device-class toggles ml.ir.{audio,video} which gate
+#       forwarding by device_type byte.
 #
 #   (2) Audio master role — BS5c is the audio master on the ML bus.  Replies
 #       to MASTER_PRESENT / AUDIO_BUS / GOTO_SOURCE, broadcasts clock,
@@ -136,12 +139,17 @@ VOL_DEFAULT = int(cfg("volume", "default", default=30))
 #       Receives sources, decodes track metadata for the UI.  Handler:
 #       lib/masterlink_link.LinkRole.
 #
-#   (5) Passive / none role — true no-bus mode. Keep the HTTP side alive
-#       (tone endpoints etc.) but do not open/init the PC2, do not set an
-#       address filter, and do not participate in ML traffic at all. Useful
-#       when ML should not compete with external HA / MLGW / A.AUX routing.
+#   (5) IR-only passive role — open the PC2 in Beoport passive mode so
+#       locally-received Beo4 IR keycodes still surface on USB, but do not
+#       process or answer Master Link telegrams in software.
 #
-# Roles 2/3/4/5 are mutually exclusive — pick exactly one via masterlink.role.
+#   (6) None / off role — true no-bus mode. Keep the HTTP side alive (tone
+#       endpoints etc.) but do not open/init the PC2, do not set an address
+#       filter, and do not participate in ML traffic at all. Useful when ML
+#       should not compete with external HA / MLGW / A.AUX routing.
+#
+# Roles 2/3/4/5/6 are mutually exclusive — pick exactly one via
+# masterlink.role.
 # IR decoding (1) runs alongside whichever role is selected.  Outstanding
 # work tracked in docs/plan-masterlink-roles.md.  cfg() is two-level only;
 # nested fields go through dict access on the masterlink block.
@@ -168,87 +176,35 @@ MAX_QUEUE_SIZE = 10  # Maximum number of messages to keep in queue
 sys.stdout.reconfigure(line_buffering=True)
 
 
-class PassiveRole:
-    """Passive ML mode: no ML bus participation in software.
-
-    When ``masterlink.role = none`` we should not see telegrams at all,
-    because the PC2 bring-up path is skipped. This role remains as a safe
-    no-op fallback for any code paths that still consult ``self._role``.
-    """
+class NoBusRole:
+    """True off mode: no PC2 and no ML bus participation."""
 
     def __init__(self, pc2):
         self.pc2 = pc2
-        self._last_forwarded_action = None
-        self._last_forwarded_at = 0.0
 
     def start(self, loop):
-        logger.info("ML passive role: no ML bus participation")
+        logger.info("ML role 'none': PC2 disabled, no ML bus participation")
 
     def handle_telegram(self, ttype, ptype, src_node, dest_node, src_src, payload):
-        if ttype == 0x14 and ptype == 0x87:
-            self._forward_status_info(src_node, src_src, payload)
-            return
         logger.debug(
-            "ML passive role: ignoring telegram src=0x%02X dest=0x%02X t=0x%02X p=0x%02X",
+            "ML role 'none': ignoring telegram src=0x%02X dest=0x%02X t=0x%02X p=0x%02X",
             src_node, dest_node, ttype, ptype,
         )
 
-    def _forward_status_info(self, src_node, src_src, payload):
-        """Mirror source announcements to the router without claiming ML.
+class PassiveRole:
+    """IR-only passive mode: decode local IR but ignore ML telegrams."""
 
-        Passive mode should not answer or assert anything on the bus, but we
-        still want HA routing to see the externally selected source. The
-        broadcast STATUS_INFO packets from real masters are the cleanest signal:
-        they say what source is actually active without requiring us to claim
-        SOURCE_CENTER ownership.
-        """
-        source_id = src_src or (payload[0] if payload else 0)
-        action = ML_SOURCE_TO_ACTION.get(source_id)
-        if not action or not self.pc2.session:
-            return
+    def __init__(self, pc2):
+        self.pc2 = pc2
 
-        now = time.monotonic()
-        if action == self._last_forwarded_action and (now - self._last_forwarded_at) < 1.5:
-            logger.debug(
-                "ML passive role: dedupe source status 0x%02X (%s) from 0x%02X",
-                source_id, action, src_node,
-            )
-            return
+    def start(self, loop):
+        logger.info("ML IR-only role: Beoport passive mode, local IR decode only")
 
-        self._last_forwarded_action = action
-        self._last_forwarded_at = now
-        device_type = "Video" if action in _VIDEO_SOURCE_ACTIONS else "Audio"
-        source_label = ML_SOURCE_LABELS.get(source_id, f"0x{source_id:02X}")
-        link_name = self.pc2.node_label(src_node)
-        logger.info(
-            "ML passive role: forward STATUS_INFO source=0x%02X (%s) from %s as %s (%s)",
-            source_id, source_label, link_name, action, device_type,
+    def handle_telegram(self, ttype, ptype, src_node, dest_node, src_src, payload):
+        logger.debug(
+            "ML IR-only role: ignoring telegram src=0x%02X dest=0x%02X t=0x%02X p=0x%02X",
+            src_node, dest_node, ttype, ptype,
         )
-        self._schedule_router_forward(
-            forward_to_router(
-                self.pc2.session,
-                source="masterlink",
-                action=action,
-                device_type=device_type,
-                link=link_name,
-            ),
-            name=f"passive_status_{action}",
-        )
-
-    def _schedule_router_forward(self, coro, *, name):
-        """Run a router-forward coroutine on the sender loop.
-
-        ML telegrams are decoded on the USB sniff thread, which has no current
-        asyncio loop. Hand off to the sender loop when available; fall back to
-        the current-thread task tracker in tests.
-        """
-        loop = getattr(self.pc2, "loop", None)
-        if loop:
-            async def _spawn():
-                self.pc2._background_tasks.spawn(coro, name=name)
-            asyncio.run_coroutine_threadsafe(_spawn(), loop)
-            return
-        self.pc2._background_tasks.spawn(coro, name=name)
 
 class MessageQueue:
     """Thread-safe queue with lossy behavior and deduplication."""
@@ -350,13 +306,13 @@ class PC2Device:
     #            masterlink_provider.py which embed src=0xC2)
     # link     = 0xC2 (no separate "link speaker" ID is enumerated in the
     #            spec; 0xC2 avoids colliding with the bus master at 0xC1)
-    # none     = 0x82 BEOport/PC2 (passive local interface; does not claim
-    #            the audio-master role on the bus)
+    # ir_only / none = 0x82 BEOport/PC2 passive local interface
+    #            (does not claim the audio-master role on the bus)
     # Provider/link keep the PC2's USB-side address filter in audio-master
-    # mode today because that's the verified receive/audio behaviour. Passive
-    # "none" flips to Beoport mode so the card no longer claims audio-master.
-    # Receiving traffic specifically addressed to 0xC2 may still need a
-    # future filter flip; tracked in docs/plan-masterlink-roles.md.
+    # mode today because that's the verified receive/audio behaviour.
+    # IR-only uses Beoport passive mode so the card no longer claims
+    # audio-master. Receiving traffic specifically addressed to 0xC2 may
+    # still need a future filter flip; tracked in docs/plan-masterlink-roles.md.
     OUR_NODE_ID = 0xC1  # AUDIO_MASTER (default; instance overrides for non-master roles)
 
     # Reconnect settings
@@ -368,7 +324,8 @@ class PC2Device:
         self.dev = None
         self.running = False
         self.connected = False
-        self._ml_bus_enabled = (ML_ROLE != "none")
+        self._pc2_enabled = (ML_ROLE != "none")
+        self._ml_bus_enabled = ML_ROLE in {"master", "provider", "link"}
         self.message_queue = MessageQueue()
         self.sniffer_thread = None
         self.sender_thread = None
@@ -420,9 +377,12 @@ class PC2Device:
         elif ML_ROLE == "link":
             self.OUR_NODE_ID = 0xC2
             self._role = LinkRole(self)
-        elif ML_ROLE == "none":
+        elif ML_ROLE == "ir_only":
             self.OUR_NODE_ID = 0x82
             self._role = PassiveRole(self)
+        elif ML_ROLE == "none":
+            self.OUR_NODE_ID = 0x82
+            self._role = NoBusRole(self)
         else:  # "master" (default) — anything unknown collapses to master
             self._role = MasterRole(self)
 
@@ -464,8 +424,8 @@ class PC2Device:
 
     def _reconnect(self):
         """Try to reconnect to the PC2 device with exponential backoff."""
-        if not self._ml_bus_enabled:
-            logger.info("PC2 reconnect skipped: ML bus disabled for role=%s", ML_ROLE)
+        if not self._pc2_enabled:
+            logger.info("PC2 reconnect skipped: PC2 disabled for role=%s", ML_ROLE)
             return False
         self._release_device()
         delay = self.RECONNECT_BASE_DELAY
@@ -522,7 +482,8 @@ class PC2Device:
         Constants from libpc2 set_address_filter() (no code copied)."""
         payload = address_filter_payload_for_role(self._address_filter_role)
         self.send_message(payload)
-        mode = "Beoport passive mode" if self._address_filter_role == "none" else "Audio Master mode"
+        passive_mode = normalize_masterlink_role(self._address_filter_role) in ("none", "ir_only")
+        mode = "Beoport passive mode" if passive_mode else "Audio Master mode"
         logger.info("Address filter set (%s)", mode)
 
     def start_sniffing(self):
@@ -530,7 +491,7 @@ class PC2Device:
         self.running = True
         self.loop = asyncio.new_event_loop()
 
-        if self._ml_bus_enabled:
+        if self._pc2_enabled:
             self.sniffer_thread = threading.Thread(target=self._sniff_loop)
             self.sniffer_thread.daemon = True
             self.sniffer_thread.start()
@@ -539,10 +500,10 @@ class PC2Device:
         self.sender_thread.daemon = True
         self.sender_thread.start()
 
-        if self._ml_bus_enabled:
+        if self._pc2_enabled:
             logger.info("USB message sniffer and sender threads started")
         else:
-            logger.info("Sender thread started (ML bus disabled)")
+            logger.info("Sender thread started (PC2 disabled)")
 
     def _sniff_loop(self):
         """Background thread to continuously read USB messages and add to queue.
@@ -627,7 +588,10 @@ class PC2Device:
             if msg_data and self._ir_passes_filter(msg_data):
                 self.message_queue.add(msg_data)
         elif msg_type == 0x00:
-            self._log_ml_telegram(message)
+            if self._ml_bus_enabled:
+                self._log_ml_telegram(message)
+            elif self.sniff_mode:
+                logger.info("ML RX ignored in role=%s", ML_ROLE)
         elif msg_type is not None:
             hex_str = " ".join(f"{b:02X}" for b in message[:32])
             level = logging.DEBUG if msg_type in self._unknown_usb_seen else logging.INFO
@@ -1630,6 +1594,11 @@ class PC2Device:
         ALL_LINK_DEVICES) follows community captures — like /ml/send,
         confirm against a sniffer when validating on new hardware.
         """
+        if not self._ml_bus_enabled:
+            return web.json_response(
+                {'ok': False, 'error': f'role {ML_ROLE!r} does not transmit ML telegrams'},
+                status=409,
+            )
         try:
             loop = asyncio.get_running_loop()
             await loop.run_in_executor(
@@ -1660,6 +1629,11 @@ class PC2Device:
           "dest_src": 0x00, "src_src": 0x00
         }
         """
+        if not self._ml_bus_enabled:
+            return web.json_response(
+                {'ok': False, 'error': f'role {ML_ROLE!r} does not transmit ML telegrams'},
+                status=409,
+            )
         data = await request.json()
         try:
             loop = asyncio.get_running_loop()
@@ -1756,10 +1730,12 @@ if __name__ == "__main__":
         pc2.sniff_mode = ml_sniff
         # PC2 dongle is optional — devices without it (e.g. Sonos-only setups
         # like Church) still need masterlink running for the mixer HTTP API
-        # (tone controls). In true passive ``role=none`` mode we intentionally
-        # do not touch the PC2 at all: no open(), no init(), no address-filter,
-        # and no reconnect loop. That keeps the BS5c fully off the ML bus.
-        if pc2._ml_bus_enabled:
+        # (tone controls). ``role=ir_only`` still opens the PC2 in Beoport
+        # passive mode so local Beo4 IR keycodes surface on USB, but it
+        # ignores ML telegrams and never transmits on the bus. In true
+        # ``role=none`` mode we intentionally do not touch the PC2 at all:
+        # no open(), no init(), no address-filter, and no reconnect loop.
+        if pc2._pc2_enabled:
             try:
                 pc2.open()
                 pc2_ready = True
@@ -1768,7 +1744,7 @@ if __name__ == "__main__":
                                "sniffer will retry in background", e)
                 pc2_ready = False
         else:
-            logger.info("Skipping PC2 open/init/filter: ML bus disabled for role=%s",
+            logger.info("Skipping PC2 open/init/filter: PC2 disabled for role=%s",
                         ML_ROLE)
             pc2_ready = False
 
@@ -1828,8 +1804,10 @@ if __name__ == "__main__":
         else:
             if pc2._ml_bus_enabled:
                 logger.info("Device initialized. Sniffing USB messages... (Ctrl+C to exit)")
+            elif pc2._pc2_enabled:
+                logger.info("Device initialized in IR-only passive mode. Decoding local IR only. (Ctrl+C to exit)")
             else:
-                logger.info("Service initialized with ML bus disabled. HTTP/tone endpoints only. (Ctrl+C to exit)")
+                logger.info("Service initialized with PC2 disabled. HTTP/tone endpoints only. (Ctrl+C to exit)")
             while True:
                 time.sleep(1)
 

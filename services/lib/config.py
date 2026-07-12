@@ -59,8 +59,10 @@ _VALID_VOLUME_TYPES = {
 }
 
 _VALID_MASTERLINK_ROLES = {
-    "master", "provider", "link", "none", "audio_slave", "slave",
-    "off", "passive", "disabled",
+    "master", "provider", "link", "ir_only", "none",
+    "audio_slave", "slave",
+    "ir", "ir-only", "passive",
+    "off", "disabled",
 }
 
 
