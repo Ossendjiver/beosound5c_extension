@@ -409,6 +409,10 @@ function routeButtonToView(page, button, uiStore) {
 
     // Playing page — active source owns buttons
     if (page === 'menu/playing') {
+        if (uiStore.media?.shouldRoutePlayingButtonsToShowing?.()
+                && uiStore.media.handleShowingButton?.(button)) {
+            return true;
+        }
         if (uiStore.activeSource) {
             const ctrl = window.SourcePresets?.[uiStore.activeSource]?.controller;
             if (ctrl?.isActive && ctrl.handleButton && ctrl.handleButton(button)) return true;
@@ -418,10 +422,6 @@ function routeButtonToView(page, button, uiStore) {
                 sendToRouter(playbackAction);
                 return true;
             }
-        }
-        // Fallback: no active source — send transport commands directly to player
-        if (uiStore.media?.shouldUseShowingAsPlaying?.() && uiStore.media.handleShowingButton?.(button)) {
-            return true;
         }
         const playerAction = { go: 'toggle', left: 'prev', right: 'next' }[button];
         if (playerAction) {

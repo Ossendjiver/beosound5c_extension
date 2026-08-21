@@ -215,24 +215,58 @@ class MediaManager {
 
     // ── Now-playing (router media WS) ──
 
+    shouldTreatAsStaleNowPlaying(data) {
+        const state = String(data?.state || '').trim().toLowerCase();
+        const relayId = String(data?.relay_id || '').trim().toLowerCase();
+        return !this.activeSource && !relayId && state === 'stopped';
+    }
+
+    normalizeMediaUpdatePayload(data) {
+        if (!this.shouldTreatAsStaleNowPlaying(data)) return data;
+        return {
+            ...data,
+            title: '',
+            artist: '',
+            album: '',
+            artwork: '',
+            back_artwork: '',
+            canvas_url: '',
+            music_video_url: '',
+            track_id: '',
+            relay_id: '',
+            source_id: '',
+            state: 'idle',
+            position: '0:00',
+            duration: '0:00'
+        };
+    }
+
     handleMediaUpdate(data, reason = 'update') {
-        console.log(`[MEDIA-WS] ${reason}: ${data.title} - ${data.artist}`);
+        const incoming = this.normalizeMediaUpdatePayload(data || {});
+        data = incoming;
+        console.log(`[MEDIA-WS] ${reason}: ${incoming.title} - ${incoming.artist}`);
 
         // canvas_url: on track_change, clear unless payload provides one
         // (new track = new canvas). On update, keep existing if not in payload
         // (canvas arrives async for the same track).
-        const keepCanvas = reason !== 'track_change' && !('canvas_url' in data);
-        const keepMusicVideo = reason !== 'track_change' && !('music_video_url' in data);
-        const keepArtwork = reason !== 'track_change' && !('artwork' in data);
-        const keepBackArtwork = reason !== 'track_change' && !('back_artwork' in data);
+        const keepCanvas = reason !== 'track_change' && !('canvas_url' in incoming);
+        const keepMusicVideo = reason !== 'track_change' && !('music_video_url' in incoming);
+        const keepArtwork = reason !== 'track_change' && !('artwork' in incoming);
+        const keepBackArtwork = reason !== 'track_change' && !('back_artwork' in incoming);
         // track_id: stamped by the router from the player's _track_uri
         // hint — used by canvas-panel.js to verify the canvas it's
         // about to show actually belongs to the currently playing
         // track. On track_change always replace; on update preserve
         // existing if payload doesn't include one (e.g. canvas_inject
         // re-broadcasts mutate canvas_url but keep the same track_id).
-        const keepTrackId = reason !== 'track_change' && !('track_id' in data);
-        const sourceId = data._source_id || data.source_id || this.mediaInfo.source_id || this.activeSource || '';
+        const keepTrackId = reason !== 'track_change' && !('track_id' in incoming);
+        const hasInternalSourceId = Object.prototype.hasOwnProperty.call(data, '_source_id');
+        const hasSourceId = Object.prototype.hasOwnProperty.call(data, 'source_id');
+        const sourceId = hasInternalSourceId
+            ? (data._source_id || '')
+            : hasSourceId
+                ? (data.source_id || '')
+                : (this.mediaInfo.source_id || this.activeSource || '');
         this.mediaInfo = {
             title: data.title || '—',
             artist: data.artist || '—',
@@ -273,15 +307,22 @@ class MediaManager {
     }
 
     shouldUseShowingAsPlaying() {
+        return !this.activeSource && this.hasActiveShowingRelay();
+    }
+
+    hasActiveShowingRelay() {
         const state = String(this.mediaInfo?.state || '').trim().toLowerCase();
-        return !this.activeSource
-            && this.mediaInfo?.relay_id === 'showing'
+        return this.mediaInfo?.relay_id === 'showing'
             && !!state
             && !['idle', 'unknown', 'off', 'standby', 'unavailable'].includes(state);
     }
 
+    shouldRoutePlayingButtonsToShowing() {
+        return this.hasActiveShowingRelay();
+    }
+
     _hasShowingTransportTarget() {
-        if (this.shouldUseShowingAsPlaying()) return true;
+        if (this.hasActiveShowingRelay()) return true;
         const state = String(this.appleTVMediaInfo?.state || '').trim().toLowerCase();
         return !!state && !['error', 'unknown', 'unavailable'].includes(state);
     }
@@ -430,5 +471,9 @@ class MediaManager {
     }
 }
 
-window.MediaManager = MediaManager;
-window.DEFAULT_PLAYING_PRESET = DEFAULT_PLAYING_PRESET;
+if (typeof module !== 'undefined' && module.exports) {
+    module.exports = { MediaManager, DEFAULT_PLAYING_PRESET, isPausedPlaybackState };
+} else {
+    window.MediaManager = MediaManager;
+    window.DEFAULT_PLAYING_PRESET = DEFAULT_PLAYING_PRESET;
+}

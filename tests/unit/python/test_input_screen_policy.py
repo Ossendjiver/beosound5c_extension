@@ -4,7 +4,7 @@ import importlib
 import sys
 import types
 from pathlib import Path
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -120,6 +120,9 @@ def test_screen_policy_target_state_follows_playback_and_presence_rules(monkeypa
         wake_hold_active=False,
         local_input_recent=True,
         playing=False,
+        paused=False,
+        paused_on_playing_screen=False,
+        currently_awake=False,
         presence_snapshot=all_off,
         all_off_since=None,
         now=100.0,
@@ -131,6 +134,9 @@ def test_screen_policy_target_state_follows_playback_and_presence_rules(monkeypa
         wake_hold_active=True,
         local_input_recent=False,
         playing=False,
+        paused=False,
+        paused_on_playing_screen=False,
+        currently_awake=False,
         presence_snapshot=all_off,
         all_off_since=None,
         now=100.0,
@@ -142,6 +148,9 @@ def test_screen_policy_target_state_follows_playback_and_presence_rules(monkeypa
         wake_hold_active=False,
         local_input_recent=False,
         playing=False,
+        paused=False,
+        paused_on_playing_screen=False,
+        currently_awake=False,
         presence_snapshot=all_off,
         all_off_since=None,
         now=100.0,
@@ -153,6 +162,9 @@ def test_screen_policy_target_state_follows_playback_and_presence_rules(monkeypa
         wake_hold_active=False,
         local_input_recent=False,
         playing=False,
+        paused=False,
+        paused_on_playing_screen=False,
+        currently_awake=False,
         presence_snapshot=any_on,
         all_off_since=None,
         now=100.0,
@@ -164,6 +176,9 @@ def test_screen_policy_target_state_follows_playback_and_presence_rules(monkeypa
         wake_hold_active=False,
         local_input_recent=False,
         playing=True,
+        paused=False,
+        paused_on_playing_screen=False,
+        currently_awake=True,
         presence_snapshot=unconfigured,
         all_off_since=None,
         now=100.0,
@@ -175,6 +190,9 @@ def test_screen_policy_target_state_follows_playback_and_presence_rules(monkeypa
         wake_hold_active=False,
         local_input_recent=False,
         playing=True,
+        paused=False,
+        paused_on_playing_screen=False,
+        currently_awake=True,
         presence_snapshot=any_on,
         all_off_since=None,
         now=100.0,
@@ -186,6 +204,9 @@ def test_screen_policy_target_state_follows_playback_and_presence_rules(monkeypa
         wake_hold_active=False,
         local_input_recent=False,
         playing=True,
+        paused=False,
+        paused_on_playing_screen=False,
+        currently_awake=True,
         presence_snapshot=all_off,
         all_off_since=100.0,
         now=250.0,
@@ -197,11 +218,56 @@ def test_screen_policy_target_state_follows_playback_and_presence_rules(monkeypa
         wake_hold_active=False,
         local_input_recent=False,
         playing=True,
+        paused=False,
+        paused_on_playing_screen=False,
+        currently_awake=True,
         presence_snapshot=all_off,
         all_off_since=100.0,
         now=281.0,
         presence_off_delay_seconds=180.0,
     ) == "off"
+    assert input_mod._screen_policy_target_state(
+        manual_override_active=False,
+        wake_snapshot=wake_on,
+        wake_hold_active=True,
+        local_input_recent=False,
+        playing=False,
+        paused=True,
+        paused_on_playing_screen=False,
+        currently_awake=False,
+        presence_snapshot=all_off,
+        all_off_since=None,
+        now=100.0,
+        presence_off_delay_seconds=180.0,
+    ) == "off"
+    assert input_mod._screen_policy_target_state(
+        manual_override_active=False,
+        wake_snapshot=wake_off,
+        wake_hold_active=False,
+        local_input_recent=False,
+        playing=False,
+        paused=True,
+        paused_on_playing_screen=True,
+        currently_awake=False,
+        presence_snapshot=unconfigured,
+        all_off_since=None,
+        now=100.0,
+        presence_off_delay_seconds=180.0,
+    ) == "off"
+    assert input_mod._screen_policy_target_state(
+        manual_override_active=False,
+        wake_snapshot=wake_off,
+        wake_hold_active=False,
+        local_input_recent=False,
+        playing=False,
+        paused=True,
+        paused_on_playing_screen=True,
+        currently_awake=True,
+        presence_snapshot=unconfigured,
+        all_off_since=None,
+        now=100.0,
+        presence_off_delay_seconds=180.0,
+    ) == "on"
 
 
 def test_screen_policy_target_state_honours_manual_override(monkeypatch):
@@ -216,6 +282,9 @@ def test_screen_policy_target_state_honours_manual_override(monkeypatch):
         wake_hold_active=True,
         local_input_recent=True,
         playing=True,
+        paused=False,
+        paused_on_playing_screen=False,
+        currently_awake=True,
         presence_snapshot=all_off,
         all_off_since=None,
         now=100.0,
@@ -407,6 +476,7 @@ async def test_screen_policy_tick_holds_screen_on_for_wake_grace_after_sensor_cl
 def test_note_local_screen_activity_cancels_wake_hold(monkeypatch):
     input_mod = _load_input_module(monkeypatch)
     state = input_mod._new_screen_policy_state()
+    state["manual_off_latched"] = True
     state["wake_hold_until"] = 130.0
     monkeypatch.setattr(input_mod, "_screen_policy_state", state)
     monkeypatch.setattr(input_mod.time, "monotonic", lambda: 100.0)
@@ -414,7 +484,59 @@ def test_note_local_screen_activity_cancels_wake_hold(monkeypatch):
     input_mod._note_local_screen_activity("hid_rotary")
 
     assert input_mod._screen_policy_state["last_local_input_at"] == 100.0
+    assert input_mod._screen_policy_state["manual_off_latched"] is False
     assert input_mod._screen_policy_state["wake_hold_until"] == 0.0
+
+
+def test_set_screen_manual_override_can_latch_until_physical_input(monkeypatch):
+    input_mod = _load_input_module(monkeypatch)
+    state = input_mod._new_screen_policy_state()
+    monkeypatch.setattr(input_mod, "_screen_policy_state", state)
+
+    input_mod._set_screen_manual_override("command:screen_off", persistent=True)
+
+    assert input_mod._screen_policy_state["manual_off_latched"] is True
+    assert input_mod._screen_policy_manual_override_active(100.0) is True
+
+
+@pytest.mark.asyncio
+async def test_process_command_does_not_wake_screen_while_manual_override_latched(monkeypatch):
+    input_mod = _load_input_module(monkeypatch)
+    state = input_mod._new_screen_policy_state()
+    state["manual_off_latched"] = True
+    monkeypatch.setattr(input_mod, "_screen_policy_state", state)
+    set_display_awake = AsyncMock()
+    monkeypatch.setattr(input_mod, "_set_display_awake", set_display_awake)
+    forward_to_router = AsyncMock()
+    monkeypatch.setattr(input_mod, "_forward_to_router", forward_to_router)
+
+    result = await input_mod.process_command({
+        "command": "wake",
+        "params": {"page": "now_playing"},
+    })
+
+    assert result == {"status": "ok", "screen": "off", "blocked": "manual_override"}
+    set_display_awake.assert_not_awaited()
+    forward_to_router.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_process_command_screen_toggle_does_not_wake_while_manual_override_latched(monkeypatch):
+    input_mod = _load_input_module(monkeypatch)
+    state = input_mod._new_screen_policy_state()
+    state["manual_off_latched"] = True
+    monkeypatch.setattr(input_mod, "_screen_policy_state", state)
+    monkeypatch.setattr(input_mod, "is_backlight_on", lambda: False)
+    toggle_backlight = MagicMock()
+    monkeypatch.setattr(input_mod, "toggle_backlight", toggle_backlight)
+
+    result = await input_mod.process_command({
+        "command": "screen_toggle",
+        "params": {},
+    })
+
+    assert result == {"status": "ok", "screen": "off", "blocked": "manual_override"}
+    toggle_backlight.assert_not_called()
 
 
 def test_parse_report_records_local_activity_for_rotary_not_power(monkeypatch):

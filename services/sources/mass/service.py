@@ -404,19 +404,55 @@ class MassSource(SourceBase):
             path     = best.get("path", "")
             provider = best.get("provider", "library")
             if path:
-                clean = urllib.parse.unquote(path)
-                if "tidal" in provider.lower() and not clean.endswith(".jpg"):
-                    clean = (
-                        clean + "x750.jpg" if clean.endswith("750")
-                        else clean.rstrip("/") + "/750x750.jpg"
-                    )
-                encoded = (
-                    urllib.parse.quote(urllib.parse.quote(clean, safe=''), safe='')
-                    if clean.startswith("http")
-                    else urllib.parse.quote(clean, safe='')
-                )
-                return f"{base}/imageproxy?path={encoded}&provider={provider}&size=256"
+                return self._image_proxy_url(path, provider, base)
         return ""
+
+    @staticmethod
+    def _image_proxy_url(path, provider, base):
+        clean = urllib.parse.unquote(str(path or "").strip())
+        if not clean:
+            return ""
+        provider = str(provider or "library").strip() or "library"
+        if "tidal" in provider.lower() and not clean.endswith(".jpg"):
+            clean = (
+                clean + "x750.jpg" if clean.endswith("750")
+                else clean.rstrip("/") + "/750x750.jpg"
+            )
+        if not base:
+            return clean if clean.startswith("http") else ""
+        encoded = (
+            urllib.parse.quote(urllib.parse.quote(clean, safe=''), safe='')
+            if clean.startswith("http")
+            else urllib.parse.quote(clean, safe='')
+        )
+        return f"{base}/imageproxy?path={encoded}&provider={provider}&size=256"
+
+    def _normalize_artwork_value(self, image_value, base=""):
+        if isinstance(image_value, str):
+            return image_value.strip()
+        if isinstance(image_value, list):
+            for candidate in image_value:
+                normalized = self._normalize_artwork_value(candidate, base)
+                if normalized:
+                    return normalized
+            return ""
+        if not isinstance(image_value, dict):
+            return ""
+
+        nested_direct = self._normalize_artwork_value(image_value.get("image"), base)
+        if nested_direct:
+            return nested_direct
+
+        for key in ("url", "src", "href"):
+            value = image_value.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+
+        path = image_value.get("path")
+        if isinstance(path, str) and path.strip():
+            return self._image_proxy_url(path, image_value.get("provider", "library"), base)
+
+        return self._get_img(image_value, base) if base else ""
 
     def _placeholder_art(self, title, subtitle=""):
         safe_title = html.escape((title or "Unknown")[:22])
@@ -697,6 +733,7 @@ class MassSource(SourceBase):
         return ""
 
     async def _cache_image_locally(self, image_url):
+        image_url = self._normalize_artwork_value(image_url, "")
         if not image_url or not image_url.startswith("http"):
             return image_url
 
@@ -2728,6 +2765,14 @@ class MassSource(SourceBase):
         return bool(MassSource._extract_queue_items(payload))
 
     @staticmethod
+    def _snapshot_can_present_now_playing(payload):
+        if not isinstance(payload, dict):
+            return False
+        if MassSource._snapshot_has_loaded_media(payload):
+            return True
+        return MassSource._extract_queue_size(payload) > 0
+
+    @staticmethod
     def _extract_progress_marker(payload):
         if not isinstance(payload, dict):
             return ""
@@ -3423,7 +3468,7 @@ class MassSource(SourceBase):
         current_media = self._extract_player_current_media(payload)
         media_item = current_media.get("media_item") if isinstance(current_media.get("media_item"), dict) else {}
         artwork = (
-            current_media.get("image")
+            self._normalize_artwork_value(current_media.get("image"), base)
             or self._get_img(current_media, base)
             or self._get_img(media_item, base)
             or ""
@@ -3534,6 +3579,9 @@ class MassSource(SourceBase):
             return None
 
         resolved_queue_id = str(snapshot.get("resolved_queue_id") or queue_id).strip()
+        state = self._extract_playback_state(snapshot) or "idle"
+        if not self._snapshot_can_present_now_playing(snapshot) and not self._is_active_state(state):
+            return {"state": state, "queue_id": resolved_queue_id}
         base = MASS_URI.replace("/ws", "").replace("ws://", "http://").replace("wss://", "https://")
         for player_id in await self._resolve_player_candidates(resolved_queue_id or queue_id):
             player_state = await self._get_player_state(player_id)
@@ -3551,7 +3599,11 @@ class MassSource(SourceBase):
                         queue_uri = self._extract_queue_uri(current_item)
                         if not current_uri or queue_uri == current_uri:
                             media_item = current_item.get("media_item") if isinstance(current_item.get("media_item"), dict) else {}
-                            artwork = current_item.get("image") or self._get_img(media_item, base) or ""
+                            artwork = (
+                                self._normalize_artwork_value(current_item.get("image"), base)
+                                or self._get_img(media_item, base)
+                                or ""
+                            )
                             if artwork:
                                 artwork = await self._cache_image_locally(artwork)
                 return {
@@ -3566,12 +3618,15 @@ class MassSource(SourceBase):
                 }
 
         current_item = self._extract_current_queue_item(snapshot)
-        state = self._extract_playback_state(snapshot) or "idle"
         if not current_item:
             return {"state": state, "queue_id": resolved_queue_id}
 
         media_item = current_item.get("media_item") if isinstance(current_item.get("media_item"), dict) else {}
-        artwork = current_item.get("image") or self._get_img(media_item, base) or ""
+        artwork = (
+            self._normalize_artwork_value(current_item.get("image"), base)
+            or self._get_img(media_item, base)
+            or ""
+        )
         if artwork:
             artwork = await self._cache_image_locally(artwork)
 

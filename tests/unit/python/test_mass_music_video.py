@@ -91,6 +91,65 @@ class TestMassNowPlayingPayload:
         assert payload["album"] == "Queue Album"
         assert payload["uri"] == "mass://queue-track"
 
+    def test_ignores_stale_player_media_when_queue_is_idle(self):
+        source = _make_mass_source()
+        source._get_queue_snapshot = AsyncMock(return_value={
+            "resolved_queue_id": "queue-main",
+            "state": "idle",
+            "items": [],
+        })
+        source._resolve_player_candidates = AsyncMock(return_value=["player-main"])
+        source._get_player_state = AsyncMock(return_value={
+            "active_queue": "queue-main",
+            "state": "playing",
+            "current_media": {
+                "name": "Stale Track",
+                "artist_str": "Stale Artist",
+                "album_name": "Stale Album",
+                "uri": "mass://stale-track",
+            },
+        })
+
+        payload = _run(source._build_now_playing_payload("queue-main"))
+
+        assert payload == {"state": "idle", "queue_id": "queue-main"}
+
+    def test_normalizes_dict_queue_artwork_in_player_fallback(self):
+        source = _make_mass_source()
+        source._get_queue_snapshot = AsyncMock(return_value={
+            "resolved_queue_id": "queue-main",
+            "state": "playing",
+            "current_item": {
+                "name": "Queue Track",
+                "artist": "Queue Artist",
+                "album": "Queue Album",
+                "uri": "mass://queue-track",
+                "image": {
+                    "path": "https://images.example/queue-track.jpg",
+                    "provider": "library",
+                },
+            },
+        })
+        source._resolve_player_candidates = AsyncMock(return_value=["player-main"])
+        source._get_player_state = AsyncMock(return_value={
+            "active_queue": "queue-main",
+            "state": "playing",
+            "current_media": {
+                "name": "Player Track",
+                "artist_str": "Player Artist",
+                "album_name": "Player Album",
+                "uri": "mass://queue-track",
+            },
+        })
+        source._extract_player_artwork = AsyncMock(return_value="")
+        source._fetch_item_artwork_by_uri = AsyncMock(return_value="")
+        source._cache_image_locally = AsyncMock(side_effect=lambda image: image)
+
+        payload = _run(source._build_now_playing_payload("queue-main"))
+
+        assert payload["artwork"].startswith("http://")
+        assert "imageproxy?path=" in payload["artwork"]
+
 
 class TestMassQueuePayload:
     def test_extracts_paginated_queue_items(self):
@@ -175,6 +234,36 @@ class TestMassQueuePayload:
         assert queue["tracks"][0]["current"] is True
         assert "imageproxy?path=" in queue["tracks"][0]["artwork"]
         source._cache_image_locally.assert_not_called()
+
+
+class TestMassResync:
+    def test_handle_resync_clears_available_when_queue_is_idle(self):
+        source = _make_mass_source()
+        source._resolve_queue_candidates = AsyncMock(return_value=["queue-main"])
+        source._get_queue_snapshot = AsyncMock(return_value={
+            "resolved_queue_id": "queue-main",
+            "state": "idle",
+            "items": [],
+        })
+        source._resolve_player_candidates = AsyncMock(return_value=["player-main"])
+        source._get_player_state = AsyncMock(return_value={
+            "active_queue": "queue-main",
+            "state": "playing",
+            "current_media": {
+                "name": "Stale Track",
+                "artist_str": "Stale Artist",
+                "album_name": "Stale Album",
+                "uri": "mass://stale-track",
+            },
+        })
+        source.register = AsyncMock()
+        source._publish_now_playing = AsyncMock()
+
+        result = _run(source.handle_resync())
+
+        assert result == {"status": "ok", "resynced": False}
+        source.register.assert_awaited_once_with("available")
+        source._publish_now_playing.assert_not_called()
 
 
 class TestMassLibraryMenu:

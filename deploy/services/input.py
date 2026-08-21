@@ -125,6 +125,7 @@ def _new_screen_policy_state() -> dict:
         'last_wake': 'unknown',
         'last_wake_states': {},
         'last_wake_sensor_state': 'unknown',
+        'manual_off_latched': False,
         'manual_off_until': 0.0,
         'wake_hold_until': 0.0,
         'last_tick_monotonic': 0.0,
@@ -1506,16 +1507,26 @@ def _screen_policy_wake_hold_active(now: float | None = None) -> bool:
 def _screen_policy_manual_override_active(now: float | None = None) -> bool:
     if now is None:
         now = time.monotonic()
+    if _screen_policy_state.get('manual_off_latched'):
+        return True
     return now < float(_screen_policy_state.get('manual_off_until') or 0.0)
 
 
 def _clear_screen_manual_override(reason: str = 'local_input'):
-    if _screen_policy_state.get('manual_off_until'):
+    if _screen_policy_state.get('manual_off_until') or _screen_policy_state.get('manual_off_latched'):
         logger.debug('Screen manual override cleared (%s)', reason)
+    _screen_policy_state['manual_off_latched'] = False
     _screen_policy_state['manual_off_until'] = 0.0
 
 
-def _set_screen_manual_override(source: str = 'manual_off'):
+def _set_screen_manual_override(source: str = 'manual_off', *, persistent: bool = False):
+    if persistent:
+        _screen_policy_state['manual_off_latched'] = True
+        _screen_policy_state['manual_off_until'] = 0.0
+        logger.info('Screen manual override latched (%s)', source)
+        return
+
+    _screen_policy_state['manual_off_latched'] = False
     seconds = _screen_manual_override_seconds()
     if seconds <= 0:
         _screen_policy_state['manual_off_until'] = 0.0
@@ -1567,6 +1578,25 @@ def _screen_policy_router_is_playing(status: dict | None) -> bool:
     return _screen_policy_state_is_playing(active_source.get('state'))
 
 
+def _screen_policy_router_playback_context(status: dict | None) -> dict:
+    status = status or {}
+    media_state = _screen_policy_normalize_state((status.get('media') or {}).get('state'))
+    if not media_state:
+        active_source_id = str(status.get('active_source') or '').strip()
+        active_source = ((status.get('sources') or {}).get(active_source_id) or {})
+        media_state = _screen_policy_normalize_state(active_source.get('state'))
+
+    active_view = str(status.get('active_view') or '').strip().lower()
+    paused_on_playing_screen = media_state == 'paused' and active_view == 'menu/playing'
+    return {
+        'media_state': media_state,
+        'active_view': active_view,
+        'playing': _screen_policy_state_is_playing(media_state),
+        'paused': media_state == 'paused',
+        'paused_on_playing_screen': paused_on_playing_screen,
+    }
+
+
 def _screen_policy_presence_snapshot(states_by_entity: dict | None) -> dict:
     normalized: dict[str, str] = {}
     for entity_id, state in (states_by_entity or {}).items():
@@ -1604,6 +1634,9 @@ def _screen_policy_target_state(
     wake_hold_active: bool,
     local_input_recent: bool,
     playing: bool,
+    paused: bool,
+    paused_on_playing_screen: bool,
+    currently_awake: bool,
     presence_snapshot: dict,
     all_off_since: float | None,
     now: float,
@@ -1612,16 +1645,17 @@ def _screen_policy_target_state(
     if manual_override_active:
         return 'off'
 
-    if wake_snapshot.get('any_on'):
+    if wake_snapshot.get('any_on') and not paused:
         return 'on'
 
-    if wake_hold_active:
+    if wake_hold_active and not paused:
         return 'on'
 
     if local_input_recent:
         return 'on'
 
-    if not playing:
+    media_should_hold_awake = playing or (paused_on_playing_screen and currently_awake)
+    if not media_should_hold_awake:
         return 'off'
 
     if presence_snapshot.get('any_on'):
@@ -1642,6 +1676,13 @@ def _screen_policy_target_state(
     return None
 
 
+def _screen_command_wake_blocked(command: str) -> bool:
+    if not _screen_policy_manual_override_active():
+        return False
+    logger.info('Ignoring %s wake while manual screen override is active', command)
+    return True
+
+
 def _screen_policy_status_snapshot() -> dict:
     all_off_since = _screen_policy_state.get('all_off_since')
     last_local_input_at = float(_screen_policy_state.get('last_local_input_at') or 0.0)
@@ -1660,6 +1701,7 @@ def _screen_policy_status_snapshot() -> dict:
         'last_target': _screen_policy_state.get('last_target'),
         'last_reason': _screen_policy_state.get('last_reason'),
         'manual_override_active': manual_override_active,
+        'manual_override_latched': bool(_screen_policy_state.get('manual_off_latched')),
         'manual_override_for_s': manual_override_for_s,
         'manual_override_timeout_s': _screen_manual_override_seconds(),
         'local_input_recent': local_input_recent,
@@ -1736,7 +1778,11 @@ async def _screen_policy_tick() -> str:
         })
         return 'router_status_unavailable'
 
-    playing = _screen_policy_router_is_playing(status)
+    playback_context = _screen_policy_router_playback_context(status)
+    playing = playback_context.get('playing', False)
+    paused = playback_context.get('paused', False)
+    paused_on_playing_screen = playback_context.get('paused_on_playing_screen', False)
+    currently_awake = _screen_policy_state.get('applied_target') == 'on' or is_backlight_on()
     hlk_state = await hlk_task if hlk_task is not None else None
     wake_states = _screen_policy_local_hlk_states(
         hlk_state,
@@ -1775,6 +1821,9 @@ async def _screen_policy_tick() -> str:
         wake_hold_active=wake_hold_active,
         local_input_recent=local_input_recent,
         playing=playing,
+        paused=paused,
+        paused_on_playing_screen=paused_on_playing_screen,
+        currently_awake=currently_awake,
         presence_snapshot=presence_snapshot,
         all_off_since=_screen_policy_state.get('all_off_since'),
         now=now,
@@ -1783,12 +1832,16 @@ async def _screen_policy_tick() -> str:
 
     if manual_override_active:
         reason = 'manual_override'
-    elif wake_snapshot.get('any_on'):
+    elif wake_snapshot.get('any_on') and not paused:
         reason = 'wake_on'
-    elif wake_hold_active:
+    elif wake_hold_active and not paused:
         reason = 'wake_grace'
     elif local_input_recent:
         reason = 'local_input_recent'
+    elif paused and not paused_on_playing_screen:
+        reason = 'paused_off_playing_screen'
+    elif paused and not currently_awake:
+        reason = 'paused_screen_stays_off'
     elif not playing:
         reason = 'idle_timeout'
     elif presence_snapshot.get('any_on'):
@@ -1852,26 +1905,30 @@ async def process_command(data: dict) -> dict:
     params = data.get('params', {})
 
     if command in ('screen_on', 'display_on'):
+        if _screen_command_wake_blocked(command):
+            return {'status': 'ok', 'screen': 'off', 'blocked': 'manual_override'}
         logger.info('Turning screen ON')
-        _note_local_screen_activity('command:screen_on')
         await _set_display_awake(True)
         return {'status': 'ok', 'screen': 'on'}
 
     elif command == 'screen_off':
         logger.info('Turning screen OFF')
-        _set_screen_manual_override('command:screen_off')
+        _set_screen_manual_override('command:screen_off', persistent=True)
         _clear_local_screen_activity()
         await _set_display_awake(False, power_audio=True)
         return {'status': 'ok', 'screen': 'off'}
 
     elif command == 'display_off':
         logger.info('Turning display OFF (panel only)')
-        _set_screen_manual_override('command:display_off')
+        _set_screen_manual_override('command:display_off', persistent=True)
         _clear_local_screen_activity()
         await _set_display_awake(False)
         return {'status': 'ok', 'screen': 'off'}
 
     elif command == 'screen_toggle':
+        if _screen_policy_manual_override_active() and not is_backlight_on():
+            logger.info('Ignoring %s wake while manual screen override is active', command)
+            return {'status': 'ok', 'screen': 'off', 'blocked': 'manual_override'}
         logger.info('Toggling screen')
         toggle_backlight()
         return {'status': 'ok', 'screen': 'on' if is_backlight_on() else 'off'}
@@ -1892,6 +1949,8 @@ async def process_command(data: dict) -> dict:
         return {'status': 'ok', 'restart': target}
 
     elif command == 'wake':
+        if _screen_command_wake_blocked(command):
+            return {'status': 'ok', 'screen': 'off', 'blocked': 'manual_override'}
         page = params.get('page', 'now_playing')
         logger.info('Waking up and showing: %s', page)
         await _set_display_awake(True)
@@ -1907,18 +1966,24 @@ async def process_command(data: dict) -> dict:
         return {'status': 'ok', **info}
 
     elif command == 'next_screen':
+        if _screen_command_wake_blocked(command):
+            return {'status': 'ok', 'screen': 'off', 'blocked': 'manual_override'}
         logger.info('Next screen')
         await _set_display_awake(True)
         await _forward_to_router('navigate', {'page': 'next'})
         return {'status': 'ok', 'action': 'next_screen'}
 
     elif command == 'prev_screen':
+        if _screen_command_wake_blocked(command):
+            return {'status': 'ok', 'screen': 'off', 'blocked': 'manual_override'}
         logger.info('Previous screen')
         await _set_display_awake(True)
         await _forward_to_router('navigate', {'page': 'previous'})
         return {'status': 'ok', 'action': 'prev_screen'}
 
     elif command == 'show_camera':
+        if _screen_command_wake_blocked(command):
+            return {'status': 'ok', 'screen': 'off', 'blocked': 'manual_override'}
         title = params.get('title', 'Camera')
         camera_entity = params.get('camera_entity', 'camera.doorbell_medium_resolution_channel')
         camera_id = params.get('camera_id', 'doorbell')
@@ -2682,7 +2747,7 @@ def parse_report(rep: list, loop=None):
                 if is_backlight_on():
                     _note_local_screen_activity('hid_button:power_on')
                 else:
-                    _set_screen_manual_override('hid_button:power_off')
+                    _set_screen_manual_override('hid_button:power_off', persistent=True)
                     _clear_local_screen_activity()
                 # Power off speakers when screen turns off (speakers power on via playback)
                 if not is_backlight_on():

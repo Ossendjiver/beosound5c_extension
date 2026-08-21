@@ -157,6 +157,11 @@ class ViewManager {
             // a Sonos external start raced view entry), pull the router's
             // cached state via HTTP and apply it. No-op if nothing cached.
             const mi = this.mediaManager.mediaInfo;
+            const staleNoActiveStop = this.mediaManager.shouldTreatAsStaleNowPlaying?.(mi);
+            if (staleNoActiveStop && mi) {
+                mi.title = '';
+                mi.state = 'idle';
+            }
             const stale = !mi || !mi.title || mi.title === '—' || mi.state === 'idle' || mi.state === 'unknown';
             if (stale) {
                 const url = `${window.AppConfig?.routerUrl || 'http://localhost:8770'}/router/media`;

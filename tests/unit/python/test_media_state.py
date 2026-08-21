@@ -84,6 +84,37 @@ class TestMediaValidation:
         assert result["dropped"] is True
         assert result["reason"] == "source_owns_media"
 
+    def test_normalizes_player_stop_without_active_source_to_idle(self):
+        ms = MediaState()
+        payload = {
+            "title": "BBC News",
+            "artist": "BBC",
+            "state": "stopped",
+            "_reason": "state_change",
+            "_source_id": None,
+            "_action_ts": 0,
+        }
+        result = ms.validate_update(payload, active_source_id=None,
+                                    latest_action_ts=0)
+        assert result is None
+        assert payload["_validated_idle_clear"] is True
+        assert payload["_validated_reason"] == "state_change"
+
+    def test_accepts_player_playback_start_without_active_source(self):
+        ms = MediaState()
+        payload = {
+            "title": "Fresh Track",
+            "artist": "Artist",
+            "state": "playing",
+            "_reason": "track_change",
+            "_source_id": None,
+            "_action_ts": 0,
+        }
+        result = ms.validate_update(payload, active_source_id=None,
+                                    latest_action_ts=0)
+        assert result is None
+        assert payload["_validated_idle_clear"] is False
+
     def test_zero_timestamp_passes_for_active_source(self):
         """Active source with action_ts=0 (no opinion) should be accepted."""
         ms = MediaState()
@@ -124,6 +155,28 @@ class TestMediaStateCache:
         asyncio.run(ms.accept_and_push(payload, "update"))
         assert ms.state == payload
         assert ms.state["title"] == "New Song"
+
+    def test_accept_and_push_idle_normalization_clears_state(self):
+        ms = MediaState()
+        seen = {}
+
+        async def fake_push_media(media_data, reason="update"):
+            seen["media"] = dict(media_data)
+            seen["reason"] = reason
+
+        ms.push_media = fake_push_media
+        payload = {
+            "title": "BBC News",
+            "artist": "BBC",
+            "state": "stopped",
+            "_validated_idle_clear": True,
+        }
+        asyncio.run(ms.accept_and_push(payload, "state_change"))
+        assert ms.state is None
+        assert seen["reason"] == "state_change"
+        assert seen["media"]["state"] == "idle"
+        assert seen["media"]["title"] == ""
+        assert seen["media"]["artwork"] == ""
 
     def test_state_property(self):
         ms = MediaState()
@@ -176,11 +229,17 @@ class TestMediaRaceScenarios:
         result = ms.validate_update(payload, active_source_id="spotify",
                                     latest_action_ts=300)
         assert result is None
-        # No source_id, no active source at all: accepted
+        # No source_id, no active source at all: accepted, but normalized idle
         payload = {"title": "Sonos Song 3", "_reason": "update"}
         result = ms.validate_update(payload, active_source_id=None,
                                     latest_action_ts=0)
         assert result is None
+        assert payload["_validated_idle_clear"] is True
+        payload = {"title": "Sonos Song 4", "_reason": "update", "state": "playing"}
+        result = ms.validate_update(payload, active_source_id=None,
+                                    latest_action_ts=0)
+        assert result is None
+        assert payload["_validated_idle_clear"] is False
 
     def test_broadcast_drops_hung_client_and_delivers_to_healthy(self):
         """A hung WS client must not block delivery to healthy clients."""
@@ -229,7 +288,7 @@ class TestMediaRaceScenarios:
         assert ms.state is None
         # New player media arrives
         payload = {"title": "Sonos Song", "_reason": "update",
-                   "_source_id": None, "_action_ts": 0}
+                   "_source_id": None, "_action_ts": 0, "state": "playing"}
         result = ms.validate_update(payload, active_source_id=None,
                                     latest_action_ts=0)
         assert result is None  # accepted

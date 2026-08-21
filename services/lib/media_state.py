@@ -18,11 +18,19 @@ logger = logging.getLogger("beo-router")
 # Per-client send timeout: a hung or dropped TCP connection must not be
 # able to block the broadcast loop (and therefore every other WS client).
 _WS_SEND_TIMEOUT = 2.0
+_ACTIVE_PLAYBACK_STATES = {"playing", "buffering", "transitioning"}
 
 _IDLE_MEDIA = {
     "state": "idle", "title": "", "artist": "", "album": "",
-    "artwork_url": "", "canvas_url": "", "music_video_url": "",
+    "artwork": "", "artwork_url": "", "back_artwork": "",
+    "canvas_url": "", "music_video_url": "", "track_id": "",
+    "relay_id": "", "source_id": "", "position": "0:00",
+    "duration": "0:00",
 }
+
+
+def _normalize_playback_state(state) -> str:
+    return str(state or "").strip().lower()
 
 
 class MediaState:
@@ -146,10 +154,18 @@ class MediaState:
         source_id = payload.pop("_source_id", None)
         action_ts = payload.pop("_action_ts", 0)
         is_active = source_id and source_id == active_source_id
+        playback_state = _normalize_playback_state(payload.get("state"))
+        relay_id = str(payload.get("relay_id") or "").strip().lower()
         trusted_bootstrap = bool(
             source_id
             and not active_source_id
             and reason in {"track_change", "resync"}
+        )
+        normalize_to_idle = bool(
+            not source_id
+            and not active_source_id
+            and not relay_id
+            and playback_state not in _ACTIVE_PLAYBACK_STATES
         )
         title = payload.get("title", "")[:40] or "-"
 
@@ -206,6 +222,7 @@ class MediaState:
             latest_ts=latest_action_ts,
             update_reason=reason,
             title=title,
+            normalized_to="idle" if normalize_to_idle else None,
         )
 
         # Ensure canvas_url and music_video_url always present to clear stale values
@@ -215,6 +232,7 @@ class MediaState:
         # Preserve context for caller (canvas injection, TTS)
         payload["_validated_source_id"] = source_id
         payload["_validated_reason"] = reason
+        payload["_validated_idle_clear"] = normalize_to_idle
 
         return None  # accepted
 
@@ -226,6 +244,9 @@ class MediaState:
         State is cached before the task fires, so late-joining clients get the
         correct value immediately on reconnect.
         """
+        if payload.pop("_validated_idle_clear", False):
+            await self.push_idle(reason)
+            return
         self._state = payload
         asyncio.ensure_future(self.push_media(payload, reason))
 
