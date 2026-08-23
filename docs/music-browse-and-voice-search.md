@@ -6,10 +6,16 @@ The three large sorted library views (`Artists`, `Albums`, and `Titles`) retain
 normal item-by-item wheel movement at ordinary speeds. A deliberate fast spin
 switches to letter groups:
 
-- speed below 24: normal list movement;
-- speed 24–55: advance one letter group;
-- speed 56–87: advance two letter groups;
-- speed 88 and above: advance three letter groups.
+- speed 1–2: normal list movement;
+- three consecutive samples at speed 3 or above: enter letter mode;
+- while the spin is sustained, advance through letter groups at a rate that
+  increases with wheel speed;
+- slow below the threshold or pause to return to item movement.
+
+These thresholds are calibrated against the physical B5c wheel: careful and
+ordinary movement reports speeds 1–2, while a deliberate spin starts at 3 and
+typically sustains 5–8. The centred letter overlay remains visible while letter
+mode is active.
 
 Letter jumps apply only at the top level of a sorted section with at least 40
 items. Nested albums, playlists, search results, and short lists remain precise.
@@ -23,6 +29,11 @@ to the MUSIC sections. Voice starts one push-to-talk capture rather than an
 always-listening wake word. Both input methods open the same live results,
 grouped as Tracks, Albums, Artists, Playlists, Radio, Podcasts, and Audiobooks.
 Selecting a playable result uses the existing MASS queue commands.
+
+Context menus and the QWERTY panel use a fractional speed ramp. Slow wheel
+movement accumulates before moving one selection, while faster movement ramps
+up smoothly. Discrete touch and keyboard controls continue to move exactly one
+selection per press.
 
 ## Voice data flow
 

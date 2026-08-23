@@ -4,6 +4,9 @@ const assert = require('node:assert/strict');
 const {
     getLetter,
     speedToSteps,
+    menuDeltaForSpeed,
+    createMenuStepRamp,
+    createLetterMode,
     findJumpIndex,
 } = require('../../../web/js/fast-letter-index.js');
 
@@ -26,12 +29,61 @@ describe('fast letter indexing', () => {
         assert.equal(getLetter('The Crystal Ship'), 'C');
     });
 
-    it('only enters letter mode on a deliberate fast spin', () => {
-        assert.equal(speedToSteps(23), 0);
-        assert.equal(speedToSteps(24), 1);
-        assert.equal(speedToSteps(56), 2);
-        assert.equal(speedToSteps(88), 3);
+    it('maps the measured physical wheel range into useful letter tiers', () => {
+        assert.equal(speedToSteps(2), 0);
+        assert.equal(speedToSteps(3), 1);
+        assert.equal(speedToSteps(7), 2);
+        assert.equal(speedToSteps(11), 3);
         assert.equal(speedToSteps(127), 3);
+    });
+
+    it('uses fractional low-speed accumulation for precise option menus', () => {
+        assert.ok(menuDeltaForSpeed(1) < menuDeltaForSpeed(5));
+        const ramp = createMenuStepRamp();
+        let emitted = 0;
+        for (let index = 0; index < 24; index += 1) {
+            emitted += ramp.push({ direction: 'clock', speed: 1 }, 100 + index * 20);
+        }
+        assert.equal(emitted, 0);
+        assert.equal(ramp.push({ direction: 'clock', speed: 1 }, 580), 1);
+
+        ramp.reset();
+        assert.equal(ramp.push({ direction: 'clock', speed: 10 }, 1000), 0);
+        assert.equal(ramp.push({ direction: 'clock', speed: 10 }, 1010), 1);
+        assert.equal(ramp.push({ direction: 'counter', speed: 10 }, 1020), 0);
+    });
+
+    it('enters iPod-style letter mode only after sustained fast samples', () => {
+        const mode = createLetterMode();
+        let timestamp = 100;
+        for (let index = 0; index < 40; index += 1) {
+            timestamp += 20;
+            assert.equal(mode.push({ direction: 'clock', speed: 1 }, timestamp).active, false);
+        }
+
+        timestamp += 10;
+        assert.equal(mode.push({ direction: 'clock', speed: 7 }, timestamp).active, false);
+        timestamp += 10;
+        assert.equal(mode.push({ direction: 'clock', speed: 7 }, timestamp).active, false);
+        timestamp += 10;
+        const entered = mode.push({ direction: 'clock', speed: 7 }, timestamp);
+        assert.deepEqual(
+            { active: entered.active, steps: entered.steps, entered: entered.entered },
+            { active: true, steps: 1, entered: true },
+        );
+
+        timestamp += 20;
+        assert.equal(mode.push({ direction: 'clock', speed: 7 }, timestamp).steps, 0);
+        timestamp += 100;
+        assert.equal(mode.push({ direction: 'clock', speed: 7 }, timestamp).steps, 1);
+
+        let state = null;
+        for (let index = 0; index < 8; index += 1) {
+            timestamp += 10;
+            state = mode.push({ direction: 'clock', speed: 1 }, timestamp);
+        }
+        assert.equal(state.active, false);
+        assert.equal(state.exited, true);
     });
 
     it('jumps forward to the first entry in the next letter group', () => {
