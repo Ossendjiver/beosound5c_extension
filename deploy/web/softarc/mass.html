@@ -385,6 +385,7 @@
 
     <script src="../js/config.js"></script>
     <script src="../js/arc-utils.js"></script>
+    <script src="../js/fast-letter-index.js"></script>
     <script src="../js/emulator-bridge.js"></script>
     <script src="../assets/qrcode.min.js"></script>
     <script src="script.js"></script>
@@ -454,8 +455,11 @@
         const SERVICE_BOOT_TIMEOUT_MS = 900;
         const ACTION_TOAST_MIN_MS = 2000;
         const ACTION_TOAST_MAX_MS = 4000;
-        const FAST_LETTER_MIN_SPEED = 3;
-        const FAST_LETTER_ARTICLES = new Set(['A', 'AN', 'THE']);
+        const FAST_LETTER_MIN_SPEED = 24;
+        const FAST_LETTER_TIER_SIZE = 32;
+        const FAST_LETTER_MAX_STEPS = 3;
+        const FAST_LETTER_MIN_ITEMS = 40;
+        const FAST_LETTER_SECTION_IDS = new Set(['artists', 'albums', 'titles']);
 
         async function fetchJson(url, options = {}) {
             const timeoutMs = Number(options.timeoutMs || 0);
@@ -514,10 +518,11 @@
             const preserveTiming = Boolean(options.preserveTiming && actionToastState);
             if (!preserveTiming) {
                 clearActionToastTimers();
+                const maxMs = Math.max(ACTION_TOAST_MIN_MS, Number(options.maxMs || ACTION_TOAST_MAX_MS));
                 actionToastState = {
                     shownAt: Date.now(),
                     hideTimer: null,
-                    maxTimer: setTimeout(hideActionToast, ACTION_TOAST_MAX_MS),
+                    maxTimer: setTimeout(hideActionToast, maxMs),
                 };
             }
             overlay.textContent = message;
@@ -833,8 +838,10 @@
             const sourceCommandUrl = serviceBaseUrl + '/command';
             const queueUrl = serviceBaseUrl + '/queue';
             const itemInfoUrl = serviceBaseUrl + '/item_info';
+            const voiceSearchUrl = serviceBaseUrl + '/voice_search';
             const FALLBACK_CARD_IMAGE = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNjQiIGhlaWdodD0iNjQiIHZpZXdCb3g9IjAgMCA2NCA2NCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPHJlY3Qgd2lkdGg9IjY0IiBoZWlnaHQ9IjY0IiBmaWxsPSIjMzMzMzMzIi8+Cjx0ZXh0IHg9IjMyIiB5PSI0MCIgZm9udC1mYW1pbHk9IkFyaWFsLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjI0IiBmaWxsPSIjZmZmZmZmIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIj7imqo8L3RleHQ+Cjwvc3ZnPgo=';
             const ROOT_ICON_STYLE = {
+                voice_search: { icon: 'microphone-stage', color: '#f03e3e' },
                 artists:   { icon: 'users-three', color: '#e05618' },
                 albums:    { icon: 'vinyl-record', color: '#1c7ed6' },
                 titles:    { icon: 'music-notes-simple', color: '#2b8a3e' },
@@ -844,8 +851,14 @@
                 mixes:     { icon: 'radio', color: '#e6ca19' },
             };
             const SOURCE_ROOT_IDS = new Set(['queue', 'artists', 'albums', 'songs', 'playlists', 'playlist_mixes', 'podcasts', 'mixes']);
-            const ROOT_SECTION_IDS = new Set(['queue', 'artists', 'albums', 'titles', 'playlists', 'playlist_mixes', 'podcasts', 'mixes']);
+            const ROOT_SECTION_IDS = new Set(['queue', 'voice_search', 'artists', 'albums', 'titles', 'playlists', 'playlist_mixes', 'podcasts', 'mixes']);
             const CROSS_SECTION_TARGET_IDS = new Set(['artists', 'albums', 'titles']);
+            const VOICE_SEARCH_ROOT = {
+                id: 'voice_search',
+                name: 'Voice Search',
+                url: 'voice-search://',
+                voice_search: true,
+            };
             const cleanTitle = (value) => String(value || '').split('\n')[0].trim();
             const normalizeServiceImageUrl = (value) => {
                 const raw = String(value || '').trim();
@@ -1475,7 +1488,8 @@
             };
 
             const rootItems = () => {
-                const src = buildDisplayRootSource(withQueueRoot(arcList.parentData || preloadedData || []));
+                const libraryItems = buildDisplayRootSource(withQueueRoot(arcList.parentData || preloadedData || []));
+                const src = [VOICE_SEARCH_ROOT].concat(libraryItems);
                 return src.map((item, idx, arr) => applyRootPresentation(childNameMapper(item, idx, arr)));
             };
 
@@ -1489,6 +1503,94 @@
                     }
                     return mapped;
                 });
+            };
+
+            let voiceSearchRunning = false;
+            const voiceErrorMessage = (reason, fallback) => {
+                const messages = {
+                    disabled: 'Voice search is disabled',
+                    microphone_not_detected: 'Connect a USB microphone',
+                    arecord_missing: 'Microphone capture is not installed',
+                    home_assistant_url_missing: 'Home Assistant voice is not configured',
+                    home_assistant_token_missing: 'Home Assistant voice is not authorized',
+                    assist_auth_failed: 'Home Assistant voice authorization failed',
+                    no_speech: 'I did not catch that',
+                    voice_timeout: 'Listening timed out',
+                    mass_unavailable: 'Music Assistant is not connected',
+                };
+                return messages[String(reason || '')] || fallback || 'Voice search failed';
+            };
+
+            const openVoiceSearchResults = (payload) => {
+                const groups = Array.isArray(payload?.groups) ? payload.groups : [];
+                if (!groups.length) return false;
+                const roots = rootItems();
+                const voiceIndex = roots.findIndex((entry) => String(entry?.id || '') === 'voice_search');
+                if (voiceIndex < 0) return false;
+
+                const query = cleanTitle(payload?.query || payload?.transcript || 'Voice Search');
+                const voiceRoot = Object.assign({}, roots[voiceIndex], {
+                    name: `Search: ${query}`,
+                    tracks: groups.map((group) => Object.assign({}, group, { search_group: true })),
+                });
+                delete voiceRoot.url;
+
+                folderStack.length = 0;
+                folderStack.push({
+                    item: voiceRoot,
+                    items: roots.slice(),
+                    currentIndex: voiceIndex,
+                    targetIndex: voiceIndex,
+                });
+                arcList.items = mapChildrenForParent(voiceRoot);
+                arcList.currentIndex = 0;
+                arcList.targetIndex = 0;
+                refreshList();
+                saveBrowseState();
+                return true;
+            };
+
+            const startVoiceSearch = async () => {
+                if (voiceSearchRunning) return true;
+                voiceSearchRunning = true;
+                showActionToast('Listening…', { maxMs: 30000 });
+                try {
+                    const response = await fetch(voiceSearchUrl, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: '{}',
+                    });
+                    let payload = null;
+                    try {
+                        payload = await response.json();
+                    } catch (_error) {}
+
+                    if (!response.ok || payload?.state === 'error') {
+                        showActionToast(
+                            voiceErrorMessage(payload?.reason, payload?.message),
+                            { preserveTiming: true },
+                        );
+                        settleActionToast();
+                        return true;
+                    }
+                    if (payload?.state === 'empty' || !openVoiceSearchResults(payload)) {
+                        const query = cleanTitle(payload?.query || payload?.transcript || 'that');
+                        showActionToast(`No results for “${query}”`, { preserveTiming: true });
+                        settleActionToast();
+                        return true;
+                    }
+
+                    showActionToast(`Results for “${cleanTitle(payload.query)}”`, { preserveTiming: true });
+                    settleActionToast();
+                    return true;
+                } catch (error) {
+                    console.warn('[MASS] Voice search failed:', error);
+                    showActionToast('Voice search service is unavailable', { preserveTiming: true });
+                    settleActionToast();
+                    return true;
+                } finally {
+                    voiceSearchRunning = false;
+                }
             };
 
             const CONTEXT_ROUTE = 'menu/mass';
@@ -1548,6 +1650,10 @@
             const openContextSection = (sectionId, options = {}) => {
                 const normalizedId = String(sectionId || '').trim();
                 if (!normalizedId) return false;
+                if (normalizedId === 'voice_search') {
+                    void startVoiceSearch();
+                    return true;
+                }
 
                 const activeSectionId = String(folderStack[0]?.item?.id || '').trim();
                 const sourceContext = resolveEffectiveSectionBrowseContext();
@@ -2151,16 +2257,7 @@
                 setDetailCounter();
             };
 
-            const getFastLetter = (value) => {
-                const base = cleanTitle(String(value || '')).replace(/^[^A-Za-z0-9]+/, '').trim();
-                if (!base) return '';
-                const tokens = base.split(/\s+/).filter(Boolean);
-                const token = tokens.length > 1 && FAST_LETTER_ARTICLES.has(tokens[0].toUpperCase())
-                    ? tokens[1]
-                    : tokens[0];
-                const match = token.match(/[A-Za-z0-9]/);
-                return match ? match[0].toUpperCase() : '';
-            };
+            const getFastLetter = (value) => window.FastLetterIndex?.getLetter(value) || '';
 
             const createBreadcrumbImage = (item) => {
                 if (typeof arcList.createImageElement === 'function') {
@@ -2288,8 +2385,8 @@
             };
 
             let fastLetterTimer = null;
-            const showFastLetter = () => {
-                const current = getCurrentItem();
+            const showFastLetter = (itemOverride = null) => {
+                const current = itemOverride || getCurrentItem();
                 const letter = getFastLetter(current?.name);
                 if (!letter) return;
                 let overlay = document.getElementById('fast-letter-overlay');
@@ -2305,9 +2402,47 @@
                 fastLetterTimer = setTimeout(() => overlay.classList.remove('visible'), 280);
             };
 
+            const tryFastLetterJump = (data) => {
+                if (!window.FastLetterIndex || !Array.isArray(arcList.items)) return false;
+                const sectionId = String(folderStack[0]?.item?.id || '').trim();
+                if (folderStack.length !== 1 || !FAST_LETTER_SECTION_IDS.has(sectionId)) return false;
+                if (arcList.items.length < FAST_LETTER_MIN_ITEMS) return false;
+
+                const letterSteps = window.FastLetterIndex.speedToSteps(data?.speed, {
+                    threshold: FAST_LETTER_MIN_SPEED,
+                    tierSize: FAST_LETTER_TIER_SIZE,
+                    maxSteps: FAST_LETTER_MAX_STEPS,
+                });
+                if (!letterSteps) return false;
+
+                const direction = String(data?.direction || '');
+                const fromIndex = direction === 'counter'
+                    ? Math.min(arcList.currentIndex, arcList.targetIndex)
+                    : Math.max(arcList.currentIndex, arcList.targetIndex);
+                const nextIndex = window.FastLetterIndex.findJumpIndex(
+                    arcList.items,
+                    fromIndex,
+                    direction,
+                    letterSteps,
+                    (item) => item?.name,
+                );
+                if (nextIndex < 0 || nextIndex === Math.round(fromIndex)) return false;
+
+                arcList.targetIndex = nextIndex;
+                arcList.lastScrollTime = Date.now();
+                if (typeof arcList.setupSnapTimer === 'function') arcList.setupSnapTimer();
+                if (!arcList.animationFrame) arcList.currentIndex = nextIndex;
+                showFastLetter(arcList.items[nextIndex]);
+                return true;
+            };
+
             // â”€â”€ Folder navigation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
             const enterFolder = () => {
                 const current = getCurrentItem();
+                if (current?.voice_search) {
+                    void startVoiceSearch();
+                    return true;
+                }
                 if (!current || !Array.isArray(current.tracks) || current.tracks.length === 0)
                     return false;
                 const enteringFromRoot = folderStack.length === 0;
@@ -2402,6 +2537,8 @@
                 const current = itemOverride || detailState?.item || optionsState?.item || getCurrentItem();
                 if (!current) return;
                 if (detailState?.loading) return;
+                if (current.voice_search) return startVoiceSearch();
+                if (current.search_group) return enterFolder();
 
                 const playUri = String(
                     extraPayload.url
@@ -2581,11 +2718,9 @@
                     }
                     return;
                 }
+                if (tryFastLetterJump(data)) return;
                 if (originalHandleNavFromParent) {
                     originalHandleNavFromParent(data);
-                }
-                if (Number(data?.speed || 1) >= FAST_LETTER_MIN_SPEED) {
-                    showFastLetter();
                 }
             };
 

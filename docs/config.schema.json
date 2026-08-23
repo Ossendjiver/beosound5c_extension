@@ -475,6 +475,40 @@
         "source": {
           "type": "string",
           "description": "Optional IR/B&O source button mapping for Music Assistant, for example n.music."
+        },
+        "voice_search": {
+          "type": "object",
+          "description": "Push-to-talk voice search. Audio is captured locally with ALSA, transcribed by the configured Home Assistant Assist pipeline, then searched live across all Music Assistant providers.",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": false,
+              "description": "Show and enable Voice Search in the MASS browser."
+            },
+            "microphone_device": {
+              "type": "string",
+              "default": "default",
+              "description": "ALSA capture device passed to arecord, for example default or plughw:CARD=ReSpeaker,DEV=0."
+            },
+            "language": {
+              "type": "string",
+              "default": "en-AU",
+              "description": "Expected speech language. The selected Home Assistant Assist pipeline must support it."
+            },
+            "pipeline_id": {
+              "type": "string",
+              "default": "",
+              "description": "Optional Home Assistant Assist pipeline ID. Empty uses Home Assistant's preferred pipeline."
+            },
+            "timeout_s": {
+              "type": "number",
+              "minimum": 5,
+              "maximum": 30,
+              "default": 15,
+              "description": "Maximum microphone capture time for one voice query."
+            }
+          },
+          "additionalProperties": false
         }
       },
       "additionalProperties": false

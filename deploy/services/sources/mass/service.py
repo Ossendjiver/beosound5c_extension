@@ -30,6 +30,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import sys
 import urllib.parse
 import websockets
@@ -170,6 +171,61 @@ LOCAL_IMAGE_SUFFIXES = (
     ".avif",
     ".tiff",
 )
+
+
+def _clamped_float(value, default, minimum, maximum):
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        parsed = float(default)
+    return max(float(minimum), min(float(maximum), parsed))
+
+_MASS_CONFIG = cfg("mass", default={}) or {}
+_VOICE_SEARCH_CONFIG = _MASS_CONFIG.get("voice_search") or {}
+VOICE_SEARCH_ENABLED = bool(_VOICE_SEARCH_CONFIG.get("enabled", False))
+VOICE_SEARCH_MIC_DEVICE = str(
+    _VOICE_SEARCH_CONFIG.get("microphone_device") or "default"
+).strip()
+VOICE_SEARCH_LANGUAGE = str(
+    _VOICE_SEARCH_CONFIG.get("language") or "en-AU"
+).strip()
+VOICE_SEARCH_PIPELINE_ID = str(
+    _VOICE_SEARCH_CONFIG.get("pipeline_id") or ""
+).strip()
+VOICE_SEARCH_TIMEOUT = _clamped_float(
+    _VOICE_SEARCH_CONFIG.get("timeout_s"),
+    15.0,
+    5.0,
+    30.0,
+)
+VOICE_SEARCH_HA_URL = str(
+    os.getenv("HA_URL") or cfg("home_assistant", "url", default="") or ""
+).strip().rstrip("/")
+VOICE_SEARCH_HA_TOKEN = os.getenv("HA_TOKEN", "").strip()
+VOICE_SEARCH_MEDIA_TYPES = (
+    "artist",
+    "album",
+    "track",
+    "playlist",
+    "radio",
+    "podcast",
+    "audiobook",
+)
+VOICE_SEARCH_RESULT_GROUPS = (
+    ("tracks", "Tracks", "track"),
+    ("albums", "Albums", "album"),
+    ("artists", "Artists", "artist"),
+    ("playlists", "Playlists", "playlist"),
+    ("radio", "Radio", "radio"),
+    ("podcasts", "Podcasts", "podcast"),
+    ("audiobooks", "Audiobooks", "audiobook"),
+)
+
+
+class VoiceSearchError(RuntimeError):
+    def __init__(self, code, message):
+        super().__init__(message)
+        self.code = str(code or "voice_search_failed")
 
 FALLBACK_IMAGE = (
     "data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNjQiIGhlaWdodD0iNjQiIHZpZXdCb3g9IjAgMCA2NCA2NCIg"
@@ -384,6 +440,312 @@ class MassSource(SourceBase):
                     self._futures[mid].set_result(data)
         except Exception:
             self._connected = False
+
+    # ── Live search + voice transcription ─────────────────────────────────────
+
+    @staticmethod
+    def _voice_websocket_url():
+        base = VOICE_SEARCH_HA_URL
+        if base.startswith("https://"):
+            base = "wss://" + base[len("https://"):]
+        elif base.startswith("http://"):
+            base = "ws://" + base[len("http://"):]
+        if not base.startswith(("ws://", "wss://")):
+            return ""
+        return base.rstrip("/") + "/api/websocket"
+
+    @staticmethod
+    def _microphone_present():
+        if not shutil.which("arecord"):
+            return False
+        try:
+            with open("/proc/asound/pcm", "r", encoding="utf-8") as handle:
+                return any("capture" in line.lower() for line in handle)
+        except OSError:
+            return False
+
+    def _voice_search_status(self):
+        reason = ""
+        if not VOICE_SEARCH_ENABLED:
+            reason = "disabled"
+        elif not self._voice_websocket_url():
+            reason = "home_assistant_url_missing"
+        elif not VOICE_SEARCH_HA_TOKEN:
+            reason = "home_assistant_token_missing"
+        elif not shutil.which("arecord"):
+            reason = "arecord_missing"
+        elif not self._microphone_present():
+            reason = "microphone_not_detected"
+
+        return {
+            "enabled": VOICE_SEARCH_ENABLED,
+            "ready": not reason,
+            "reason": reason,
+            "microphone_present": self._microphone_present(),
+            "microphone_device": VOICE_SEARCH_MIC_DEVICE,
+            "language": VOICE_SEARCH_LANGUAGE,
+            "pipeline_id": VOICE_SEARCH_PIPELINE_ID,
+            "transcription": "home_assistant_assist",
+            "search_scope": "all_mass_providers",
+        }
+
+    @staticmethod
+    def _voice_request_allowed(request):
+        """Limit microphone capture to the B5c UI or a loopback diagnostic."""
+        request_host = urllib.parse.urlsplit(f"//{request.host}").hostname or ""
+        origin = str(request.headers.get("Origin") or "").strip()
+        if origin:
+            origin_host = urllib.parse.urlsplit(origin).hostname or ""
+            return origin_host in {request_host, "localhost", "127.0.0.1", "::1"}
+        remote_host = str(request.remote or "").strip()
+        return remote_host in {request_host, "localhost", "127.0.0.1", "::1"}
+
+    @staticmethod
+    def _clean_voice_query(value):
+        query = re.sub(r"\s+", " ", str(value or "")).strip(" .?!")
+        if not query:
+            return ""
+        cleaned = re.sub(
+            r"^(?:please\s+)?(?:play|search(?:\s+for)?|find|look\s+for|show\s+me)\s+",
+            "",
+            query,
+            flags=re.IGNORECASE,
+        ).strip(" .?!")
+        cleaned = re.sub(
+            r"\s+(?:on|in)\s+(?:music\s+assistant|mass)$",
+            "",
+            cleaned,
+            flags=re.IGNORECASE,
+        ).strip(" .?!")
+        return cleaned if len(cleaned) >= 2 else query
+
+    def _normalize_live_search_item(self, item, media_type):
+        if not isinstance(item, dict):
+            return None
+        name = str(item.get("name") or item.get("sort_name") or "").strip()
+        provider = str(item.get("provider") or "").strip()
+        item_id = str(item.get("item_id") or item.get("id") or "").strip()
+        uri = str(item.get("uri") or "").strip()
+        if not uri and provider and item_id:
+            uri = f"{media_type}://{provider}/{item_id}"
+        if not name or not uri:
+            return None
+
+        artist = self._extract_item_artist(item, "").strip()
+        album = self._extract_item_album(item, "").strip()
+        image = self._get_img(item, self._base_http_url())
+        provider_label = provider.split("--", 1)[0].replace("_", " ").strip().title()
+        subtitle_parts = [part for part in (artist, album) if part]
+        if provider_label and provider_label.lower() != "library":
+            subtitle_parts.append(provider_label)
+
+        return {
+            "id": f"search:{media_type}:{provider or 'unknown'}:{item_id or hashlib.md5(uri.encode()).hexdigest()[:12]}",
+            "item_id": item_id,
+            "name": name,
+            "url": uri,
+            "media_type": media_type,
+            "provider": provider,
+            "artist": artist,
+            "album": album,
+            "image": image or FALLBACK_IMAGE,
+            "subtitle": " · ".join(subtitle_parts),
+            "live_search": True,
+        }
+
+    async def _search_all_mass_providers(self, query, limit=8):
+        query = self._clean_voice_query(query)
+        if len(query) < 2:
+            raise VoiceSearchError("query_too_short", "Please say at least two characters.")
+        if len(query) > 200:
+            raise VoiceSearchError("query_too_long", "Search query is too long.")
+        if not self._connected:
+            raise VoiceSearchError("mass_unavailable", "Music Assistant is not connected.")
+
+        limit = max(1, min(20, int(limit or 8)))
+        result = await self.send_command(
+            "music/search",
+            search_query=query,
+            media_types=list(VOICE_SEARCH_MEDIA_TYPES),
+            limit=limit,
+            library_only=False,
+        )
+        if not isinstance(result, dict):
+            raise VoiceSearchError("mass_search_failed", "Music Assistant search did not return a result.")
+
+        groups = []
+        seen = set()
+        for result_key, label, media_type in VOICE_SEARCH_RESULT_GROUPS:
+            items = []
+            for raw_item in result.get(result_key) or []:
+                normalized = self._normalize_live_search_item(raw_item, media_type)
+                if not normalized:
+                    continue
+                identity = (
+                    media_type,
+                    normalized["name"].casefold(),
+                    normalized["artist"].casefold(),
+                )
+                if identity in seen:
+                    continue
+                seen.add(identity)
+                items.append(normalized)
+            if items:
+                groups.append({
+                    "id": f"voice_search_{result_key}",
+                    "name": label,
+                    "tracks": items,
+                    "live_search": True,
+                })
+
+        return {
+            "state": "ready" if groups else "empty",
+            "query": query,
+            "transcript": query,
+            "scope": "all_mass_providers",
+            "total": sum(len(group["tracks"]) for group in groups),
+            "groups": groups,
+        }
+
+    async def _pause_for_voice_capture(self):
+        """Pause active MASS playback so speech is not competing with the speakers."""
+        for queue_id in await self._resolve_queue_candidates():
+            for player_id in await self._resolve_player_candidates(queue_id):
+                state = await self._get_player_state(player_id)
+                if self._extract_playback_state(state) not in {"playing", "buffering"}:
+                    continue
+                await self.send_command("players/cmd/pause", player_id=player_id)
+                return player_id
+        return ""
+
+    async def _resume_after_voice_capture(self, player_id):
+        player_id = str(player_id or "").strip()
+        if not player_id:
+            return
+        await self.send_command("players/cmd/play", player_id=player_id)
+
+    async def _send_microphone_audio(self, websocket, handler_id, stop_event):
+        process = None
+        try:
+            process = await asyncio.create_subprocess_exec(
+                "arecord",
+                "-D", VOICE_SEARCH_MIC_DEVICE,
+                "-q",
+                "-r", "16000",
+                "-c", "1",
+                "-f", "S16_LE",
+                "-t", "raw",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            deadline = asyncio.get_running_loop().time() + VOICE_SEARCH_TIMEOUT
+            prefix = bytes([handler_id])
+            while not stop_event.is_set() and asyncio.get_running_loop().time() < deadline:
+                try:
+                    chunk = await asyncio.wait_for(process.stdout.read(3200), timeout=0.5)
+                except asyncio.TimeoutError:
+                    continue
+                if not chunk:
+                    error = (await process.stderr.read()).decode("utf-8", errors="replace").strip()
+                    raise VoiceSearchError(
+                        "microphone_capture_failed",
+                        error or "The microphone capture process stopped unexpectedly.",
+                    )
+                await websocket.send(prefix + chunk)
+            await websocket.send(prefix)
+        finally:
+            if process and process.returncode is None:
+                process.terminate()
+                try:
+                    await asyncio.wait_for(process.wait(), timeout=2)
+                except asyncio.TimeoutError:
+                    process.kill()
+                    await process.wait()
+
+    async def _transcribe_microphone(self):
+        status = self._voice_search_status()
+        if not status["ready"]:
+            raise VoiceSearchError(status["reason"], "Voice search is not ready on this B5c.")
+
+        websocket_url = self._voice_websocket_url()
+        stop_audio = asyncio.Event()
+        audio_task = None
+        try:
+            async with websockets.connect(websocket_url, max_size=2_000_000) as websocket:
+                hello = json.loads(await asyncio.wait_for(websocket.recv(), timeout=5))
+                if hello.get("type") != "auth_required":
+                    raise VoiceSearchError("assist_protocol_error", "Unexpected Home Assistant greeting.")
+                await websocket.send(json.dumps({"type": "auth", "access_token": VOICE_SEARCH_HA_TOKEN}))
+                auth = json.loads(await asyncio.wait_for(websocket.recv(), timeout=5))
+                if auth.get("type") != "auth_ok":
+                    raise VoiceSearchError("assist_auth_failed", "Home Assistant rejected the voice-search token.")
+
+                request = {
+                    "id": 1,
+                    "type": "assist_pipeline/run",
+                    "start_stage": "stt",
+                    "end_stage": "stt",
+                    "input": {"sample_rate": 16000},
+                }
+                if VOICE_SEARCH_PIPELINE_ID:
+                    request["pipeline"] = VOICE_SEARCH_PIPELINE_ID
+                await websocket.send(json.dumps(request))
+
+                deadline = asyncio.get_running_loop().time() + VOICE_SEARCH_TIMEOUT + 10
+                while asyncio.get_running_loop().time() < deadline:
+                    remaining = max(0.1, deadline - asyncio.get_running_loop().time())
+                    raw = await asyncio.wait_for(websocket.recv(), timeout=remaining)
+                    if not isinstance(raw, str):
+                        continue
+                    message = json.loads(raw)
+                    if message.get("type") == "result" and message.get("id") == 1:
+                        if not message.get("success", False):
+                            raise VoiceSearchError("assist_pipeline_failed", str(message.get("error") or "Assist failed."))
+                        continue
+                    if message.get("type") != "event" or message.get("id") != 1:
+                        continue
+
+                    event = message.get("event") or {}
+                    event_type = event.get("type")
+                    event_data = event.get("data") or {}
+                    if event_type == "run-start" and audio_task is None:
+                        runner_data = event_data.get("runner_data") or {}
+                        handler_id = runner_data.get("stt_binary_handler_id")
+                        if not isinstance(handler_id, int) or not 0 <= handler_id <= 255:
+                            raise VoiceSearchError("assist_protocol_error", "Assist did not provide an audio handler.")
+                        # This task is scoped to this request and is always
+                        # awaited or cancelled in the finally block below.
+                        audio_task = asyncio.ensure_future(
+                            self._send_microphone_audio(websocket, handler_id, stop_audio)
+                        )
+                    elif event_type == "stt-vad-end":
+                        stop_audio.set()
+                    elif event_type == "stt-end":
+                        stop_audio.set()
+                        transcript = str((event_data.get("stt_output") or {}).get("text") or "").strip()
+                        if transcript:
+                            return transcript
+                        raise VoiceSearchError("no_speech", "No speech was recognized.")
+                    elif event_type == "error":
+                        stop_audio.set()
+                        raise VoiceSearchError(
+                            str(event_data.get("code") or "assist_pipeline_failed"),
+                            str(event_data.get("message") or "Home Assistant could not transcribe the request."),
+                        )
+
+                raise VoiceSearchError("voice_timeout", "Voice search timed out.")
+        except VoiceSearchError:
+            raise
+        except (OSError, websockets.WebSocketException, asyncio.TimeoutError) as exc:
+            raise VoiceSearchError("assist_unavailable", f"Home Assistant voice service is unavailable: {exc}") from exc
+        finally:
+            stop_audio.set()
+            if audio_task:
+                try:
+                    await asyncio.wait_for(audio_task, timeout=3)
+                except (asyncio.TimeoutError, VoiceSearchError):
+                    audio_task.cancel()
+                    await asyncio.gather(audio_task, return_exceptions=True)
 
     # ── Image helpers ─────────────────────────────────────────────────────────
 
@@ -1658,11 +2020,59 @@ class MassSource(SourceBase):
             response.headers.update(self._cors_headers())
             return response
 
+        async def _handle_search(request):
+            query = str(request.query.get("q") or "").strip()
+            try:
+                limit = int(request.query.get("limit") or 8)
+                payload = await self._search_all_mass_providers(query, limit)
+                return web.json_response(payload, headers=self._cors_headers())
+            except ValueError:
+                return web.json_response(
+                    {"state": "error", "reason": "invalid_limit", "message": "limit must be an integer"},
+                    status=400,
+                    headers=self._cors_headers(),
+                )
+            except VoiceSearchError as exc:
+                status = 503 if exc.code in {"mass_unavailable", "mass_search_failed"} else 400
+                return web.json_response(
+                    {"state": "error", "reason": exc.code, "message": str(exc)},
+                    status=status,
+                    headers=self._cors_headers(),
+                )
+
+        async def _handle_voice_search(request):
+            if not self._voice_request_allowed(request):
+                return web.json_response(
+                    {"state": "error", "reason": "forbidden", "message": "Voice capture is local-only."},
+                    status=403,
+                    headers=self._cors_headers(),
+                )
+            paused_player_id = ""
+            try:
+                paused_player_id = await self._pause_for_voice_capture()
+                transcript = await self._transcribe_microphone()
+                payload = await self._search_all_mass_providers(transcript)
+                payload["transcript"] = transcript
+                return web.json_response(payload, headers=self._cors_headers())
+            except VoiceSearchError as exc:
+                logger.warning("Voice search failed [%s]: %s", exc.code, exc)
+                status = 408 if exc.code in {"voice_timeout", "no_speech"} else 503
+                return web.json_response(
+                    {"state": "error", "reason": exc.code, "message": str(exc)},
+                    status=status,
+                    headers=self._cors_headers(),
+                )
+            finally:
+                await self._resume_after_voice_capture(paused_player_id)
+
         app.router.add_get('/playlists', _handle_playlists)
         app.router.add_get('/artist_bio', _handle_artist_bio)
         app.router.add_get('/now_playing', _handle_now_playing)
         app.router.add_get('/item_info', _handle_item_info)
         app.router.add_get('/art/{filename}', _handle_art)
+        app.router.add_get('/search', _handle_search)
+        app.router.add_post('/voice_search', _handle_voice_search)
+        app.router.add_options('/voice_search', self._handle_cors)
 
     def _library_root(self, root_id):
         for node in self._library_data or []:
@@ -1732,6 +2142,7 @@ class MassSource(SourceBase):
                 "library": self._build_library_status(),
                 "queue": await self._build_queue_status(),
                 "transfer_targets": self._configured_transfer_targets(),
+                "voice_search": self._voice_search_status(),
             }
         )
         return status

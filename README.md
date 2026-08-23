@@ -90,6 +90,7 @@ touch ~/beosound5c/NO_TELEMETRY
 ## Documentation
 
 - [Audio, players & sources](docs/audio-setup.md) — player types, MASS/Kodi notes, source compatibility, Spotify setup, volume adapters
+- [Music browse & voice search](docs/music-browse-and-voice-search.md) — fast letter jumps, Assist capture, live MASS search, cache architecture
 - [Home Assistant integration](docs/home-assistant.md) — MQTT, webhooks, automation examples
 - [Remotes & IR](docs/remotes.md) — BeoRemote One pairing, IR source buttons, Beo6
 - [Development & contributing](docs/CONTRIBUTING.md) — local dev setup, repo layout, deploy script

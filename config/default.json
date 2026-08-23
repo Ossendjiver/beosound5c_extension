@@ -87,6 +87,13 @@
   "spotify": { "client_id": "" },
   "mass": {
     "playback_mode": "auto",
+    "voice_search": {
+      "enabled": false,
+      "microphone_device": "default",
+      "language": "en-AU",
+      "pipeline_id": "",
+      "timeout_s": 15
+    },
     "transfer_targets": [
       { "id": "08a2eca2-247c-96fe-7998-7baddf01b2b1", "name": "Cuisine" },
       { "id": "64ad9554-d5e6-116c-8b0b-069c1f0b7885", "name": "Bedroom Mini" },
