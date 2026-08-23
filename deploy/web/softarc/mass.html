@@ -218,6 +218,63 @@
             display: none;
         }
 
+        .options-view.search-composer {
+            padding-top: 4vh;
+        }
+
+        .search-composer .options-panel {
+            width: min(620px, calc(100vw - 390px));
+            max-height: 84vh;
+        }
+
+        .search-composer .options-subtitle {
+            max-width: 430px;
+            min-height: 27px;
+            color: #ffffff;
+            font-size: 18px;
+            line-height: 1.35;
+            white-space: normal;
+            overflow-wrap: anywhere;
+        }
+
+        .search-composer .options-list {
+            display: grid;
+            grid-template-columns: repeat(10, minmax(0, 1fr));
+            gap: 6px;
+            max-height: 60vh;
+        }
+
+        .search-key {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 40px;
+            padding: 6px 4px;
+            border-radius: 10px;
+            background: rgba(255, 255, 255, 0.06);
+            color: rgba(255, 255, 255, 0.82);
+            font: 600 15px/1 Arial, sans-serif;
+            text-align: center;
+        }
+
+        .search-key.is-selected {
+            background: rgba(100, 166, 255, 0.28);
+            box-shadow: inset 0 0 0 2px rgba(173, 211, 255, 0.82), 0 8px 20px rgba(0, 0, 0, 0.24);
+            color: #ffffff;
+        }
+
+        .search-key.search-key--action {
+            grid-column: span 2;
+            gap: 5px;
+            font-size: 11px;
+            letter-spacing: 0.35px;
+            text-transform: uppercase;
+        }
+
+        .search-key.search-key--row-start {
+            grid-column-start: 1;
+        }
+
         .options-entry {
             display: flex;
             align-items: center;
@@ -386,6 +443,7 @@
     <script src="../js/config.js"></script>
     <script src="../js/arc-utils.js"></script>
     <script src="../js/fast-letter-index.js"></script>
+    <script src="../js/search-composer.js"></script>
     <script src="../js/emulator-bridge.js"></script>
     <script src="../assets/qrcode.min.js"></script>
     <script src="script.js"></script>
@@ -838,10 +896,11 @@
             const sourceCommandUrl = serviceBaseUrl + '/command';
             const queueUrl = serviceBaseUrl + '/queue';
             const itemInfoUrl = serviceBaseUrl + '/item_info';
+            const searchUrl = serviceBaseUrl + '/search';
             const voiceSearchUrl = serviceBaseUrl + '/voice_search';
             const FALLBACK_CARD_IMAGE = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNjQiIGhlaWdodD0iNjQiIHZpZXdCb3g9IjAgMCA2NCA2NCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPHJlY3Qgd2lkdGg9IjY0IiBoZWlnaHQ9IjY0IiBmaWxsPSIjMzMzMzMzIi8+Cjx0ZXh0IHg9IjMyIiB5PSI0MCIgZm9udC1mYW1pbHk9IkFyaWFsLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjI0IiBmaWxsPSIjZmZmZmZmIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIj7imqo8L3RleHQ+Cjwvc3ZnPgo=';
             const ROOT_ICON_STYLE = {
-                voice_search: { icon: 'microphone-stage', color: '#f03e3e' },
+                search:     { icon: 'magnifying-glass', color: '#f03e3e' },
                 artists:   { icon: 'users-three', color: '#e05618' },
                 albums:    { icon: 'vinyl-record', color: '#1c7ed6' },
                 titles:    { icon: 'music-notes-simple', color: '#2b8a3e' },
@@ -851,13 +910,13 @@
                 mixes:     { icon: 'radio', color: '#e6ca19' },
             };
             const SOURCE_ROOT_IDS = new Set(['queue', 'artists', 'albums', 'songs', 'playlists', 'playlist_mixes', 'podcasts', 'mixes']);
-            const ROOT_SECTION_IDS = new Set(['queue', 'voice_search', 'artists', 'albums', 'titles', 'playlists', 'playlist_mixes', 'podcasts', 'mixes']);
+            const ROOT_SECTION_IDS = new Set(['queue', 'search', 'artists', 'albums', 'titles', 'playlists', 'playlist_mixes', 'podcasts', 'mixes']);
             const CROSS_SECTION_TARGET_IDS = new Set(['artists', 'albums', 'titles']);
-            const VOICE_SEARCH_ROOT = {
-                id: 'voice_search',
-                name: 'Voice Search',
-                url: 'voice-search://',
-                voice_search: true,
+            const SEARCH_ROOT = {
+                id: 'search',
+                name: 'Search',
+                search_root: true,
+                tracks: [{ id: 'search_composer', name: 'Search' }],
             };
             const cleanTitle = (value) => String(value || '').split('\n')[0].trim();
             const normalizeServiceImageUrl = (value) => {
@@ -1489,7 +1548,7 @@
 
             const rootItems = () => {
                 const libraryItems = buildDisplayRootSource(withQueueRoot(arcList.parentData || preloadedData || []));
-                const src = [VOICE_SEARCH_ROOT].concat(libraryItems);
+                const src = [SEARCH_ROOT].concat(libraryItems);
                 return src.map((item, idx, arr) => applyRootPresentation(childNameMapper(item, idx, arr)));
             };
 
@@ -1506,6 +1565,8 @@
             };
 
             let voiceSearchRunning = false;
+            let textSearchRunning = false;
+            let searchComposerQuery = '';
             const voiceErrorMessage = (reason, fallback) => {
                 const messages = {
                     disabled: 'Voice search is disabled',
@@ -1521,32 +1582,117 @@
                 return messages[String(reason || '')] || fallback || 'Voice search failed';
             };
 
-            const openVoiceSearchResults = (payload) => {
+            const openSearchResults = (payload) => {
                 const groups = Array.isArray(payload?.groups) ? payload.groups : [];
                 if (!groups.length) return false;
                 const roots = rootItems();
-                const voiceIndex = roots.findIndex((entry) => String(entry?.id || '') === 'voice_search');
-                if (voiceIndex < 0) return false;
+                const searchIndex = roots.findIndex((entry) => String(entry?.id || '') === 'search');
+                if (searchIndex < 0) return false;
 
-                const query = cleanTitle(payload?.query || payload?.transcript || 'Voice Search');
-                const voiceRoot = Object.assign({}, roots[voiceIndex], {
+                const query = cleanTitle(payload?.query || payload?.transcript || 'Search');
+                searchComposerQuery = query;
+                const resultRoot = Object.assign({}, roots[searchIndex], {
                     name: `Search: ${query}`,
                     tracks: groups.map((group) => Object.assign({}, group, { search_group: true })),
+                    search_results_root: true,
                 });
-                delete voiceRoot.url;
+                delete resultRoot.search_root;
+                optionsState = null;
+                clearPageView();
 
                 folderStack.length = 0;
                 folderStack.push({
-                    item: voiceRoot,
+                    item: resultRoot,
                     items: roots.slice(),
-                    currentIndex: voiceIndex,
-                    targetIndex: voiceIndex,
+                    currentIndex: searchIndex,
+                    targetIndex: searchIndex,
                 });
-                arcList.items = mapChildrenForParent(voiceRoot);
+                arcList.items = mapChildrenForParent(resultRoot);
                 arcList.currentIndex = 0;
                 arcList.targetIndex = 0;
                 refreshList();
-                saveBrowseState();
+                return true;
+            };
+
+            const startTextSearch = async (query = searchComposerQuery) => {
+                const normalizedQuery = String(query || '').trim();
+                if (!normalizedQuery) {
+                    showActionToast('Enter a search term', { preserveTiming: true });
+                    settleActionToast();
+                    return true;
+                }
+                if (textSearchRunning) return true;
+                textSearchRunning = true;
+                showActionToast(`Searching for “${normalizedQuery}”…`, { maxMs: 30000 });
+                try {
+                    const response = await fetch(
+                        `${searchUrl}?q=${encodeURIComponent(normalizedQuery)}&limit=8`,
+                        { cache: 'no-store' },
+                    );
+                    let payload = null;
+                    try {
+                        payload = await response.json();
+                    } catch (_error) {}
+
+                    if (!response.ok || payload?.state === 'error') {
+                        showActionToast(
+                            voiceErrorMessage(payload?.reason, payload?.message || 'Search failed'),
+                            { preserveTiming: true },
+                        );
+                        settleActionToast();
+                        return true;
+                    }
+                    if (payload?.state === 'empty' || !openSearchResults(payload)) {
+                        showActionToast(`No results for “${normalizedQuery}”`, { preserveTiming: true });
+                        settleActionToast();
+                        return true;
+                    }
+
+                    showActionToast(`Results for “${normalizedQuery}”`, { preserveTiming: true });
+                    settleActionToast();
+                    return true;
+                } catch (error) {
+                    console.warn('[MASS] Text search failed:', error);
+                    showActionToast('Search service is unavailable', { preserveTiming: true });
+                    settleActionToast();
+                    return true;
+                } finally {
+                    textSearchRunning = false;
+                }
+            };
+
+            const openSearchComposer = (query = searchComposerQuery, selectedIndex = 0) => {
+                if (!window.SearchComposer) {
+                    showActionToast('Search keyboard is unavailable', { preserveTiming: true });
+                    settleActionToast();
+                    return false;
+                }
+                searchComposerQuery = String(query || '').slice(0, window.SearchComposer.MAX_QUERY_LENGTH);
+                const roots = rootItems();
+                const searchRoot = roots.find((entry) => String(entry?.id || '') === 'search') || SEARCH_ROOT;
+                const entries = window.SearchComposer.buildKeySpecs().map((spec, index) => Object.assign({}, spec, {
+                    onSelect: async () => {
+                        if (spec.action === 'voice') return startVoiceSearch();
+                        if (spec.action === 'submit') return startTextSearch(searchComposerQuery);
+                        searchComposerQuery = window.SearchComposer.applyAction(
+                            searchComposerQuery,
+                            spec.action,
+                            spec.value,
+                        );
+                        return openSearchComposer(searchComposerQuery, index);
+                    },
+                }));
+                optionsState = {
+                    kind: 'search_composer',
+                    item: searchRoot,
+                    title: 'Search',
+                    subtitle: searchComposerQuery ? `Query: ${searchComposerQuery}` : 'Query: _',
+                    entries,
+                    currentIndex: Math.max(0, Math.min(entries.length - 1, Number(selectedIndex || 0))),
+                    parent: null,
+                    onClose: () => returnToRootState('search'),
+                };
+                renderOptionsPage();
                 return true;
             };
 
@@ -1573,7 +1719,7 @@
                         settleActionToast();
                         return true;
                     }
-                    if (payload?.state === 'empty' || !openVoiceSearchResults(payload)) {
+                    if (payload?.state === 'empty' || !openSearchResults(payload)) {
                         const query = cleanTitle(payload?.query || payload?.transcript || 'that');
                         showActionToast(`No results for “${query}”`, { preserveTiming: true });
                         settleActionToast();
@@ -1650,12 +1796,17 @@
             const openContextSection = (sectionId, options = {}) => {
                 const normalizedId = String(sectionId || '').trim();
                 if (!normalizedId) return false;
-                if (normalizedId === 'voice_search') {
-                    void startVoiceSearch();
+                const activeSectionId = String(folderStack[0]?.item?.id || '').trim();
+                if (normalizedId === 'search') {
+                    if (activeSectionId === 'search' || optionsState?.kind === 'search_composer') {
+                        publishContextMenu();
+                        return true;
+                    }
+                    returnToRootState('search', { saveState: false });
+                    openSearchComposer();
                     return true;
                 }
 
-                const activeSectionId = String(folderStack[0]?.item?.id || '').trim();
                 const sourceContext = resolveEffectiveSectionBrowseContext();
                 if (activeSectionId && activeSectionId !== normalizedId) {
                     rememberCurrentSectionBrowseContext();
@@ -1974,8 +2125,13 @@
 
             const dismissOptionsMenu = (refresh = true) => {
                 if (!optionsState) return false;
+                const onClose = typeof optionsState.onClose === 'function' ? optionsState.onClose : null;
                 optionsState = null;
                 clearPageView();
+                if (onClose) {
+                    onClose();
+                    return true;
+                }
                 if (refresh) refreshList();
                 return true;
             };
@@ -2214,7 +2370,8 @@
                 renderBreadcrumbs();
 
                 const page = document.createElement('div');
-                page.className = 'options-view';
+                const isSearchComposer = optionsState.kind === 'search_composer';
+                page.className = `options-view${isSearchComposer ? ' search-composer' : ''}`;
 
                 const panel = document.createElement('div');
                 panel.className = 'options-panel';
@@ -2223,17 +2380,30 @@
                 header.className = 'options-header';
                 header.innerHTML = `
                     <div>
-                        <div class="options-kicker">${escapeHtml(optionsState.parent ? 'Submenu' : 'Hold GO')}</div>
+                        <div class="options-kicker">${escapeHtml(isSearchComposer ? 'Wheel keyboard' : (optionsState.parent ? 'Submenu' : 'Hold GO'))}</div>
                         <h2 class="options-title">${escapeHtml(optionsState.title || 'Options')}</h2>
                         <div class="options-subtitle">${escapeHtml(optionsState.subtitle || '')}</div>
                     </div>
-                    <div class="options-hint">GO Select<br>RIGHT Back</div>
+                    <div class="options-hint">${isSearchComposer ? 'WHEEL Choose<br>GO Enter<br>RIGHT Back' : 'GO Select<br>RIGHT Back'}</div>
                 `;
 
                 const list = document.createElement('div');
                 list.className = 'options-list';
                 optionsState.entries.forEach((entry, index) => {
                     const row = document.createElement('div');
+                    if (isSearchComposer) {
+                        row.className = [
+                            'search-key',
+                            index === optionsState.currentIndex ? 'is-selected' : '',
+                            entry.actionKey ? 'search-key--action' : '',
+                            entry.rowStart ? 'search-key--row-start' : '',
+                        ].filter(Boolean).join(' ');
+                        row.innerHTML = entry.actionKey
+                            ? `<i class="ph ph-${escapeHtml(entry.icon || 'dots-three')}"></i><span>${escapeHtml(entry.title || '')}</span>`
+                            : `<span>${escapeHtml(entry.title || '')}</span>`;
+                        list.appendChild(row);
+                        return;
+                    }
                     row.className = `options-entry${index === optionsState.currentIndex ? ' is-selected' : ''}`;
                     row.innerHTML = `
                         <div class="options-entry-icon"><i class="ph ph-${escapeHtml(entry.icon || 'dots-three')}"></i></div>
@@ -2437,10 +2607,10 @@
             };
 
             // â”€â”€ Folder navigation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-            const enterFolder = () => {
-                const current = getCurrentItem();
-                if (current?.voice_search) {
-                    void startVoiceSearch();
+            const enterFolder = (itemOverride = null) => {
+                const current = itemOverride || getCurrentItem();
+                if (current?.search_root) {
+                    openSearchComposer();
                     return true;
                 }
                 if (!current || !Array.isArray(current.tracks) || current.tracks.length === 0)
@@ -2472,6 +2642,10 @@
 
             const exitFolder = () => {
                 if (!folderStack.length) return false;
+                if (folderStack.length === 1 && folderStack[0]?.item?.search_results_root) {
+                    openSearchComposer();
+                    return true;
+                }
                 rememberCurrentSectionBrowseContext();
                 if (folderStack.length === 1) {
                     const activeSectionId = String(folderStack[0]?.item?.id || '').trim();
@@ -2537,8 +2711,8 @@
                 const current = itemOverride || detailState?.item || optionsState?.item || getCurrentItem();
                 if (!current) return;
                 if (detailState?.loading) return;
-                if (current.voice_search) return startVoiceSearch();
-                if (current.search_group) return enterFolder();
+                if (current.search_root) return openSearchComposer();
+                if (current.search_group) return enterFolder(current);
 
                 const playUri = String(
                     extraPayload.url

@@ -16,10 +16,13 @@ items. Nested albums, playlists, search results, and short lists remain precise.
 Articles (`A`, `An`, and `The`) are ignored for the displayed letter, and titles
 beginning with a number share the `#` group.
 
-`Voice Search` is a MUSIC section rather than an always-listening wake word. Open
-it and press GO or LEFT to start one capture. The screen shows `Listening…`, then
-opens results grouped as Tracks, Albums, Artists, Playlists, Radio, Podcasts, and
-Audiobooks. Selecting a playable result uses the existing MASS queue commands.
+`Search` is a MUSIC section. Open it with GO or LEFT to reach a wheel-native
+QWERTY panel. Rotate the wheel to highlight a key and press GO to enter it. The
+first row provides Voice, Search, Delete, Space, and Clear actions; RIGHT returns
+to the MUSIC sections. Voice starts one push-to-talk capture rather than an
+always-listening wake word. Both input methods open the same live results,
+grouped as Tracks, Albums, Artists, Playlists, Radio, Podcasts, and Audiobooks.
+Selecting a playable result uses the existing MASS queue commands.
 
 ## Voice data flow
 
@@ -59,9 +62,9 @@ USB microphone, set a stable ALSA name such as
 `plughw:CARD=ReSpeaker,DEV=0`. Leaving `pipeline_id` empty uses Home Assistant's
 preferred Assist pipeline.
 
-Service health reports voice readiness at `GET /status`. `GET /search?q=...`
-provides a typed diagnostic for the same all-provider MASS search; the UI uses
-`POST /voice_search` for capture plus search.
+Service health reports voice readiness at `GET /status`. The keyboard uses
+`GET /search?q=...`; Voice uses `POST /voice_search` for capture plus search.
+Both use the same all-provider MASS result normalization.
 
 ## Library architecture decision
 
@@ -71,8 +74,8 @@ guarantee that it is available during a MASS restart. The local snapshot still
 provides deterministic alphabetical ordering, immediate cold-start display,
 letter boundaries, and graceful degraded browsing.
 
-New discovery paths should be live: voice search is live now, and text search
-should use the same endpoint. The next architectural simplification should be a
+New discovery paths are live: both voice and wheel-composed text bypass the
+snapshot. The next architectural simplification should be a
 shallower stale-while-revalidate browse cache, not removal of caching:
 
 - cache root summaries and precomputed letter boundaries;

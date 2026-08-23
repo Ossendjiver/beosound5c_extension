@@ -483,7 +483,7 @@
             "enabled": {
               "type": "boolean",
               "default": false,
-              "description": "Show and enable Voice Search in the MASS browser."
+              "description": "Enable the Voice action inside the MASS Search panel."
             },
             "microphone_device": {
               "type": "string",
