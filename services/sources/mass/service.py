@@ -692,6 +692,7 @@ class MassSource(SourceBase):
                 await websocket.send(json.dumps(request))
 
                 deadline = asyncio.get_running_loop().time() + VOICE_SEARCH_TIMEOUT + 10
+                handler_id = None
                 while asyncio.get_running_loop().time() < deadline:
                     remaining = max(0.1, deadline - asyncio.get_running_loop().time())
                     raw = await asyncio.wait_for(websocket.recv(), timeout=remaining)
@@ -708,11 +709,14 @@ class MassSource(SourceBase):
                     event = message.get("event") or {}
                     event_type = event.get("type")
                     event_data = event.get("data") or {}
-                    if event_type == "run-start" and audio_task is None:
+                    if event_type == "run-start":
                         runner_data = event_data.get("runner_data") or {}
                         handler_id = runner_data.get("stt_binary_handler_id")
                         if not isinstance(handler_id, int) or not 0 <= handler_id <= 255:
                             raise VoiceSearchError("assist_protocol_error", "Assist did not provide an audio handler.")
+                    elif event_type == "stt-start" and audio_task is None:
+                        if handler_id is None:
+                            raise VoiceSearchError("assist_protocol_error", "Assist started STT without an audio handler.")
                         # This task is scoped to this request and is always
                         # awaited or cancelled in the finally block below.
                         audio_task = asyncio.ensure_future(
