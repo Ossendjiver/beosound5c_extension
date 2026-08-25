@@ -12,15 +12,15 @@
 })(typeof globalThis !== 'undefined' ? globalThis : this, function () {
     const DEFAULT_ARTICLES = new Set(['A', 'AN', 'THE']);
     const MENU_SPEED_CURVE = [
-        [1, 0.04],
-        [2, 0.07],
-        [3, 0.11],
-        [4, 0.16],
-        [5, 0.22],
-        [6, 0.29],
-        [8, 0.44],
-        [10, 0.62],
-        [12, 0.75],
+        [1, 0.52],
+        [2, 0.535],
+        [3, 0.555],
+        [4, 0.58],
+        [5, 0.61],
+        [6, 0.645],
+        [8, 0.72],
+        [10, 0.81],
+        [12, 0.875],
     ];
 
     const clamp = (value, minimum, maximum) => Math.max(minimum, Math.min(maximum, value));
@@ -57,12 +57,12 @@
     }
 
     function speedToSteps(speed, options = {}) {
-        const threshold = Math.max(1, Number(options.threshold || 3));
-        const tierSize = Math.max(1, Number(options.tierSize || 4));
+        const threshold = Math.max(1, Number(options.threshold || 5));
+        const tierSize = Math.max(1, Number(options.tierSize || 3));
         const maxSteps = Math.max(1, Number(options.maxSteps || 3));
         const normalized = Number(speed || 0);
-        if (!Number.isFinite(normalized) || normalized < threshold) return 0;
-        return Math.min(maxSteps, 1 + Math.floor((normalized - threshold) / tierSize));
+        if (!Number.isFinite(normalized) || normalized <= threshold) return 0;
+        return Math.min(maxSteps, 1 + Math.floor((normalized - threshold - Number.EPSILON) / tierSize));
     }
 
     function menuDeltaForSpeed(speed, options = {}) {
@@ -105,16 +105,17 @@
     }
 
     function letterIntervalForSpeed(speed, options = {}) {
-        const enterSpeed = Math.max(1, Number(options.enterSpeed || 3));
-        const slowIntervalMs = Math.max(40, Number(options.slowIntervalMs || 145));
-        const fastIntervalMs = Math.max(30, Number(options.fastIntervalMs || 62));
-        const fullSpeed = Math.max(enterSpeed + 1, Number(options.fullSpeed || 9));
+        const enterSpeed = Math.max(1, Number(options.enterSpeed || 5));
+        const slowIntervalMs = Math.max(40, Number(options.slowIntervalMs || 800));
+        const fastIntervalMs = Math.max(30, Number(options.fastIntervalMs || 200));
+        const fullSpeed = Math.max(enterSpeed + 1, Number(options.fullSpeed || 11));
         const progress = clamp((Number(speed || 0) - enterSpeed) / (fullSpeed - enterSpeed), 0, 1);
         return slowIntervalMs - (slowIntervalMs - fastIntervalMs) * progress;
     }
 
     function createLetterMode(options = {}) {
-        const enterSpeed = Math.max(1, Number(options.enterSpeed || 3));
+        const enterSpeed = Math.max(1, Number(options.enterSpeed || 5));
+        const enterInclusive = options.enterInclusive !== false;
         const exitSpeed = Math.max(0, Number(options.exitSpeed ?? 2));
         const enterSamples = Math.max(1, Number(options.enterSamples || 3));
         const exitSamples = Math.max(1, Number(options.exitSamples || 8));
@@ -146,7 +147,8 @@
             lastAt = timestamp;
 
             if (!active) {
-                highSpeedSamples = speed >= enterSpeed ? highSpeedSamples + 1 : 0;
+                const atEntrySpeed = enterInclusive ? speed >= enterSpeed : speed > enterSpeed;
+                highSpeedSamples = atEntrySpeed ? highSpeedSamples + 1 : 0;
                 lastDirection = direction;
                 if (highSpeedSamples < enterSamples) {
                     return { active: false, steps: 0, entered: false, exited: false };

@@ -6,16 +6,16 @@ The three large sorted library views (`Artists`, `Albums`, and `Titles`) retain
 normal item-by-item wheel movement at ordinary speeds. A deliberate fast spin
 switches to letter groups:
 
-- speed 1–2: normal list movement;
-- three consecutive samples at speed 3 or above: enter letter mode;
-- while the spin is sustained, advance through letter groups at a rate that
-  increases with wheel speed;
-- slow below the threshold or pause to return to item movement.
+- speed 1–5: normal list movement;
+- three consecutive samples above speed 5: enter letter mode;
+- while the spin is sustained, advance one letter every 800 ms at speed 5,
+  interpolating linearly to every 200 ms at speed 11;
+- an input at speed 2 or below returns immediately to item movement.
 
 These thresholds are calibrated against the physical B5c wheel: careful and
-ordinary movement reports speeds 1–2, while a deliberate spin starts at 3 and
-typically sustains 5–8. The centred letter overlay remains visible while letter
-mode is active.
+ordinary movement reports speeds 1–2, while the recorded deliberate-spin range
+reached 11. The centred letter overlay remains visible while letter mode is
+active.
 
 Letter jumps apply only at the top level of a sorted section with at least 40
 items. Nested albums, playlists, search results, and short lists remain precise.
@@ -30,10 +30,11 @@ always-listening wake word. Both input methods open the same live results,
 grouped as Tracks, Albums, Artists, Playlists, Radio, Podcasts, and Audiobooks.
 Selecting a playable result uses the existing MASS queue commands.
 
-Context menus and the QWERTY panel use a fractional speed ramp. Slow wheel
-movement accumulates before moving one selection, while faster movement ramps
-up smoothly. Discrete touch and keyboard controls continue to move exactly one
-selection per press.
+Context menus and the QWERTY panel use a fractional speed ramp set halfway
+between the original one-selection-per-event behaviour and the slower precision
+curve. At speed 1 this is approximately one selection per two events, ramping up
+smoothly with speed. Discrete touch and keyboard controls continue to move
+exactly one selection per press.
 
 ## Voice data flow
 
