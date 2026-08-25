@@ -31,9 +31,9 @@ describe('fast letter indexing', () => {
     });
 
     it('maps the measured physical wheel range into useful letter tiers', () => {
-        assert.equal(speedToSteps(5), 0);
-        assert.equal(speedToSteps(6), 1);
-        assert.equal(speedToSteps(9), 2);
+        assert.equal(speedToSteps(3), 0);
+        assert.equal(speedToSteps(4), 1);
+        assert.equal(speedToSteps(7), 2);
         assert.equal(speedToSteps(11), 3);
         assert.equal(speedToSteps(127), 3);
     });
@@ -59,19 +59,19 @@ describe('fast letter indexing', () => {
     });
 
     it('uses cadence as a maximum dwell while tracking natural letter progress', () => {
-        const mode = createLetterMode({ enterInclusive: false, exitSamples: 1 });
+        const mode = createLetterMode({ enterInclusive: true, exitSamples: 3 });
         let timestamp = 100;
         for (let index = 0; index < 3; index += 1) {
             timestamp += 10;
-            assert.equal(mode.push({ direction: 'clock', speed: 5 }, timestamp, 'A').active, false);
+            assert.equal(mode.push({ direction: 'clock', speed: 3 }, timestamp, 'A').active, false);
         }
 
         timestamp += 10;
-        assert.equal(mode.push({ direction: 'clock', speed: 6 }, timestamp, 'A').active, false);
+        assert.equal(mode.push({ direction: 'clock', speed: 4 }, timestamp, 'A').active, false);
         timestamp += 10;
-        assert.equal(mode.push({ direction: 'clock', speed: 6 }, timestamp, 'A').active, false);
+        assert.equal(mode.push({ direction: 'clock', speed: 4 }, timestamp, 'A').active, false);
         timestamp += 10;
-        const entered = mode.push({ direction: 'clock', speed: 6 }, timestamp, 'A');
+        const entered = mode.push({ direction: 'clock', speed: 4 }, timestamp, 'A');
         assert.deepEqual(
             { active: entered.active, steps: entered.steps, entered: entered.entered },
             { active: true, steps: 0, entered: true },
@@ -93,8 +93,24 @@ describe('fast letter indexing', () => {
         timestamp += 200;
         assert.equal(mode.push({ direction: 'clock', speed: 5 }, timestamp, 'B').steps, 1);
 
+        timestamp += 1000;
+        const reversed = mode.push({ direction: 'counter', speed: 1 }, timestamp, 'B');
+        assert.deepEqual(
+            { active: reversed.active, steps: reversed.steps, reversed: reversed.reversed },
+            { active: true, steps: 1, reversed: true },
+        );
+
         timestamp += 10;
-        const state = mode.push({ direction: 'clock', speed: 2 }, timestamp, 'B');
+        assert.equal(mode.push({ direction: 'counter', speed: 2 }, timestamp, 'A').active, true);
+        timestamp += 10;
+        assert.equal(mode.push({ direction: 'counter', speed: 3 }, timestamp, 'A').active, true);
+
+        timestamp += 10;
+        assert.equal(mode.push({ direction: 'counter', speed: 2 }, timestamp, 'A').active, true);
+        timestamp += 10;
+        assert.equal(mode.push({ direction: 'counter', speed: 2 }, timestamp, 'A').active, true);
+        timestamp += 10;
+        const state = mode.push({ direction: 'counter', speed: 2 }, timestamp, 'A');
         assert.equal(state.active, false);
         assert.equal(state.exited, true);
     });

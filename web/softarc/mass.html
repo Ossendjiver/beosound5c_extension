@@ -513,10 +513,10 @@
         const SERVICE_BOOT_TIMEOUT_MS = 900;
         const ACTION_TOAST_MIN_MS = 2000;
         const ACTION_TOAST_MAX_MS = 4000;
-        const FAST_LETTER_ENTER_SPEED = 5;
+        const FAST_LETTER_ENTER_SPEED = 4;
         const FAST_LETTER_EXIT_SPEED = 2;
         const FAST_LETTER_ENTER_SAMPLES = 3;
-        const FAST_LETTER_EXIT_SAMPLES = 1;
+        const FAST_LETTER_EXIT_SAMPLES = 3;
         const FAST_LETTER_MIN_ITEMS = 40;
         const FAST_LETTER_SECTION_IDS = new Set(['artists', 'albums', 'titles']);
 
@@ -1124,10 +1124,11 @@
             const optionWheelRamp = window.FastLetterIndex?.createMenuStepRamp?.();
             const fastLetterMode = window.FastLetterIndex?.createLetterMode?.({
                 enterSpeed: FAST_LETTER_ENTER_SPEED,
-                enterInclusive: false,
+                enterInclusive: true,
                 exitSpeed: FAST_LETTER_EXIT_SPEED,
                 enterSamples: FAST_LETTER_ENTER_SAMPLES,
                 exitSamples: FAST_LETTER_EXIT_SAMPLES,
+                slowSpeed: 5,
                 slowIntervalMs: 800,
                 fastIntervalMs: 200,
                 fullSpeed: 11,

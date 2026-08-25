@@ -57,12 +57,12 @@
     }
 
     function speedToSteps(speed, options = {}) {
-        const threshold = Math.max(1, Number(options.threshold || 5));
+        const threshold = Math.max(1, Number(options.threshold || 4));
         const tierSize = Math.max(1, Number(options.tierSize || 3));
         const maxSteps = Math.max(1, Number(options.maxSteps || 3));
         const normalized = Number(speed || 0);
-        if (!Number.isFinite(normalized) || normalized <= threshold) return 0;
-        return Math.min(maxSteps, 1 + Math.floor((normalized - threshold - Number.EPSILON) / tierSize));
+        if (!Number.isFinite(normalized) || normalized < threshold) return 0;
+        return Math.min(maxSteps, 1 + Math.floor((normalized - threshold) / tierSize));
     }
 
     function menuDeltaForSpeed(speed, options = {}) {
@@ -105,20 +105,20 @@
     }
 
     function letterIntervalForSpeed(speed, options = {}) {
-        const enterSpeed = Math.max(1, Number(options.enterSpeed || 5));
+        const slowSpeed = Math.max(1, Number(options.slowSpeed || 5));
         const slowIntervalMs = Math.max(40, Number(options.slowIntervalMs || 800));
         const fastIntervalMs = Math.max(30, Number(options.fastIntervalMs || 200));
-        const fullSpeed = Math.max(enterSpeed + 1, Number(options.fullSpeed || 11));
-        const progress = clamp((Number(speed || 0) - enterSpeed) / (fullSpeed - enterSpeed), 0, 1);
+        const fullSpeed = Math.max(slowSpeed + 1, Number(options.fullSpeed || 11));
+        const progress = clamp((Number(speed || 0) - slowSpeed) / (fullSpeed - slowSpeed), 0, 1);
         return slowIntervalMs - (slowIntervalMs - fastIntervalMs) * progress;
     }
 
     function createLetterMode(options = {}) {
-        const enterSpeed = Math.max(1, Number(options.enterSpeed || 5));
+        const enterSpeed = Math.max(1, Number(options.enterSpeed || 4));
         const enterInclusive = options.enterInclusive !== false;
         const exitSpeed = Math.max(0, Number(options.exitSpeed ?? 2));
         const enterSamples = Math.max(1, Number(options.enterSamples || 3));
-        const exitSamples = Math.max(1, Number(options.exitSamples || 8));
+        const exitSamples = Math.max(1, Number(options.exitSamples || 3));
         const idleResetMs = Math.max(100, Number(options.idleResetMs || 340));
         let active = false;
         let highSpeedSamples = 0;
@@ -146,7 +146,7 @@
             if (direction !== 'clock' && direction !== 'counter') {
                 return { active, steps: 0, entered: false, exited: false };
             }
-            if (lastAt && timestamp - lastAt > idleResetMs) reset();
+            if (!active && lastAt && timestamp - lastAt > idleResetMs) reset();
             lastAt = timestamp;
 
             if (!active) {
@@ -168,10 +168,7 @@
             }
             if (normalizedGroupKey) lastGroupKey = normalizedGroupKey;
 
-            if (direction !== lastDirection) {
-                lastDirection = direction;
-                lastJumpAt = timestamp;
-            }
+            const reversed = Boolean(lastDirection && direction !== lastDirection);
 
             lowSpeedSamples = speed <= exitSpeed ? lowSpeedSamples + 1 : 0;
             if (lowSpeedSamples >= exitSamples) {
@@ -182,7 +179,13 @@
                 return { active: false, steps: 0, entered: false, exited: true };
             }
 
-            const intervalMs = letterIntervalForSpeed(speed, Object.assign({}, options, { enterSpeed }));
+            if (reversed) {
+                lastDirection = direction;
+                lastJumpAt = timestamp;
+                return { active: true, steps: 1, entered: false, exited: false, reversed: true };
+            }
+
+            const intervalMs = letterIntervalForSpeed(speed, options);
             if (lastJumpAt && timestamp - lastJumpAt < intervalMs) {
                 return { active: true, steps: 0, entered: false, exited: false };
             }
