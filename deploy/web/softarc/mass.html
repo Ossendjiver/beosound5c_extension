@@ -2599,17 +2599,18 @@
                     return false;
                 }
 
-                const mode = fastLetterMode.push(data);
-                if (!mode.active) return false;
-                if (!mode.steps) {
-                    showFastLetter();
-                    return true;
-                }
-
                 const direction = String(data?.direction || '');
                 const fromIndex = direction === 'counter'
                     ? Math.min(arcList.currentIndex, arcList.targetIndex)
                     : Math.max(arcList.currentIndex, arcList.targetIndex);
+                const currentItem = arcList.items[Math.round(fromIndex)] || getCurrentItem();
+                const mode = fastLetterMode.push(data, Date.now(), getFastLetter(currentItem?.name));
+                if (!mode.active) return false;
+                showFastLetter(currentItem);
+                if (!mode.steps) {
+                    return false;
+                }
+
                 const nextIndex = window.FastLetterIndex.findJumpIndex(
                     arcList.items,
                     fromIndex,
@@ -2618,8 +2619,7 @@
                     (item) => item?.name,
                 );
                 if (nextIndex < 0 || nextIndex === Math.round(fromIndex)) {
-                    showFastLetter();
-                    return true;
+                    return false;
                 }
 
                 arcList.targetIndex = nextIndex;

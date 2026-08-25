@@ -8,14 +8,22 @@ switches to letter groups:
 
 - speed 1–5: normal list movement;
 - three consecutive samples above speed 5: enter letter mode;
-- while the spin is sustained, advance one letter every 800 ms at speed 5,
-  interpolating linearly to every 200 ms at speed 11;
+- while the spin is sustained, continue normal accelerated item movement with
+  the current letter overlaid;
+- if item movement has not reached a new letter naturally, jump to the next
+  letter after at most 800 ms at speed 5, interpolating linearly to 200 ms at
+  speed 11;
 - an input at speed 2 or below returns immediately to item movement.
 
 These thresholds are calibrated against the physical B5c wheel: careful and
 ordinary movement reports speeds 1–2, while the recorded deliberate-spin range
 reached 11. The centred letter overlay remains visible while letter mode is
 active.
+
+The cadence is a maximum dwell time, not a pause between letters. Crossing a
+letter boundary through normal item movement resets the dwell timer. This keeps
+the list visibly flowing through short groups while still bounding the time
+spent inside a very large group.
 
 Letter jumps apply only at the top level of a sorted section with at least 40
 items. Nested albums, playlists, search results, and short lists remain precise.

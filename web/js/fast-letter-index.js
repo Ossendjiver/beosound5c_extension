@@ -126,6 +126,7 @@
         let lastAt = 0;
         let lastJumpAt = 0;
         let lastDirection = '';
+        let lastGroupKey = '';
 
         const reset = () => {
             active = false;
@@ -134,12 +135,14 @@
             lastAt = 0;
             lastJumpAt = 0;
             lastDirection = '';
+            lastGroupKey = '';
         };
 
-        const push = (data, at = Date.now()) => {
+        const push = (data, at = Date.now(), groupKey = '') => {
             const direction = String(data?.direction || '');
             const speed = Math.max(0, Number(data?.speed || 0));
             const timestamp = Number(at || 0);
+            const normalizedGroupKey = String(groupKey || '');
             if (direction !== 'clock' && direction !== 'counter') {
                 return { active, steps: 0, entered: false, exited: false };
             }
@@ -150,18 +153,24 @@
                 const atEntrySpeed = enterInclusive ? speed >= enterSpeed : speed > enterSpeed;
                 highSpeedSamples = atEntrySpeed ? highSpeedSamples + 1 : 0;
                 lastDirection = direction;
+                if (normalizedGroupKey) lastGroupKey = normalizedGroupKey;
                 if (highSpeedSamples < enterSamples) {
                     return { active: false, steps: 0, entered: false, exited: false };
                 }
                 active = true;
                 lowSpeedSamples = 0;
                 lastJumpAt = timestamp;
-                return { active: true, steps: 1, entered: true, exited: false };
+                return { active: true, steps: 0, entered: true, exited: false };
             }
+
+            if (normalizedGroupKey && lastGroupKey && normalizedGroupKey !== lastGroupKey) {
+                lastJumpAt = timestamp;
+            }
+            if (normalizedGroupKey) lastGroupKey = normalizedGroupKey;
 
             if (direction !== lastDirection) {
                 lastDirection = direction;
-                lastJumpAt = 0;
+                lastJumpAt = timestamp;
             }
 
             lowSpeedSamples = speed <= exitSpeed ? lowSpeedSamples + 1 : 0;
@@ -173,9 +182,6 @@
                 return { active: false, steps: 0, entered: false, exited: true };
             }
 
-            if (speed < enterSpeed) {
-                return { active: true, steps: 0, entered: false, exited: false };
-            }
             const intervalMs = letterIntervalForSpeed(speed, Object.assign({}, options, { enterSpeed }));
             if (lastJumpAt && timestamp - lastJumpAt < intervalMs) {
                 return { active: true, steps: 0, entered: false, exited: false };
