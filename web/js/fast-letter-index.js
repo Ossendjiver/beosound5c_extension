@@ -117,25 +117,99 @@
         const enterSpeed = Math.max(1, Number(options.enterSpeed || 4));
         const enterInclusive = options.enterInclusive !== false;
         const exitSpeed = Math.max(0, Number(options.exitSpeed ?? 2));
-        const enterSamples = Math.max(1, Number(options.enterSamples || 3));
-        const exitSamples = Math.max(1, Number(options.exitSamples || 3));
         const idleResetMs = Math.max(100, Number(options.idleResetMs || 340));
+        const entryWindowMs = Math.max(40, Number(options.entryWindowMs || 120));
+        const entryBucketMs = Math.max(5, Number(options.entryBucketMs || 20));
+        const entryMinSpanMs = Math.max(entryBucketMs, Number(options.entryMinSpanMs || 40));
+        const entryMinBuckets = Math.max(2, Number(options.entryMinBuckets || 3));
+        const settleWindowMs = Math.max(100, Number(options.settleWindowMs || 400));
+        const reversalFastWindowMs = Math.min(
+            settleWindowMs,
+            Math.max(40, Number(options.reversalFastWindowMs || 180)),
+        );
+        const reversalFastSpeed = Math.max(exitSpeed + 1, Number(options.reversalFastSpeed || enterSpeed));
+        const slowContinuationUnits = Math.max(1, Number(options.slowContinuationUnits || 12));
+        const slowReversalUnits = Math.max(
+            slowContinuationUnits,
+            Number(options.slowReversalUnits || 16),
+        );
         let active = false;
-        let highSpeedSamples = 0;
-        let lowSpeedSamples = 0;
+        let entryDirection = '';
+        let entryBuckets = [];
         let lastAt = 0;
         let lastJumpAt = 0;
         let lastDirection = '';
         let lastGroupKey = '';
+        let settleStartedAt = 0;
+        let settleSameUnits = 0;
+        let settleOppositeUnits = 0;
+        let settleOppositeStartedAt = 0;
+
+        const clearEntry = () => {
+            entryDirection = '';
+            entryBuckets = [];
+        };
+
+        const clearSettle = () => {
+            settleStartedAt = 0;
+            settleSameUnits = 0;
+            settleOppositeUnits = 0;
+            settleOppositeStartedAt = 0;
+        };
 
         const reset = () => {
             active = false;
-            highSpeedSamples = 0;
-            lowSpeedSamples = 0;
+            clearEntry();
+            clearSettle();
             lastAt = 0;
             lastJumpAt = 0;
             lastDirection = '';
             lastGroupKey = '';
+        };
+
+        const addEntrySample = (direction, speed, timestamp) => {
+            if (entryDirection && direction !== entryDirection) clearEntry();
+            entryDirection = direction;
+
+            const bucketAt = Math.floor(timestamp / entryBucketMs) * entryBucketMs;
+            const lastBucket = entryBuckets[entryBuckets.length - 1];
+            if (lastBucket && lastBucket.at === bucketAt) {
+                lastBucket.speed = Math.max(lastBucket.speed, speed);
+            } else {
+                entryBuckets.push({ at: bucketAt, speed });
+            }
+
+            const oldestAt = timestamp - entryWindowMs;
+            entryBuckets = entryBuckets.filter((sample) => sample.at >= oldestAt);
+            if (entryBuckets.length < entryMinBuckets) return false;
+
+            const spanMs = entryBuckets[entryBuckets.length - 1].at - entryBuckets[0].at;
+            if (spanMs < entryMinSpanMs) return false;
+
+            const measuredVelocity = entryBuckets.reduce((total, sample) => total + sample.speed, 0)
+                / entryBuckets.length;
+            return enterInclusive ? measuredVelocity >= enterSpeed : measuredVelocity > enterSpeed;
+        };
+
+        const beginSettle = (timestamp, speed, isOpposite = false) => {
+            settleStartedAt = timestamp;
+            settleSameUnits = isOpposite ? 0 : speed;
+            settleOppositeUnits = isOpposite ? speed : 0;
+            settleOppositeStartedAt = isOpposite ? timestamp : 0;
+        };
+
+        const confirmReversal = (direction, timestamp) => {
+            lastDirection = direction;
+            lastJumpAt = timestamp;
+            clearSettle();
+            return {
+                active: true,
+                steps: 1,
+                entered: false,
+                exited: false,
+                reversed: true,
+                consume: true,
+            };
         };
 
         const push = (data, at = Date.now(), groupKey = '') => {
@@ -150,17 +224,25 @@
             lastAt = timestamp;
 
             if (!active) {
-                const atEntrySpeed = enterInclusive ? speed >= enterSpeed : speed > enterSpeed;
-                highSpeedSamples = atEntrySpeed ? highSpeedSamples + 1 : 0;
-                lastDirection = direction;
                 if (normalizedGroupKey) lastGroupKey = normalizedGroupKey;
-                if (highSpeedSamples < enterSamples) {
+                if (!addEntrySample(direction, speed, timestamp)) {
                     return { active: false, steps: 0, entered: false, exited: false };
                 }
                 active = true;
-                lowSpeedSamples = 0;
+                lastDirection = direction;
+                clearEntry();
+                clearSettle();
                 lastJumpAt = timestamp;
                 return { active: true, steps: 0, entered: true, exited: false };
+            }
+
+            if (settleStartedAt && timestamp - settleStartedAt >= settleWindowMs) {
+                active = false;
+                clearEntry();
+                clearSettle();
+                lastJumpAt = 0;
+                lastDirection = '';
+                return { active: false, steps: 0, entered: false, exited: true };
             }
 
             if (normalizedGroupKey && lastGroupKey && normalizedGroupKey !== lastGroupKey) {
@@ -168,21 +250,42 @@
             }
             if (normalizedGroupKey) lastGroupKey = normalizedGroupKey;
 
-            const reversed = Boolean(lastDirection && direction !== lastDirection);
-
-            lowSpeedSamples = speed <= exitSpeed ? lowSpeedSamples + 1 : 0;
-            if (lowSpeedSamples >= exitSamples) {
-                active = false;
-                highSpeedSamples = 0;
-                lowSpeedSamples = 0;
-                lastJumpAt = 0;
-                return { active: false, steps: 0, entered: false, exited: true };
+            const opposite = Boolean(lastDirection && direction !== lastDirection);
+            if (!settleStartedAt && (speed <= exitSpeed || opposite)) {
+                beginSettle(timestamp, speed, opposite);
+                if (opposite && speed >= reversalFastSpeed) {
+                    return confirmReversal(direction, timestamp);
+                }
+            } else if (settleStartedAt) {
+                if (opposite) {
+                    if (!settleOppositeStartedAt) settleOppositeStartedAt = timestamp;
+                    settleOppositeUnits += speed;
+                    const reversalAgeMs = timestamp - settleOppositeStartedAt;
+                    if ((speed >= reversalFastSpeed && reversalAgeMs <= reversalFastWindowMs)
+                            || settleOppositeUnits >= slowReversalUnits) {
+                        return confirmReversal(direction, timestamp);
+                    }
+                } else {
+                    settleOppositeUnits = 0;
+                    settleOppositeStartedAt = 0;
+                    if (speed > exitSpeed) {
+                        clearSettle();
+                    } else {
+                        settleSameUnits += speed;
+                        if (settleSameUnits >= slowContinuationUnits) clearSettle();
+                    }
+                }
             }
 
-            if (reversed) {
-                lastDirection = direction;
-                lastJumpAt = timestamp;
-                return { active: true, steps: 1, entered: false, exited: false, reversed: true };
+            if (settleStartedAt) {
+                return {
+                    active: true,
+                    steps: 0,
+                    entered: false,
+                    exited: false,
+                    settling: true,
+                    consume: opposite,
+                };
             }
 
             const intervalMs = letterIntervalForSpeed(speed, options);

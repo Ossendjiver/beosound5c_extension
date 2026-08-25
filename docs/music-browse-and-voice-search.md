@@ -6,14 +6,18 @@ The three large sorted library views (`Artists`, `Albums`, and `Titles`) retain
 normal item-by-item wheel movement at ordinary speeds. A deliberate fast spin
 switches to letter groups:
 
-- speed 1–3: normal list movement;
-- three consecutive samples at speed 4 or above: enter letter mode;
+- speed 1–3: normal list movement before letter mode is armed;
+- a rolling 120 ms velocity measurement at nominal speed 4 or above enters
+  letter mode; 20 ms buckets prevent a burst of same-timestamp USB reports from
+  being mistaken for sustained movement;
 - while the spin is sustained, continue normal accelerated item movement with
   the current letter overlaid;
 - if item movement has not reached a new letter naturally, jump to the next
   letter after at most 800 ms at speed 5, interpolating linearly to 200 ms at
   speed 11;
-- three consecutive inputs at speed 2 or below return to item movement.
+- speed 2 or below starts a 400 ms settling window rather than exiting
+  immediately. Sustained slow movement keeps the mode alive; an inactive window
+  returns to normal item movement.
 
 These thresholds are calibrated against the physical B5c wheel: careful and
 ordinary movement reports speeds 1–2, while the recorded deliberate-spin range
@@ -25,11 +29,14 @@ letter boundary through normal item movement resets the dwell timer. This keeps
 the list visibly flowing through short groups while still bounding the time
 spent inside a very large group.
 
-Reversing the wheel while letter mode is active keeps the mode alive, including
-after a brief input pause. The first event in the opposite direction jumps one
-letter immediately regardless of its speed, then continuous item movement and
-the maximum-dwell rule continue in the new direction. Inputs above speed 2 reset
-the low-speed exit counter.
+Reversing the wheel while letter mode is active keeps the mode alive. Isolated
+opposite-direction reports at speed 1–2 are suppressed because the physical
+wheel emits them while settling after an ordinary stop. A reversal is confirmed
+when the opposite direction reaches speed 4 within 180 ms, or accumulates 16
+units of sustained slow motion before the 400 ms settling window ends. The
+confirmed reversal jumps one letter, clears the settling state, and continues
+letter mode in the new direction. Twelve units of continuing same-direction
+slow movement similarly cancel settling without changing direction.
 
 Letter jumps apply only at the top level of a sorted section with at least 40
 items. Nested albums, playlists, search results, and short lists remain precise.

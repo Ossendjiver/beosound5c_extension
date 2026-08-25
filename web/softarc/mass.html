@@ -515,8 +515,9 @@
         const ACTION_TOAST_MAX_MS = 4000;
         const FAST_LETTER_ENTER_SPEED = 4;
         const FAST_LETTER_EXIT_SPEED = 2;
-        const FAST_LETTER_ENTER_SAMPLES = 3;
-        const FAST_LETTER_EXIT_SAMPLES = 3;
+        const FAST_LETTER_ENTRY_WINDOW_MS = 120;
+        const FAST_LETTER_SETTLE_WINDOW_MS = 400;
+        const FAST_LETTER_REVERSAL_WINDOW_MS = 180;
         const FAST_LETTER_MIN_ITEMS = 40;
         const FAST_LETTER_SECTION_IDS = new Set(['artists', 'albums', 'titles']);
 
@@ -1126,8 +1127,9 @@
                 enterSpeed: FAST_LETTER_ENTER_SPEED,
                 enterInclusive: true,
                 exitSpeed: FAST_LETTER_EXIT_SPEED,
-                enterSamples: FAST_LETTER_ENTER_SAMPLES,
-                exitSamples: FAST_LETTER_EXIT_SAMPLES,
+                entryWindowMs: FAST_LETTER_ENTRY_WINDOW_MS,
+                settleWindowMs: FAST_LETTER_SETTLE_WINDOW_MS,
+                reversalFastWindowMs: FAST_LETTER_REVERSAL_WINDOW_MS,
                 slowSpeed: 5,
                 slowIntervalMs: 800,
                 fastIntervalMs: 200,
@@ -2608,7 +2610,7 @@
                 if (!mode.active) return false;
                 showFastLetter(currentItem);
                 if (!mode.steps) {
-                    return false;
+                    return Boolean(mode.consume);
                 }
 
                 const nextIndex = window.FastLetterIndex.findJumpIndex(
