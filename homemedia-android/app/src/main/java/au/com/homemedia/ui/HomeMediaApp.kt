@@ -40,6 +40,7 @@ import au.com.homemedia.core.Screen
 import au.com.homemedia.model.*
 import coil3.compose.AsyncImage
 import coil3.network.NetworkHeaders
+import coil3.network.httpHeaders
 import coil3.request.ImageRequest
 import okhttp3.Credentials
 import kotlin.math.roundToInt
