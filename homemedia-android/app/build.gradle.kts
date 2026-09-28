@@ -5,7 +5,11 @@ plugins {
 
 android {
     namespace = "au.com.homemedia"
-    compileSdk = 36
+    compileSdk {
+        version = release(37) {
+            minorApiLevel = 2
+        }
+    }
 
     defaultConfig {
         applicationId = "au.com.homemedia"
