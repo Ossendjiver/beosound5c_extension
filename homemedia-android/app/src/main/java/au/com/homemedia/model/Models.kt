@@ -104,6 +104,25 @@ data class PhoneVideo(
     val youtubeItem: YouTubeItem? = null
 )
 
+data class StremioMetaItem(
+    val id: String,
+    val type: String,
+    val name: String,
+    val poster: String = "",
+    val description: String = "",
+    val releaseInfo: String = ""
+)
+
+data class StremioStreamItem(
+    val name: String = "",
+    val title: String = "",
+    val url: String = "",
+    val externalUrl: String = "",
+    val infoHash: String = ""
+) {
+    val directlyPlayable: Boolean get() = url.startsWith("http://") || url.startsWith("https://")
+}
+
 data class RoomConfig(
     val id: String = UUID.randomUUID().toString(),
     val name: String = "Room",
@@ -253,6 +272,7 @@ data class AppSettings(
     val musicAssistantUrl: String = "",
     val musicAssistantToken: String = "",
     val youtubeApiKey: String = "",
+    val stremioStreamAddonManifests: List<String> = emptyList(),
     val bluetoothLocationEnabled: Boolean = true,
     /** Shared MA output used by Master Link rooms. The known player name is Link; ID is resolved at runtime if blank. */
     val sharedMaQueueId: String = "",
@@ -372,6 +392,7 @@ fun AppSettings.toJson(): JSONObject = JSONObject().apply {
     put("musicAssistantUrl", musicAssistantUrl)
     put("musicAssistantToken", musicAssistantToken)
     put("youtubeApiKey", youtubeApiKey)
+    put("stremioStreamAddonManifests", JSONArray().apply { stremioStreamAddonManifests.forEach { put(it) } })
     put("bluetoothLocationEnabled", bluetoothLocationEnabled)
     put("sharedMaQueueId", sharedMaQueueId)
     put("sharedMaQueueName", sharedMaQueueName)
@@ -449,6 +470,9 @@ fun appSettingsFromJson(obj: JSONObject): AppSettings {
         musicAssistantUrl = obj.optString("musicAssistantUrl"),
         musicAssistantToken = obj.optString("musicAssistantToken"),
         youtubeApiKey = obj.optString("youtubeApiKey"),
+        stremioStreamAddonManifests = obj.optJSONArray("stremioStreamAddonManifests")?.let { arr ->
+            (0 until arr.length()).mapNotNull { i -> arr.optString(i).takeIf(String::isNotBlank) }
+        } ?: emptyList(),
         bluetoothLocationEnabled = obj.optBoolean("bluetoothLocationEnabled", true),
         sharedMaQueueId = obj.optString("sharedMaQueueId"),
         sharedMaQueueName = obj.optString("sharedMaQueueName", "Link"),
