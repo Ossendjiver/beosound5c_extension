@@ -33,7 +33,9 @@ class YouTubeClient {
             if (initialized) return
             NewPipe.init(object : Downloader() {
                 override fun execute(request: Request): Response {
-                    val builder = OkRequest.Builder().url(request.url())
+                    val builder = OkRequest.Builder()
+                        .url(request.url())
+                        .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:140.0) Gecko/20100101 Firefox/140.0")
                     request.headers().forEach { (name, values) ->
                         values.forEach { value -> builder.addHeader(name, value) }
                     }
@@ -69,7 +71,7 @@ class YouTubeClient {
         ensureNewPipe()
         val service = NewPipe.getService("YouTube")
         val info = SearchInfo.getInfo(service.getSearchExtractor(query))
-        info.relatedItems
+        val results = info.relatedItems
             .asSequence()
             .filterIsInstance<StreamInfoItem>()
             .take(limit.coerceIn(1, 50))
@@ -83,6 +85,8 @@ class YouTubeClient {
                 )
             }
             .toList()
+        if (results.isEmpty()) error("NewPipe returned no YouTube video results")
+        results
     }
 
     suspend fun directPlaybackUrl(videoId: String): String = withContext(Dispatchers.IO) {
