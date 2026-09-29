@@ -4,7 +4,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.util.UUID
 
-enum class TileActionType { HA_SERVICE, OPEN_LIBRARY, OPEN_KODI, OPEN_QUEUE }
+enum class TileActionType { HA_SERVICE, SELECT_SOURCE, OPEN_LIBRARY, OPEN_KODI, OPEN_QUEUE }
 enum class SharedSource { LINK, A_AUX }
 enum class MassCategory(val apiName: String, val label: String) {
     ARTISTS("artists", "Artists"),
@@ -33,6 +33,7 @@ data class TileConfig(
     val title: String = "Tile",
     val icon: String = "music",
     val actionType: TileActionType = TileActionType.HA_SERVICE,
+    val source: String = "",
     val service: HaServiceSpec = HaServiceSpec()
 )
 
@@ -40,6 +41,36 @@ data class KodiConfig(
     val baseUrl: String = "",
     val username: String = "",
     val password: String = ""
+)
+
+data class SecondaryPlayerConfig(
+    val id: String = UUID.randomUUID().toString(),
+    val name: String = "Secondary player",
+    val haEntity: String = "",
+    val maPlayerId: String = "",
+    val maPlayerName: String = "",
+    val toggleEntity: String = ""
+)
+
+data class BluetoothAnchorConfig(
+    val address: String = "",
+    val nameContains: String = "",
+    val minRssi: Int = -92
+)
+
+data class PlaybackTarget(
+    val id: String,
+    val label: String,
+    val roomId: String,
+    val secondaryId: String = "",
+    val kodi: Boolean = false
+)
+
+data class YouTubeItem(
+    val videoId: String,
+    val title: String,
+    val channel: String = "",
+    val thumbnail: String = ""
 )
 
 data class RoomConfig(
@@ -51,6 +82,10 @@ data class RoomConfig(
     val mlgwEntity: String = "",
     /** Native Music Assistant player/queue ID. Blank means use the shared MA target. */
     val maPlayerId: String = "",
+    val maPlayerName: String = "",
+    val secondaryPlayers: List<SecondaryPlayerConfig> = emptyList(),
+    val sourceOptions: List<String> = emptyList(),
+    val bluetoothAnchors: List<BluetoothAnchorConfig> = emptyList(),
     val presenceEntity: String = "",
     val presenceValue: String = "",
     val powerOnDelayMs: Long = 900,
@@ -96,21 +131,82 @@ data class RoomConfig(
     }
 }
 
+private fun mediaTiles(video: Boolean = false): List<TileConfig> = buildList {
+    add(TileConfig(title = "CD", icon = "disc", actionType = TileActionType.SELECT_SOURCE, source = "CD"))
+    add(TileConfig(title = "Music library", icon = "library", actionType = TileActionType.OPEN_LIBRARY))
+    if (video) add(TileConfig(title = "Video library", icon = "video", actionType = TileActionType.OPEN_KODI))
+    add(TileConfig(title = "Queue", icon = "queue", actionType = TileActionType.OPEN_QUEUE))
+}
+
 private fun presetRooms(): List<RoomConfig> = listOf(
-    RoomConfig(id = "bathroom", name = "Bathroom", primaryPlayerEntity = "media_player.bl3500_2"),
-    RoomConfig(id = "lounge_mini", name = "Lounge Mini", primaryPlayerEntity = "media_player.lounge_mini_ma"),
-    RoomConfig(id = "dining", name = "Dining", primaryPlayerEntity = "media_player.dining"),
-    RoomConfig(id = "cuisine", name = "Cuisine", primaryPlayerEntity = "media_player.cuisine"),
-    RoomConfig(id = "bv10_40", name = "BV10-40", primaryPlayerEntity = "media_player.bv10_40"),
-    RoomConfig(id = "bv10_32", name = "BV10-32", primaryPlayerEntity = "media_player.bv10_32_2"),
-    RoomConfig(id = "bs3", name = "BS3", primaryPlayerEntity = "media_player.bs3_2")
+    RoomConfig(
+        id = "lounge", name = "Lounge",
+        primaryPlayerEntity = "media_player.bs3_2",
+        mlgwEntity = "media_player.bs3_2",
+        secondaryPlayers = listOf(
+            SecondaryPlayerConfig(
+                id = "lounge_mini", name = "Lounge Mini",
+                haEntity = "media_player.lounge_mini_ma",
+                maPlayerName = "Lounge Mini"
+            )
+        ),
+        sourceOptions = listOf("CD", "Link", "A.AUX"),
+        tiles = mediaTiles(video = true)
+    ),
+    RoomConfig(
+        id = "dining", name = "Dining",
+        primaryPlayerEntity = "media_player.bv10_32_2",
+        mlgwEntity = "media_player.bv10_32_2",
+        secondaryPlayers = listOf(
+            SecondaryPlayerConfig(
+                id = "dining_secondary", name = "Dining",
+                haEntity = "media_player.dining",
+                maPlayerName = "Dining",
+                toggleEntity = "switch.bc9500"
+            )
+        ),
+        sourceOptions = listOf("CD", "Link", "A.AUX"),
+        tiles = mediaTiles(video = true)
+    ),
+    RoomConfig(
+        id = "bedroom", name = "Bedroom",
+        primaryPlayerEntity = "media_player.bv10_40",
+        mlgwEntity = "media_player.bv10_40",
+        sourceOptions = listOf("CD", "Link", "A.AUX"),
+        tiles = mediaTiles(video = true)
+    ),
+    RoomConfig(
+        id = "kitchen", name = "Kitchen",
+        primaryPlayerEntity = "media_player.cuisine",
+        mlgwEntity = "media_player.cuisine",
+        sourceOptions = listOf("Link", "A.AUX"),
+        tiles = mediaTiles(video = true)
+    ),
+    RoomConfig(
+        id = "bathroom", name = "Bathroom",
+        primaryPlayerEntity = "media_player.bl3500_2",
+        mlgwEntity = "media_player.bl3500_2",
+        sourceOptions = listOf("Link", "A.AUX"),
+        tiles = mediaTiles(video = false)
+    )
 )
 
+private fun migrateRoomId(id: String): String = when (id) {
+    "bs3", "lounge_mini" -> "lounge"
+    "bv10_32", "dining" -> "dining"
+    "bv10_40" -> "bedroom"
+    "cuisine" -> "kitchen"
+    else -> id
+}
+
 data class AppSettings(
+    val schemaVersion: Int = 3,
     val homeAssistantUrl: String = "",
     val homeAssistantToken: String = "",
     val musicAssistantUrl: String = "",
     val musicAssistantToken: String = "",
+    val youtubeApiKey: String = "",
+    val bluetoothLocationEnabled: Boolean = true,
     /** Shared MA output used by Master Link rooms. The known player name is Link; ID is resolved at runtime if blank. */
     val sharedMaQueueId: String = "",
     val sharedMaQueueName: String = "Link",
@@ -119,7 +215,7 @@ data class AppSettings(
     val automaticRoom: Boolean = true,
     /** Do not treat the only active room as the user's physical location unless explicitly enabled. */
     val activePlayerLocationFallback: Boolean = false,
-    val lastRoomId: String = "bathroom",
+    val lastRoomId: String = "lounge",
     val rooms: List<RoomConfig> = presetRooms()
 )
 
@@ -223,10 +319,13 @@ data class KodiBrowseState(
 )
 
 fun AppSettings.toJson(): JSONObject = JSONObject().apply {
+    put("schemaVersion", schemaVersion)
     put("homeAssistantUrl", homeAssistantUrl)
     put("homeAssistantToken", homeAssistantToken)
     put("musicAssistantUrl", musicAssistantUrl)
     put("musicAssistantToken", musicAssistantToken)
+    put("youtubeApiKey", youtubeApiKey)
+    put("bluetoothLocationEnabled", bluetoothLocationEnabled)
     put("sharedMaQueueId", sharedMaQueueId)
     put("sharedMaQueueName", sharedMaQueueName)
     put("globalMediaEntity", globalMediaEntity)
@@ -239,7 +338,10 @@ fun AppSettings.toJson(): JSONObject = JSONObject().apply {
 
 fun RoomConfig.toJson(): JSONObject = JSONObject().apply {
     put("id", id); put("name", name); put("primaryPlayerEntity", primaryPlayerEntity)
-    put("mlgwEntity", mlgwEntity); put("maPlayerId", maPlayerId)
+    put("mlgwEntity", mlgwEntity); put("maPlayerId", maPlayerId); put("maPlayerName", maPlayerName)
+    put("secondaryPlayers", JSONArray().apply { secondaryPlayers.forEach { put(it.toJson()) } })
+    put("sourceOptions", JSONArray().apply { sourceOptions.forEach { put(it) } })
+    put("bluetoothAnchors", JSONArray().apply { bluetoothAnchors.forEach { put(it.toJson()) } })
     put("presenceEntity", presenceEntity); put("presenceValue", presenceValue)
     put("powerOnDelayMs", powerOnDelayMs); put("sourceConfirmTimeoutMs", sourceConfirmTimeoutMs)
     put("linkSourceName", linkSourceName); put("auxSourceName", auxSourceName)
@@ -252,8 +354,18 @@ fun KodiConfig.toJson(): JSONObject = JSONObject().apply {
     put("baseUrl", baseUrl); put("username", username); put("password", password)
 }
 
+fun SecondaryPlayerConfig.toJson(): JSONObject = JSONObject().apply {
+    put("id", id); put("name", name); put("haEntity", haEntity)
+    put("maPlayerId", maPlayerId); put("maPlayerName", maPlayerName); put("toggleEntity", toggleEntity)
+}
+
+fun BluetoothAnchorConfig.toJson(): JSONObject = JSONObject().apply {
+    put("address", address); put("nameContains", nameContains); put("minRssi", minRssi)
+}
+
 fun TileConfig.toJson(): JSONObject = JSONObject().apply {
     put("id", id); put("title", title); put("icon", icon); put("actionType", actionType.name)
+    put("source", source)
     put("service", service.toJson())
 }
 
@@ -262,22 +374,30 @@ fun HaServiceSpec.toJson(): JSONObject = JSONObject().apply {
 }
 
 fun appSettingsFromJson(obj: JSONObject): AppSettings {
+    val schema = obj.optInt("schemaVersion", 1)
     val parsedRooms = obj.optJSONArray("rooms")?.let { arr ->
         (0 until arr.length()).mapNotNull { i -> arr.optJSONObject(i)?.let(::roomFromJson) }
     }
+    val legacyIds = parsedRooms.orEmpty().map { it.id }.toSet()
+    val rooms = if (schema < 3 && legacyIds.any { it in setOf("bs3", "lounge_mini", "bv10_32", "bv10_40", "cuisine") }) {
+        presetRooms()
+    } else parsedRooms?.takeIf { it.isNotEmpty() } ?: presetRooms()
     return AppSettings(
+        schemaVersion = 3,
         homeAssistantUrl = obj.optString("homeAssistantUrl"),
         homeAssistantToken = obj.optString("homeAssistantToken"),
         musicAssistantUrl = obj.optString("musicAssistantUrl"),
         musicAssistantToken = obj.optString("musicAssistantToken"),
+        youtubeApiKey = obj.optString("youtubeApiKey"),
+        bluetoothLocationEnabled = obj.optBoolean("bluetoothLocationEnabled", true),
         sharedMaQueueId = obj.optString("sharedMaQueueId"),
         sharedMaQueueName = obj.optString("sharedMaQueueName", "Link"),
         globalMediaEntity = obj.optString("globalMediaEntity", "media_player.global_media"),
         linkMediaPlayerEntity = obj.optString("linkMediaPlayerEntity", "media_player.link"),
         automaticRoom = obj.optBoolean("automaticRoom", true),
         activePlayerLocationFallback = obj.optBoolean("activePlayerLocationFallback", false),
-        lastRoomId = obj.optString("lastRoomId", "bathroom"),
-        rooms = parsedRooms?.takeIf { it.isNotEmpty() } ?: presetRooms()
+        lastRoomId = migrateRoomId(obj.optString("lastRoomId", "lounge")),
+        rooms = rooms
     )
 }
 
@@ -287,6 +407,16 @@ fun roomFromJson(obj: JSONObject): RoomConfig = RoomConfig(
     primaryPlayerEntity = obj.optString("primaryPlayerEntity"),
     mlgwEntity = obj.optString("mlgwEntity"),
     maPlayerId = obj.optString("maPlayerId"),
+    maPlayerName = obj.optString("maPlayerName"),
+    secondaryPlayers = obj.optJSONArray("secondaryPlayers")?.let { arr ->
+        (0 until arr.length()).mapNotNull { i -> arr.optJSONObject(i)?.let(::secondaryPlayerFromJson) }
+    } ?: emptyList(),
+    sourceOptions = obj.optJSONArray("sourceOptions")?.let { arr ->
+        (0 until arr.length()).mapNotNull { i -> arr.optString(i).takeIf(String::isNotBlank) }
+    } ?: emptyList(),
+    bluetoothAnchors = obj.optJSONArray("bluetoothAnchors")?.let { arr ->
+        (0 until arr.length()).mapNotNull { i -> arr.optJSONObject(i)?.let(::bluetoothAnchorFromJson) }
+    } ?: emptyList(),
     presenceEntity = obj.optString("presenceEntity"),
     presenceValue = obj.optString("presenceValue"),
     powerOnDelayMs = obj.optLong("powerOnDelayMs", 900),
@@ -304,6 +434,21 @@ fun kodiFromJson(obj: JSONObject) = KodiConfig(
     baseUrl = obj.optString("baseUrl"), username = obj.optString("username"), password = obj.optString("password")
 )
 
+fun secondaryPlayerFromJson(obj: JSONObject) = SecondaryPlayerConfig(
+    id = obj.optString("id").ifBlank { UUID.randomUUID().toString() },
+    name = obj.optString("name", "Secondary player"),
+    haEntity = obj.optString("haEntity"),
+    maPlayerId = obj.optString("maPlayerId"),
+    maPlayerName = obj.optString("maPlayerName"),
+    toggleEntity = obj.optString("toggleEntity")
+)
+
+fun bluetoothAnchorFromJson(obj: JSONObject) = BluetoothAnchorConfig(
+    address = obj.optString("address"),
+    nameContains = obj.optString("nameContains"),
+    minRssi = obj.optInt("minRssi", -92)
+)
+
 fun tileFromJson(obj: JSONObject): TileConfig {
     val rawType = obj.optString("actionType")
     val action = when (rawType) {
@@ -315,6 +460,7 @@ fun tileFromJson(obj: JSONObject): TileConfig {
         title = obj.optString("title", "Tile"),
         icon = obj.optString("icon", "music"),
         actionType = action,
+        source = obj.optString("source"),
         service = obj.optJSONObject("service")?.let(::serviceFromJson) ?: HaServiceSpec()
     )
 }
