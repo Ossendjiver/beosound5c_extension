@@ -140,6 +140,12 @@ class AppController(context: Context) {
             TileActionType.OPEN_LIBRARY -> openLibrary()
             TileActionType.OPEN_KODI -> openKodi()
             TileActionType.OPEN_QUEUE -> openQueue()
+            TileActionType.SELECT_SOURCE -> scope.launch {
+                busyRun("Could not select ${tile.source}") {
+                    ensureRoomOn(room)
+                    if (!ha.selectSource(room.routeEntity, tile.source)) error("Home Assistant is not connected")
+                }
+            }
             TileActionType.HA_SERVICE -> scope.launch {
                 busyRun("Home Assistant action failed") {
                     if (tile.service.domain == "media_player" && tile.service.service == "select_source") {
@@ -151,12 +157,11 @@ class AppController(context: Context) {
         }
     }
 
-    fun togglePlayPause() { currentRoom()?.let { room -> transportEntity(room).takeIf(String::isNotBlank)?.let(ha::playPause) } }
-    fun next() { currentRoom()?.let { room -> transportEntity(room).takeIf(String::isNotBlank)?.let(ha::next) } }
-    fun previous() { currentRoom()?.let { room -> transportEntity(room).takeIf(String::isNotBlank)?.let(ha::previous) } }
-    // Volume always belongs to the physical room, even when transport is the shared Link player.
-    fun volumeUp() { currentRoom()?.primaryPlayerEntity?.takeIf { it.isNotBlank() }?.let(ha::volumeUp) }
-    fun volumeDown() { currentRoom()?.primaryPlayerEntity?.takeIf { it.isNotBlank() }?.let(ha::volumeDown) }
+    fun togglePlayPause() { activeTransportEntity()?.takeIf(String::isNotBlank)?.let(ha::playPause) }
+    fun next() { activeTransportEntity()?.takeIf(String::isNotBlank)?.let(ha::next) }
+    fun previous() { activeTransportEntity()?.takeIf(String::isNotBlank)?.let(ha::previous) }
+    fun volumeUp() { activeTransportEntity()?.takeIf(String::isNotBlank)?.let(ha::volumeUp) }
+    fun volumeDown() { activeTransportEntity()?.takeIf(String::isNotBlank)?.let(ha::volumeDown) }
 
     // ----- Context-sensitive room Join / Transfer -----
 
