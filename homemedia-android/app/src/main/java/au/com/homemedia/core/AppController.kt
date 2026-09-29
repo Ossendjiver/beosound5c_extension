@@ -473,7 +473,7 @@ class AppController(context: Context) {
             Screen.MEDIA -> goRoom()
             Screen.MASS_DETAIL -> backFromMassDetail()
             Screen.MASS_LIST -> backToMassHome()
-            Screen.MASS_HOME, Screen.QUEUE, Screen.YOUTUBE, Screen.STREMIO ->
+            Screen.MASS_HOME, Screen.QUEUE, Screen.NEWS, Screen.YOUTUBE, Screen.STREMIO ->
                 if (mediaOriginScreen == Screen.MEDIA) goMedia() else goRoom()
             Screen.KODI_LIBRARY -> {
                 if (_kodiBrowse.value.type != KodiBrowseType.HOME || kodiBackStack.isNotEmpty()) {
