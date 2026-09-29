@@ -615,19 +615,21 @@ private fun MediaHubScreen(controller: AppController) {
                 }
             }
         }
-        gridItems(settings.rooms.filter { it.kodi.baseUrl.isNotBlank() }, key = { "kodi:${it.id}" }) { room ->
-            Card(
-                Modifier.fillMaxWidth().aspectRatio(1.15f).combinedClickable(
-                    onClick = { controller.selectRoom(room.id); controller.openKodiLibrary() },
-                    onLongClick = {}
-                ),
-                colors = CardDefaults.cardColors(containerColor = Panel2)
-            ) {
-                Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.SpaceBetween) {
-                    Icon(Icons.Default.VideoLibrary, null, modifier = Modifier.size(32.dp))
-                    Column {
-                        Text(room.name, fontWeight = FontWeight.Bold, fontSize = 18.sp)
-                        Text("Video library", color = TextMuted, fontSize = 12.sp)
+        if (settings.rooms.any { it.kodi.baseUrl.isNotBlank() }) {
+            item {
+                Card(
+                    Modifier.fillMaxWidth().aspectRatio(1.15f).combinedClickable(
+                        onClick = controller::openSharedKodiLibrary,
+                        onLongClick = {}
+                    ),
+                    colors = CardDefaults.cardColors(containerColor = Panel2)
+                ) {
+                    Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.SpaceBetween) {
+                        Icon(Icons.Default.VideoLibrary, null, modifier = Modifier.size(32.dp))
+                        Column {
+                            Text("Video library", fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                            Text("Shared Kodi library", color = TextMuted, fontSize = 12.sp)
+                        }
                     }
                 }
             }
@@ -1296,6 +1298,7 @@ private fun RoomEditor(room: RoomConfig, onChange: (RoomConfig) -> Unit) {
     SettingsField("Kodi base URL", room.kodi.baseUrl) { onChange(room.copy(kodi = room.kodi.copy(baseUrl = it))) }
     SettingsField("Kodi username", room.kodi.username) { onChange(room.copy(kodi = room.kodi.copy(username = it))) }
     SettingsField("Kodi password", room.kodi.password, secret = true) { onChange(room.copy(kodi = room.kodi.copy(password = it))) }
+    SettingsField("Kodi source label", room.kodiSourceName) { onChange(room.copy(kodiSourceName = it)) }
 }
 
 @Composable
