@@ -58,6 +58,17 @@ data class BluetoothAnchorConfig(
     val minRssi: Int = -92
 )
 
+data class BluetoothFingerprintSample(
+    val address: String = "",
+    val name: String = "",
+    val rssi: Int = -100
+)
+
+data class BluetoothCalibrationPoint(
+    val point: Int = 1,
+    val samples: List<BluetoothFingerprintSample> = emptyList()
+)
+
 data class PlaybackTarget(
     val id: String,
     val label: String,
@@ -87,6 +98,8 @@ data class RoomConfig(
     val secondaryPlayers: List<SecondaryPlayerConfig> = emptyList(),
     val sourceOptions: List<String> = emptyList(),
     val bluetoothAnchors: List<BluetoothAnchorConfig> = emptyList(),
+    /** Three spatial fingerprints captured in this room. */
+    val bluetoothCalibrationPoints: List<BluetoothCalibrationPoint> = emptyList(),
     val youtubeCastEntity: String = "",
     val kodiSourceName: String = "Kodi",
     val presenceEntity: String = "",
@@ -355,6 +368,7 @@ fun RoomConfig.toJson(): JSONObject = JSONObject().apply {
     put("secondaryPlayers", JSONArray().apply { secondaryPlayers.forEach { put(it.toJson()) } })
     put("sourceOptions", JSONArray().apply { sourceOptions.forEach { put(it) } })
     put("bluetoothAnchors", JSONArray().apply { bluetoothAnchors.forEach { put(it.toJson()) } })
+    put("bluetoothCalibrationPoints", JSONArray().apply { bluetoothCalibrationPoints.forEach { put(it.toJson()) } })
     put("youtubeCastEntity", youtubeCastEntity)
     put("kodiSourceName", kodiSourceName)
     put("presenceEntity", presenceEntity); put("presenceValue", presenceValue)
@@ -376,6 +390,15 @@ fun SecondaryPlayerConfig.toJson(): JSONObject = JSONObject().apply {
 
 fun BluetoothAnchorConfig.toJson(): JSONObject = JSONObject().apply {
     put("address", address); put("nameContains", nameContains); put("minRssi", minRssi)
+}
+
+fun BluetoothFingerprintSample.toJson(): JSONObject = JSONObject().apply {
+    put("address", address); put("name", name); put("rssi", rssi)
+}
+
+fun BluetoothCalibrationPoint.toJson(): JSONObject = JSONObject().apply {
+    put("point", point)
+    put("samples", JSONArray().apply { samples.forEach { put(it.toJson()) } })
 }
 
 fun TileConfig.toJson(): JSONObject = JSONObject().apply {
@@ -432,6 +455,9 @@ fun roomFromJson(obj: JSONObject): RoomConfig = RoomConfig(
     bluetoothAnchors = obj.optJSONArray("bluetoothAnchors")?.let { arr ->
         (0 until arr.length()).mapNotNull { i -> arr.optJSONObject(i)?.let(::bluetoothAnchorFromJson) }
     } ?: emptyList(),
+    bluetoothCalibrationPoints = obj.optJSONArray("bluetoothCalibrationPoints")?.let { arr ->
+        (0 until arr.length()).mapNotNull { i -> arr.optJSONObject(i)?.let(::bluetoothCalibrationPointFromJson) }
+    } ?: emptyList(),
     youtubeCastEntity = obj.optString("youtubeCastEntity"),
     kodiSourceName = obj.optString("kodiSourceName", "Kodi"),
     presenceEntity = obj.optString("presenceEntity"),
@@ -471,6 +497,19 @@ fun bluetoothAnchorFromJson(obj: JSONObject) = BluetoothAnchorConfig(
     address = obj.optString("address"),
     nameContains = obj.optString("nameContains"),
     minRssi = obj.optInt("minRssi", -92)
+)
+
+fun bluetoothFingerprintSampleFromJson(obj: JSONObject) = BluetoothFingerprintSample(
+    address = obj.optString("address"),
+    name = obj.optString("name"),
+    rssi = obj.optInt("rssi", -100)
+)
+
+fun bluetoothCalibrationPointFromJson(obj: JSONObject) = BluetoothCalibrationPoint(
+    point = obj.optInt("point", 1),
+    samples = obj.optJSONArray("samples")?.let { arr ->
+        (0 until arr.length()).mapNotNull { i -> arr.optJSONObject(i)?.let(::bluetoothFingerprintSampleFromJson) }
+    } ?: emptyList()
 )
 
 fun tileFromJson(obj: JSONObject): TileConfig {
