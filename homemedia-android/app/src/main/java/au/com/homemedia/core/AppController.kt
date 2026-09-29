@@ -159,8 +159,17 @@ class AppController(context: Context) {
         scope.launch {
             ha.states.collect { states ->
                 if (_settings.value.automaticRoom && _wifiConnected.value) resolveAutomaticRoom(states)
+                val activePlayerChanged = syncActivePlayerForCurrentRoom(states)
                 updateNowPlaying(states)
                 updateJoinCandidate(states)
+                if (activePlayerChanged && _screen.value == Screen.QUEUE) {
+                    currentRoom()?.let { room ->
+                        scope.launch {
+                            runCatching { refreshQueueInternal(resolveActiveQueueForRoom(room)) }
+                                .onFailure { debugLogger.log("MA", "Could not refresh queue after active player change: ${it.message}") }
+                        }
+                    }
+                }
             }
         }
     }
@@ -172,6 +181,16 @@ class AppController(context: Context) {
 
     fun currentRoom(): RoomConfig? = _settings.value.rooms.firstOrNull { it.id == _selectedRoomId.value }
         ?: _settings.value.rooms.firstOrNull()
+
+    fun activePlayerDisplayName(): String {
+        val room = currentRoom() ?: return ""
+        val key = _activePlayerKey.value
+        return if (key == "primary") {
+            room.maPlayerName.ifBlank { room.name }
+        } else {
+            room.secondaryPlayers.firstOrNull { it.id == key }?.name ?: room.name
+        }
+    }
 
     fun bluetoothCalibrationQuality(room: RoomConfig): String = bluetoothLocator.calibrationQuality(room)
 
@@ -1014,7 +1033,7 @@ class AppController(context: Context) {
         val room = currentRoom() ?: return
         scope.launch {
             busyRun("Could not load Music Assistant queue") {
-                val queueId = resolveQueueIdForRoom(room)
+                val queueId = resolveActiveQueueForRoom(room)
                 refreshQueueInternal(queueId)
                 _screen.value = Screen.QUEUE
             }
@@ -1024,7 +1043,7 @@ class AppController(context: Context) {
     fun refreshQueue() {
         val room = currentRoom() ?: return
         scope.launch {
-            busyRun("Could not refresh queue") { refreshQueueInternal(resolveQueueIdForRoom(room)) }
+            busyRun("Could not refresh queue") { refreshQueueInternal(resolveActiveQueueForRoom(room)) }
         }
     }
 
@@ -1053,7 +1072,7 @@ class AppController(context: Context) {
         val room = currentRoom() ?: return
         scope.launch {
             busyRun("Queue playback command failed") {
-                val q = resolveQueueIdForRoom(room)
+                val q = resolveActiveQueueForRoom(room)
                 command(q)
                 delay(120)
                 refreshQueueInternal(q)
@@ -1069,7 +1088,7 @@ class AppController(context: Context) {
         val room = currentRoom() ?: return
         scope.launch {
             busyRun("Queue command failed") {
-                val q = if (preparePlayback) prepareMassPlaybackTarget(room) else resolveQueueIdForRoom(room)
+                val q = if (preparePlayback) prepareActiveQueueForRoom(room) else resolveActiveQueueForRoom(room)
                 command(q)
                 if (refresh) { delay(120); refreshQueueInternal(q) }
             }
@@ -1702,6 +1721,19 @@ class AppController(context: Context) {
         return activeVolumeEntity()
     }
 
+    private suspend fun prepareActiveQueueForRoom(room: RoomConfig): String {
+        val key = _activePlayerKey.value
+        if (key != "primary") {
+            val secondary = room.secondaryPlayers.firstOrNull { it.id == key }
+            if (secondary != null) {
+                return ma.resolvePlayerQueueId(
+                    ma.resolvePlayerId(secondary.maPlayerId, secondary.maPlayerName)
+                )
+            }
+        }
+        return prepareMassPlaybackTarget(room)
+    }
+
     private suspend fun resolveActiveQueueForRoom(room: RoomConfig): String {
         val key = _activePlayerKey.value
         if (key != "primary") {
@@ -1822,12 +1854,44 @@ class AppController(context: Context) {
     }
 
     private fun isRoomActive(room: RoomConfig, states: Map<String, HaEntityState>): Boolean {
+        val activeStates = setOf("playing", "paused", "buffering")
         val primary = states[room.primaryPlayerEntity]
-        if (primary?.state in setOf("playing", "paused", "buffering")) return true
+        if (primary?.state in activeStates) return true
+        if (room.secondaryPlayers.any { secondary ->
+                secondary.haEntity.isNotBlank() && states[secondary.haEntity]?.state in activeStates
+            }) return true
         val routed = states[room.routeEntity] ?: return false
         if (routed.state in setOf("off", "unavailable", "unknown")) return false
         val source = routed.attributes.optString("source")
         return source.equals(room.linkSourceName, true) || source.equals(room.auxSourceName, true)
+    }
+
+    private fun syncActivePlayerForCurrentRoom(states: Map<String, HaEntityState>): Boolean {
+        val room = currentRoom() ?: return false
+        val activeStates = setOf("playing", "paused", "buffering")
+        val currentKey = _activePlayerKey.value
+        val primaryActive = states[room.primaryPlayerEntity]?.state in activeStates
+        val activeSecondaries = room.secondaryPlayers.filter { secondary ->
+            secondary.haEntity.isNotBlank() && states[secondary.haEntity]?.state in activeStates
+        }
+
+        val resolvedKey = when {
+            currentKey != "primary" &&
+                activeSecondaries.any { it.id == currentKey } -> currentKey
+            !primaryActive && activeSecondaries.size == 1 -> activeSecondaries.first().id
+            primaryActive && currentKey != "primary" &&
+                activeSecondaries.none { it.id == currentKey } -> "primary"
+            else -> currentKey
+        }
+
+        if (resolvedKey == currentKey) return false
+        debugLogger.log(
+            "PLAYER",
+            "Active player changed room=${room.name} $currentKey -> $resolvedKey " +
+                "primaryActive=$primaryActive secondaries=${activeSecondaries.joinToString { it.name }}"
+        )
+        _activePlayerKey.value = resolvedKey
+        return true
     }
 
     private fun updateNowPlaying(states: Map<String, HaEntityState>) {
