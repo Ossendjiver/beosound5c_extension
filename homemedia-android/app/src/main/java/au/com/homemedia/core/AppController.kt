@@ -144,6 +144,8 @@ class AppController(context: Context) {
     val bluetoothCalibration: StateFlow<BluetoothCalibrationState?> = _bluetoothCalibration
     private var kodiLibraryHostRoomId: String? = null
     private var kodiLibraryShared: Boolean = false
+    private var pendingBleRoomId: String? = null
+    private var pendingBleConfirmations: Int = 0
 
     init {
         debugLogger.setEnabled(_settings.value.debugEnabled)
@@ -177,6 +179,57 @@ class AppController(context: Context) {
             persist(_settings.value.copy(debugEnabled = enabled))
         }
         debugLogger.log("DEBUG", "Runtime debug mode=$enabled")
+        if (enabled) {
+            val settings = _settings.value
+            debugLogger.log(
+                "SNAPSHOT",
+                "wifi=${wifiStatus.isConnectedToWifi()} haConnected=${ha.connected.value} " +
+                    "haStates=${ha.states.value.size} selected=${_selectedRoomId.value} " +
+                    "automaticRoom=${settings.automaticRoom} bluetooth=${settings.bluetoothLocationEnabled}"
+            )
+            settings.rooms.forEach { room ->
+                val state = room.presenceEntity.takeIf(String::isNotBlank)?.let { ha.states.value[it] }
+                debugLogger.log(
+                    "SNAPSHOT",
+                    "room=${room.name} presence=${room.presenceEntity.ifBlank { "<none>" }} " +
+                        "actual=${state?.state ?: "<missing>"} expected=${room.presenceValue.ifBlank { "<auto>" }} " +
+                        "ble=${bluetoothLocator.calibrationQuality(room)}"
+                )
+            }
+        }
+    }
+
+    fun runHomeAssistantDiagnostic() {
+        scope.launch {
+            _busy.value = true
+            try {
+                val settings = _settings.value
+                val states = ha.states.value
+                debugLogger.log(
+                    "HA",
+                    "Manual Home Assistant diagnostic started connected=${ha.connected.value} states=${states.size}"
+                )
+                val lines = settings.rooms.map { room ->
+                    val state = states[room.presenceEntity]
+                    val matches = presenceMatchesRoom(room, state)
+                    val line =
+                        "${room.name}: ${room.presenceEntity.ifBlank { "<not configured>" }} " +
+                            "state=${state?.state ?: "<missing>"} expected=${room.presenceValue.ifBlank { "<auto>" }} match=$matches"
+                    debugLogger.log("HA", line)
+                    line
+                }
+                val missing = settings.rooms.count { it.presenceEntity.isBlank() || states[it.presenceEntity] == null }
+                _message.value =
+                    "Home Assistant · connected=${ha.connected.value} · ${states.size} states · " +
+                        "${settings.rooms.size - missing}/${settings.rooms.size} presence sensors received\n" +
+                        lines.joinToString("\n")
+            } catch (e: Exception) {
+                debugLogger.log("HA", "Diagnostic failed ${e.javaClass.simpleName}: ${e.message}")
+                _message.value = "Home Assistant failed: ${e.message ?: e.javaClass.simpleName}"
+            } finally {
+                _busy.value = false
+            }
+        }
     }
 
     fun runMusicAssistantDiagnostic() {
@@ -186,9 +239,23 @@ class AppController(context: Context) {
                 debugLogger.log("MA", "Manual Music Assistant diagnostic started")
                 val queues = ma.queues()
                 debugLogger.log("MA", "Queue listing OK count=${queues.size}")
-                val albums = ma.library(MassCategory.ALBUMS, limit = 3)
-                debugLogger.log("MA", "Album library OK count=${albums.size} sample=${albums.joinToString { it.name }.take(300)}")
-                _message.value = "Music Assistant OK · ${queues.size} queues · ${albums.size} album samples"
+
+                val categoryCounts = linkedMapOf<MassCategory, Int>()
+                MassCategory.entries.forEach { category ->
+                    val sample = ma.library(category, limit = 3)
+                    categoryCounts[category] = sample.size
+                    debugLogger.log(
+                        "MA",
+                        "Library ${category.label} OK count=${sample.size} sample=${sample.joinToString { it.name }.take(300)}"
+                    )
+                }
+
+                val normalPage = ma.library(MassCategory.ALBUMS, limit = 250)
+                debugLogger.log("MA", "Normal 250-item album page OK count=${normalPage.size}")
+                _message.value =
+                    "Music Assistant OK · ${queues.size} queues · " +
+                        categoryCounts.entries.joinToString { "${it.key.label}=${it.value}" } +
+                        " · album page=${normalPage.size}"
             } catch (e: Exception) {
                 debugLogger.log("MA", "Diagnostic failed ${e.javaClass.simpleName}: ${e.message}")
                 _message.value = "Music Assistant failed: ${e.message ?: e.javaClass.simpleName}"
@@ -207,17 +274,25 @@ class AppController(context: Context) {
         scope.launch(Dispatchers.IO) {
             runCatching {
                 val settings = _settings.value
+                val states = ha.states.value
                 val header = buildString {
                     appendLine("Home Media diagnostic log")
+                    appendLine("App settings schema: ${settings.schemaVersion}")
                     appendLine("Wi-Fi connected: ${wifiStatus.isConnectedToWifi()}")
                     appendLine("HA connected: ${ha.connected.value}")
+                    appendLine("HA states loaded: ${states.size}")
                     appendLine("HA URL: ${settings.homeAssistantUrl}")
                     appendLine("MA URL: ${settings.musicAssistantUrl}")
                     appendLine("Selected room: ${_selectedRoomId.value}")
+                    appendLine("Automatic room: ${settings.automaticRoom}")
+                    appendLine("Bluetooth room detection: ${settings.bluetoothLocationEnabled}")
                     settings.rooms.forEach { room ->
+                        val presenceState = states[room.presenceEntity]
                         appendLine(
-                            "Room ${room.name}: presence=${room.presenceEntity} expected=${room.presenceValue}; " +
-                                "BLE points=${room.bluetoothCalibrationPoints.size}; quiet=${room.bluetoothQuietRoom}"
+                            "Room ${room.name}: presence=${room.presenceEntity} " +
+                                "actual=${presenceState?.state ?: "<missing>"} expected=${room.presenceValue}; " +
+                                "BLE points=${room.bluetoothCalibrationPoints.size}; quiet=${room.bluetoothQuietRoom}; " +
+                                "quality=${bluetoothLocator.calibrationQuality(room)}"
                         )
                     }
                     appendLine("Tokens: REDACTED")
@@ -243,32 +318,48 @@ class AppController(context: Context) {
                     return@launch
                 }
 
-                val presenceLines = settings.rooms.mapNotNull { room ->
-                    if (room.presenceEntity.isBlank()) return@mapNotNull null
-                    val st = ha.states.value[room.presenceEntity]
-                    val line = "${room.name}: ${room.presenceEntity} state=${st?.state ?: "<missing>"} expected=${room.presenceValue.ifBlank { "<auto>" }}"
+                val presenceLines = settings.rooms.map { room ->
+                    val st = room.presenceEntity.takeIf(String::isNotBlank)?.let { ha.states.value[it] }
+                    val line =
+                        "${room.name}: ${room.presenceEntity.ifBlank { "<not configured>" }} " +
+                            "state=${st?.state ?: "<missing>"} expected=${room.presenceValue.ifBlank { "<auto>" }}"
                     debugLogger.log("PRESENCE", line)
                     line
                 }
 
                 val scan = bluetoothLocator.scanFingerprint(3500)
-                val top = scan.samples.take(8).joinToString { "${it.name.ifBlank { it.address }}=${it.rssi}" }
-                debugLogger.log("BLE", "Scan devices=${scan.samples.size} top=[$top]")
+                val top = scan.samples.take(10).joinToString { "${it.name.ifBlank { it.address }}=${it.rssi}" }
+                debugLogger.log("BLE", "Scan devices=${scan.samples.size} duration=${scan.durationMs}ms top=[$top]")
+
                 settings.rooms.forEach { room ->
                     debugLogger.log(
                         "BLE",
-                        "Calibration room=${room.name} points=${room.bluetoothCalibrationPoints.size} quiet=${room.bluetoothQuietRoom}"
+                        "Calibration room=${room.name} points=${room.bluetoothCalibrationPoints.size} " +
+                            "quiet=${room.bluetoothQuietRoom} quality=${bluetoothLocator.calibrationQuality(room)}"
                     )
                 }
-                val match = bluetoothLocator.resolveRoom(settings.rooms, scanMs = 1800)
+
+                val candidates = bluetoothLocator.scoreRooms(settings.rooms, scan.samples)
+                candidates.forEach { score ->
+                    val name = settings.rooms.firstOrNull { it.id == score.roomId }?.name ?: score.roomId
+                    debugLogger.log(
+                        "BLE",
+                        "Candidate room=$name score=${"%.1f".format(score.score)} " +
+                            "overlap=${score.overlap}/${score.expectedDevices} stable=${score.stableDevices}"
+                    )
+                }
+
+                val match = bluetoothLocator.resolveRoomFromSamples(settings.rooms, scan.samples)
                 val matchText = match?.let {
-                    "${settings.rooms.firstOrNull { r -> r.id == it.roomId }?.name ?: it.roomId} score=${"%.1f".format(it.score)} margin=${"%.1f".format(it.confidenceMargin)}"
+                    "${settings.rooms.firstOrNull { r -> r.id == it.roomId }?.name ?: it.roomId} " +
+                        "score=${"%.1f".format(it.score)} margin=${"%.1f".format(it.confidenceMargin)} " +
+                        "overlap=${it.overlap}/${it.expectedDevices}"
                 } ?: "no confident BLE match"
-                debugLogger.log("BLE", "Prediction: $matchText")
+                debugLogger.log("BLE", "Prediction from same scan: $matchText")
 
                 _message.value = buildString {
                     append("Presence: ")
-                    append(if (presenceLines.isEmpty()) "none configured" else presenceLines.joinToString(" | "))
+                    append(presenceLines.joinToString(" | "))
                     append("\nBLE: ${scan.samples.size} devices; $matchText")
                 }
             } catch (e: Exception) {
@@ -279,6 +370,7 @@ class AppController(context: Context) {
             }
         }
     }
+
     fun goRoom() { _screen.value = Screen.ROOM }
     fun goMedia() { _screen.value = Screen.MEDIA }
     fun goSettings() { _screen.value = Screen.SETTINGS }
@@ -447,6 +539,12 @@ class AppController(context: Context) {
         debugLogger.setEnabled(newSettings.debugEnabled)
         persist(newSettings)
         debugLogger.log("SETTINGS", "Saved settings debug=${newSettings.debugEnabled} automaticRoom=${newSettings.automaticRoom} bluetooth=${newSettings.bluetoothLocationEnabled}")
+        if (newSettings.automaticRoom) {
+            val missingPresence = newSettings.rooms.filter { it.presenceEntity.isBlank() }
+            if (missingPresence.isNotEmpty()) {
+                debugLogger.log("PRESENCE", "Automatic room enabled but presence is not configured for: " + missingPresence.joinToString { it.name })
+            }
+        }
         if (_selectedRoomId.value.isBlank() || newSettings.rooms.none { it.id == _selectedRoomId.value }) {
             _selectedRoomId.value = resolveInitialRoomId(newSettings)
         }
@@ -1255,6 +1353,8 @@ class AppController(context: Context) {
             presenceMatchesRoom(room, ha.states.value[room.presenceEntity])
         }
         if (activePresence != null) {
+            pendingBleRoomId = null
+            pendingBleConfirmations = 0
             debugLogger.log("BLE", "Skip BLE override because HA presence matches room=${activePresence.name}")
             if (activePresence.id != _selectedRoomId.value) {
                 _selectedRoomId.value = activePresence.id
@@ -1262,6 +1362,7 @@ class AppController(context: Context) {
             }
             return
         }
+
         val anyBluetoothData = settings.rooms.any {
             it.bluetoothAnchors.isNotEmpty() || it.bluetoothCalibrationPoints.size >= 3
         }
@@ -1269,23 +1370,66 @@ class AppController(context: Context) {
             debugLogger.log("BLE", "Skip automatic BLE: enabled=${settings.bluetoothLocationEnabled} anyData=$anyBluetoothData")
             return
         }
-        val match = bluetoothLocator.resolveRoom(settings.rooms)
+
+        val scan = bluetoothLocator.scanFingerprint(2200)
+        val candidates = bluetoothLocator.scoreRooms(settings.rooms, scan.samples)
+        candidates.take(5).forEach { score ->
+            debugLogger.log(
+                "BLE",
+                "Auto candidate room=${score.roomId} score=${"%.1f".format(score.score)} " +
+                    "overlap=${score.overlap}/${score.expectedDevices} stable=${score.stableDevices}"
+            )
+        }
+        val match = bluetoothLocator.resolveRoomFromSamples(settings.rooms, scan.samples)
         if (match == null) {
+            pendingBleRoomId = null
+            pendingBleConfirmations = 0
             debugLogger.log("BLE", "No confident automatic BLE room match")
             return
         }
-        debugLogger.log("BLE", "Automatic match room=${match.roomId} score=${match.score} margin=${match.confidenceMargin}")
+
         val roomId = match.roomId
+        if (roomId == _selectedRoomId.value) {
+            pendingBleRoomId = null
+            pendingBleConfirmations = 0
+            debugLogger.log(
+                "BLE",
+                "Automatic match confirms current room=$roomId score=${match.score} margin=${match.confidenceMargin}"
+            )
+            return
+        }
+
+        if (pendingBleRoomId == roomId) {
+            pendingBleConfirmations += 1
+        } else {
+            pendingBleRoomId = roomId
+            pendingBleConfirmations = 1
+        }
+
+        debugLogger.log(
+            "BLE",
+            "Automatic candidate room=$roomId score=${"%.1f".format(match.score)} " +
+                "margin=${"%.1f".format(match.confidenceMargin)} confirmation=$pendingBleConfirmations/2"
+        )
+        if (pendingBleConfirmations < 2) return
+
         val current = settings.rooms.firstOrNull { it.id == _selectedRoomId.value }
         val leavingQuietRoom = current?.bluetoothQuietRoom == true && roomId != current.id
         if (leavingQuietRoom) {
             val veryStrong = match.score <= 18.0 && match.confidenceMargin >= 14.0
-            if (!veryStrong) return
+            if (!veryStrong) {
+                debugLogger.log("BLE", "Rejected exit from quiet room; candidate not strong enough")
+                return
+            }
         }
-        if (settings.rooms.any { it.id == roomId } && roomId != _selectedRoomId.value) {
+
+        if (settings.rooms.any { it.id == roomId }) {
             _selectedRoomId.value = roomId
             persist(settings.copy(lastRoomId = roomId))
+            debugLogger.log("BLE", "Automatic room changed to $roomId after 2 confirmations")
         }
+        pendingBleRoomId = null
+        pendingBleConfirmations = 0
     }
 
     private fun activeTransportEntity(): String? {
