@@ -3,6 +3,8 @@
 package au.com.homemedia.ui
 
 import android.Manifest
+import android.app.Activity
+import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
 import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -34,6 +36,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -41,13 +44,15 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
-import androidx.media3.common.MediaItem
-import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
 import androidx.compose.ui.window.Dialog
 import au.com.homemedia.core.AppController
 import au.com.homemedia.core.Screen
 import au.com.homemedia.model.*
+import au.com.homemedia.playback.PhonePlaybackService
+import au.com.homemedia.storage.LocalVideoItem
 import coil3.compose.AsyncImage
 import coil3.network.NetworkHeaders
 import coil3.network.httpHeaders
@@ -89,8 +94,10 @@ fun HomeMediaApp(controller: AppController) {
     val pendingMass by controller.pendingMassPlayback.collectAsState()
     val pendingYoutube by controller.pendingYoutube.collectAsState()
     val pendingKodi by controller.pendingKodiItem.collectAsState()
+    val pendingStremio by controller.pendingStremio.collectAsState()
     val calibration by controller.bluetoothCalibration.collectAsState()
     val wifiConnected by controller.wifiConnected.collectAsState()
+    val phoneFullscreen by controller.phoneFullscreen.collectAsState()
     val activePlayerKey by controller.activePlayerKey.collectAsState()
     val activePlayerName = room?.let { r ->
         if (activePlayerKey == "primary") r.name
@@ -101,7 +108,25 @@ fun HomeMediaApp(controller: AppController) {
     val settingsZipLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         uri?.let(controller::importSettingsZip)
     }
+    val localVideoLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        uri?.let(controller::addLocalVideo)
+    }
     val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { }
+    val activity = context as? Activity
+    val view = LocalView.current
+    LaunchedEffect(phoneFullscreen) {
+        activity?.requestedOrientation = if (phoneFullscreen) {
+            ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+        } else {
+            ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+        }
+        activity?.window?.let { window ->
+            val insets = WindowCompat.getInsetsController(window, view)
+            if (phoneFullscreen) insets.hide(WindowInsetsCompat.Type.systemBars())
+            else insets.show(WindowInsetsCompat.Type.systemBars())
+        }
+    }
+
     LaunchedEffect(wifiConnected) {
         if (!wifiConnected) return@LaunchedEffect
         val wanted = if (Build.VERSION.SDK_INT >= 31) {
@@ -117,7 +142,7 @@ fun HomeMediaApp(controller: AppController) {
         Surface(Modifier.fillMaxSize(), color = Bg) {
             Box {
                 Column(Modifier.fillMaxSize()) {
-                    AppTopBar(
+                    if (!phoneFullscreen) AppTopBar(
                         roomName = room?.name ?: "Home Media",
                         screen = screen,
                         activePlayerName = activePlayerName,
@@ -139,7 +164,7 @@ fun HomeMediaApp(controller: AppController) {
                     Box(Modifier.fillMaxSize()) {
                         when (screen) {
                             Screen.ROOM -> RoomScreen(controller, room)
-                            Screen.MEDIA -> MediaHubScreen(controller)
+                            Screen.MEDIA -> MediaHubScreen(controller) { localVideoLauncher.launch(arrayOf("video/*")) }
                             Screen.MASS_HOME -> MassHomeScreen(controller)
                             Screen.MASS_LIST -> MassListScreen(controller)
                             Screen.MASS_DETAIL -> MassDetailScreen(controller)
@@ -209,6 +234,15 @@ fun HomeMediaApp(controller: AppController) {
                     targets = controller.kodiPlaybackTargets(),
                     onDismiss = controller::cancelPendingPlayback,
                     onTarget = controller::confirmKodiPlayback
+                )
+            }
+
+            pendingStremio?.let { pending ->
+                PlaybackTargetDialog(
+                    title = "Play ${pending.first.name}",
+                    targets = controller.youtubePlaybackTargets(),
+                    onDismiss = controller::cancelPendingStremio,
+                    onTarget = controller::confirmStremioPlayback
                 )
             }
 
@@ -1035,7 +1069,7 @@ private fun PlaybackTargetDialog(
                         onClick = { onTarget(target.id) },
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        Icon(when { target.kodi -> Icons.Default.Tv; target.cast -> Icons.Default.Cast; else -> Icons.Default.Speaker }, null)
+                        Icon(when { target.phone -> Icons.Default.Smartphone; target.kodi -> Icons.Default.Tv; target.cast -> Icons.Default.Cast; else -> Icons.Default.Speaker }, null)
                         Spacer(Modifier.width(8.dp))
                         Text(target.label, modifier = Modifier.weight(1f))
                     }
