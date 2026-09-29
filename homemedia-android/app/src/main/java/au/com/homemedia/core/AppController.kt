@@ -227,6 +227,13 @@ class AppController(context: Context) {
 
     // ----- In-room secondary players -----
 
+    fun availableSources(room: RoomConfig): List<String> {
+        val discovered = ha.states.value[room.routeEntity]?.attributes?.optJSONArray("source_list")?.let { arr ->
+            (0 until arr.length()).mapNotNull { i -> arr.optString(i).takeIf(String::isNotBlank) }
+        }.orEmpty()
+        return (room.sourceOptions + discovered).distinctBy { it.lowercase() }
+    }
+
     fun secondaryPlayer(id: String): SecondaryPlayerConfig? = currentRoom()?.secondaryPlayers?.firstOrNull { it.id == id }
 
     fun toggleSecondaryPlayer(id: String) {
