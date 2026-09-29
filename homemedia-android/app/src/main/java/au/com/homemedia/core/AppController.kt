@@ -564,6 +564,8 @@ class AppController(context: Context) {
     private fun kodiBrowseRoom(): RoomConfig? =
         kodiLibraryHostRoomId?.let { id -> _settings.value.rooms.firstOrNull { it.id == id } } ?: currentRoom()
 
+    fun kodiLibraryHostRoom(): RoomConfig? = kodiBrowseRoom()
+
     fun kodiPlaybackTargets(): List<PlaybackTarget> = _settings.value.rooms
         .filter { it.kodi.baseUrl.isNotBlank() }
         .map { PlaybackTarget("kodi:${it.id}", "${it.name} · Kodi", it.id, kodi = true) }
