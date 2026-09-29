@@ -100,6 +100,8 @@ data class RoomConfig(
     val bluetoothAnchors: List<BluetoothAnchorConfig> = emptyList(),
     /** Three spatial fingerprints captured in this room. */
     val bluetoothCalibrationPoints: List<BluetoothCalibrationPoint> = emptyList(),
+    /** True when calibration found no strong local BLE device; retain this room unless another match is very strong. */
+    val bluetoothQuietRoom: Boolean = false,
     val youtubeCastEntity: String = "",
     val kodiSourceName: String = "Kodi",
     val presenceEntity: String = "",
@@ -369,6 +371,7 @@ fun RoomConfig.toJson(): JSONObject = JSONObject().apply {
     put("sourceOptions", JSONArray().apply { sourceOptions.forEach { put(it) } })
     put("bluetoothAnchors", JSONArray().apply { bluetoothAnchors.forEach { put(it.toJson()) } })
     put("bluetoothCalibrationPoints", JSONArray().apply { bluetoothCalibrationPoints.forEach { put(it.toJson()) } })
+    put("bluetoothQuietRoom", bluetoothQuietRoom)
     put("youtubeCastEntity", youtubeCastEntity)
     put("kodiSourceName", kodiSourceName)
     put("presenceEntity", presenceEntity); put("presenceValue", presenceValue)
@@ -458,6 +461,7 @@ fun roomFromJson(obj: JSONObject): RoomConfig = RoomConfig(
     bluetoothCalibrationPoints = obj.optJSONArray("bluetoothCalibrationPoints")?.let { arr ->
         (0 until arr.length()).mapNotNull { i -> arr.optJSONObject(i)?.let(::bluetoothCalibrationPointFromJson) }
     } ?: emptyList(),
+    bluetoothQuietRoom = obj.optBoolean("bluetoothQuietRoom", false),
     youtubeCastEntity = obj.optString("youtubeCastEntity"),
     kodiSourceName = obj.optString("kodiSourceName", "Kodi"),
     presenceEntity = obj.optString("presenceEntity"),
