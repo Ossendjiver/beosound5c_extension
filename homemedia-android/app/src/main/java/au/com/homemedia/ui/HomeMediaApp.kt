@@ -1095,6 +1095,7 @@ private fun KodiDpad(onInput: (String) -> Unit) {
 @Composable
 private fun KodiLibraryScreen(controller: AppController, room: RoomConfig?) {
     val state by controller.kodiBrowse.collectAsState()
+    val artworkRoom = controller.kodiLibraryHostRoom() ?: room
     if (state.type == KodiBrowseType.HOME) {
         val categories = listOf(
             KodiBrowseType.MOVIES to "Movies",
@@ -1130,7 +1131,7 @@ private fun KodiLibraryScreen(controller: AppController, room: RoomConfig?) {
         if (state.items.isEmpty()) EmptyState("Nothing here", "Kodi returned no items.")
         else LazyColumn(contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)) {
             items(state.items, key = { "${state.type}:${it.id}:${it.file}:${it.label}" }) { item ->
-                KodiItemRow(item, room) { controller.kodiSelectItem(item) }
+                KodiItemRow(item, artworkRoom) { controller.kodiSelectItem(item) }
             }
         }
     }
