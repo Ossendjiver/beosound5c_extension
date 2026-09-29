@@ -1376,6 +1376,8 @@ private fun MassDetailScreen(controller: AppController) {
 private fun QueueScreen(controller: AppController) {
     val info by controller.queueInfo.collectAsState()
     val items by controller.queueItems.collectAsState()
+    val activePlayerKey by controller.activePlayerKey.collectAsState()
+    val activePlayerName = remember(activePlayerKey, info) { controller.activePlayerDisplayName() }
     var saveDialog by remember { mutableStateOf(false) }
     var overlayDialog by remember { mutableStateOf(false) }
     val q = info
@@ -1384,6 +1386,7 @@ private fun QueueScreen(controller: AppController) {
         if (q != null) {
             QueueControlPanel(
                 q = q,
+                activePlayerName = activePlayerName,
                 onRefresh = controller::refreshQueue,
                 onPrevious = controller::queuePrevious,
                 onPlayPause = controller::queuePlayPause,
@@ -1419,6 +1422,7 @@ private fun QueueScreen(controller: AppController) {
 @Composable
 private fun QueueControlPanel(
     q: MassQueueInfo,
+    activePlayerName: String,
     onRefresh: () -> Unit,
     onPrevious: () -> Unit,
     onPlayPause: () -> Unit,
@@ -1439,8 +1443,17 @@ private fun QueueControlPanel(
         Column(Modifier.padding(14.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
-                    Text(q.displayName.ifBlank { q.queueId }, fontWeight = FontWeight.Bold)
-                    Text(q.state, color = TextMuted, fontSize = 12.sp)
+                    Text(
+                        activePlayerName.ifBlank { q.displayName.ifBlank { q.queueId } },
+                        fontWeight = FontWeight.Bold
+                    )
+                    val queueSubtitle = buildList {
+                        if (activePlayerName.isNotBlank() && q.displayName.isNotBlank() && !q.displayName.equals(activePlayerName, true)) {
+                            add(q.displayName)
+                        }
+                        add(q.state)
+                    }.joinToString(" · ")
+                    Text(queueSubtitle, color = TextMuted, fontSize = 12.sp)
                 }
                 IconButton(onClick = onRefresh) { Icon(Icons.Default.Refresh, "Refresh") }
             }
