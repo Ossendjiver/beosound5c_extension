@@ -15,8 +15,8 @@ android {
         applicationId = "au.com.homemedia"
         minSdk = 28
         targetSdk = 36
-        versionCode = 6
-        versionName = "0.5.0"
+        versionCode = 7
+        versionName = "0.5.1"
     }
 
     buildFeatures {
@@ -46,6 +46,7 @@ dependencies {
     implementation("androidx.media3:media3-exoplayer-hls:1.11.1")
     implementation("androidx.media3:media3-exoplayer-dash:1.11.1")
     implementation("androidx.media3:media3-ui:1.11.1")
+    implementation("androidx.media3:media3-session:1.11.1")
     implementation("io.coil-kt.coil3:coil-compose:3.6.3")
     implementation("io.coil-kt.coil3:coil-network-okhttp:3.6.3")
 
