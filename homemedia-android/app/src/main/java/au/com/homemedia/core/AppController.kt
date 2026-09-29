@@ -345,13 +345,36 @@ class AppController(context: Context) {
     }
 
     fun playMassItem(item: MassMediaItem, option: String = "replace") {
-        val room = currentRoom() ?: return
+        _pendingMassPlayback.value = item to option
+    }
+
+    fun cancelPendingPlayback() {
+        _pendingMassPlayback.value = null
+        _pendingYoutube.value = null
+    }
+
+    fun playbackTargets(includeKodi: Boolean = false): List<PlaybackTarget> = _settings.value.rooms.flatMap { room ->
+        buildList {
+            add(PlaybackTarget("room:${room.id}", room.name, room.id))
+            room.secondaryPlayers.forEach { s ->
+                add(PlaybackTarget("secondary:${room.id}:${s.id}", "${room.name} · ${s.name}", room.id, s.id))
+            }
+            if (includeKodi && room.kodi.baseUrl.isNotBlank()) {
+                add(PlaybackTarget("kodi:${room.id}", "${room.name} · Kodi", room.id, kodi = true))
+            }
+        }
+    }
+
+    fun confirmMassPlayback(targetId: String) {
+        val pending = _pendingMassPlayback.value ?: return
+        _pendingMassPlayback.value = null
         scope.launch {
-            busyRun("Could not start ${item.name}") {
-                val queueId = prepareMassPlaybackTarget(room)
-                ma.play(queueId, item.uri, option)
+            busyRun("Could not start ${pending.first.name}") {
+                refreshBluetoothLocation()
+                val q = queueForTarget(targetId)
+                ma.play(q, pending.first.uri, pending.second)
                 delay(250)
-                refreshQueueInternal(queueId)
+                refreshQueueInternal(q)
             }
         }
     }
