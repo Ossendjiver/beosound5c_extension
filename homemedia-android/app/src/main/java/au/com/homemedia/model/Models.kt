@@ -79,6 +79,20 @@ data class PlaybackTarget(
     val phone: Boolean = false
 )
 
+data class NewsArticle(
+    val id: String,
+    val title: String,
+    val trail: String = "",
+    val body: String = "",
+    val imageUrl: String = ""
+)
+
+data class NewsSection(
+    val id: String,
+    val name: String,
+    val articles: List<NewsArticle> = emptyList()
+)
+
 data class YouTubeItem(
     val videoId: String,
     val title: String,
@@ -134,6 +148,8 @@ data class RoomConfig(
     val maPlayerId: String = "",
     val maPlayerName: String = "",
     val secondaryPlayers: List<SecondaryPlayerConfig> = emptyList(),
+    /** Last player selected for this room. Persisted so secondary-player context survives app restarts. */
+    val activePlayerKey: String = "primary",
     val sourceOptions: List<String> = emptyList(),
     val bluetoothAnchors: List<BluetoothAnchorConfig> = emptyList(),
     /** Three spatial fingerprints captured in this room. */
@@ -438,6 +454,7 @@ fun RoomConfig.toJson(): JSONObject = JSONObject().apply {
     put("id", id); put("name", name); put("primaryPlayerEntity", primaryPlayerEntity)
     put("mlgwEntity", mlgwEntity); put("maPlayerId", maPlayerId); put("maPlayerName", maPlayerName)
     put("secondaryPlayers", JSONArray().apply { secondaryPlayers.forEach { put(it.toJson()) } })
+    put("activePlayerKey", activePlayerKey)
     put("sourceOptions", JSONArray().apply { sourceOptions.forEach { put(it) } })
     put("bluetoothAnchors", JSONArray().apply { bluetoothAnchors.forEach { put(it.toJson()) } })
     put("bluetoothCalibrationPoints", JSONArray().apply { bluetoothCalibrationPoints.forEach { put(it.toJson()) } })
@@ -549,6 +566,7 @@ fun roomFromJson(obj: JSONObject): RoomConfig = RoomConfig(
     secondaryPlayers = obj.optJSONArray("secondaryPlayers")?.let { arr ->
         (0 until arr.length()).mapNotNull { i -> arr.optJSONObject(i)?.let(::secondaryPlayerFromJson) }
     } ?: emptyList(),
+    activePlayerKey = obj.optString("activePlayerKey", "primary"),
     sourceOptions = obj.optJSONArray("sourceOptions")?.let { arr ->
         (0 until arr.length()).mapNotNull { i -> arr.optString(i).takeIf(String::isNotBlank) }
     } ?: emptyList(),
