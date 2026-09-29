@@ -1351,8 +1351,20 @@ class AppController(context: Context) {
         _wifiConnected.value = wifiStatus.isConnectedToWifi()
         if (!_wifiConnected.value) return
         val settings = _settings.value
-        val activePresence = settings.rooms.firstOrNull { room ->
+        val activePresenceMatches = settings.rooms.filter { room ->
             presenceMatchesRoom(room, ha.states.value[room.presenceEntity])
+        }
+        val activePresence = when {
+            activePresenceMatches.size == 1 -> activePresenceMatches.first()
+            activePresenceMatches.any { it.id == _selectedRoomId.value } ->
+                activePresenceMatches.first { it.id == _selectedRoomId.value }
+            else -> null
+        }
+        if (activePresenceMatches.size > 1 && activePresence == null) {
+            debugLogger.log(
+                "PRESENCE",
+                "Ambiguous active presence rooms=" + activePresenceMatches.joinToString { it.name } + "; allowing BLE disambiguation"
+            )
         }
         if (activePresence != null) {
             pendingBleRoomId = null
