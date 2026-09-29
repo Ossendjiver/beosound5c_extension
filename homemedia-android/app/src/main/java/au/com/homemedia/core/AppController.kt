@@ -542,10 +542,42 @@ class AppController(context: Context) {
         }
     }
 
-    fun openKodiLibrary() {
+    fun openKodiLibrary(shared: Boolean = false) {
+        val host = if (shared) _settings.value.rooms.firstOrNull { it.kodi.baseUrl.isNotBlank() } else currentRoom()
+        if (host == null || host.kodi.baseUrl.isBlank()) {
+            _message.value = "No Kodi library host is configured"
+            return
+        }
+        kodiLibraryHostRoomId = host.id
+        kodiLibraryShared = shared
         kodiBackStack.clear()
         _kodiBrowse.value = KodiBrowseState()
         _screen.value = Screen.KODI_LIBRARY
+    }
+
+    fun openSharedKodiLibrary() = openKodiLibrary(shared = true)
+
+    private fun kodiBrowseRoom(): RoomConfig? =
+        kodiLibraryHostRoomId?.let { id -> _settings.value.rooms.firstOrNull { it.id == id } } ?: currentRoom()
+
+    fun kodiPlaybackTargets(): List<PlaybackTarget> = _settings.value.rooms
+        .filter { it.kodi.baseUrl.isNotBlank() }
+        .map { PlaybackTarget("kodi:${it.id}", "${it.name} · Kodi", it.id, kodi = true) }
+
+    fun confirmKodiPlayback(targetId: String) {
+        val item = _pendingKodiItem.value ?: return
+        _pendingKodiItem.value = null
+        val target = kodiPlaybackTargets().firstOrNull { it.id == targetId } ?: return
+        val room = _settings.value.rooms.firstOrNull { it.id == target.roomId } ?: return
+        scope.launch {
+            busyRun("Kodi playback failed") {
+                kodi.open(room.kodi, item)
+                _selectedRoomId.value = room.id
+                _screen.value = Screen.KODI
+                delay(150)
+                refreshKodi()
+            }
+        }
     }
 
     fun refreshKodi() {
@@ -574,7 +606,7 @@ class AppController(context: Context) {
     }
 
     fun openKodiCategory(type: KodiBrowseType) {
-        val room = currentRoom() ?: return
+        val room = kodiBrowseRoom() ?: return
         scope.launch {
             busyRun("Could not load Kodi library") {
                 pushKodiState()
@@ -595,7 +627,7 @@ class AppController(context: Context) {
     }
 
     fun kodiSelectItem(item: KodiLibraryItem) {
-        val room = currentRoom() ?: return
+        val room = kodiBrowseRoom() ?: return
         val state = _kodiBrowse.value
         scope.launch {
             busyRun("Kodi action failed") {
