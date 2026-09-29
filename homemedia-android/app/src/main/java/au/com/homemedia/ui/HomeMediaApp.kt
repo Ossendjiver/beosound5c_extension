@@ -1665,6 +1665,10 @@ private fun kodiImageUrl(config: KodiConfig, raw: String): String {
 @Composable
 private fun SettingsScreen(controller: AppController, initial: AppSettings, onImportSettings: () -> Unit) {
     var draft by remember(initial) { mutableStateOf(initial) }
+    val haStates by controller.ha.states.collectAsState()
+    val debugExportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("text/plain")
+    ) { uri -> uri?.let(controller::exportDebugLog) }
     var selectedRoomId by remember(initial.rooms) { mutableStateOf(initial.rooms.firstOrNull()?.id.orEmpty()) }
     val roomIndex = draft.rooms.indexOfFirst { it.id == selectedRoomId }.takeIf { it >= 0 } ?: 0
     val room = draft.rooms.getOrNull(roomIndex)
@@ -1684,6 +1688,43 @@ private fun SettingsScreen(controller: AppController, initial: AppSettings, onIm
                     ) {
                         draft = draft.copy(stremioStreamAddonManifests = it.split(",").map(String::trim).filter(String::isNotBlank))
                     }
+
+                    HorizontalDivider(Modifier.padding(vertical = 8.dp))
+                    Text("Diagnostics", fontWeight = FontWeight.SemiBold)
+                    SettingSwitch("Debug mode", draft.debugEnabled) {
+                        draft = draft.copy(debugEnabled = it)
+                        controller.setDebugRuntimeEnabled(it)
+                    }
+                    Text(
+                        "Debug logs include connection status, entity IDs/states, BLE scan summaries and API response diagnostics. Authentication tokens are not written.",
+                        color = TextMuted,
+                        fontSize = 12.sp,
+                        modifier = Modifier.padding(bottom = 6.dp)
+                    )
+                    Row(
+                        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        OutlinedButton(onClick = controller::runLocationDiagnostic) {
+                            Icon(Icons.Default.MyLocation, null)
+                            Spacer(Modifier.width(6.dp))
+                            Text("Test location")
+                        }
+                        OutlinedButton(
+                            onClick = { debugExportLauncher.launch("HomeMedia-debug.txt") },
+                            enabled = draft.debugEnabled
+                        ) {
+                            Icon(Icons.Default.Share, null)
+                            Spacer(Modifier.width(6.dp))
+                            Text("Export log")
+                        }
+                        OutlinedButton(onClick = controller::clearDebugLog, enabled = draft.debugEnabled) {
+                            Icon(Icons.Default.DeleteSweep, null)
+                            Spacer(Modifier.width(6.dp))
+                            Text("Clear")
+                        }
+                    }
+
                     SettingSwitch("Bluetooth room detection", draft.bluetoothLocationEnabled) { draft = draft.copy(bluetoothLocationEnabled = it) }
                     OutlinedButton(onClick = onImportSettings, modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
                         Icon(Icons.Default.FolderZip, null)
@@ -1712,6 +1753,27 @@ private fun SettingsScreen(controller: AppController, initial: AppSettings, onIm
                             draft = draft.copy(rooms = draft.rooms.map { if (it.id == updated.id) updated else it })
                         }
                         Spacer(Modifier.height(12.dp))
+
+                        if (room.presenceEntity.isNotBlank()) {
+                            val livePresence = haStates[room.presenceEntity]
+                            Surface(color = Panel2, shape = RoundedCornerShape(10.dp), modifier = Modifier.fillMaxWidth()) {
+                                Column(Modifier.padding(10.dp)) {
+                                    Text("Home Assistant presence", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                                    Text(
+                                        "Actual: ${livePresence?.state ?: "entity not received"} · Expected: ${room.presenceValue.ifBlank { "auto-detect" }}",
+                                        color = if (livePresence != null) ActiveGreen else Danger,
+                                        fontSize = 12.sp
+                                    )
+                                    val roomAttr = livePresence?.attributes?.optString("room").orEmpty()
+                                    val locationAttr = livePresence?.attributes?.optString("location").orEmpty()
+                                    if (roomAttr.isNotBlank() || locationAttr.isNotBlank()) {
+                                        Text("Attributes: room=$roomAttr location=$locationAttr", color = TextMuted, fontSize = 11.sp)
+                                    }
+                                }
+                            }
+                            Spacer(Modifier.height(8.dp))
+                        }
+
                         val calibrated = room.bluetoothCalibrationPoints.size >= 3
                         val calibrationLabel = when {
                             room.bluetoothQuietRoom && calibrated -> "3-point calibration complete · Bluetooth-quiet room"
@@ -1719,6 +1781,17 @@ private fun SettingsScreen(controller: AppController, initial: AppSettings, onIm
                             else -> "Not calibrated"
                         }
                         Text(calibrationLabel, color = if (calibrated) ActiveGreen else TextMuted, fontSize = 12.sp)
+                        if (room.bluetoothCalibrationPoints.isNotEmpty()) {
+                            Text(
+                                room.bluetoothCalibrationPoints.sortedBy { it.point }.joinToString(" · ") {
+                                    val strongest = it.samples.maxOfOrNull { sample -> sample.rssi }
+                                    "P${it.point}: ${it.samples.size} devices${strongest?.let { r -> ", max $r dBm" } ?: ""}"
+                                },
+                                color = TextMuted,
+                                fontSize = 11.sp,
+                                modifier = Modifier.padding(top = 3.dp)
+                            )
+                        }
                         Spacer(Modifier.height(6.dp))
                         OutlinedButton(
                             onClick = { controller.beginBluetoothCalibration(room.id) },
