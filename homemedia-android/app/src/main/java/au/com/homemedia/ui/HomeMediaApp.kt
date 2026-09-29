@@ -7,6 +7,7 @@ import android.app.Activity
 import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
 import android.os.Build
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -104,6 +105,9 @@ fun HomeMediaApp(controller: AppController) {
         else r.secondaryPlayers.firstOrNull { it.id == activePlayerKey }?.name ?: r.name
     }.orEmpty()
     var drawerOpen by remember { mutableStateOf(false) }
+    BackHandler(enabled = drawerOpen || screen != Screen.ROOM) {
+        if (drawerOpen) drawerOpen = false else controller.navigateBack()
+    }
     val context = LocalContext.current
     val settingsZipLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         uri?.let(controller::importSettingsZip)
@@ -145,17 +149,7 @@ fun HomeMediaApp(controller: AppController) {
                         activePlayerName = activePlayerName,
                         onMenu = { drawerOpen = true },
                         onBack = {
-                            when (screen) {
-                                Screen.ROOM -> drawerOpen = true
-                                Screen.MASS_DETAIL -> controller.backFromMassDetail()
-                                Screen.MASS_LIST -> controller.backToMassHome()
-                                Screen.MEDIA, Screen.MASS_HOME, Screen.QUEUE, Screen.KODI, Screen.YOUTUBE, Screen.STREMIO, Screen.SETTINGS -> controller.goRoom()
-                                Screen.PHONE_VIDEO -> controller.stopPhoneVideo()
-                                Screen.KODI_LIBRARY -> {
-                                    val state = controller.kodiBrowse.value
-                                    if (state.type == KodiBrowseType.HOME) controller.exitKodiLibrary() else controller.kodiBrowseBack()
-                                }
-                            }
+                            if (screen == Screen.ROOM) drawerOpen = true else controller.navigateBack()
                         }
                     )
                     Box(Modifier.fillMaxSize()) {
@@ -194,6 +188,7 @@ fun HomeMediaApp(controller: AppController) {
                         onLibrary = { controller.openLibrary(); drawerOpen = false },
                         onQueue = { controller.openQueue(); drawerOpen = false },
                         onKodi = { controller.openKodi(); drawerOpen = false },
+                        onAllOff = { controller.allOff(); drawerOpen = false },
                         onSettings = { controller.goSettings(); drawerOpen = false }
                     )
                 }
@@ -320,6 +315,7 @@ private fun RoomDrawer(
     onLibrary: () -> Unit,
     onQueue: () -> Unit,
     onKodi: () -> Unit,
+    onAllOff: () -> Unit,
     onSettings: () -> Unit
 ) {
     Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = .55f)).combinedClickable(onClick = onClose, onLongClick = {})) {
@@ -341,6 +337,8 @@ private fun RoomDrawer(
                 item { DrawerAction("Music library", Icons.Default.LibraryMusic, onLibrary) }
                 item { DrawerAction("Queue", Icons.Default.QueueMusic, onQueue) }
                 item { DrawerAction("Kodi", Icons.Default.Tv, onKodi) }
+                item { HorizontalDivider(Modifier.padding(vertical = 10.dp)) }
+                item { DrawerAction("All Off", Icons.Default.PowerSettingsNew, onAllOff) }
                 item { DrawerAction("Settings", Icons.Default.Settings, onSettings) }
             }
         }
@@ -367,20 +365,31 @@ private fun RoomScreen(controller: AppController, room: RoomConfig?) {
 
         val kodiActive = now.source.equals(room.kodiSourceName, ignoreCase = true) ||
             now.source.contains("kodi", ignoreCase = true)
-        val tiles = remember(room.tiles, joinSourceId, kodiActive) {
-            room.tiles.toMutableList().apply {
-                if (kodiActive && room.kodi.baseUrl.isNotBlank()) {
-                    add(TileConfig(id = "__KODI_REMOTE__", title = "Kodi remote", icon = "remote"))
-                }
-                if (joinSourceId != null) add(TileConfig(id = "__JOIN__", title = "Join", icon = "join"))
-            }
-        }
+        val regularTiles = room.tiles.filterNot { it.id == "__SOURCE__" }
+
         LazyVerticalGrid(
             columns = GridCells.Fixed(2),
             horizontalArrangement = Arrangement.spacedBy(12.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
             modifier = Modifier.weight(1f)
         ) {
+            item(key = "__SOURCE_FIXED__") {
+                SourceTile(
+                    currentSource = now.source,
+                    sources = controller.availableSources(room),
+                    modifier = Modifier.fillMaxWidth().aspectRatio(1.12f),
+                    onSelect = controller::selectRoomSource
+                )
+            }
+            if (kodiActive && room.kodi.baseUrl.isNotBlank()) {
+                item(key = "__KODI_REMOTE_FIXED__") {
+                    RoomTile(
+                        TileConfig(title = "Kodi remote", icon = "remote"),
+                        Modifier.fillMaxWidth().aspectRatio(1.12f),
+                        selected = true
+                    ) { controller.openKodi() }
+                }
+            }
             gridItems(room.secondaryPlayers, key = { "secondary:${it.id}" }) { secondary ->
                 SecondaryPlayerTile(
                     secondary = secondary,
@@ -392,21 +401,8 @@ private fun RoomScreen(controller: AppController, room: RoomConfig?) {
                     onAuxToggle = { controller.toggleSecondaryAux(secondary.id) }
                 )
             }
-            gridItems(tiles, key = { it.id }) { tile ->
-                if (tile.id == "__SOURCE__") {
-                    SourceTile(
-                        currentSource = now.source,
-                        sources = controller.availableSources(room),
-                        modifier = Modifier.fillMaxWidth().aspectRatio(1.12f),
-                        onSelect = controller::selectRoomSource
-                    )
-                } else if (tile.id == "__KODI_REMOTE__") {
-                    RoomTile(
-                        TileConfig(title = "Kodi remote", icon = "remote"),
-                        Modifier.fillMaxWidth().aspectRatio(1.12f),
-                        selected = true
-                    ) { controller.openKodi() }
-                } else if (tile.id == "__JOIN__" && joinRoom != null) {
+            if (joinRoom != null) {
+                item(key = "__JOIN_FIXED__") {
                     JoinTile(
                         source = joinRoom,
                         modifier = Modifier.fillMaxWidth().aspectRatio(1.12f),
@@ -415,9 +411,10 @@ private fun RoomScreen(controller: AppController, room: RoomConfig?) {
                         onPause = { controller.pauseRoom(joinRoom.id) },
                         onOff = { controller.turnOffRoom(joinRoom.id) }
                     )
-                } else {
-                    RoomTile(tile, Modifier.fillMaxWidth().aspectRatio(1.12f)) { controller.executeTile(tile) }
                 }
+            }
+            gridItems(regularTiles, key = { it.id }) { tile ->
+                RoomTile(tile, Modifier.fillMaxWidth().aspectRatio(1.12f)) { controller.executeTile(tile) }
             }
         }
     }
@@ -440,13 +437,19 @@ private fun NowPlayingCard(controller: AppController, now: NowPlaying, settings:
                 val secondary = listOf(now.album, now.source).filter { it.isNotBlank() }.joinToString(" • ")
                 if (secondary.isNotBlank()) Text(secondary, color = TextMuted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Spacer(Modifier.height(8.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    IconButton(onClick = controller::previous) { Icon(Icons.Default.SkipPrevious, "Previous") }
-                    FilledIconButton(onClick = controller::togglePlayPause) { Icon(if (now.isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow, "Play/Pause") }
-                    IconButton(onClick = controller::next) { Icon(Icons.Default.SkipNext, "Next") }
-                    Spacer(Modifier.weight(1f))
-                    IconButton(onClick = controller::volumeDown) { Icon(Icons.Default.VolumeDown, "Volume down") }
-                    IconButton(onClick = controller::volumeUp) { Icon(Icons.Default.VolumeUp, "Volume up") }
+                Row(
+                    Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    IconButton(onClick = controller::previous, modifier = Modifier.size(38.dp)) { Icon(Icons.Default.SkipPrevious, "Previous") }
+                    FilledIconButton(onClick = controller::togglePlayPause, modifier = Modifier.size(42.dp)) {
+                        Icon(if (now.isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow, "Play/Pause")
+                    }
+                    IconButton(onClick = controller::stop, modifier = Modifier.size(38.dp)) { Icon(Icons.Default.Stop, "Stop") }
+                    IconButton(onClick = controller::next, modifier = Modifier.size(38.dp)) { Icon(Icons.Default.SkipNext, "Next") }
+                    IconButton(onClick = controller::volumeDown, modifier = Modifier.size(38.dp)) { Icon(Icons.Default.VolumeDown, "Volume down") }
+                    IconButton(onClick = controller::volumeUp, modifier = Modifier.size(38.dp)) { Icon(Icons.Default.VolumeUp, "Volume up") }
                 }
             }
         }
@@ -1216,7 +1219,7 @@ private fun MassListScreen(controller: AppController) {
                 val browsable = item.mediaType.lowercase() in setOf("artist", "album", "playlist", "podcast", "genre")
                 MassItemRow(
                     item, settings,
-                    onOpen = { if (browsable) controller.openMassItem(item) else controller.playMassItem(item, "play") },
+                    onOpen = { controller.openMassItem(item) },
                     onPlay = { controller.playMassItem(item, "replace") },
                     onQueueOption = { option -> controller.playMassItem(item, option) }
                 )
@@ -1299,7 +1302,7 @@ private fun MassDetailScreen(controller: AppController) {
             val browsable = child.mediaType.lowercase() in setOf("artist", "album", "playlist", "podcast", "genre")
             MassItemRow(
                 child, settings,
-                onOpen = { if (browsable) controller.openMassItem(child) else controller.playMassItem(child, "play") },
+                onOpen = { controller.openMassItem(child) },
                 onPlay = { controller.playMassItem(child, "replace") },
                 onQueueOption = { option -> controller.playMassItem(child, option) }
             )
@@ -1422,31 +1425,73 @@ private fun repeatIcon(mode: String) = if (mode.equals("one", true)) Icons.Defau
 
 @Composable
 private fun QueueItemRow(controller: AppController, item: MassQueueItem, current: Boolean) {
+    var actionsMenu by remember { mutableStateOf(false) }
     var speedMenu by remember { mutableStateOf(false) }
     Card(
         Modifier.fillMaxWidth().padding(vertical = 4.dp),
         colors = CardDefaults.cardColors(containerColor = if (current) Panel3 else Panel2)
     ) {
-        Row(Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
-            FilledTonalIconButton(onClick = { controller.queuePlay(item) }) { Icon(Icons.Default.PlayArrow, "Play") }
-            Spacer(Modifier.width(8.dp))
+        Row(Modifier.fillMaxWidth().padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
+            FilledTonalIconButton(onClick = { controller.queuePlay(item) }) {
+                Icon(Icons.Default.PlayArrow, "Play")
+            }
+            Spacer(Modifier.width(10.dp))
             Column(Modifier.weight(1f)) {
-                Text(item.name, maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = if (current) FontWeight.Bold else FontWeight.Normal)
-                if (item.subtitle.isNotBlank()) Text(item.subtitle, color = TextMuted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(
+                    item.name,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    fontWeight = if (current) FontWeight.Bold else FontWeight.Medium
+                )
+                if (item.subtitle.isNotBlank()) {
+                    Text(item.subtitle, color = TextMuted, fontSize = 12.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                }
             }
             Box {
                 IconButton(onClick = { speedMenu = true }) { Icon(Icons.Default.Speed, "Playback speed") }
                 DropdownMenu(expanded = speedMenu, onDismissRequest = { speedMenu = false }) {
                     listOf(.75, 1.0, 1.25, 1.5, 2.0).forEach { speed ->
-                        DropdownMenuItem(text = { Text("${speed}×") }, onClick = { speedMenu = false; controller.queuePlaybackSpeed(item, speed) })
+                        DropdownMenuItem(
+                            text = { Text("${speed}×") },
+                            onClick = {
+                                speedMenu = false
+                                controller.queuePlaybackSpeed(item, speed)
+                            }
+                        )
                     }
                 }
             }
-            IconButton(onClick = { controller.queueMoveUp(item) }) { Icon(Icons.Default.KeyboardArrowUp, "Move up") }
-            IconButton(onClick = { controller.queueMoveDown(item) }) { Icon(Icons.Default.KeyboardArrowDown, "Move down") }
-            IconButton(onClick = { controller.queueMoveNext(item) }) { Icon(Icons.Default.VerticalAlignTop, "Move next") }
-            IconButton(onClick = { controller.queueMoveEnd(item) }) { Icon(Icons.Default.VerticalAlignBottom, "Move to end") }
-            IconButton(onClick = { controller.queueDelete(item) }) { Icon(Icons.Default.Close, "Remove") }
+            Box {
+                IconButton(onClick = { actionsMenu = true }) { Icon(Icons.Default.MoreVert, "Queue actions") }
+                DropdownMenu(expanded = actionsMenu, onDismissRequest = { actionsMenu = false }) {
+                    DropdownMenuItem(
+                        text = { Text("Move up") },
+                        leadingIcon = { Icon(Icons.Default.KeyboardArrowUp, null) },
+                        onClick = { actionsMenu = false; controller.queueMoveUp(item) }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Move down") },
+                        leadingIcon = { Icon(Icons.Default.KeyboardArrowDown, null) },
+                        onClick = { actionsMenu = false; controller.queueMoveDown(item) }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Play next") },
+                        leadingIcon = { Icon(Icons.Default.VerticalAlignTop, null) },
+                        onClick = { actionsMenu = false; controller.queueMoveNext(item) }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Move to end") },
+                        leadingIcon = { Icon(Icons.Default.VerticalAlignBottom, null) },
+                        onClick = { actionsMenu = false; controller.queueMoveEnd(item) }
+                    )
+                    HorizontalDivider()
+                    DropdownMenuItem(
+                        text = { Text("Remove") },
+                        leadingIcon = { Icon(Icons.Default.DeleteOutline, null) },
+                        onClick = { actionsMenu = false; controller.queueDelete(item) }
+                    )
+                }
+            }
         }
     }
 }
