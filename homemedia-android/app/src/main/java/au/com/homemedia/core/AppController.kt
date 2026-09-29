@@ -169,6 +169,8 @@ class AppController(context: Context) {
     fun currentRoom(): RoomConfig? = _settings.value.rooms.firstOrNull { it.id == _selectedRoomId.value }
         ?: _settings.value.rooms.firstOrNull()
 
+    fun bluetoothCalibrationQuality(room: RoomConfig): String = bluetoothLocator.calibrationQuality(room)
+
     fun joinSourceRoom(): RoomConfig? = _joinSourceRoomId.value?.let { id -> _settings.value.rooms.firstOrNull { it.id == id } }
 
     fun clearMessage() { _message.value = null }
