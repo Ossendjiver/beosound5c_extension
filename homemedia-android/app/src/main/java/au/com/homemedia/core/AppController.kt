@@ -8,13 +8,16 @@ import au.com.homemedia.network.HomeAssistantClient
 import au.com.homemedia.network.KodiClient
 import au.com.homemedia.network.MusicAssistantClient
 import au.com.homemedia.network.YouTubeClient
+import au.com.homemedia.network.WifiStatus
+import au.com.homemedia.network.StremioClient
 import au.com.homemedia.storage.SettingsStore
+import au.com.homemedia.storage.YouTubeLibraryStore
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import org.json.JSONObject
 import java.util.zip.ZipInputStream
 
-enum class Screen { ROOM, MEDIA, MASS_HOME, MASS_LIST, MASS_DETAIL, QUEUE, KODI, KODI_LIBRARY, YOUTUBE, SETTINGS }
+enum class Screen { ROOM, MEDIA, MASS_HOME, MASS_LIST, MASS_DETAIL, QUEUE, KODI, KODI_LIBRARY, YOUTUBE, PHONE_VIDEO, STREMIO, SETTINGS }
 
 data class BluetoothCalibrationState(
     val roomId: String = "",
@@ -34,7 +37,10 @@ class AppController(context: Context) {
     val ma = MusicAssistantClient()
     val kodi = KodiClient()
     val youtube = YouTubeClient()
+    val stremio = StremioClient(appContext)
     private val bluetoothLocator = BluetoothLocator(appContext)
+    private val wifiStatus = WifiStatus(appContext)
+    private val youtubeStore = YouTubeLibraryStore(appContext)
 
     private val _settings = MutableStateFlow(store.load())
     val settings: StateFlow<AppSettings> = _settings
@@ -91,6 +97,15 @@ class AppController(context: Context) {
     private val _youtubeResults = MutableStateFlow<List<YouTubeItem>>(emptyList())
     val youtubeResults: StateFlow<List<YouTubeItem>> = _youtubeResults
 
+    private val _youtubeLibrary = MutableStateFlow(youtubeStore.load())
+    val youtubeLibrary: StateFlow<YouTubeLibraryStore.State> = _youtubeLibrary
+
+    private val _wifiConnected = MutableStateFlow(wifiStatus.isConnectedToWifi())
+    val wifiConnected: StateFlow<Boolean> = _wifiConnected
+
+    private val _phoneVideo = MutableStateFlow<PhoneVideo?>(null)
+    val phoneVideo: StateFlow<PhoneVideo?> = _phoneVideo
+
     private val _pendingYoutube = MutableStateFlow<YouTubeItem?>(null)
     val pendingYoutube: StateFlow<YouTubeItem?> = _pendingYoutube
 
@@ -106,7 +121,7 @@ class AppController(context: Context) {
         configureConnections(_settings.value)
         scope.launch {
             ha.states.collect { states ->
-                if (_settings.value.automaticRoom) resolveAutomaticRoom(states)
+                if (_settings.value.automaticRoom && _wifiConnected.value) resolveAutomaticRoom(states)
                 updateNowPlaying(states)
                 updateJoinCandidate(states)
             }
@@ -128,6 +143,8 @@ class AppController(context: Context) {
     fun goMedia() { _screen.value = Screen.MEDIA }
     fun goSettings() { _screen.value = Screen.SETTINGS }
     fun openYouTube() { _screen.value = Screen.YOUTUBE }
+    fun openStremio() { _screen.value = Screen.STREMIO }
+    fun stopPhoneVideo() { _phoneVideo.value = null; _screen.value = Screen.YOUTUBE }
 
     fun beginBluetoothCalibration(roomId: String) {
         val room = _settings.value.rooms.firstOrNull { it.id == roomId } ?: return
@@ -213,6 +230,7 @@ class AppController(context: Context) {
             TileActionType.OPEN_LIBRARY -> openLibrary()
             TileActionType.OPEN_KODI -> openKodiLibrary(shared = false)
             TileActionType.OPEN_QUEUE -> openQueue()
+            TileActionType.OPEN_YOUTUBE -> openYouTube()
             TileActionType.SELECT_SOURCE -> if (tile.source.isNotBlank()) selectRoomSource(tile.source)
             TileActionType.HA_SERVICE -> scope.launch {
                 busyRun("Home Assistant action failed") {
@@ -474,8 +492,16 @@ class AppController(context: Context) {
             if (includeKodi && room.kodi.baseUrl.isNotBlank()) {
                 add(PlaybackTarget("kodi:${room.id}", "${room.name} · Kodi", room.id, kodi = true))
             }
-            if (includeKodi && (room.id == "bedroom" || room.youtubeCastEntity.isNotBlank())) {
-                add(PlaybackTarget("cast:${room.id}", "${room.name} · Cast", room.id, cast = true))
+        }
+    }
+
+    fun youtubePlaybackTargets(): List<PlaybackTarget> = buildList {
+        add(PlaybackTarget("phone", "This phone", phone = true))
+        _settings.value.rooms.forEach { room ->
+            if (room.kodi.baseUrl.isNotBlank()) add(PlaybackTarget("kodi:${room.id}", "${room.name} · Kodi", room.id, kodi = true))
+            resolveYouTubeCastEntityOrNull(room)?.let { entity ->
+                val friendly = ha.states.value[entity]?.attributes?.optString("friendly_name").orEmpty()
+                add(PlaybackTarget("cast:${room.id}", friendly.ifBlank { "${room.name} · Cast" }, room.id, cast = true))
             }
         }
     }
@@ -578,34 +604,122 @@ class AppController(context: Context) {
         }
     }
 
+    fun saveYouTubeChannel(item: YouTubeItem) {
+        if (item.channelUrl.isBlank()) { _message.value = "This result did not expose a channel URL"; return }
+        val state = _youtubeLibrary.value
+        val channel = YouTubeSavedChannel(item.channel, item.channelUrl)
+        if (state.channels.none { it.url == channel.url }) {
+            val updated = state.copy(channels = state.channels + channel)
+            _youtubeLibrary.value = updated
+            youtubeStore.save(updated)
+        }
+    }
+
+    fun removeYouTubeChannel(url: String) {
+        val state = _youtubeLibrary.value
+        val updated = state.copy(channels = state.channels.filterNot { it.url == url })
+        _youtubeLibrary.value = updated
+        youtubeStore.save(updated)
+    }
+
+    fun createYouTubePlaylist(name: String) {
+        if (name.isBlank()) return
+        val state = _youtubeLibrary.value
+        val updated = state.copy(playlists = state.playlists + YouTubePlaylist(name = name.trim()))
+        _youtubeLibrary.value = updated
+        youtubeStore.save(updated)
+    }
+
+    fun addYouTubeToPlaylist(playlistId: String, item: YouTubeItem) {
+        val state = _youtubeLibrary.value
+        val updated = state.copy(playlists = state.playlists.map { p ->
+            if (p.id == playlistId && p.videos.none { it.videoId == item.videoId }) p.copy(videos = p.videos + item) else p
+        })
+        _youtubeLibrary.value = updated
+        youtubeStore.save(updated)
+    }
+
+    fun removeYouTubeFromPlaylist(playlistId: String, videoId: String) {
+        val state = _youtubeLibrary.value
+        val updated = state.copy(playlists = state.playlists.map { p ->
+            if (p.id == playlistId) p.copy(videos = p.videos.filterNot { it.videoId == videoId }) else p
+        })
+        _youtubeLibrary.value = updated
+        youtubeStore.save(updated)
+    }
+
+    fun clearYouTubeHistory() {
+        val state = _youtubeLibrary.value.copy(history = emptyList())
+        _youtubeLibrary.value = state
+        youtubeStore.save(state)
+    }
+
+    private fun markYouTubeWatched(item: YouTubeItem) {
+        val state = _youtubeLibrary.value
+        val updatedHistory = (listOf(item) + state.history.filterNot { it.videoId == item.videoId }).take(200)
+        val updated = state.copy(history = updatedHistory)
+        _youtubeLibrary.value = updated
+        youtubeStore.save(updated)
+    }
+
     fun requestYouTubePlayback(item: YouTubeItem) {
-        _pendingYoutube.value = item
+        _wifiConnected.value = wifiStatus.isConnectedToWifi()
+        if (_wifiConnected.value) {
+            _pendingYoutube.value = item
+        } else {
+            startPhoneYouTube(item)
+        }
+    }
+
+    private fun startPhoneYouTube(item: YouTubeItem) {
+        scope.launch {
+            busyRun("Could not play YouTube on phone") {
+                val stream = youtube.directPlaybackUrl(item.videoId)
+                markYouTubeWatched(item)
+                _phoneVideo.value = PhoneVideo(item.title, stream, item)
+                _screen.value = Screen.PHONE_VIDEO
+            }
+        }
     }
 
     fun confirmYouTubePlayback(targetId: String) {
         val item = _pendingYoutube.value ?: return
         _pendingYoutube.value = null
+        if (targetId == "phone") {
+            startPhoneYouTube(item)
+            return
+        }
         scope.launch {
             busyRun("Could not start YouTube") {
+                _wifiConnected.value = wifiStatus.isConnectedToWifi()
+                if (!_wifiConnected.value) {
+                    val stream = youtube.directPlaybackUrl(item.videoId)
+                    markYouTubeWatched(item)
+                    _phoneVideo.value = PhoneVideo(item.title, stream, item)
+                    _screen.value = Screen.PHONE_VIDEO
+                    return@busyRun
+                }
                 refreshBluetoothLocation()
-                val target = playbackTargets(includeKodi = true).firstOrNull { it.id == targetId }
+                val target = youtubePlaybackTargets().firstOrNull { it.id == targetId }
                     ?: error("Playback target not found")
                 val room = _settings.value.rooms.first { it.id == target.roomId }
-                if (target.kodi) {
-                    kodi.openUrl(room.kodi, "plugin://plugin.video.youtube/play/?video_id=${item.videoId}")
-                } else {
-                    val entity = when {
-                        target.cast -> resolveYouTubeCastEntity(room)
-                        target.secondaryId.isNotBlank() -> room.secondaryPlayers.first { it.id == target.secondaryId }.haEntity
-                        else -> room.primaryPlayerEntity
+                when {
+                    target.kodi -> kodi.openUrl(room.kodi, "plugin://plugin.video.youtube/play/?video_id=${item.videoId}")
+                    target.cast -> {
+                        val entity = resolveYouTubeCastEntity(room)
+                        if (isSamsungEntity(entity)) {
+                            val data = JSONObject()
+                                .put("media_content_id", "https://www.youtube.com/watch?v=${item.videoId}")
+                                .put("media_content_type", "video")
+                            if (!ha.callService("media_extractor", "play_media", entity, data)) error("Home Assistant is not connected")
+                        } else {
+                            val streamUrl = youtube.directPlaybackUrl(item.videoId)
+                            val data = JSONObject().put("media_content_id", streamUrl).put("media_content_type", "video")
+                            if (!ha.callService("media_player", "play_media", entity, data)) error("Home Assistant is not connected")
+                        }
                     }
-                    if (entity.isBlank()) error("Target media player is not configured")
-                    val streamUrl = youtube.directPlaybackUrl(item.videoId)
-                    val data = JSONObject()
-                        .put("media_content_id", streamUrl)
-                        .put("media_content_type", "video")
-                    if (!ha.callService("media_player", "play_media", entity, data)) error("Home Assistant is not connected")
                 }
+                markYouTubeWatched(item)
             }
         }
     }
@@ -766,11 +880,12 @@ class AppController(context: Context) {
     }
 
     fun onForeground() {
+        _wifiConnected.value = wifiStatus.isConnectedToWifi()
         val s = _settings.value
         if (!ha.connected.value && s.homeAssistantUrl.isNotBlank() && s.homeAssistantToken.isNotBlank()) {
             ha.connect(s.homeAssistantUrl, s.homeAssistantToken)
         }
-        scope.launch { refreshBluetoothLocation() }
+        if (_wifiConnected.value) scope.launch { refreshBluetoothLocation() }
     }
 
     fun importSettingsZip(uri: Uri) {
@@ -812,7 +927,11 @@ class AppController(context: Context) {
         }
     }
 
-    private fun resolveYouTubeCastEntity(room: RoomConfig): String {
+    private fun resolveYouTubeCastEntity(room: RoomConfig): String =
+        resolveYouTubeCastEntityOrNull(room)
+            ?: error("${room.name} Cast player was not found. Set its HA entity in room settings.")
+
+    private fun resolveYouTubeCastEntityOrNull(room: RoomConfig): String? {
         if (room.youtubeCastEntity.isNotBlank()) return room.youtubeCastEntity
         val candidates = ha.states.value.values.filter { it.entityId.startsWith("media_player.") }
         val bedroomCandidates = candidates.filter { state ->
@@ -835,10 +954,17 @@ class AppController(context: Context) {
         }
         val remaining = bedroomCandidates.filter { it.entityId !in excluded }
         return remaining.singleOrNull()?.entityId
-            ?: error("Bedroom Cast player was not found automatically. Set its HA entity in Bedroom settings.")
+    }
+
+    private fun isSamsungEntity(entityId: String): Boolean {
+        val state = ha.states.value[entityId]
+        val name = state?.attributes?.optString("friendly_name").orEmpty()
+        return entityId.contains("samsung", true) || name.contains("samsung", true)
     }
 
     private suspend fun refreshBluetoothLocation() {
+        _wifiConnected.value = wifiStatus.isConnectedToWifi()
+        if (!_wifiConnected.value) return
         val settings = _settings.value
         if (!settings.bluetoothLocationEnabled || settings.rooms.none { it.bluetoothAnchors.isNotEmpty() }) return
         val match = bluetoothLocator.resolveRoom(settings.rooms) ?: return
