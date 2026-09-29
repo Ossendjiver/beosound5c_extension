@@ -367,6 +367,9 @@ class AppController(context: Context) {
             if (includeKodi && room.kodi.baseUrl.isNotBlank()) {
                 add(PlaybackTarget("kodi:${room.id}", "${room.name} · Kodi", room.id, kodi = true))
             }
+            if (includeKodi && (room.id == "bedroom" || room.youtubeCastEntity.isNotBlank())) {
+                add(PlaybackTarget("cast:${room.id}", "${room.name} · Cast", room.id, cast = true))
+            }
         }
     }
 
@@ -462,7 +465,7 @@ class AppController(context: Context) {
     fun searchYouTube(query: String) {
         scope.launch {
             busyRun("YouTube search failed") {
-                _youtubeResults.value = youtube.search(_settings.value.youtubeApiKey, query)
+                _youtubeResults.value = youtube.search(query)
                 _screen.value = Screen.YOUTUBE
             }
         }
@@ -484,9 +487,11 @@ class AppController(context: Context) {
                 if (target.kodi) {
                     kodi.openUrl(room.kodi, "plugin://plugin.video.youtube/play/?video_id=${item.videoId}")
                 } else {
-                    val entity = if (target.secondaryId.isNotBlank()) {
-                        room.secondaryPlayers.first { it.id == target.secondaryId }.haEntity
-                    } else room.primaryPlayerEntity
+                    val entity = when {
+                        target.cast -> resolveYouTubeCastEntity(room)
+                        target.secondaryId.isNotBlank() -> room.secondaryPlayers.first { it.id == target.secondaryId }.haEntity
+                        else -> room.primaryPlayerEntity
+                    }
                     if (entity.isBlank()) error("Target media player is not configured")
                     val data = JSONObject()
                         .put("media_content_id", "https://www.youtube.com/watch?v=${item.videoId}")
@@ -657,6 +662,19 @@ class AppController(context: Context) {
                 withContext(Dispatchers.Main) { _message.value = e.message ?: "Could not import settings ZIP" }
             }
         }
+    }
+
+    private fun resolveYouTubeCastEntity(room: RoomConfig): String {
+        if (room.youtubeCastEntity.isNotBlank()) return room.youtubeCastEntity
+        val candidates = ha.states.value.values.filter { it.entityId.startsWith("media_player.") }
+        val exact = candidates.firstOrNull { state ->
+            val id = state.entityId.lowercase()
+            val name = state.attributes.optString("friendly_name").lowercase()
+            (id.contains("bedroom") || name.contains("bedroom")) &&
+                (id.contains("cast") || id.contains("chromecast") || name.contains("cast") || name.contains("chromecast"))
+        }
+        return exact?.entityId
+            ?: error("Bedroom Cast player was not found. Set its HA entity in Bedroom settings.")
     }
 
     private suspend fun refreshBluetoothLocation() {
