@@ -144,6 +144,12 @@ class AppController(context: Context) {
     fun goSettings() { _screen.value = Screen.SETTINGS }
     fun openYouTube() { _screen.value = Screen.YOUTUBE }
     fun openStremio() { _screen.value = Screen.STREMIO }
+    fun stremioBoard() { runCatching { stremio.openBoard() }.onFailure { _message.value = it.message ?: "Stremio is not installed" } }
+    fun stremioLibrary() { runCatching { stremio.openLibrary() }.onFailure { _message.value = it.message ?: "Stremio is not installed" } }
+    fun stremioSearch(query: String) {
+        if (query.isBlank()) return
+        runCatching { stremio.search(query) }.onFailure { _message.value = it.message ?: "Stremio is not installed" }
+    }
     fun stopPhoneVideo() { _phoneVideo.value = null; _screen.value = Screen.YOUTUBE }
 
     fun beginBluetoothCalibration(roomId: String) {
@@ -604,6 +610,15 @@ class AppController(context: Context) {
         }
     }
 
+    fun openSavedYouTubeChannel(channel: YouTubeSavedChannel) {
+        scope.launch {
+            busyRun("Could not load ${channel.name}") {
+                _youtubeResults.value = youtube.channelVideos(channel.url)
+                _screen.value = Screen.YOUTUBE
+            }
+        }
+    }
+
     fun saveYouTubeChannel(item: YouTubeItem) {
         if (item.channelUrl.isBlank()) { _message.value = "This result did not expose a channel URL"; return }
         val state = _youtubeLibrary.value
@@ -953,7 +968,17 @@ class AppController(context: Context) {
             room.secondaryPlayers.mapTo(this) { it.haEntity }
         }
         val remaining = bedroomCandidates.filter { it.entityId !in excluded }
-        return remaining.singleOrNull()?.entityId
+        if (remaining.size == 1) return remaining.first().entityId
+
+        if (room.id == "lounge") {
+            val samsung = candidates.filter { state ->
+                val id = state.entityId.lowercase()
+                val name = state.attributes.optString("friendly_name").lowercase()
+                (id.contains("samsung") || name.contains("samsung")) && state.entityId !in excluded
+            }
+            if (samsung.size == 1) return samsung.first().entityId
+        }
+        return null
     }
 
     private fun isSamsungEntity(entityId: String): Boolean {
