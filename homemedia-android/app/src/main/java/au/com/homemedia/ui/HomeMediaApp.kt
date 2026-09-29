@@ -1015,35 +1015,139 @@ private fun PhoneVideoScreen(controller: AppController) {
 
 @Composable
 private fun StremioScreen(controller: AppController) {
+    val results by controller.stremioResults.collectAsState()
+    val selected by controller.selectedStremio.collectAsState()
+    val streams by controller.stremioStreams.collectAsState()
+    val settings by controller.settings.collectAsState()
     var query by remember { mutableStateOf("") }
-    Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Text(
-            "Stremio search and library use Stremio's documented deep links and open in the installed Stremio app.",
-            color = TextMuted,
-            fontSize = 13.sp
-        )
+
+    Column(Modifier.fillMaxSize().padding(horizontal = 14.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             OutlinedTextField(
                 value = query,
                 onValueChange = { query = it },
-                placeholder = { Text("Search Stremio") },
+                placeholder = { Text("Search movies & series") },
                 singleLine = true,
                 modifier = Modifier.weight(1f)
             )
             Spacer(Modifier.width(8.dp))
-            FilledIconButton(onClick = { controller.stremioSearch(query) }) { Icon(Icons.Default.Search, "Search") }
+            FilledIconButton(onClick = { controller.stremioSearch(query) }) {
+                Icon(Icons.Default.Search, "Search")
+            }
         }
-        Button(onClick = controller::stremioBoard, modifier = Modifier.fillMaxWidth()) {
-            Icon(Icons.Default.Dashboard, null); Spacer(Modifier.width(8.dp)); Text("Open Stremio Board")
+
+        if (selected == null) {
+            Row(
+                Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                AssistChip(onClick = controller::stremioBoard, label = { Text("Stremio Board") }, leadingIcon = { Icon(Icons.Default.Dashboard, null) })
+                AssistChip(onClick = controller::stremioLibrary, label = { Text("Stremio Library") }, leadingIcon = { Icon(Icons.Default.VideoLibrary, null) })
+            }
+            if (results.isEmpty()) {
+                EmptyState("Stremio", "Search is native to Home Media. Compatible direct streams can play here or cast; unsupported streams open in Stremio.")
+            } else {
+                LazyVerticalGrid(
+                    columns = GridCells.Adaptive(145.dp),
+                    contentPadding = PaddingValues(vertical = 10.dp),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    gridItems(results, key = { it.type + ":" + it.id }) { item ->
+                        Card(
+                            Modifier.fillMaxWidth().combinedClickable(
+                                onClick = { controller.selectStremioItem(item) },
+                                onLongClick = { controller.openStremioItemInApp(item) }
+                            ),
+                            colors = CardDefaults.cardColors(containerColor = Panel2)
+                        ) {
+                            Column {
+                                Surface(Modifier.fillMaxWidth().aspectRatio(2f / 3f), color = Panel3) {
+                                    if (item.poster.isNotBlank()) {
+                                        AsyncImage(
+                                            model = item.poster,
+                                            contentDescription = null,
+                                            modifier = Modifier.fillMaxSize(),
+                                            contentScale = ContentScale.Crop
+                                        )
+                                    } else {
+                                        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                            Icon(Icons.Default.Movie, null, modifier = Modifier.size(42.dp))
+                                        }
+                                    }
+                                }
+                                Column(Modifier.padding(10.dp)) {
+                                    Text(item.name, fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                                    Text(
+                                        listOf(item.type.replaceFirstChar { it.uppercase() }, item.releaseInfo).filter { it.isNotBlank() }.joinToString(" · "),
+                                        color = TextMuted,
+                                        fontSize = 12.sp
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+            val item = selected!!
+            Row(Modifier.fillMaxWidth().padding(vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                IconButton(onClick = { controller.stremioSearch(query.ifBlank { item.name }) }) {
+                    Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back")
+                }
+                Column(Modifier.weight(1f)) {
+                    Text(item.name, fontWeight = FontWeight.Bold, fontSize = 20.sp)
+                    Text(item.type.replaceFirstChar { it.uppercase() }, color = TextMuted, fontSize = 12.sp)
+                }
+                TextButton(onClick = { controller.openStremioItemInApp(item) }) { Text("Open in Stremio") }
+            }
+
+            if (item.description.isNotBlank()) {
+                Text(item.description, color = TextMuted, fontSize = 13.sp, maxLines = 4, overflow = TextOverflow.Ellipsis)
+                Spacer(Modifier.height(10.dp))
+            }
+
+            if (item.type == "series") {
+                EmptyState(
+                    "Series episode selection",
+                    "Episode selection currently hands off to Stremio. Movie search and compatible direct streams are playable inside Home Media."
+                )
+            } else if (settings.stremioStreamAddonManifests.isEmpty()) {
+                EmptyState(
+                    "No stream addons configured",
+                    "Add one or more Stremio addon manifest URLs in Settings, or open this title in Stremio."
+                )
+            } else if (streams.isEmpty()) {
+                EmptyState("No compatible streams", "The configured addons returned no direct stream for this title.")
+            } else {
+                LazyColumn(contentPadding = PaddingValues(vertical = 8.dp)) {
+                    items(streams.indices.toList()) { idx ->
+                        val stream = streams[idx]
+                        ListItem(
+                            headlineContent = { Text(stream.title.ifBlank { stream.name.ifBlank { "Stream ${idx + 1}" } }) },
+                            supportingContent = {
+                                Text(
+                                    when {
+                                        stream.directlyPlayable -> "Direct stream · play here or cast"
+                                        stream.externalUrl.isNotBlank() -> "External provider"
+                                        stream.infoHash.isNotBlank() -> "Torrent stream · open in Stremio"
+                                        else -> "Stremio stream"
+                                    },
+                                    color = TextMuted
+                                )
+                            },
+                            leadingContent = {
+                                Icon(if (stream.directlyPlayable) Icons.Default.PlayCircle else Icons.Default.OpenInNew, null)
+                            },
+                            modifier = Modifier.combinedClickable(
+                                onClick = { controller.requestStremioPlayback(item, stream) },
+                                onLongClick = { controller.openStremioItemInApp(item) }
+                            )
+                        )
+                    }
+                }
+            }
         }
-        Button(onClick = controller::stremioLibrary, modifier = Modifier.fillMaxWidth()) {
-            Icon(Icons.Default.VideoLibrary, null); Spacer(Modifier.width(8.dp)); Text("Open Stremio Library")
-        }
-        Text(
-            "Home Media does not bundle third-party streaming addons; Stremio keeps control of your installed addons and playback.",
-            color = TextMuted,
-            fontSize = 12.sp
-        )
     }
 }
 
