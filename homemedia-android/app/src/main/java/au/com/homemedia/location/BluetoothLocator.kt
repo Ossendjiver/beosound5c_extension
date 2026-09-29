@@ -5,22 +5,42 @@ import android.bluetooth.BluetoothManager
 import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanResult
 import android.content.Context
-import au.com.homemedia.model.BluetoothCalibrationPoint
 import au.com.homemedia.model.BluetoothFingerprintSample
 import au.com.homemedia.model.RoomConfig
 import kotlinx.coroutines.delay
 import kotlin.math.abs
+import kotlin.math.sqrt
 
 data class BluetoothScanSummary(
     val samples: List<BluetoothFingerprintSample>,
     val durationMs: Long
 )
 
+data class BluetoothRoomScore(
+    val roomId: String,
+    val score: Double,
+    val overlap: Int,
+    val expectedDevices: Int,
+    val stableDevices: Int
+)
+
 data class BluetoothRoomMatch(
     val roomId: String,
     val score: Double,
     val runnerUpScore: Double?,
-    val confidenceMargin: Double
+    val confidenceMargin: Double,
+    val overlap: Int = 0,
+    val expectedDevices: Int = 0,
+    val stableDevices: Int = 0,
+    val candidates: List<BluetoothRoomScore> = emptyList()
+)
+
+private data class FingerprintDevice(
+    val address: String,
+    val medianRssi: Double,
+    val stdDev: Double,
+    val seenPoints: Int,
+    val name: String
 )
 
 class BluetoothLocator(context: Context) {
@@ -68,99 +88,180 @@ class BluetoothLocator(context: Context) {
     suspend fun resolveRoom(
         rooms: List<RoomConfig>,
         scanMs: Long = 1800,
-        minConfidenceMargin: Double = 9.0,
-        maxAcceptableScore: Double = 34.0
+        minConfidenceMargin: Double = 8.0,
+        maxAcceptableScore: Double = 32.0
+    ): BluetoothRoomMatch? =
+        resolveRoomFromSamples(
+            rooms = rooms,
+            live = scanFingerprint(scanMs).samples,
+            minConfidenceMargin = minConfidenceMargin,
+            maxAcceptableScore = maxAcceptableScore
+        )
+
+    fun resolveRoomFromSamples(
+        rooms: List<RoomConfig>,
+        live: List<BluetoothFingerprintSample>,
+        minConfidenceMargin: Double = 8.0,
+        maxAcceptableScore: Double = 32.0
     ): BluetoothRoomMatch? {
-        val live = scanFingerprint(scanMs).samples
         val calibrated = rooms.filter { it.bluetoothCalibrationPoints.size >= 3 }
         val uniqueQuiet = calibrated.filter { it.bluetoothQuietRoom }.singleOrNull()
 
-        // A fully silent scan can identify one explicitly calibrated Bluetooth-quiet room.
-        // This is intentionally only allowed when exactly one room has that profile.
         if (live.isEmpty()) {
             return uniqueQuiet?.let {
-                BluetoothRoomMatch(it.id, 30.0, null, Double.POSITIVE_INFINITY)
+                BluetoothRoomMatch(
+                    roomId = it.id,
+                    score = 30.0,
+                    runnerUpScore = null,
+                    confidenceMargin = Double.POSITIVE_INFINITY
+                )
             }
         }
 
+        if (calibrated.isEmpty()) return resolveLegacyAnchorRoom(rooms, live)
 
-        if (calibrated.isEmpty()) {
-            return resolveLegacyAnchorRoom(rooms, live)
-        }
-
-        val scored = calibrated.mapNotNull { room ->
-            val score = roomScore(room, live) ?: return@mapNotNull null
-            room.id to score
-        }.sortedBy { it.second }
-
+        val scored = scoreRooms(calibrated, live)
         val best = scored.firstOrNull()
         val runnerUp = scored.getOrNull(1)
 
         if (best != null) {
-            val margin = if (runnerUp == null) Double.POSITIVE_INFINITY else runnerUp.second - best.second
-            if (best.second <= maxAcceptableScore && (runnerUp == null || margin >= minConfidenceMargin)) {
-                return BluetoothRoomMatch(best.first, best.second, runnerUp?.second, margin)
+            val margin = if (runnerUp == null) Double.POSITIVE_INFINITY else runnerUp.score - best.score
+            if (best.score <= maxAcceptableScore && (runnerUp == null || margin >= minConfidenceMargin)) {
+                return BluetoothRoomMatch(
+                    roomId = best.roomId,
+                    score = best.score,
+                    runnerUpScore = runnerUp?.score,
+                    confidenceMargin = margin,
+                    overlap = best.overlap,
+                    expectedDevices = best.expectedDevices,
+                    stableDevices = best.stableDevices,
+                    candidates = scored
+                )
             }
         }
 
-        // Negative/quiet-room fingerprint: useful for a room such as Bathroom with no local BLE.
-        // Only use it when exactly one calibrated room is explicitly quiet, no strong device is
-        // visible, and no normal room is even a moderately plausible match.
         val quietRooms = calibrated.filter { it.bluetoothQuietRoom }
         val strongestLive = live.maxOfOrNull { it.rssi } ?: -127
         val nearestNormal = scored
-            .filterNot { pair -> quietRooms.any { it.id == pair.first } }
-            .minOfOrNull { it.second } ?: Double.POSITIVE_INFINITY
-        if (quietRooms.size == 1 && strongestLive < -72 && nearestNormal > 24.0) {
+            .filterNot { score -> quietRooms.any { it.id == score.roomId } }
+            .minByOrNull { it.score }
+        if (quietRooms.size == 1 && strongestLive < -72 && (nearestNormal?.score ?: Double.POSITIVE_INFINITY) > 24.0) {
             return BluetoothRoomMatch(
                 roomId = quietRooms.first().id,
                 score = 30.0,
-                runnerUpScore = nearestNormal.takeIf { it.isFinite() },
-                confidenceMargin = if (nearestNormal.isFinite()) nearestNormal - 30.0 else Double.POSITIVE_INFINITY
+                runnerUpScore = nearestNormal?.score,
+                confidenceMargin = nearestNormal?.score?.minus(30.0) ?: Double.POSITIVE_INFINITY,
+                candidates = scored
             )
         }
 
         return null
     }
 
-    private fun roomScore(room: RoomConfig, live: List<BluetoothFingerprintSample>): Double? {
-        val points = room.bluetoothCalibrationPoints.take(3)
-        if (points.size < 3) return null
-
+    fun scoreRooms(rooms: List<RoomConfig>, live: List<BluetoothFingerprintSample>): List<BluetoothRoomScore> {
+        val fingerprints = rooms.associate { it.id to aggregateFingerprint(it) }
+        val allRoomDevices = fingerprints.values.flatten().groupBy { it.address }
         val liveByAddress = live.associateBy { it.address.lowercase() }
-        val pointScores = points.mapNotNull { point -> fingerprintDistance(point, liveByAddress) }
-        if (pointScores.size < 2) return null
 
-        // A room match is the nearest of the three calibration points.
-        // Requiring overlap and keeping an absolute ceiling prevents distant bleed-through.
-        return pointScores.minOrNull()
+        return rooms.mapNotNull { room ->
+            val fp = fingerprints[room.id].orEmpty()
+            if (fp.isEmpty()) return@mapNotNull null
+
+            val expected = fp.take(10)
+            var overlap = 0
+            var weightedError = 0.0
+            var weightTotal = 0.0
+            var stableOverlap = 0
+
+            expected.forEach { device ->
+                val actual = liveByAddress[device.address] ?: return@forEach
+                overlap++
+
+                val stable = device.seenPoints >= 2 && device.stdDev <= 8.0
+                if (stable) stableOverlap++
+
+                val roomCount = allRoomDevices[device.address].orEmpty().count()
+                val distinctiveness = when (roomCount) {
+                    0, 1 -> 1.55
+                    2 -> 1.25
+                    else -> 1.0
+                }
+                val strengthWeight = when {
+                    device.medianRssi >= -60 -> 1.6
+                    device.medianRssi >= -72 -> 1.3
+                    else -> 1.0
+                }
+                val stabilityWeight = when {
+                    device.stdDev <= 4.0 -> 1.35
+                    device.stdDev <= 8.0 -> 1.15
+                    device.stdDev >= 14.0 -> 0.75
+                    else -> 1.0
+                }
+                val weight = distinctiveness * strengthWeight * stabilityWeight
+                weightedError += abs(actual.rssi - device.medianRssi) * weight
+                weightTotal += weight
+            }
+
+            val minOverlap = if (expected.size >= 5) 3 else 2
+            if (overlap < minOverlap || weightTotal == 0.0) return@mapNotNull null
+
+            val missing = (expected.size - overlap).coerceAtLeast(0)
+            val missingPenalty = missing * 3.0
+            val weakOverlapPenalty = if (stableOverlap < 2 && expected.size >= 4) 5.0 else 0.0
+            val score = (weightedError / weightTotal) + missingPenalty + weakOverlapPenalty
+
+            BluetoothRoomScore(
+                roomId = room.id,
+                score = score,
+                overlap = overlap,
+                expectedDevices = expected.size,
+                stableDevices = stableOverlap
+            )
+        }.sortedBy { it.score }
     }
 
-    private fun fingerprintDistance(
-        point: BluetoothCalibrationPoint,
-        liveByAddress: Map<String, BluetoothFingerprintSample>
-    ): Double? {
-        if (point.samples.isEmpty()) return null
-        var overlap = 0
-        var weightedError = 0.0
-        var weightTotal = 0.0
+    fun calibrationQuality(room: RoomConfig): String {
+        val fp = aggregateFingerprint(room)
+        if (room.bluetoothCalibrationPoints.size < 3) return "not calibrated"
+        if (fp.isEmpty()) return "poor · no repeatable devices"
+        val stable = fp.count { it.seenPoints >= 2 && it.stdDev <= 8.0 }
+        val strong = fp.count { it.medianRssi >= -70 }
+        return when {
+            room.bluetoothQuietRoom -> "quiet profile · ${fp.size} repeatable devices"
+            stable >= 5 && strong >= 2 -> "good · $stable stable / ${fp.size} repeatable"
+            stable >= 3 -> "fair · $stable stable / ${fp.size} repeatable"
+            else -> "weak · $stable stable / ${fp.size} repeatable"
+        }
+    }
 
-        point.samples.take(12).forEach { expected ->
-            val live = liveByAddress[expected.address.lowercase()] ?: return@forEach
-            overlap++
-            val weight = when {
-                expected.rssi >= -60 -> 1.8
-                expected.rssi >= -72 -> 1.35
-                else -> 1.0
+    private fun aggregateFingerprint(room: RoomConfig): List<FingerprintDevice> {
+        val points = room.bluetoothCalibrationPoints.take(3)
+        if (points.size < 3) return emptyList()
+
+        val byAddress = linkedMapOf<String, MutableList<BluetoothFingerprintSample>>()
+        points.forEach { point ->
+            point.samples.forEach { sample ->
+                byAddress.getOrPut(sample.address.lowercase()) { mutableListOf() }.add(sample)
             }
-            weightedError += abs(live.rssi - expected.rssi) * weight
-            weightTotal += weight
         }
 
-        if (overlap < 2 || weightTotal == 0.0) return null
-
-        val missingPenalty = (point.samples.take(8).size - overlap).coerceAtLeast(0) * 4.0
-        return (weightedError / weightTotal) + missingPenalty
+        return byAddress.mapNotNull { (address, samples) ->
+            if (samples.size < 2) return@mapNotNull null
+            val rssis = samples.map { it.rssi.toDouble() }.sorted()
+            val median = rssis[rssis.size / 2]
+            val mean = rssis.average()
+            val variance = rssis.map { (it - mean) * (it - mean) }.average()
+            FingerprintDevice(
+                address = address,
+                medianRssi = median,
+                stdDev = sqrt(variance),
+                seenPoints = samples.size,
+                name = samples.firstNotNullOfOrNull { it.name.takeIf(String::isNotBlank) }.orEmpty()
+            )
+        }.sortedWith(
+            compareByDescending<FingerprintDevice> { it.seenPoints }
+                .thenByDescending { it.medianRssi }
+        )
     }
 
     private fun resolveLegacyAnchorRoom(
@@ -183,8 +284,6 @@ class BluetoothLocator(context: Context) {
         val second = bestByRoom.getOrNull(1)
         val margin = if (second == null) Double.POSITIVE_INFINITY else second.second - best.second
 
-        // Legacy anchors are deliberately conservative: if two rooms are close,
-        // do not move the user at all.
         if (second != null && margin < 8.0) return null
         return BluetoothRoomMatch(best.first, best.second, second?.second, margin)
     }
