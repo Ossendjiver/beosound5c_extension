@@ -12,6 +12,9 @@ import org.schabi.newpipe.extractor.downloader.Downloader
 import org.schabi.newpipe.extractor.downloader.Request
 import org.schabi.newpipe.extractor.downloader.Response
 import org.schabi.newpipe.extractor.search.SearchInfo
+import org.schabi.newpipe.extractor.channel.ChannelInfo
+import org.schabi.newpipe.extractor.channel.tabs.ChannelTabInfo
+import org.schabi.newpipe.extractor.channel.tabs.ChannelTabs
 import org.schabi.newpipe.extractor.stream.StreamInfo
 import org.schabi.newpipe.extractor.stream.StreamInfoItem
 import java.net.URI
@@ -89,6 +92,32 @@ class YouTubeClient {
             .toList()
         if (results.isEmpty()) error("NewPipe returned no YouTube video results")
         results
+    }
+
+    suspend fun channelVideos(channelUrl: String, limit: Int = 40): List<YouTubeItem> = withContext(Dispatchers.IO) {
+        require(channelUrl.isNotBlank()) { "Channel URL is blank" }
+        ensureNewPipe()
+        val service = NewPipe.getService("YouTube")
+        val channel = ChannelInfo.getInfo(service, channelUrl)
+        val videosTab = channel.tabs.firstOrNull { handler ->
+            handler.contentFilters.any { it.equals(ChannelTabs.VIDEOS, ignoreCase = true) }
+        } ?: error("This channel does not expose a videos tab")
+        val info = ChannelTabInfo.getInfo(service, videosTab)
+        info.relatedItems
+            .asSequence()
+            .filterIsInstance<StreamInfoItem>()
+            .take(limit.coerceIn(1, 100))
+            .mapNotNull { item ->
+                val id = videoIdFromUrl(item.url)
+                if (id.isBlank()) null else YouTubeItem(
+                    videoId = id,
+                    title = item.name,
+                    channel = item.uploaderName,
+                    channelUrl = item.uploaderUrl.orEmpty().ifBlank { channelUrl },
+                    thumbnail = item.thumbnails.firstOrNull()?.url.orEmpty()
+                )
+            }
+            .toList()
     }
 
     suspend fun directPlaybackUrl(videoId: String): String = withContext(Dispatchers.IO) {
