@@ -839,12 +839,28 @@ class AppController(context: Context) {
         val target = currentRoom() ?: return
         scope.launch {
             busyRun("Could not join ${source.name}") {
-                if (source.maPlayerId.isNotBlank() && target.maPlayerId.isNotBlank()) {
-                    ensureRoomOn(target)
-                    ma.playerGroup(target.maPlayerId, source.maPlayerId)
-                } else {
+                val sourcePlayerId = resolveSelectedMaPlayerId(source)
+                val targetPlayerId = resolveSelectedMaPlayerId(target)
+                if (sourcePlayerId.isNotBlank() && targetPlayerId.isNotBlank()) {
+                    if (selectedPlayerKeyForRoom(target) == "primary") ensureRoomOn(target)
+                    ma.playerGroup(targetPlayerId, sourcePlayerId)
+                    debugLogger.log(
+                        "PLAYER",
+                        "Join source=${source.name}/$sourcePlayerId target=${target.name}/$targetPlayerId"
+                    )
+                } else if (selectedPlayerKeyForRoom(target) == "primary") {
                     val sourceKind = sharedSourceForRoom(source, ha.states.value)
                     prepareMlgwSource(target, sourceKind)
+                } else {
+                    // Secondary MA target but no groupable source player: move the active queue as a safe fallback.
+                    val sourceQueue = resolveSelectedQueueForRoom(source)
+                    val targetQueue = resolveSelectedQueueForRoom(target)
+                    if (sourceQueue == targetQueue) return@busyRun
+                    ma.transferQueue(sourceQueue, targetQueue, autoPlay = true)
+                    debugLogger.log(
+                        "PLAYER",
+                        "Join fallback transferred queue source=$sourceQueue target=$targetQueue"
+                    )
                 }
             }
         }
@@ -861,17 +877,28 @@ class AppController(context: Context) {
         if (source.id == target.id) return
         scope.launch {
             busyRun("Transfer from ${source.name} failed") {
-                if (source.maPlayerId.isNotBlank() && target.maPlayerId.isNotBlank() && source.maPlayerId != target.maPlayerId) {
-                    ensureRoomOn(target)
-                    val sourceQueue = ma.resolvePlayerQueueId(source.maPlayerId)
-                    val targetQueue = ma.resolvePlayerQueueId(target.maPlayerId)
+                val sourceQueue = resolveSelectedQueueForRoom(source)
+                val targetQueue = prepareSelectedQueueForRoom(target)
+
+                if (sourceQueue.isNotBlank() && targetQueue.isNotBlank() && sourceQueue != targetQueue) {
                     ma.transferQueue(sourceQueue, targetQueue, autoPlay = true)
-                } else {
+                    debugLogger.log(
+                        "PLAYER",
+                        "Transfer source=${source.name}/$sourceQueue target=${target.name}/$targetQueue"
+                    )
+                    // Only power down the source room hardware when its selected player is the primary room system.
+                    if (selectedPlayerKeyForRoom(source) == "primary") {
+                        val sourceEntity = source.routeEntity
+                        if (sourceEntity.isNotBlank()) ha.turnOff(sourceEntity)
+                    }
+                } else if (selectedPlayerKeyForRoom(target) == "primary") {
                     val sourceKind = sharedSourceForRoom(source, ha.states.value)
                     prepareMlgwSource(target, sourceKind)
                     val sourceEntity = source.routeEntity
                     if (sourceEntity.isBlank()) error("${source.name} has no MLGW/HA room entity configured")
                     if (!ha.turnOff(sourceEntity)) error("Home Assistant is not connected")
+                } else {
+                    error("No transferable Music Assistant queue was found for ${source.name}")
                 }
             }
         }
@@ -881,8 +908,11 @@ class AppController(context: Context) {
         val room = _settings.value.rooms.firstOrNull { it.id == roomId } ?: return
         scope.launch {
             runCatching {
-                if (room.maPlayerId.isNotBlank()) ma.playerPause(room.maPlayerId)
-                else transportEntity(room).takeIf { it.isNotBlank() }?.let { if (!ha.pause(it)) error("Home Assistant is not connected") }
+                val playerId = resolveSelectedMaPlayerId(room)
+                if (playerId.isNotBlank()) ma.playerPause(playerId)
+                else selectedTransportEntity(room).takeIf { it.isNotBlank() }?.let {
+                    if (!ha.pause(it)) error("Home Assistant is not connected")
+                }
             }.onFailure { _message.value = it.message ?: "Could not pause ${room.name}" }
         }
     }
@@ -1917,26 +1947,64 @@ class AppController(context: Context) {
         return activeVolumeEntity()
     }
 
-    private suspend fun prepareActiveQueueForRoom(room: RoomConfig): String {
-        val key = _activePlayerKey.value
-        if (key != "primary") {
-            val secondary = room.secondaryPlayers.firstOrNull { it.id == key }
-            if (secondary != null) {
-                val playerId = ma.resolvePlayerId(secondary.maPlayerId, secondary.maPlayerName.ifBlank { secondary.name })
-                return ma.resolvePlayerQueueId(playerId)
-            }
+    private fun selectedPlayerKeyForRoom(room: RoomConfig): String =
+        if (room.id == _selectedRoomId.value) _activePlayerKey.value
+        else room.activePlayerKey.takeIf { key ->
+            key == "primary" || room.secondaryPlayers.any { it.id == key }
+        } ?: "primary"
+
+    private fun selectedSecondaryForRoom(room: RoomConfig): SecondaryPlayerConfig? =
+        selectedPlayerKeyForRoom(room).takeIf { it != "primary" }
+            ?.let { key -> room.secondaryPlayers.firstOrNull { it.id == key } }
+
+    private suspend fun resolveSelectedMaPlayerId(room: RoomConfig): String {
+        selectedSecondaryForRoom(room)?.let { secondary ->
+            return ma.resolvePlayerId(
+                secondary.maPlayerId,
+                secondary.maPlayerName.ifBlank { secondary.name }
+            )
+        }
+
+        if (room.maPlayerId.isNotBlank() || room.maPlayerName.isNotBlank()) {
+            return ma.resolvePlayerId(room.maPlayerId, room.maPlayerName.ifBlank { room.name })
+        }
+
+        // MasterLink primary rooms share the Link MA player.
+        return runCatching {
+            ma.resolvePlayerId("", _settings.value.sharedMaQueueName)
+        }.getOrDefault("")
+    }
+
+    private suspend fun resolveSelectedQueueForRoom(room: RoomConfig): String {
+        val playerId = resolveSelectedMaPlayerId(room)
+        if (playerId.isNotBlank()) return ma.resolvePlayerQueueId(playerId)
+        return resolveQueueIdForRoom(room)
+    }
+
+    private suspend fun prepareSelectedQueueForRoom(room: RoomConfig): String {
+        val secondary = selectedSecondaryForRoom(room)
+        if (secondary != null) {
+            val playerId = ma.resolvePlayerId(
+                secondary.maPlayerId,
+                secondary.maPlayerName.ifBlank { secondary.name }
+            )
+            return ma.resolvePlayerQueueId(playerId)
         }
         return prepareMassPlaybackTarget(room)
     }
 
-    private suspend fun resolveActiveQueueForRoom(room: RoomConfig): String {
-        val key = _activePlayerKey.value
-        if (key != "primary") {
-            val s = room.secondaryPlayers.firstOrNull { it.id == key }
-            if (s != null) return ma.resolvePlayerQueueId(ma.resolvePlayerId(s.maPlayerId, s.maPlayerName.ifBlank { s.name }))
+    private fun selectedTransportEntity(room: RoomConfig): String {
+        selectedSecondaryForRoom(room)?.let { secondary ->
+            return secondaryHaEntity(secondary).ifBlank { secondary.haEntity }
         }
-        return resolveQueueIdForRoom(room)
+        return transportEntity(room)
     }
+
+    private suspend fun prepareActiveQueueForRoom(room: RoomConfig): String =
+        prepareSelectedQueueForRoom(room)
+
+    private suspend fun resolveActiveQueueForRoom(room: RoomConfig): String =
+        resolveSelectedQueueForRoom(room)
 
     private suspend fun queueForTarget(targetId: String): String {
         val target = playbackTargets().firstOrNull { it.id == targetId } ?: error("Playback target not found")
