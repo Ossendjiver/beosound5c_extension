@@ -304,12 +304,9 @@ private fun RoomScreen(controller: AppController, room: RoomConfig?) {
         Spacer(Modifier.height(16.dp))
 
         val tiles = remember(room.tiles, joinSourceId) {
-            val base = room.tiles.take(4).toMutableList()
-            if (joinSourceId != null) {
-                while (base.size < 4) base += TileConfig(title = "Tile ${base.size + 1}")
-                base[3] = TileConfig(id = "__JOIN__", title = "Join", icon = "join")
+            room.tiles.toMutableList().apply {
+                if (joinSourceId != null) add(TileConfig(id = "__JOIN__", title = "Join", icon = "join"))
             }
-            base
         }
         LazyVerticalGrid(
             columns = GridCells.Fixed(2),
