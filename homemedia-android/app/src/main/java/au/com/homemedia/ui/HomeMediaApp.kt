@@ -104,6 +104,12 @@ fun HomeMediaApp(controller: AppController) {
         if (activePlayerKey == "primary") simplifyPlayerName(r.primaryPlayerEntity, r.name)
         else r.secondaryPlayers.firstOrNull { it.id == activePlayerKey }?.name ?: simplifyPlayerName(r.primaryPlayerEntity, r.name)
     }.orEmpty()
+    val activePlayerChoices = room?.let { r ->
+        buildList {
+            add("primary" to simplifyPlayerName(r.primaryPlayerEntity, r.name))
+            r.secondaryPlayers.forEach { add(it.id to it.name) }
+        }
+    }.orEmpty()
     val haStates by controller.ha.states.collectAsState()
     val activeRoomMediaKinds = remember(settings.rooms, haStates) {
         settings.rooms.associate { it.id to controller.roomMediaKind(it) }
@@ -154,6 +160,9 @@ fun HomeMediaApp(controller: AppController) {
                         roomName = room?.name ?: "Home Media",
                         screen = screen,
                         activePlayerName = activePlayerName,
+                        activePlayerKey = activePlayerKey,
+                        playerChoices = activePlayerChoices,
+                        onPlayerSelect = controller::selectActivePlayer,
                         onMenu = { drawerOpen = true },
                         onBack = {
                             if (screen == Screen.ROOM) drawerOpen = true else controller.navigateBack()
@@ -169,6 +178,7 @@ fun HomeMediaApp(controller: AppController) {
                             Screen.QUEUE -> QueueScreen(controller)
                             Screen.KODI -> KodiRemoteScreen(controller, room)
                             Screen.KODI_LIBRARY -> KodiLibraryScreen(controller, room)
+                            Screen.NEWS -> NewsScreen(controller)
                             Screen.YOUTUBE -> YouTubeScreen(controller)
                             Screen.PHONE_VIDEO -> PhoneVideoScreen(controller)
                             Screen.STREMIO -> StremioScreen(controller)
@@ -270,9 +280,13 @@ private fun AppTopBar(
     roomName: String,
     screen: Screen,
     activePlayerName: String,
+    activePlayerKey: String,
+    playerChoices: List<Pair<String, String>>,
+    onPlayerSelect: (String) -> Unit,
     onMenu: () -> Unit,
     onBack: () -> Unit
 ) {
+    var playerMenu by remember { mutableStateOf(false) }
     TopAppBar(
         title = {
             Column {
@@ -287,29 +301,45 @@ private fun AppTopBar(
         },
         actions = {
             if (screen == Screen.ROOM && activePlayerName.isNotBlank()) {
-                Surface(
-                    modifier = Modifier.padding(end = 12.dp),
-                    shape = RoundedCornerShape(16.dp),
-                    color = Panel2
-                ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                Box {
+                    Surface(
+                        modifier = Modifier.padding(end = 12.dp).combinedClickable(
+                            onClick = { playerMenu = true },
+                            onLongClick = { playerMenu = true }
+                        ),
+                        shape = RoundedCornerShape(16.dp),
+                        color = Panel2
                     ) {
-                        Icon(
-                            Icons.Default.Speaker,
-                            activePlayerName,
-                            tint = ActiveGreen,
-                            modifier = Modifier.size(16.dp)
-                        )
-                        Text(
-                            activePlayerName,
-                            color = Color.White,
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            maxLines = 1
-                        )
+                        Row(
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Icon(Icons.Default.Speaker, activePlayerName, tint = ActiveGreen, modifier = Modifier.size(16.dp))
+                            Text(
+                                activePlayerName,
+                                color = Color.White,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 1
+                            )
+                            Icon(Icons.Default.ArrowDropDown, null, tint = TextMuted, modifier = Modifier.size(16.dp))
+                        }
+                    }
+                    DropdownMenu(expanded = playerMenu, onDismissRequest = { playerMenu = false }) {
+                        playerChoices.forEach { (key, label) ->
+                            DropdownMenuItem(
+                                text = { Text(label) },
+                                leadingIcon = {
+                                    if (key == activePlayerKey) Icon(Icons.Default.Check, null, tint = ActiveGreen)
+                                    else Icon(Icons.Default.Speaker, null)
+                                },
+                                onClick = {
+                                    playerMenu = false
+                                    onPlayerSelect(key)
+                                }
+                            )
+                        }
                     }
                 }
             }
@@ -346,6 +376,7 @@ private fun screenTitle(screen: Screen) = when (screen) {
     Screen.QUEUE -> "Queue"
     Screen.KODI -> "Kodi remote"
     Screen.KODI_LIBRARY -> "Video library"
+    Screen.NEWS -> "News"
     Screen.YOUTUBE -> "YouTube"
     Screen.PHONE_VIDEO -> "Now playing"
     Screen.STREMIO -> "Stremio"
@@ -414,25 +445,24 @@ private fun DrawerAction(label: String, icon: androidx.compose.ui.graphics.vecto
 private fun RoomScreen(controller: AppController, room: RoomConfig?) {
     val now by controller.nowPlaying.collectAsState()
     val joinSourceId by controller.joinSourceRoomId.collectAsState()
-    val activePlayerKey by controller.activePlayerKey.collectAsState()
     val settings by controller.settings.collectAsState()
     val joinRoom = joinSourceId?.let { id -> settings.rooms.firstOrNull { it.id == id } }
     if (room == null) { EmptyState("No room configured", "Add a room in Settings."); return }
+
+    val beforeTen = remember { java.time.LocalTime.now().hour < 10 }
 
     Column(Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 6.dp)) {
         NowPlayingCard(controller, now, settings)
         Spacer(Modifier.height(16.dp))
 
-        val kodiActive = now.source.equals(room.kodiSourceName, ignoreCase = true) ||
-            now.source.contains("kodi", ignoreCase = true)
-        val regularTiles = room.tiles.filterNot { it.id == "__SOURCE__" }
-
         LazyVerticalGrid(
             columns = GridCells.Fixed(2),
             horizontalArrangement = Arrangement.spacedBy(12.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
-            modifier = Modifier.weight(1f)
+            modifier = Modifier.weight(1f),
+            userScrollEnabled = false
         ) {
+            // L1 — Source
             item(key = "__SOURCE_FIXED__") {
                 SourceTile(
                     currentSource = now.source,
@@ -441,28 +471,10 @@ private fun RoomScreen(controller: AppController, room: RoomConfig?) {
                     onSelect = controller::selectRoomSource
                 )
             }
-            if (kodiActive && room.kodi.baseUrl.isNotBlank()) {
-                item(key = "__KODI_REMOTE_FIXED__") {
-                    RoomTile(
-                        TileConfig(title = "Kodi remote", icon = "remote"),
-                        Modifier.fillMaxWidth().aspectRatio(1.12f),
-                        selected = true
-                    ) { controller.openKodi() }
-                }
-            }
-            gridItems(room.secondaryPlayers, key = { "secondary:${it.id}" }) { secondary ->
-                SecondaryPlayerTile(
-                    secondary = secondary,
-                    active = activePlayerKey == secondary.id,
-                    modifier = Modifier.fillMaxWidth().aspectRatio(1.12f),
-                    onToggle = { controller.toggleSecondaryPlayer(secondary.id) },
-                    onPause = { controller.secondaryPause(secondary.id) },
-                    onStop = { controller.secondaryStop(secondary.id) },
-                    onAuxToggle = { controller.toggleSecondaryAux(secondary.id) }
-                )
-            }
-            if (joinRoom != null) {
-                item(key = "__JOIN_FIXED__") {
+
+            // R1 — Join when available; otherwise context-aware play.
+            item(key = "__R1_FIXED__") {
+                if (joinRoom != null) {
                     JoinTile(
                         source = joinRoom,
                         modifier = Modifier.fillMaxWidth().aspectRatio(1.12f),
@@ -471,10 +483,50 @@ private fun RoomScreen(controller: AppController, room: RoomConfig?) {
                         onPause = { controller.pauseRoom(joinRoom.id) },
                         onOff = { controller.turnOffRoom(joinRoom.id) }
                     )
+                } else {
+                    RoomTile(
+                        TileConfig(
+                            id = "__DYNAMIC_PLAY__",
+                            title = if (beforeTen) "Morning news" else "Play music",
+                            icon = if (beforeTen) "news" else "music"
+                        ),
+                        Modifier.fillMaxWidth().aspectRatio(1.12f)
+                    ) { controller.playDynamicTile() }
                 }
             }
-            gridItems(regularTiles, key = { it.id }) { tile ->
-                RoomTile(tile, Modifier.fillMaxWidth().aspectRatio(1.12f)) { controller.executeTile(tile) }
+
+            // L2 — Video library
+            item(key = "__VIDEO_LIBRARY__") {
+                RoomTile(
+                    TileConfig(id = "__VIDEO_LIBRARY__", title = "Video library", icon = "video"),
+                    Modifier.fillMaxWidth().aspectRatio(1.12f)
+                ) {
+                    controller.executeTile(TileConfig(actionType = TileActionType.OPEN_KODI))
+                }
+            }
+
+            // R2 — Music library
+            item(key = "__MUSIC_LIBRARY__") {
+                RoomTile(
+                    TileConfig(id = "__MUSIC_LIBRARY__", title = "Music library", icon = "library"),
+                    Modifier.fillMaxWidth().aspectRatio(1.12f)
+                ) { controller.openLibrary(roomScoped = true) }
+            }
+
+            // L3 — News from BS5c; article selection is spoken in the active room.
+            item(key = "__NEWS__") {
+                RoomTile(
+                    TileConfig(id = "__NEWS__", title = "News", icon = "news"),
+                    Modifier.fillMaxWidth().aspectRatio(1.12f)
+                ) { controller.openNews() }
+            }
+
+            // R3 — Queue
+            item(key = "__QUEUE__") {
+                RoomTile(
+                    TileConfig(id = "__QUEUE__", title = "Queue", icon = "queue"),
+                    Modifier.fillMaxWidth().aspectRatio(1.12f)
+                ) { controller.openQueue(roomScoped = true) }
             }
         }
     }
@@ -689,6 +741,46 @@ private fun tileIcon(name: String) = when (name.lowercase()) {
     "video" -> Icons.Default.VideoLibrary
     "youtube" -> Icons.Default.SmartDisplay
     else -> Icons.Default.MusicNote
+}
+
+@Composable
+private fun NewsScreen(controller: AppController) {
+    val sections by controller.newsSections.collectAsState()
+    if (sections.isEmpty()) {
+        EmptyState("No news available", "The BeoSound 5c news service did not return any articles.")
+        return
+    }
+    LazyColumn(
+        Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(14.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        sections.forEach { section ->
+            item(key = "section:${section.id}") {
+                Text(section.name, fontSize = 18.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 6.dp))
+            }
+            items(section.articles, key = { "article:${it.id}" }) { article ->
+                Card(
+                    modifier = Modifier.fillMaxWidth().combinedClickable(
+                        onClick = { controller.readNewsArticle(article) },
+                        onLongClick = { controller.readNewsArticle(article) }
+                    ),
+                    colors = CardDefaults.cardColors(containerColor = Panel2),
+                    shape = RoundedCornerShape(16.dp)
+                ) {
+                    Row(Modifier.fillMaxWidth().padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.Newspaper, null, modifier = Modifier.size(28.dp))
+                        Spacer(Modifier.width(12.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text(article.title, fontWeight = FontWeight.SemiBold, maxLines = 3, overflow = TextOverflow.Ellipsis)
+                            Text("Tap to read in ${controller.currentRoom()?.name ?: "active room"}", color = TextMuted, fontSize = 12.sp)
+                        }
+                        Icon(Icons.Default.VolumeUp, "Read article", tint = ActiveGreen)
+                    }
+                }
+            }
+        }
+    }
 }
 
 // ---------------- Unified media hub ----------------
@@ -1960,22 +2052,6 @@ private fun SettingsScreen(
                             Icon(Icons.Default.BluetoothSearching, null)
                             Spacer(Modifier.width(8.dp))
                             Text(if (calibrated) "Recalibrate Bluetooth (3 points)" else "Calibrate Bluetooth (3 points)")
-                        }
-                    }
-                }
-                item {
-                    SettingsSection("${room.name} tiles") {
-                        SourceTileAdder(room, controller.availableSources(room)) { updatedRoom ->
-                            draft = draft.copy(rooms = draft.rooms.map { if (it.id == room.id) updatedRoom else it })
-                        }
-                        if (room.sourceOptions.isNotEmpty()) HorizontalDivider(Modifier.padding(vertical = 8.dp))
-                        room.tiles.forEachIndexed { idx, tile ->
-                            TileEditor(idx + 1, tile) { updated ->
-                                val newTiles = room.tiles.toMutableList().apply { this[idx] = updated }
-                                val updatedRoom = room.copy(tiles = newTiles)
-                                draft = draft.copy(rooms = draft.rooms.map { if (it.id == room.id) updatedRoom else it })
-                            }
-                            if (idx < room.tiles.lastIndex) HorizontalDivider(Modifier.padding(vertical = 8.dp))
                         }
                     }
                 }
