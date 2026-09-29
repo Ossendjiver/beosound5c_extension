@@ -557,6 +557,10 @@ class AppController(context: Context) {
 
     fun openSharedKodiLibrary() = openKodiLibrary(shared = true)
 
+    fun exitKodiLibrary() {
+        if (kodiLibraryShared) goMedia() else openKodi()
+    }
+
     private fun kodiBrowseRoom(): RoomConfig? =
         kodiLibraryHostRoomId?.let { id -> _settings.value.rooms.firstOrNull { it.id == id } } ?: currentRoom()
 
