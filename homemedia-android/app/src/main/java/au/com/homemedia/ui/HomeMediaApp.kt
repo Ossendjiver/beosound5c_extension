@@ -960,30 +960,55 @@ private fun YouTubeCompactRow(item: YouTubeItem, onPlay: () -> Unit, modifier: M
 @Composable
 private fun PhoneVideoScreen(controller: AppController) {
     val video by controller.phoneVideo.collectAsState()
-    val context = LocalContext.current
+    val fullscreen by controller.phoneFullscreen.collectAsState()
+    val player by PhonePlaybackService.player.collectAsState()
     val current = video ?: run {
         EmptyState("Nothing playing", "Return to YouTube.")
         return
     }
-    val player = remember(current.streamUrl) {
-        ExoPlayer.Builder(context).build().apply {
-            setMediaItem(MediaItem.fromUri(current.streamUrl))
-            prepare()
-            playWhenReady = true
+
+    Column(Modifier.fillMaxSize().background(Color.Black)) {
+        Box(Modifier.fillMaxWidth().weight(1f)) {
+            if (player == null) {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator()
+                }
+            } else {
+                AndroidView(
+                    factory = { ctx ->
+                        PlayerView(ctx).apply {
+                            useController = true
+                            this.player = player
+                        }
+                    },
+                    update = { it.player = player },
+                    modifier = Modifier.fillMaxSize()
+                )
+            }
+            Row(
+                Modifier.align(Alignment.TopEnd).padding(10.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                FilledTonalIconButton(
+                    onClick = { controller.setPhoneFullscreen(!fullscreen) }
+                ) {
+                    Icon(
+                        if (fullscreen) Icons.Default.FullscreenExit else Icons.Default.Fullscreen,
+                        if (fullscreen) "Exit fullscreen" else "Fullscreen"
+                    )
+                }
+                if (fullscreen) {
+                    FilledTonalIconButton(onClick = controller::stopPhoneVideo) {
+                        Icon(Icons.Default.Close, "Close")
+                    }
+                }
+            }
         }
-    }
-    DisposableEffect(player) {
-        onDispose { player.release() }
-    }
-    Column(Modifier.fillMaxSize()) {
-        AndroidView(
-            factory = { ctx -> PlayerView(ctx).apply { this.player = player } },
-            update = { it.player = player },
-            modifier = Modifier.fillMaxWidth().weight(1f)
-        )
-        Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text(current.title, modifier = Modifier.weight(1f), maxLines = 2, overflow = TextOverflow.Ellipsis)
-            TextButton(onClick = controller::stopPhoneVideo) { Text("Close") }
+        if (!fullscreen) {
+            Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text(current.title, modifier = Modifier.weight(1f), maxLines = 2, overflow = TextOverflow.Ellipsis)
+                TextButton(onClick = controller::stopPhoneVideo) { Text("Close") }
+            }
         }
     }
 }
