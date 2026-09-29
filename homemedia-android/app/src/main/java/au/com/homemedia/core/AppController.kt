@@ -144,6 +144,9 @@ class AppController(context: Context) {
     val bluetoothCalibration: StateFlow<BluetoothCalibrationState?> = _bluetoothCalibration
     private var kodiLibraryHostRoomId: String? = null
     private var kodiLibraryShared: Boolean = false
+    private var pendingBluetoothRoomId: String? = null
+    private var pendingBluetoothConfirmations: Int = 0
+    private val bluetoothConfirmationsRequired = 2
     private var pendingBleRoomId: String? = null
     private var pendingBleConfirmations: Int = 0
 
