@@ -130,9 +130,7 @@ private fun mediaTiles(
     includeCd: Boolean = true,
     includeNews: Boolean = true
 ): List<TileConfig> = buildList {
-    if (includeCd) {
-        add(TileConfig(title = "CD", icon = "disc", actionType = TileActionType.SELECT_SOURCE, source = "CD"))
-    }
+    add(TileConfig(id = "__SOURCE__", title = "Source", icon = "source", actionType = TileActionType.SELECT_SOURCE))
     if (includeNews) {
         add(
             TileConfig(
