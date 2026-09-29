@@ -493,8 +493,9 @@ class AppController(context: Context) {
                         else -> room.primaryPlayerEntity
                     }
                     if (entity.isBlank()) error("Target media player is not configured")
+                    val streamUrl = youtube.directPlaybackUrl(item.videoId)
                     val data = JSONObject()
-                        .put("media_content_id", "https://www.youtube.com/watch?v=${item.videoId}")
+                        .put("media_content_id", streamUrl)
                         .put("media_content_type", "video")
                     if (!ha.callService("media_player", "play_media", entity, data)) error("Home Assistant is not connected")
                 }
