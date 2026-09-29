@@ -4,7 +4,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.util.UUID
 
-enum class TileActionType { HA_SERVICE, SELECT_SOURCE, OPEN_LIBRARY, OPEN_KODI, OPEN_QUEUE }
+enum class TileActionType { HA_SERVICE, SELECT_SOURCE, OPEN_LIBRARY, OPEN_KODI, OPEN_QUEUE, OPEN_YOUTUBE }
 enum class SharedSource { LINK, A_AUX }
 enum class MassCategory(val apiName: String, val label: String) {
     ARTISTS("artists", "Artists"),
@@ -72,17 +72,36 @@ data class BluetoothCalibrationPoint(
 data class PlaybackTarget(
     val id: String,
     val label: String,
-    val roomId: String,
+    val roomId: String = "",
     val secondaryId: String = "",
     val kodi: Boolean = false,
-    val cast: Boolean = false
+    val cast: Boolean = false,
+    val phone: Boolean = false
 )
 
 data class YouTubeItem(
     val videoId: String,
     val title: String,
     val channel: String = "",
+    val channelUrl: String = "",
     val thumbnail: String = ""
+)
+
+data class YouTubeSavedChannel(
+    val name: String,
+    val url: String
+)
+
+data class YouTubePlaylist(
+    val id: String = UUID.randomUUID().toString(),
+    val name: String,
+    val videos: List<YouTubeItem> = emptyList()
+)
+
+data class PhoneVideo(
+    val title: String = "",
+    val streamUrl: String = "",
+    val youtubeItem: YouTubeItem? = null
 )
 
 data class RoomConfig(
@@ -179,7 +198,7 @@ private fun presetRooms(): List<RoomConfig> = listOf(
         ),
         sourceOptions = listOf("CD", "Link", "A.AUX", "Kodi"),
         youtubeCastEntity = "",
-        tiles = mediaTiles(video = true)
+        tiles = mediaTiles(video = true) + TileConfig(title = "YouTube", icon = "youtube", actionType = TileActionType.OPEN_YOUTUBE)
     ),
     RoomConfig(
         id = "dining", name = "Dining",
@@ -194,7 +213,7 @@ private fun presetRooms(): List<RoomConfig> = listOf(
             )
         ),
         sourceOptions = listOf("CD", "Link", "A.AUX", "Kodi"),
-        tiles = mediaTiles(video = true)
+        tiles = mediaTiles(video = true) + TileConfig(title = "YouTube", icon = "youtube", actionType = TileActionType.OPEN_YOUTUBE)
     ),
     RoomConfig(
         id = "bedroom", name = "Bedroom",
@@ -208,7 +227,7 @@ private fun presetRooms(): List<RoomConfig> = listOf(
         primaryPlayerEntity = "media_player.cuisine",
         mlgwEntity = "media_player.cuisine",
         sourceOptions = listOf("Link", "A.AUX", "Kodi"),
-        tiles = mediaTiles(video = true, includeCd = false)
+        tiles = mediaTiles(video = true, includeCd = false) + TileConfig(title = "YouTube", icon = "youtube", actionType = TileActionType.OPEN_YOUTUBE)
     ),
     RoomConfig(
         id = "bathroom", name = "Bathroom",
