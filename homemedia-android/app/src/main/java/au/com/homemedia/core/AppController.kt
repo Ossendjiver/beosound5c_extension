@@ -146,6 +146,8 @@ class AppController(context: Context) {
     private var kodiLibraryShared: Boolean = false
     private var pendingBleRoomId: String? = null
     private var pendingBleConfirmations: Int = 0
+    private var mediaEntryRoomId: String? = null
+    private var mediaOriginScreen: Screen = Screen.ROOM
 
     init {
         debugLogger.setEnabled(_settings.value.debugEnabled)
@@ -373,14 +375,61 @@ class AppController(context: Context) {
         }
     }
 
-    fun goRoom() { _screen.value = Screen.ROOM }
-    fun goMedia() { _screen.value = Screen.MEDIA }
+    fun goRoom() {
+        mediaEntryRoomId = null
+        mediaOriginScreen = Screen.ROOM
+        _screen.value = Screen.ROOM
+    }
+
+    fun goMedia() {
+        mediaEntryRoomId = null
+        mediaOriginScreen = Screen.MEDIA
+        _screen.value = Screen.MEDIA
+    }
+
     fun goSettings() { _screen.value = Screen.SETTINGS }
-    fun openYouTube(section: String = "Search") {
+
+    private fun beginMediaNavigation(roomScoped: Boolean) {
+        mediaOriginScreen = if (roomScoped) Screen.ROOM else when (_screen.value) {
+            Screen.MEDIA -> Screen.MEDIA
+            else -> Screen.ROOM
+        }
+        mediaEntryRoomId = if (roomScoped) _selectedRoomId.value else null
+    }
+
+    fun openYouTube(section: String = "Search", roomScoped: Boolean = false) {
+        beginMediaNavigation(roomScoped)
         _youtubeSection.value = section
         _screen.value = Screen.YOUTUBE
     }
-    fun openStremio() { _screen.value = Screen.STREMIO }
+
+    fun openStremio(roomScoped: Boolean = false) {
+        beginMediaNavigation(roomScoped)
+        _screen.value = Screen.STREMIO
+    }
+
+    fun navigateBack() {
+        when (_screen.value) {
+            Screen.ROOM -> Unit
+            Screen.MEDIA -> goRoom()
+            Screen.MASS_DETAIL -> backFromMassDetail()
+            Screen.MASS_LIST -> backToMassHome()
+            Screen.MASS_HOME, Screen.QUEUE, Screen.YOUTUBE, Screen.STREMIO ->
+                if (mediaOriginScreen == Screen.MEDIA) goMedia() else goRoom()
+            Screen.KODI_LIBRARY -> {
+                if (_kodiBrowse.value.type != KodiBrowseType.HOME || kodiBackStack.isNotEmpty()) {
+                    kodiBrowseBack()
+                } else if (mediaOriginScreen == Screen.MEDIA) {
+                    goMedia()
+                } else {
+                    goRoom()
+                }
+            }
+            Screen.KODI -> if (mediaOriginScreen == Screen.MEDIA) goMedia() else goRoom()
+            Screen.PHONE_VIDEO -> stopPhoneVideo()
+            Screen.SETTINGS -> goRoom()
+        }
+    }
     fun setPhoneFullscreen(enabled: Boolean) { _phoneFullscreen.value = enabled }
     fun stremioBoard() { runCatching { stremio.openBoard() }.onFailure { _message.value = it.message ?: "Stremio is not installed" } }
     fun stremioLibrary() { runCatching { stremio.openLibrary() }.onFailure { _message.value = it.message ?: "Stremio is not installed" } }
@@ -530,6 +579,8 @@ class AppController(context: Context) {
         if (_settings.value.rooms.none { it.id == id }) return
         _selectedRoomId.value = id
         persist(_settings.value.copy(lastRoomId = id))
+        mediaEntryRoomId = null
+        mediaOriginScreen = Screen.ROOM
         _screen.value = Screen.ROOM
         _activePlayerKey.value = "primary"
         updateNowPlaying(ha.states.value)
@@ -563,10 +614,13 @@ class AppController(context: Context) {
     fun executeTile(tile: TileConfig) {
         val room = currentRoom() ?: return
         when (tile.actionType) {
-            TileActionType.OPEN_LIBRARY -> openLibrary()
-            TileActionType.OPEN_KODI -> openKodiLibrary(shared = false)
-            TileActionType.OPEN_QUEUE -> openQueue()
-            TileActionType.OPEN_YOUTUBE -> openYouTube("Search")
+            TileActionType.OPEN_LIBRARY -> openLibrary(roomScoped = true)
+            TileActionType.OPEN_KODI -> {
+                beginMediaNavigation(roomScoped = true)
+                openKodiLibrary(shared = false)
+            }
+            TileActionType.OPEN_QUEUE -> openQueue(roomScoped = true)
+            TileActionType.OPEN_YOUTUBE -> openYouTube("Search", roomScoped = true)
             TileActionType.SELECT_SOURCE -> if (tile.source.isNotBlank()) selectRoomSource(tile.source)
             TileActionType.HA_SERVICE -> scope.launch {
                 busyRun("Home Assistant action failed") {
@@ -582,8 +636,54 @@ class AppController(context: Context) {
     fun togglePlayPause() { activeTransportEntity()?.takeIf(String::isNotBlank)?.let(ha::playPause) }
     fun next() { activeTransportEntity()?.takeIf(String::isNotBlank)?.let(ha::next) }
     fun previous() { activeTransportEntity()?.takeIf(String::isNotBlank)?.let(ha::previous) }
-    fun volumeUp() { activeTransportEntity()?.takeIf(String::isNotBlank)?.let(ha::volumeUp) }
-    fun volumeDown() { activeTransportEntity()?.takeIf(String::isNotBlank)?.let(ha::volumeDown) }
+    fun stop() { activeTransportEntity()?.takeIf(String::isNotBlank)?.let(ha::stop) }
+    fun volumeUp() { activeVolumeEntity()?.takeIf(String::isNotBlank)?.let(ha::volumeUp) }
+    fun volumeDown() { activeVolumeEntity()?.takeIf(String::isNotBlank)?.let(ha::volumeDown) }
+
+    fun hardwareVolumeUp() { hardwareVolumeEntity()?.let(ha::volumeUp) }
+    fun hardwareVolumeDown() { hardwareVolumeEntity()?.let(ha::volumeDown) }
+
+    fun allOff() {
+        scope.launch {
+            busyRun("All Off failed") {
+                val states = ha.states.value
+                val script = states.values.firstOrNull { state ->
+                    if (!state.entityId.startsWith("script.")) return@firstOrNull false
+                    val id = state.entityId.lowercase()
+                    val name = state.attributes.optString("friendly_name").lowercase()
+                    id.contains("b_o_all_off") || id.contains("bo_all_off") ||
+                        name.replace("&", "and").contains("b and o all off") ||
+                        name.contains("b&o all off")
+                }?.entityId
+                if (script != null) {
+                    if (!ha.callService("script", "turn_on", script)) error("Home Assistant is not connected")
+                } else {
+                    debugLogger.log("HA", "All Off script not found")
+                }
+
+                val configuredTargets = buildSet {
+                    add(_settings.value.linkMediaPlayerEntity)
+                    add("media_player.cuisine")
+                    add("media_player.bedroomcast")
+                    _settings.value.rooms.flatMap { it.secondaryPlayers }.forEach { secondary ->
+                        if (secondary.name.equals("Lounge Mini", true) || secondary.name.equals("Bedroom Mini", true)) {
+                            add(secondary.haEntity)
+                        }
+                    }
+                }.filter(String::isNotBlank)
+
+                configuredTargets.forEach { entity ->
+                    if (states.containsKey(entity)) {
+                        ha.stop(entity)
+                        debugLogger.log("HA", "All Off media_stop target=$entity")
+                    } else {
+                        debugLogger.log("HA", "All Off target missing from HA states=$entity")
+                    }
+                }
+                _message.value = if (script != null) "All Off sent" else "Media stopped; B&O All Off script was not found"
+            }
+        }
+    }
 
     fun roomSourceOptions(room: RoomConfig): List<String> {
         val dynamic = ha.states.value[room.routeEntity]?.attributes?.optJSONArray("source_list")
@@ -752,7 +852,8 @@ class AppController(context: Context) {
 
     // ----- Music Assistant library -----
 
-    fun openLibrary() {
+    fun openLibrary(roomScoped: Boolean = false) {
+        beginMediaNavigation(roomScoped)
         val np = _nowPlaying.value
         scope.launch {
             _busy.value = true
@@ -810,7 +911,20 @@ class AppController(context: Context) {
     }
 
     fun playMassItem(item: MassMediaItem, option: String = "replace") {
+        val roomId = mediaEntryRoomId
+        if (roomId == null) {
+            _pendingMassPlayback.value = item to option
+            return
+        }
+        val room = _settings.value.rooms.firstOrNull { it.id == roomId } ?: return
+        val activeSecondary = room.secondaryPlayers.firstOrNull { it.id == _activePlayerKey.value }
+        val targetId = if (activeSecondary != null) {
+            "secondary:${room.id}:${activeSecondary.id}"
+        } else {
+            "room:${room.id}"
+        }
         _pendingMassPlayback.value = item to option
+        confirmMassPlayback(targetId)
     }
 
     fun cancelPendingPlayback() {
@@ -858,7 +972,8 @@ class AppController(context: Context) {
 
     // ----- Music Assistant queue -----
 
-    fun openQueue() {
+    fun openQueue(roomScoped: Boolean = false) {
+        beginMediaNavigation(roomScoped)
         val room = currentRoom() ?: return
         scope.launch {
             busyRun("Could not load Music Assistant queue") {
@@ -927,6 +1042,10 @@ class AppController(context: Context) {
     // ----- Kodi remote + complete library -----
 
     fun openKodi() {
+        if (_screen.value == Screen.ROOM) {
+            mediaOriginScreen = Screen.ROOM
+            mediaEntryRoomId = _selectedRoomId.value
+        }
         _screen.value = Screen.KODI
         refreshKodi()
     }
@@ -1037,11 +1156,33 @@ class AppController(context: Context) {
 
     fun requestYouTubePlayback(item: YouTubeItem) {
         _wifiConnected.value = wifiStatus.isConnectedToWifi()
-        if (_wifiConnected.value) {
-            _pendingYoutube.value = item
-        } else {
+        if (!_wifiConnected.value) {
             startPhoneYouTube(item)
+            return
         }
+
+        val roomId = mediaEntryRoomId
+        if (roomId == null) {
+            _pendingYoutube.value = item
+            return
+        }
+
+        val room = _settings.value.rooms.firstOrNull { it.id == roomId }
+        if (room == null) {
+            _pendingYoutube.value = item
+            return
+        }
+
+        val targetId = resolveYouTubeCastEntityOrNull(room)?.let { "cast:${room.id}" }
+            ?: room.kodi.baseUrl.takeIf(String::isNotBlank)?.let { "kodi:${room.id}" }
+
+        if (targetId == null) {
+            _message.value = "No YouTube playback target is configured for ${room.name}"
+            return
+        }
+
+        _pendingYoutube.value = item
+        confirmYouTubePlayback(targetId)
     }
 
     private fun startPhoneYouTube(item: YouTubeItem) {
@@ -1100,6 +1241,7 @@ class AppController(context: Context) {
     }
 
     fun openKodiLibrary(shared: Boolean = false) {
+        if (shared) beginMediaNavigation(roomScoped = false)
         val host = if (shared) _settings.value.rooms.firstOrNull { it.kodi.baseUrl.isNotBlank() } else currentRoom()
         if (host == null || host.kodi.baseUrl.isBlank()) {
             _message.value = "No Kodi library host is configured"
@@ -1234,15 +1376,21 @@ class AppController(context: Context) {
                                 kodi.directory(room.kodi, item.file, media), directory = item.file, fileMedia = media
                             )
                         } else {
-                            refreshBluetoothLocation()
-                            kodi.open(room.kodi, item)
-                            delay(150); refreshKodi(); _screen.value = Screen.KODI
+                            if (kodiLibraryShared) {
+                                _pendingKodiItem.value = item
+                            } else {
+                                kodi.open(room.kodi, item)
+                                delay(150); refreshKodi(); _screen.value = Screen.KODI
+                            }
                         }
                     }
                     KodiBrowseType.MOVIES, KodiBrowseType.EPISODES, KodiBrowseType.MUSIC_VIDEOS, KodiBrowseType.SONGS -> {
-                        refreshBluetoothLocation()
-                        kodi.open(room.kodi, item)
-                        delay(150); refreshKodi(); _screen.value = Screen.KODI
+                        if (kodiLibraryShared) {
+                            _pendingKodiItem.value = item
+                        } else {
+                            kodi.open(room.kodi, item)
+                            delay(150); refreshKodi(); _screen.value = Screen.KODI
+                        }
                     }
                     else -> Unit
                 }
@@ -1451,6 +1599,38 @@ class AppController(context: Context) {
         val key = _activePlayerKey.value
         if (key != "primary") return room.secondaryPlayers.firstOrNull { it.id == key }?.haEntity
         return transportEntity(room)
+    }
+
+    private fun activeVolumeEntity(): String? {
+        val room = currentRoom() ?: return null
+        val key = _activePlayerKey.value
+        if (key != "primary") {
+            return room.secondaryPlayers.firstOrNull { it.id == key }?.haEntity?.takeIf(String::isNotBlank)
+                ?: room.primaryPlayerEntity.takeIf(String::isNotBlank)
+                ?: room.routeEntity.takeIf(String::isNotBlank)
+        }
+        return room.primaryPlayerEntity.takeIf(String::isNotBlank)
+            ?: room.routeEntity.takeIf(String::isNotBlank)
+    }
+
+    private fun hardwareVolumeEntity(): String? {
+        if (_screen.value == Screen.ROOM) return activeVolumeEntity()
+
+        val states = ha.states.value
+        val configured = buildList {
+            _settings.value.rooms.forEach { room ->
+                if (room.primaryPlayerEntity.isNotBlank()) add(room.primaryPlayerEntity)
+                room.secondaryPlayers.mapNotNullTo(this) { it.haEntity.takeIf(String::isNotBlank) }
+                resolveYouTubeCastEntityOrNull(room)?.let(::add)
+            }
+        }.distinct()
+
+        val active = configured.filter { entity ->
+            states[entity]?.state in setOf("playing", "paused", "buffering")
+        }
+        if (active.size == 1) return active.first()
+
+        return activeVolumeEntity()
     }
 
     private suspend fun resolveActiveQueueForRoom(room: RoomConfig): String {
