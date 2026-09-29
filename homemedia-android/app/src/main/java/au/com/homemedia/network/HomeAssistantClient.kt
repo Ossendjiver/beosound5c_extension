@@ -19,6 +19,9 @@ class HomeAssistantClient {
     private var token: String = ""
     private val ids = AtomicInteger(10)
     private var debugLog: ((String, String) -> Unit)? = null
+    private var reconnectJob: kotlinx.coroutines.Job? = null
+    private val reconnectScope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.IO)
+    @Volatile private var manualDisconnect = false
 
     fun setDebugLogger(logger: ((String, String) -> Unit)?) {
         debugLog = logger
@@ -31,7 +34,10 @@ class HomeAssistantClient {
     val connected: StateFlow<Boolean> = _connected
 
     fun connect(url: String, accessToken: String) {
-        disconnect()
+        manualDisconnect = false
+        reconnectJob?.cancel()
+        reconnectJob = null
+        disconnectInternal("reconnect")
         if (url.isBlank() || accessToken.isBlank()) return
         baseUrl = url.trimEnd('/')
         token = accessToken.trim()
@@ -51,19 +57,68 @@ class HomeAssistantClient {
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
                 debugLog?.invoke("HA", "WebSocket closed code=$code reason=$reason")
                 _connected.value = false
+                if (!manualDisconnect) scheduleReconnect()
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                 debugLog?.invoke("HA", "WebSocket failure ${t.javaClass.simpleName}: ${t.message}; http=${response?.code}")
                 _connected.value = false
+                if (!manualDisconnect) scheduleReconnect()
             }
         })
     }
 
     fun disconnect() {
-        socket?.close(1000, "reconnect")
+        manualDisconnect = true
+        reconnectJob?.cancel()
+        reconnectJob = null
+        disconnectInternal("disconnect")
+    }
+
+    private fun disconnectInternal(reason: String) {
+        socket?.close(1000, reason)
         socket = null
         _connected.value = false
+    }
+
+    private fun scheduleReconnect() {
+        if (baseUrl.isBlank() || token.isBlank()) return
+        if (reconnectJob?.isActive == true) return
+        reconnectJob = reconnectScope.launch {
+            var delayMs = 1500L
+            while (!manualDisconnect && !_connected.value) {
+                kotlinx.coroutines.delay(delayMs)
+                if (manualDisconnect || _connected.value) break
+                debugLog?.invoke("HA", "Reconnect attempt after ${delayMs}ms")
+                val url = baseUrl
+                val wsUrl = when {
+                    url.startsWith("https://") -> "wss://${url.removePrefix("https://")}/api/websocket"
+                    url.startsWith("http://") -> "ws://${url.removePrefix("http://")}/api/websocket"
+                    else -> "ws://$url/api/websocket"
+                }
+                debugLog?.invoke("HA", "Connecting websocket $wsUrl token=present")
+                val request = Request.Builder().url(wsUrl).build()
+                socket = http.newWebSocket(request, object : WebSocketListener() {
+                    override fun onMessage(webSocket: WebSocket, text: String) {
+                        handleMessage(webSocket, text)
+                    }
+                    override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                        debugLog?.invoke("HA", "WebSocket closed code=$code reason=$reason")
+                        _connected.value = false
+                    }
+                    override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                        debugLog?.invoke("HA", "Reconnect failed ${t.javaClass.simpleName}: ${t.message}; http=${response?.code}")
+                        _connected.value = false
+                    }
+                })
+                kotlinx.coroutines.delay(3000)
+                if (_connected.value) {
+                    debugLog?.invoke("HA", "Reconnect succeeded")
+                    break
+                }
+                delayMs = (delayMs * 2).coerceAtMost(30000L)
+            }
+        }
     }
 
     fun imageUrl(relativeOrAbsolute: String): String {
