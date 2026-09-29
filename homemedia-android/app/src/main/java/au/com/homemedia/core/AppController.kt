@@ -145,7 +145,7 @@ class AppController(context: Context) {
             _bluetoothCalibration.value = state.copy(running = true, lastSummary = "Scanning…")
             val scan = bluetoothLocator.scanFingerprint(5500)
             val useful = scan.samples.filter { it.rssi >= -92 }.take(12)
-            val strong = useful.count { it.rssi >= -68 }
+            val strong = useful.count { it.rssi >= -62 }
             val point = BluetoothCalibrationPoint(point = state.point, samples = useful)
             val captured = state.captured.filterNot { it.point == state.point } + point
             val summary = when {
@@ -163,7 +163,7 @@ class AppController(context: Context) {
                 )
             } else {
                 val finalPoints = captured.sortedBy { it.point }.take(3)
-                val strongAcross = finalPoints.flatMap { it.samples }.count { it.rssi >= -68 }
+                val strongAcross = finalPoints.flatMap { it.samples }.count { it.rssi >= -62 }
                 val quiet = strongAcross == 0
                 val settings = _settings.value
                 val updatedRooms = settings.rooms.map { room ->
