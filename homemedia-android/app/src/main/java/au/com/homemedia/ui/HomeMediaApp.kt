@@ -1746,6 +1746,14 @@ private fun SettingsScreen(controller: AppController, initial: AppSettings, onIm
                     SettingsField("Global media entity", draft.globalMediaEntity) { draft = draft.copy(globalMediaEntity = it) }
                     SettingsField("Link metadata entity", draft.linkMediaPlayerEntity) { draft = draft.copy(linkMediaPlayerEntity = it) }
                     SettingSwitch("Automatic room from presence", draft.automaticRoom) { draft = draft.copy(automaticRoom = it) }
+                    if (draft.automaticRoom && draft.rooms.none { it.presenceEntity.isNotBlank() }) {
+                        Text(
+                            "Automatic room is enabled, but no Home Assistant presence sensors are configured.",
+                            color = Danger,
+                            fontSize = 12.sp,
+                            modifier = Modifier.padding(vertical = 4.dp)
+                        )
+                    }
                     SettingSwitch("Use sole active player as room fallback", draft.activePlayerLocationFallback) { draft = draft.copy(activePlayerLocationFallback = it) }
                 }
             }
