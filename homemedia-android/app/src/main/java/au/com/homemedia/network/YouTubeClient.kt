@@ -3,39 +3,97 @@ package au.com.homemedia.network
 import au.com.homemedia.model.YouTubeItem
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.OkHttpClient
-import okhttp3.Request
-import org.json.JSONObject
-import java.net.URLEncoder
+import okhttp3.Request as OkRequest
+import okhttp3.RequestBody.Companion.toRequestBody
+import org.schabi.newpipe.extractor.NewPipe
+import org.schabi.newpipe.extractor.downloader.Downloader
+import org.schabi.newpipe.extractor.downloader.Request
+import org.schabi.newpipe.extractor.downloader.Response
+import org.schabi.newpipe.extractor.search.SearchInfo
+import org.schabi.newpipe.extractor.stream.StreamInfoItem
+import java.net.URI
 import java.util.concurrent.TimeUnit
 
 class YouTubeClient {
-    private val client = OkHttpClient.Builder()
-        .connectTimeout(8, TimeUnit.SECONDS)
-        .readTimeout(20, TimeUnit.SECONDS)
+    private val http = OkHttpClient.Builder()
+        .connectTimeout(10, TimeUnit.SECONDS)
+        .readTimeout(25, TimeUnit.SECONDS)
+        .followRedirects(true)
+        .followSslRedirects(true)
         .build()
 
-    suspend fun search(apiKey: String, query: String, limit: Int = 25): List<YouTubeItem> = withContext(Dispatchers.IO) {
-        require(apiKey.isNotBlank()) { "Add a YouTube Data API key in Settings" }
+    @Volatile private var initialized = false
+
+    private fun ensureNewPipe() {
+        if (initialized) return
+        synchronized(this) {
+            if (initialized) return
+            NewPipe.init(object : Downloader() {
+                override fun execute(request: Request): Response {
+                    val builder = OkRequest.Builder().url(request.url())
+                    request.headers().forEach { (name, values) ->
+                        values.forEach { value -> builder.addHeader(name, value) }
+                    }
+                    val method = request.httpMethod().uppercase()
+                    val bodyBytes = request.dataToSend()
+                    val body = bodyBytes?.toRequestBody(
+                        request.headers()["Content-Type"]?.firstOrNull()?.toMediaTypeOrNull()
+                    )
+                    when (method) {
+                        "GET" -> builder.get()
+                        "HEAD" -> builder.head()
+                        "POST" -> builder.post(body ?: ByteArray(0).toRequestBody(null))
+                        else -> builder.method(method, body)
+                    }
+                    http.newCall(builder.build()).execute().use { res ->
+                        val headers = res.headers.names().associateWith { name -> res.headers.values(name) }
+                        return Response(
+                            res.code,
+                            res.message,
+                            headers,
+                            res.body?.string().orEmpty(),
+                            res.request.url.toString()
+                        )
+                    }
+                }
+            })
+            initialized = true
+        }
+    }
+
+    suspend fun search(query: String, limit: Int = 25): List<YouTubeItem> = withContext(Dispatchers.IO) {
         require(query.isNotBlank()) { "Enter a YouTube search" }
-        val url = "https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&maxResults=${limit.coerceIn(1,50)}&q=${URLEncoder.encode(query,"UTF-8")}&key=${URLEncoder.encode(apiKey,"UTF-8")}"
-        val req = Request.Builder().url(url).get().build()
-        client.newCall(req).execute().use { res ->
-            if (!res.isSuccessful) error("YouTube HTTP ${res.code}")
-            val root = JSONObject(res.body?.string().orEmpty())
-            val arr = root.optJSONArray("items") ?: return@withContext emptyList()
-            (0 until arr.length()).mapNotNull { i ->
-                val obj = arr.optJSONObject(i) ?: return@mapNotNull null
-                val id = obj.optJSONObject("id")?.optString("videoId").orEmpty()
-                val sn = obj.optJSONObject("snippet") ?: return@mapNotNull null
-                if (id.isBlank()) return@mapNotNull null
-                YouTubeItem(
+        ensureNewPipe()
+        val service = NewPipe.getService("YouTube")
+        val info = SearchInfo.getInfo(service.getSearchExtractor(query))
+        info.relatedItems
+            .asSequence()
+            .filterIsInstance<StreamInfoItem>()
+            .take(limit.coerceIn(1, 50))
+            .mapNotNull { item ->
+                val id = videoIdFromUrl(item.url)
+                if (id.isBlank()) null else YouTubeItem(
                     videoId = id,
-                    title = sn.optString("title"),
-                    channel = sn.optString("channelTitle"),
-                    thumbnail = sn.optJSONObject("thumbnails")?.optJSONObject("medium")?.optString("url").orEmpty()
+                    title = item.name,
+                    channel = item.uploaderName,
+                    thumbnail = item.thumbnails.firstOrNull()?.url.orEmpty()
                 )
             }
-        }
+            .toList()
+    }
+
+    private fun videoIdFromUrl(url: String): String {
+        return runCatching {
+            val uri = URI(url)
+            when {
+                uri.host?.contains("youtu.be", true) == true -> uri.path.trim('/').substringBefore('/')
+                else -> uri.rawQuery.orEmpty().split('&')
+                    .firstOrNull { it.startsWith("v=") }
+                    ?.substringAfter("v=")
+                    .orEmpty()
+            }
+        }.getOrDefault("")
     }
 }
