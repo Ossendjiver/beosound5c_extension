@@ -1896,6 +1896,8 @@ private fun SettingsScreen(
                     SettingsField("Home Assistant token", draft.homeAssistantToken, secret = true) { draft = draft.copy(homeAssistantToken = it) }
                     SettingsField("Music Assistant URL", draft.musicAssistantUrl) { draft = draft.copy(musicAssistantUrl = it) }
                     SettingsField("Music Assistant token", draft.musicAssistantToken, secret = true) { draft = draft.copy(musicAssistantToken = it) }
+                    SettingsField("BeoSound 5c URL", draft.beosound5cUrl) { draft = draft.copy(beosound5cUrl = it) }
+                    Text("News is loaded from the BeoSound 5c news service. Home Assistant TTS is used for the active room, with BS5c local speech as fallback.", color = TextMuted, fontSize = 12.sp, modifier = Modifier.padding(vertical = 4.dp))
                     Text("YouTube search uses NewPipeExtractor — no API key required.", color = TextMuted, fontSize = 12.sp, modifier = Modifier.padding(vertical = 4.dp))
                     SettingsField(
                         "Stremio stream addon manifests (comma separated)",
