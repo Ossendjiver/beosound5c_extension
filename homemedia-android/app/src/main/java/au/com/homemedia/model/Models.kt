@@ -203,6 +203,15 @@ private fun mediaTiles(
     add(TileConfig(title = "Queue", icon = "queue", actionType = TileActionType.OPEN_QUEUE))
 }
 
+private fun defaultPresenceForRoom(id: String): Pair<String, String> = when (id) {
+    "bedroom" -> "binary_sensor.bedroom_hlk_presence_stable" to "on"
+    "dining" -> "binary_sensor.dining_room_presence" to "on"
+    "bathroom" -> "binary_sensor.ensuite_room_presence" to "on"
+    "kitchen" -> "binary_sensor.kitchen_room_presence" to "on"
+    "lounge" -> "binary_sensor.lounge_area_presence" to "on"
+    else -> "" to ""
+}
+
 private fun presetRooms(): List<RoomConfig> = listOf(
     RoomConfig(
         id = "lounge", name = "Lounge",
@@ -217,6 +226,8 @@ private fun presetRooms(): List<RoomConfig> = listOf(
         ),
         sourceOptions = listOf("CD", "Link", "A.AUX", "Kodi"),
         youtubeCastEntity = "",
+        presenceEntity = "binary_sensor.lounge_area_presence",
+        presenceValue = "on",
         tiles = mediaTiles(video = true) + TileConfig(title = "YouTube", icon = "youtube", actionType = TileActionType.OPEN_YOUTUBE)
     ),
     RoomConfig(
@@ -232,6 +243,8 @@ private fun presetRooms(): List<RoomConfig> = listOf(
             )
         ),
         sourceOptions = listOf("CD", "Link", "A.AUX", "Kodi"),
+        presenceEntity = "binary_sensor.dining_room_presence",
+        presenceValue = "on",
         tiles = mediaTiles(video = true) + TileConfig(title = "YouTube", icon = "youtube", actionType = TileActionType.OPEN_YOUTUBE)
     ),
     RoomConfig(
@@ -239,6 +252,8 @@ private fun presetRooms(): List<RoomConfig> = listOf(
         primaryPlayerEntity = "media_player.bv10_40",
         mlgwEntity = "media_player.bv10_40",
         sourceOptions = listOf("CD", "Link", "A.AUX", "Kodi"),
+        presenceEntity = "binary_sensor.bedroom_hlk_presence_stable",
+        presenceValue = "on",
         tiles = mediaTiles(video = true) + TileConfig(title = "YouTube", icon = "youtube", actionType = TileActionType.OPEN_YOUTUBE)
     ),
     RoomConfig(
@@ -246,6 +261,8 @@ private fun presetRooms(): List<RoomConfig> = listOf(
         primaryPlayerEntity = "media_player.cuisine",
         mlgwEntity = "media_player.cuisine",
         sourceOptions = listOf("Link", "A.AUX", "Kodi"),
+        presenceEntity = "binary_sensor.kitchen_room_presence",
+        presenceValue = "on",
         tiles = mediaTiles(video = true, includeCd = false) + TileConfig(title = "YouTube", icon = "youtube", actionType = TileActionType.OPEN_YOUTUBE)
     ),
     RoomConfig(
@@ -253,6 +270,8 @@ private fun presetRooms(): List<RoomConfig> = listOf(
         primaryPlayerEntity = "media_player.bl3500_2",
         mlgwEntity = "media_player.bl3500_2",
         sourceOptions = listOf("CD", "Link", "A.AUX"),
+        presenceEntity = "binary_sensor.ensuite_room_presence",
+        presenceValue = "on",
         tiles = mediaTiles(video = false, includeCd = true)
     )
 )
@@ -266,7 +285,7 @@ private fun migrateRoomId(id: String): String = when (id) {
 }
 
 data class AppSettings(
-    val schemaVersion: Int = 3,
+    val schemaVersion: Int = 4,
     val homeAssistantUrl: String = "",
     val homeAssistantToken: String = "",
     val musicAssistantUrl: String = "",
@@ -462,11 +481,19 @@ fun appSettingsFromJson(obj: JSONObject): AppSettings {
         (0 until arr.length()).mapNotNull { i -> arr.optJSONObject(i)?.let(::roomFromJson) }
     }
     val legacyIds = parsedRooms.orEmpty().map { it.id }.toSet()
-    val rooms = if (schema < 3 && legacyIds.any { it in setOf("bs3", "lounge_mini", "bv10_32", "bv10_40", "cuisine") }) {
+    val baseRooms = if (schema < 3 && legacyIds.any { it in setOf("bs3", "lounge_mini", "bv10_32", "bv10_40", "cuisine") }) {
         presetRooms()
     } else parsedRooms?.takeIf { it.isNotEmpty() } ?: presetRooms()
+    val rooms = if (schema < 4) {
+        baseRooms.map { room ->
+            val (entity, expected) = defaultPresenceForRoom(room.id)
+            if (room.presenceEntity.isBlank() && entity.isNotBlank()) {
+                room.copy(presenceEntity = entity, presenceValue = room.presenceValue.ifBlank { expected })
+            } else room
+        }
+    } else baseRooms
     return AppSettings(
-        schemaVersion = 3,
+        schemaVersion = 4,
         homeAssistantUrl = obj.optString("homeAssistantUrl"),
         homeAssistantToken = obj.optString("homeAssistantToken"),
         musicAssistantUrl = obj.optString("musicAssistantUrl"),
