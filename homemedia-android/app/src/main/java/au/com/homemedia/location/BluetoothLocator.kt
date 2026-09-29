@@ -98,16 +98,34 @@ class BluetoothLocator(context: Context) {
             room.id to score
         }.sortedBy { it.second }
 
-        val best = scored.firstOrNull() ?: return null
+        val best = scored.firstOrNull()
         val runnerUp = scored.getOrNull(1)
-        val margin = if (runnerUp == null) Double.POSITIVE_INFINITY else runnerUp.second - best.second
 
-        // Reject weak/ambiguous matches. This is important for rooms such as Bathroom,
-        // where distant Bedroom devices may still be visible but are not a valid fingerprint.
-        if (best.second > maxAcceptableScore) return null
-        if (runnerUp != null && margin < minConfidenceMargin) return null
+        if (best != null) {
+            val margin = if (runnerUp == null) Double.POSITIVE_INFINITY else runnerUp.second - best.second
+            if (best.second <= maxAcceptableScore && (runnerUp == null || margin >= minConfidenceMargin)) {
+                return BluetoothRoomMatch(best.first, best.second, runnerUp?.second, margin)
+            }
+        }
 
-        return BluetoothRoomMatch(best.first, best.second, runnerUp?.second, margin)
+        // Negative/quiet-room fingerprint: useful for a room such as Bathroom with no local BLE.
+        // Only use it when exactly one calibrated room is explicitly quiet, no strong device is
+        // visible, and no normal room is even a moderately plausible match.
+        val quietRooms = calibrated.filter { it.bluetoothQuietRoom }
+        val strongestLive = live.maxOfOrNull { it.rssi } ?: -127
+        val nearestNormal = scored
+            .filterNot { pair -> quietRooms.any { it.id == pair.first } }
+            .minOfOrNull { it.second } ?: Double.POSITIVE_INFINITY
+        if (quietRooms.size == 1 && strongestLive < -72 && nearestNormal > 24.0) {
+            return BluetoothRoomMatch(
+                roomId = quietRooms.first().id,
+                score = 30.0,
+                runnerUpScore = nearestNormal.takeIf { it.isFinite() },
+                confidenceMargin = if (nearestNormal.isFinite()) nearestNormal - 30.0 else Double.POSITIVE_INFINITY
+            )
+        }
+
+        return null
     }
 
     private fun roomScore(room: RoomConfig, live: List<BluetoothFingerprintSample>): Double? {
