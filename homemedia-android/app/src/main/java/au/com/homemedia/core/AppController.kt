@@ -7,6 +7,7 @@ import au.com.homemedia.model.*
 import au.com.homemedia.network.HomeAssistantClient
 import au.com.homemedia.network.KodiClient
 import au.com.homemedia.network.MusicAssistantClient
+import au.com.homemedia.network.NewsClient
 import au.com.homemedia.network.YouTubeClient
 import au.com.homemedia.network.WifiStatus
 import au.com.homemedia.network.StremioClient
