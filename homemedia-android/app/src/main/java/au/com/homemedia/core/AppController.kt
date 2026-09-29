@@ -454,6 +454,44 @@ class AppController(context: Context) {
         refreshKodi()
     }
 
+    fun searchYouTube(query: String) {
+        scope.launch {
+            busyRun("YouTube search failed") {
+                _youtubeResults.value = youtube.search(_settings.value.youtubeApiKey, query)
+                _screen.value = Screen.YOUTUBE
+            }
+        }
+    }
+
+    fun requestYouTubePlayback(item: YouTubeItem) {
+        _pendingYoutube.value = item
+    }
+
+    fun confirmYouTubePlayback(targetId: String) {
+        val item = _pendingYoutube.value ?: return
+        _pendingYoutube.value = null
+        scope.launch {
+            busyRun("Could not start YouTube") {
+                refreshBluetoothLocation()
+                val target = playbackTargets(includeKodi = true).firstOrNull { it.id == targetId }
+                    ?: error("Playback target not found")
+                val room = _settings.value.rooms.first { it.id == target.roomId }
+                if (target.kodi) {
+                    kodi.openUrl(room.kodi, "plugin://plugin.video.youtube/play/?video_id=${item.videoId}")
+                } else {
+                    val entity = if (target.secondaryId.isNotBlank()) {
+                        room.secondaryPlayers.first { it.id == target.secondaryId }.haEntity
+                    } else room.primaryPlayerEntity
+                    if (entity.isBlank()) error("Target media player is not configured")
+                    val data = JSONObject()
+                        .put("media_content_id", "https://www.youtube.com/watch?v=${item.videoId}")
+                        .put("media_content_type", "video")
+                    if (!ha.callService("media_player", "play_media", entity, data)) error("Home Assistant is not connected")
+                }
+            }
+        }
+    }
+
     fun openKodiLibrary() {
         kodiBackStack.clear()
         _kodiBrowse.value = KodiBrowseState()
@@ -574,6 +612,77 @@ class AppController(context: Context) {
         if (!ha.connected.value && s.homeAssistantUrl.isNotBlank() && s.homeAssistantToken.isNotBlank()) {
             ha.connect(s.homeAssistantUrl, s.homeAssistantToken)
         }
+        scope.launch { refreshBluetoothLocation() }
+    }
+
+    fun importSettingsZip(uri: Uri) {
+        scope.launch(Dispatchers.IO) {
+            runCatching {
+                val input = appContext.contentResolver.openInputStream(uri) ?: error("Could not open settings ZIP")
+                input.use {
+                    ZipInputStream(it).use { zip ->
+                        var entry = zip.nextEntry
+                        while (entry != null) {
+                            if (!entry.isDirectory && entry.name.substringAfterLast('/').equals("settings.json", true)) {
+                                val json = zip.bufferedReader().readText()
+                                val imported = appSettingsFromJson(JSONObject(json))
+                                withContext(Dispatchers.Main) {
+                                    saveSettings(imported)
+                                    _message.value = "Settings imported"
+                                }
+                                return@use
+                            }
+                            zip.closeEntry()
+                            entry = zip.nextEntry
+                        }
+                        error("settings.json was not found in the ZIP")
+                    }
+                }
+            }.onFailure { e ->
+                withContext(Dispatchers.Main) { _message.value = e.message ?: "Could not import settings ZIP" }
+            }
+        }
+    }
+
+    private suspend fun refreshBluetoothLocation() {
+        val settings = _settings.value
+        if (!settings.bluetoothLocationEnabled || settings.rooms.none { it.bluetoothAnchors.isNotEmpty() }) return
+        val roomId = bluetoothLocator.resolveRoom(settings.rooms) ?: return
+        if (settings.rooms.any { it.id == roomId } && roomId != _selectedRoomId.value) {
+            _selectedRoomId.value = roomId
+            persist(settings.copy(lastRoomId = roomId))
+        }
+    }
+
+    private fun activeTransportEntity(): String? {
+        val room = currentRoom() ?: return null
+        val key = _activePlayerKey.value
+        if (key != "primary") return room.secondaryPlayers.firstOrNull { it.id == key }?.haEntity
+        return transportEntity(room)
+    }
+
+    private suspend fun resolveActiveQueueForRoom(room: RoomConfig): String {
+        val key = _activePlayerKey.value
+        if (key != "primary") {
+            val s = room.secondaryPlayers.firstOrNull { it.id == key }
+            if (s != null) return ma.resolvePlayerQueueId(ma.resolvePlayerId(s.maPlayerId, s.maPlayerName))
+        }
+        return resolveQueueIdForRoom(room)
+    }
+
+    private suspend fun queueForTarget(targetId: String): String {
+        val target = playbackTargets().firstOrNull { it.id == targetId } ?: error("Playback target not found")
+        val room = _settings.value.rooms.first { it.id == target.roomId }
+        return if (target.secondaryId.isNotBlank()) {
+            val s = room.secondaryPlayers.first { it.id == target.secondaryId }
+            _selectedRoomId.value = room.id
+            _activePlayerKey.value = s.id
+            ma.resolvePlayerQueueId(ma.resolvePlayerId(s.maPlayerId, s.maPlayerName))
+        } else {
+            _selectedRoomId.value = room.id
+            _activePlayerKey.value = "primary"
+            prepareMassPlaybackTarget(room)
+        }
     }
 
     // ----- internals -----
@@ -625,8 +734,10 @@ class AppController(context: Context) {
     private fun updateNowPlaying(states: Map<String, HaEntityState>) {
         val room = currentRoom()
         if (room == null) { _nowPlaying.value = NowPlaying(); return }
-        val roomState = states[room.primaryPlayerEntity]
-        val routeState = states[room.routeEntity]
+        val activeSecondary = room.secondaryPlayers.firstOrNull { it.id == _activePlayerKey.value }
+        val activeEntity = activeSecondary?.haEntity?.takeIf(String::isNotBlank) ?: room.primaryPlayerEntity
+        val roomState = states[activeEntity]
+        val routeState = if (activeSecondary == null) states[room.routeEntity] else roomState
         val source = routeState?.attributes?.optString("source").orEmpty()
         val settings = _settings.value
         val fallbackState = when {
@@ -639,7 +750,7 @@ class AppController(context: Context) {
             else -> roomState ?: routeState
         }
         if (st == null) {
-            _nowPlaying.value = NowPlaying(entityId = room.primaryPlayerEntity, source = source)
+            _nowPlaying.value = NowPlaying(entityId = activeEntity, source = source)
             return
         }
         val a = st.attributes
