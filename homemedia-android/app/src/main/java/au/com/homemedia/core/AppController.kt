@@ -15,6 +15,7 @@ import au.com.homemedia.storage.SettingsStore
 import au.com.homemedia.storage.YouTubeLibraryStore
 import au.com.homemedia.storage.LocalVideoStore
 import au.com.homemedia.storage.LocalVideoItem
+import au.com.homemedia.storage.MediaLibraryCache
 import au.com.homemedia.playback.PhonePlaybackService
 import au.com.homemedia.debug.DebugLogger
 import android.provider.OpenableColumns
@@ -51,6 +52,7 @@ class AppController(context: Context) {
     private val wifiStatus = WifiStatus(appContext)
     private val youtubeStore = YouTubeLibraryStore(appContext)
     private val localVideoStore = LocalVideoStore(appContext)
+    private val mediaCache = MediaLibraryCache(appContext)
     private val debugLogger = DebugLogger(appContext)
 
     private val _settings = MutableStateFlow(store.load())
@@ -142,6 +144,10 @@ class AppController(context: Context) {
 
     private val _phoneFullscreen = MutableStateFlow(false)
     val phoneFullscreen: StateFlow<Boolean> = _phoneFullscreen
+
+    private val _volumeHud = MutableStateFlow<Int?>(null)
+    val volumeHud: StateFlow<Int?> = _volumeHud
+    private var volumeHudJob: Job? = null
 
     private val _pendingYoutube = MutableStateFlow<YouTubeItem?>(null)
     val pendingYoutube: StateFlow<YouTubeItem?> = _pendingYoutube
@@ -725,8 +731,28 @@ class AppController(context: Context) {
     fun volumeUp() { activeVolumeEntity()?.takeIf(String::isNotBlank)?.let(ha::volumeUp) }
     fun volumeDown() { activeVolumeEntity()?.takeIf(String::isNotBlank)?.let(ha::volumeDown) }
 
-    fun hardwareVolumeUp() { hardwareVolumeEntity()?.let(ha::volumeUp) }
-    fun hardwareVolumeDown() { hardwareVolumeEntity()?.let(ha::volumeDown) }
+    fun hardwareVolumeUp() {
+        hardwareVolumeEntity()?.let {
+            ha.volumeUp(it)
+            showVolumeHud(+1)
+        }
+    }
+    fun hardwareVolumeDown() {
+        hardwareVolumeEntity()?.let {
+            ha.volumeDown(it)
+            showVolumeHud(-1)
+        }
+    }
+
+    private fun showVolumeHud(delta: Int) {
+        val current = (_nowPlaying.value.volume * 100.0).toInt().takeIf { it in 0..100 } ?: 0
+        _volumeHud.value = (current + delta * 5).coerceIn(0, 100)
+        volumeHudJob?.cancel()
+        volumeHudJob = scope.launch {
+            delay(1100)
+            _volumeHud.value = null
+        }
+    }
 
     fun allOff() {
         scope.launch {
@@ -794,9 +820,14 @@ class AppController(context: Context) {
         if (source.isBlank()) return
         scope.launch {
             busyRun("Could not select $source") {
-                resetRoomToPrimary(room.id)
-                ensureRoomOn(room)
-                if (!ha.selectSource(room.routeEntity, source)) error("Home Assistant is not connected")
+                if (source.equals("Off", true)) {
+                    resetRoomToPrimary(room.id)
+                    if (!ha.turnOff(room.routeEntity)) error("Home Assistant is not connected")
+                } else {
+                    resetRoomToPrimary(room.id)
+                    ensureRoomOn(room)
+                    if (!ha.selectSource(room.routeEntity, source)) error("Home Assistant is not connected")
+                }
             }
         }
     }
