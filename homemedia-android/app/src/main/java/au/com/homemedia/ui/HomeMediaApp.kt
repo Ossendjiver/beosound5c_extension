@@ -634,73 +634,107 @@ private fun tileIcon(name: String) = when (name.lowercase()) {
 // ---------------- Unified media hub ----------------
 
 @Composable
-private fun MediaHubScreen(controller: AppController) {
+private fun MediaHubScreen(controller: AppController, onAddLocal: () -> Unit) {
     val settings by controller.settings.collectAsState()
-    LazyVerticalGrid(
-        columns = GridCells.Adaptive(150.dp),
-        contentPadding = PaddingValues(16.dp),
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
-    ) {
-        item {
-            Card(
-                Modifier.fillMaxWidth().aspectRatio(1.15f).combinedClickable(onClick = controller::openLibrary, onLongClick = {}),
-                colors = CardDefaults.cardColors(containerColor = Panel2)
+    val wifi by controller.wifiConnected.collectAsState()
+    val localVideos by controller.localVideos.collectAsState()
+    var tab by remember(wifi) { mutableStateOf(if (wifi) "Home" else "Local") }
+
+    Column(Modifier.fillMaxSize()) {
+        PrimaryTabRow(selectedTabIndex = if (tab == "Home") 0 else 1) {
+            Tab(selected = tab == "Home", onClick = { tab = "Home" }, text = { Text("Home") }, icon = { Icon(Icons.Default.Home, null) })
+            Tab(selected = tab == "Local", onClick = { tab = "Local" }, text = { Text("Local") }, icon = { Icon(Icons.Default.PhoneAndroid, null) })
+        }
+
+        if (tab == "Home") {
+            LazyVerticalGrid(
+                columns = GridCells.Adaptive(150.dp),
+                contentPadding = PaddingValues(16.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.SpaceBetween) {
-                    Icon(Icons.Default.LibraryMusic, null, modifier = Modifier.size(32.dp))
-                    Column {
-                        Text("Music", fontWeight = FontWeight.Bold, fontSize = 18.sp)
-                        Text("Music Assistant", color = TextMuted, fontSize = 12.sp)
+                item {
+                    MediaHubTile("Music", "Music Assistant", Icons.Default.LibraryMusic, controller::openLibrary)
+                }
+                item {
+                    MediaHubTile("YouTube", "Channels, history & playlists", Icons.Default.SmartDisplay) { controller.openYouTube("Search") }
+                }
+                item {
+                    MediaHubTile("Stremio", "Search, watch & cast", Icons.Default.MovieFilter, controller::openStremio)
+                }
+                if (settings.rooms.any { it.kodi.baseUrl.isNotBlank() }) {
+                    item {
+                        MediaHubTile("Video library", "Kodi + YouTube + Stremio", Icons.Default.VideoLibrary, controller::openSharedKodiLibrary)
                     }
                 }
             }
-        }
-        item {
-            Card(
-                Modifier.fillMaxWidth().aspectRatio(1.15f).combinedClickable(onClick = controller::openYouTube, onLongClick = {}),
-                colors = CardDefaults.cardColors(containerColor = Panel2)
-            ) {
-                Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.SpaceBetween) {
-                    Icon(Icons.Default.SmartDisplay, null, modifier = Modifier.size(32.dp))
-                    Column {
-                        Text("YouTube", fontWeight = FontWeight.Bold, fontSize = 18.sp)
-                        Text("Search and play", color = TextMuted, fontSize = 12.sp)
-                    }
-                }
-            }
-        }
-        item {
-            Card(
-                Modifier.fillMaxWidth().aspectRatio(1.15f).combinedClickable(onClick = controller::openStremio, onLongClick = {}),
-                colors = CardDefaults.cardColors(containerColor = Panel2)
-            ) {
-                Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.SpaceBetween) {
-                    Icon(Icons.Default.MovieFilter, null, modifier = Modifier.size(32.dp))
-                    Column {
-                        Text("Stremio", fontWeight = FontWeight.Bold, fontSize = 18.sp)
-                        Text("Search and library", color = TextMuted, fontSize = 12.sp)
-                    }
-                }
-            }
-        }
-        if (settings.rooms.any { it.kodi.baseUrl.isNotBlank() }) {
-            item {
-                Card(
-                    Modifier.fillMaxWidth().aspectRatio(1.15f).combinedClickable(
-                        onClick = controller::openSharedKodiLibrary,
-                        onLongClick = {}
-                    ),
-                    colors = CardDefaults.cardColors(containerColor = Panel2)
+        } else {
+            Column(Modifier.fillMaxSize()) {
+                Row(
+                    Modifier.fillMaxWidth().padding(14.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.SpaceBetween) {
-                        Icon(Icons.Default.VideoLibrary, null, modifier = Modifier.size(32.dp))
-                        Column {
-                            Text("Video library", fontWeight = FontWeight.Bold, fontSize = 18.sp)
-                            Text("Shared Kodi library", color = TextMuted, fontSize = 12.sp)
+                    Column(Modifier.weight(1f)) {
+                        Text("Local", fontWeight = FontWeight.Bold, fontSize = 20.sp)
+                        Text(
+                            if (wifi) "On-device videos available without the home network."
+                            else "Offline mode · room location and BLE are disabled.",
+                            color = TextMuted,
+                            fontSize = 12.sp
+                        )
+                    }
+                    Button(onClick = onAddLocal) {
+                        Icon(Icons.Default.Add, null)
+                        Spacer(Modifier.width(6.dp))
+                        Text("Add video")
+                    }
+                }
+                if (localVideos.isEmpty()) {
+                    EmptyState("No local videos", "Add videos from your phone for playback without Wi‑Fi.")
+                } else {
+                    LazyColumn(contentPadding = PaddingValues(horizontal = 14.dp, vertical = 4.dp)) {
+                        items(localVideos, key = { it.uri }) { item ->
+                            Row(
+                                Modifier.fillMaxWidth()
+                                    .combinedClickable(onClick = { controller.playLocalVideo(item) }, onLongClick = {})
+                                    .padding(vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Surface(Modifier.size(58.dp), color = Panel2, shape = RoundedCornerShape(10.dp)) {
+                                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                        Icon(Icons.Default.PlayCircle, null, modifier = Modifier.size(30.dp))
+                                    }
+                                }
+                                Spacer(Modifier.width(12.dp))
+                                Text(item.name, Modifier.weight(1f), maxLines = 2, overflow = TextOverflow.Ellipsis)
+                                IconButton(onClick = { controller.removeLocalVideo(item.uri) }) {
+                                    Icon(Icons.Default.DeleteOutline, "Remove")
+                                }
+                            }
                         }
                     }
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun MediaHubTile(
+    title: String,
+    subtitle: String,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    onClick: () -> Unit
+) {
+    Card(
+        Modifier.fillMaxWidth().aspectRatio(1.15f).combinedClickable(onClick = onClick, onLongClick = {}),
+        colors = CardDefaults.cardColors(containerColor = Panel2)
+    ) {
+        Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.SpaceBetween) {
+            Icon(icon, null, modifier = Modifier.size(32.dp))
+            Column {
+                Text(title, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                Text(subtitle, color = TextMuted, fontSize = 12.sp)
             }
         }
     }
