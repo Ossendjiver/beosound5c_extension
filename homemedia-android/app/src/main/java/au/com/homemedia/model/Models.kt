@@ -63,7 +63,8 @@ data class PlaybackTarget(
     val label: String,
     val roomId: String,
     val secondaryId: String = "",
-    val kodi: Boolean = false
+    val kodi: Boolean = false,
+    val cast: Boolean = false
 )
 
 data class YouTubeItem(
@@ -86,6 +87,7 @@ data class RoomConfig(
     val secondaryPlayers: List<SecondaryPlayerConfig> = emptyList(),
     val sourceOptions: List<String> = emptyList(),
     val bluetoothAnchors: List<BluetoothAnchorConfig> = emptyList(),
+    val youtubeCastEntity: String = "",
     val presenceEntity: String = "",
     val presenceValue: String = "",
     val powerOnDelayMs: Long = 900,
@@ -151,6 +153,7 @@ private fun presetRooms(): List<RoomConfig> = listOf(
             )
         ),
         sourceOptions = listOf("CD", "Link", "A.AUX"),
+        youtubeCastEntity = "",
         tiles = mediaTiles(video = true)
     ),
     RoomConfig(
@@ -342,6 +345,7 @@ fun RoomConfig.toJson(): JSONObject = JSONObject().apply {
     put("secondaryPlayers", JSONArray().apply { secondaryPlayers.forEach { put(it.toJson()) } })
     put("sourceOptions", JSONArray().apply { sourceOptions.forEach { put(it) } })
     put("bluetoothAnchors", JSONArray().apply { bluetoothAnchors.forEach { put(it.toJson()) } })
+    put("youtubeCastEntity", youtubeCastEntity)
     put("presenceEntity", presenceEntity); put("presenceValue", presenceValue)
     put("powerOnDelayMs", powerOnDelayMs); put("sourceConfirmTimeoutMs", sourceConfirmTimeoutMs)
     put("linkSourceName", linkSourceName); put("auxSourceName", auxSourceName)
@@ -417,6 +421,7 @@ fun roomFromJson(obj: JSONObject): RoomConfig = RoomConfig(
     bluetoothAnchors = obj.optJSONArray("bluetoothAnchors")?.let { arr ->
         (0 until arr.length()).mapNotNull { i -> arr.optJSONObject(i)?.let(::bluetoothAnchorFromJson) }
     } ?: emptyList(),
+    youtubeCastEntity = obj.optString("youtubeCastEntity"),
     presenceEntity = obj.optString("presenceEntity"),
     presenceValue = obj.optString("presenceValue"),
     powerOnDelayMs = obj.optLong("powerOnDelayMs", 900),
