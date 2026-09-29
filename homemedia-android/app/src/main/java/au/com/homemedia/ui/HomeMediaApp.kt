@@ -1080,7 +1080,7 @@ private fun kodiImageUrl(config: KodiConfig, raw: String): String {
 // ---------------- Settings ----------------
 
 @Composable
-private fun SettingsScreen(controller: AppController, initial: AppSettings) {
+private fun SettingsScreen(controller: AppController, initial: AppSettings, onImportSettings: () -> Unit) {
     var draft by remember(initial) { mutableStateOf(initial) }
     var selectedRoomId by remember(initial.rooms) { mutableStateOf(initial.rooms.firstOrNull()?.id.orEmpty()) }
     val roomIndex = draft.rooms.indexOfFirst { it.id == selectedRoomId }.takeIf { it >= 0 } ?: 0
@@ -1094,6 +1094,13 @@ private fun SettingsScreen(controller: AppController, initial: AppSettings) {
                     SettingsField("Home Assistant token", draft.homeAssistantToken, secret = true) { draft = draft.copy(homeAssistantToken = it) }
                     SettingsField("Music Assistant URL", draft.musicAssistantUrl) { draft = draft.copy(musicAssistantUrl = it) }
                     SettingsField("Music Assistant token", draft.musicAssistantToken, secret = true) { draft = draft.copy(musicAssistantToken = it) }
+                    SettingsField("YouTube Data API key", draft.youtubeApiKey, secret = true) { draft = draft.copy(youtubeApiKey = it) }
+                    SettingSwitch("Bluetooth room detection", draft.bluetoothLocationEnabled) { draft = draft.copy(bluetoothLocationEnabled = it) }
+                    OutlinedButton(onClick = onImportSettings, modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
+                        Icon(Icons.Default.FolderZip, null)
+                        Spacer(Modifier.width(8.dp))
+                        Text("Import settings ZIP")
+                    }
                     SettingsField("Shared MA queue/player ID", draft.sharedMaQueueId) { draft = draft.copy(sharedMaQueueId = it) }
                     SettingsField("Shared MA queue/player name", draft.sharedMaQueueName) { draft = draft.copy(sharedMaQueueName = it) }
                     SettingsField("Global media entity", draft.globalMediaEntity) { draft = draft.copy(globalMediaEntity = it) }
@@ -1119,13 +1126,17 @@ private fun SettingsScreen(controller: AppController, initial: AppSettings) {
                 }
                 item {
                     SettingsSection("${room.name} tiles") {
-                        room.tiles.take(4).forEachIndexed { idx, tile ->
+                        SourceTileAdder(room) { updatedRoom ->
+                            draft = draft.copy(rooms = draft.rooms.map { if (it.id == room.id) updatedRoom else it })
+                        }
+                        if (room.sourceOptions.isNotEmpty()) HorizontalDivider(Modifier.padding(vertical = 8.dp))
+                        room.tiles.forEachIndexed { idx, tile ->
                             TileEditor(idx + 1, tile) { updated ->
                                 val newTiles = room.tiles.toMutableList().apply { this[idx] = updated }
                                 val updatedRoom = room.copy(tiles = newTiles)
                                 draft = draft.copy(rooms = draft.rooms.map { if (it.id == room.id) updatedRoom else it })
                             }
-                            if (idx < 3) HorizontalDivider(Modifier.padding(vertical = 8.dp))
+                            if (idx < room.tiles.lastIndex) HorizontalDivider(Modifier.padding(vertical = 8.dp))
                         }
                     }
                 }
@@ -1156,6 +1167,29 @@ private fun RoomEditor(room: RoomConfig, onChange: (RoomConfig) -> Unit) {
     SettingsField("Primary HA media_player", room.primaryPlayerEntity) { onChange(room.copy(primaryPlayerEntity = it)) }
     SettingsField("MLGW HA entity (blank = primary)", room.mlgwEntity) { onChange(room.copy(mlgwEntity = it)) }
     SettingsField("Native Music Assistant player/queue ID", room.maPlayerId) { onChange(room.copy(maPlayerId = it)) }
+    SettingsField("Native Music Assistant player name", room.maPlayerName) { onChange(room.copy(maPlayerName = it)) }
+    SettingsField("Source options (comma separated)", room.sourceOptions.joinToString(", ")) {
+        onChange(room.copy(sourceOptions = it.split(",").map(String::trim).filter(String::isNotBlank)))
+    }
+    room.secondaryPlayers.forEachIndexed { index, secondary ->
+        Spacer(Modifier.height(8.dp))
+        Text("Secondary player ${index + 1}", fontWeight = FontWeight.SemiBold)
+        SecondaryPlayerEditor(secondary) { updated ->
+            onChange(room.copy(secondaryPlayers = room.secondaryPlayers.toMutableList().apply { this[index] = updated }))
+        }
+    }
+    val anchor = room.bluetoothAnchors.firstOrNull() ?: BluetoothAnchorConfig()
+    Spacer(Modifier.height(8.dp))
+    Text("Bluetooth room anchor", fontWeight = FontWeight.SemiBold)
+    SettingsField("BLE address / MAC", anchor.address) { value ->
+        onChange(room.copy(bluetoothAnchors = listOf(anchor.copy(address = value))))
+    }
+    SettingsField("BLE device name contains", anchor.nameContains) { value ->
+        onChange(room.copy(bluetoothAnchors = listOf(anchor.copy(nameContains = value))))
+    }
+    SettingsField("Minimum RSSI", anchor.minRssi.toString(), numeric = true) { value ->
+        onChange(room.copy(bluetoothAnchors = listOf(anchor.copy(minRssi = value.toIntOrNull() ?: anchor.minRssi))))
+    }
     SettingsField("Presence entity", room.presenceEntity) { onChange(room.copy(presenceEntity = it)) }
     SettingsField("Presence value", room.presenceValue) { onChange(room.copy(presenceValue = it)) }
     SettingsField("Link source label", room.linkSourceName) { onChange(room.copy(linkSourceName = it)) }
@@ -1168,6 +1202,38 @@ private fun RoomEditor(room: RoomConfig, onChange: (RoomConfig) -> Unit) {
     SettingsField("Kodi base URL", room.kodi.baseUrl) { onChange(room.copy(kodi = room.kodi.copy(baseUrl = it))) }
     SettingsField("Kodi username", room.kodi.username) { onChange(room.copy(kodi = room.kodi.copy(username = it))) }
     SettingsField("Kodi password", room.kodi.password, secret = true) { onChange(room.copy(kodi = room.kodi.copy(password = it))) }
+}
+
+@Composable
+private fun SecondaryPlayerEditor(player: SecondaryPlayerConfig, onChange: (SecondaryPlayerConfig) -> Unit) {
+    SettingsField("Name", player.name) { onChange(player.copy(name = it)) }
+    SettingsField("HA media_player", player.haEntity) { onChange(player.copy(haEntity = it)) }
+    SettingsField("Music Assistant player ID", player.maPlayerId) { onChange(player.copy(maPlayerId = it)) }
+    SettingsField("Music Assistant player name", player.maPlayerName) { onChange(player.copy(maPlayerName = it)) }
+    SettingsField("Optional toggle entity", player.toggleEntity) { onChange(player.copy(toggleEntity = it)) }
+}
+
+@Composable
+private fun SourceTileAdder(room: RoomConfig, onChange: (RoomConfig) -> Unit) {
+    if (room.sourceOptions.isEmpty()) return
+    Text("Add source tile", color = TextMuted, fontSize = 12.sp)
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        room.sourceOptions.take(4).forEach { source ->
+            val exists = room.tiles.any { it.actionType == TileActionType.SELECT_SOURCE && it.source.equals(source, true) }
+            AssistChip(
+                onClick = {
+                    if (!exists) onChange(room.copy(tiles = room.tiles + TileConfig(
+                        title = source,
+                        icon = if (source.equals("CD", true)) "disc" else "radio",
+                        actionType = TileActionType.SELECT_SOURCE,
+                        source = source
+                    )))
+                },
+                enabled = !exists,
+                label = { Text(source) }
+            )
+        }
+    }
 }
 
 @Composable
@@ -1189,6 +1255,9 @@ private fun TileEditor(number: Int, tile: TileConfig, onChange: (TileConfig) -> 
     SettingsField("Title", tile.title) { onChange(tile.copy(title = it)) }
     SettingsField("Icon", tile.icon) { onChange(tile.copy(icon = it)) }
     TileActionSelector(tile.actionType) { onChange(tile.copy(actionType = it)) }
+    if (tile.actionType == TileActionType.SELECT_SOURCE) {
+        SettingsField("Source", tile.source) { onChange(tile.copy(source = it)) }
+    }
     if (tile.actionType == TileActionType.HA_SERVICE) {
         SettingsField("HA domain", tile.service.domain) { onChange(tile.copy(service = tile.service.copy(domain = it))) }
         SettingsField("HA service", tile.service.service) { onChange(tile.copy(service = tile.service.copy(service = it))) }
