@@ -72,6 +72,20 @@ class BluetoothLocator(context: Context) {
         maxAcceptableScore: Double = 34.0
     ): BluetoothRoomMatch? {
         val live = scanFingerprint(scanMs).samples
+        val quietRooms = rooms.filter { it.bluetoothQuietRoom && it.bluetoothCalibrationPoints.size >= 3 }
+        val hasStrongLocalSignal = live.any { it.rssi >= -62 }
+
+        // A uniquely calibrated quiet room (e.g. Bathroom) may be identified by the
+        // absence of a strong local BLE device. This prevents weak Bedroom bleed-through
+        // from becoming the default simply because Bedroom has visible devices.
+        if (!hasStrongLocalSignal && quietRooms.size == 1) {
+            return BluetoothRoomMatch(
+                roomId = quietRooms.first().id,
+                score = 0.0,
+                runnerUpScore = null,
+                confidenceMargin = Double.POSITIVE_INFINITY
+            )
+        }
         if (live.isEmpty()) return null
 
         val calibrated = rooms.filter { it.bluetoothCalibrationPoints.size >= 3 }
