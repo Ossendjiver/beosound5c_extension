@@ -153,6 +153,11 @@ class AppController(context: Context) {
     fun stopPhoneVideo() { _phoneVideo.value = null; _screen.value = Screen.YOUTUBE }
 
     fun beginBluetoothCalibration(roomId: String) {
+        _wifiConnected.value = wifiStatus.isConnectedToWifi()
+        if (!_wifiConnected.value) {
+            _message.value = "Bluetooth room calibration is disabled when not connected to Wi‑Fi"
+            return
+        }
         val room = _settings.value.rooms.firstOrNull { it.id == roomId } ?: return
         _bluetoothCalibration.value = BluetoothCalibrationState(roomId = room.id, roomName = room.name)
     }
@@ -162,6 +167,11 @@ class AppController(context: Context) {
     }
 
     fun captureBluetoothCalibrationPoint() {
+        _wifiConnected.value = wifiStatus.isConnectedToWifi()
+        if (!_wifiConnected.value) {
+            _message.value = "Bluetooth room calibration is disabled when not connected to Wi‑Fi"
+            return
+        }
         val state = _bluetoothCalibration.value ?: return
         if (state.running || state.complete) return
         scope.launch {
@@ -991,7 +1001,10 @@ class AppController(context: Context) {
         _wifiConnected.value = wifiStatus.isConnectedToWifi()
         if (!_wifiConnected.value) return
         val settings = _settings.value
-        if (!settings.bluetoothLocationEnabled || settings.rooms.none { it.bluetoothAnchors.isNotEmpty() }) return
+        val anyBluetoothData = settings.rooms.any {
+            it.bluetoothAnchors.isNotEmpty() || it.bluetoothCalibrationPoints.size >= 3
+        }
+        if (!settings.bluetoothLocationEnabled || !anyBluetoothData) return
         val match = bluetoothLocator.resolveRoom(settings.rooms) ?: return
         val roomId = match.roomId
         val current = settings.rooms.firstOrNull { it.id == _selectedRoomId.value }
@@ -1050,6 +1063,8 @@ class AppController(context: Context) {
     }
 
     private fun resolveAutomaticRoom(states: Map<String, HaEntityState>) {
+        _wifiConnected.value = wifiStatus.isConnectedToWifi()
+        if (!_wifiConnected.value) return
         val settings = _settings.value
         val presenceMatch = settings.rooms.firstOrNull { room ->
             room.presenceEntity.isNotBlank() && room.presenceValue.isNotBlank() &&
