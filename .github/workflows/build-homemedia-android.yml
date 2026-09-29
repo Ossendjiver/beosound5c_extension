@@ -58,7 +58,6 @@ jobs:
           cp "$ANDROID_SDK_ROOT/build-tools/36.0.0/lib/apksigner.jar" build-tools/apksigner.jar
 
       - name: Sign release APK with persistent key
-        if: ${{ env.HOME_MEDIA_KEYSTORE_B64 != '' }}
         shell: bash
         env:
           HOME_MEDIA_KEYSTORE_B64: ${{ secrets.HOME_MEDIA_KEYSTORE_B64 }}
@@ -67,6 +66,10 @@ jobs:
           HOME_MEDIA_KEY_PASSWORD: ${{ secrets.HOME_MEDIA_KEY_PASSWORD }}
         run: |
           set -euo pipefail
+          if [ -z "${HOME_MEDIA_KEYSTORE_B64:-}" ]; then
+            echo "Persistent signing secrets are not configured; leaving release APK unsigned."
+            exit 0
+          fi
           printf '%s' "$HOME_MEDIA_KEYSTORE_B64" | base64 --decode > build-tools/home-media-release.keystore
           java -jar build-tools/apksigner.jar sign \
             --ks build-tools/home-media-release.keystore \
