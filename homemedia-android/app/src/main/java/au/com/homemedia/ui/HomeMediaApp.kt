@@ -40,6 +40,10 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.media3.common.MediaItem
+import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.ui.PlayerView
 import androidx.compose.ui.window.Dialog
 import au.com.homemedia.core.AppController
 import au.com.homemedia.core.Screen
@@ -86,6 +90,7 @@ fun HomeMediaApp(controller: AppController) {
     val pendingYoutube by controller.pendingYoutube.collectAsState()
     val pendingKodi by controller.pendingKodiItem.collectAsState()
     val calibration by controller.bluetoothCalibration.collectAsState()
+    val wifiConnected by controller.wifiConnected.collectAsState()
     val activePlayerKey by controller.activePlayerKey.collectAsState()
     val activePlayerName = room?.let { r ->
         if (activePlayerKey == "primary") r.name
@@ -97,7 +102,8 @@ fun HomeMediaApp(controller: AppController) {
         uri?.let(controller::importSettingsZip)
     }
     val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { }
-    LaunchedEffect(Unit) {
+    LaunchedEffect(wifiConnected) {
+        if (!wifiConnected) return@LaunchedEffect
         val wanted = if (Build.VERSION.SDK_INT >= 31) {
             arrayOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT)
         } else {
@@ -121,7 +127,8 @@ fun HomeMediaApp(controller: AppController) {
                                 Screen.ROOM -> drawerOpen = true
                                 Screen.MASS_DETAIL -> controller.backFromMassDetail()
                                 Screen.MASS_LIST -> controller.backToMassHome()
-                                Screen.MEDIA, Screen.MASS_HOME, Screen.QUEUE, Screen.KODI, Screen.YOUTUBE, Screen.SETTINGS -> controller.goRoom()
+                                Screen.MEDIA, Screen.MASS_HOME, Screen.QUEUE, Screen.KODI, Screen.YOUTUBE, Screen.STREMIO, Screen.SETTINGS -> controller.goRoom()
+                                Screen.PHONE_VIDEO -> controller.stopPhoneVideo()
                                 Screen.KODI_LIBRARY -> {
                                     val state = controller.kodiBrowse.value
                                     if (state.type == KodiBrowseType.HOME) controller.exitKodiLibrary() else controller.kodiBrowseBack()
@@ -140,6 +147,8 @@ fun HomeMediaApp(controller: AppController) {
                             Screen.KODI -> KodiRemoteScreen(controller, room)
                             Screen.KODI_LIBRARY -> KodiLibraryScreen(controller, room)
                             Screen.YOUTUBE -> YouTubeScreen(controller)
+                            Screen.PHONE_VIDEO -> PhoneVideoScreen(controller)
+                            Screen.STREMIO -> StremioScreen(controller)
                             Screen.SETTINGS -> SettingsScreen(controller, settings) {
                                 settingsZipLauncher.launch(arrayOf("application/zip", "application/octet-stream"))
                             }
@@ -188,7 +197,7 @@ fun HomeMediaApp(controller: AppController) {
             pendingYoutube?.let { item ->
                 PlaybackTargetDialog(
                     title = "Play ${item.title}",
-                    targets = controller.playbackTargets(includeKodi = true),
+                    targets = controller.youtubePlaybackTargets(),
                     onDismiss = controller::cancelPendingPlayback,
                     onTarget = controller::confirmYouTubePlayback
                 )
@@ -264,6 +273,8 @@ private fun screenTitle(screen: Screen) = when (screen) {
     Screen.KODI -> "Kodi remote"
     Screen.KODI_LIBRARY -> "Kodi library"
     Screen.YOUTUBE -> "YouTube"
+    Screen.PHONE_VIDEO -> "Now playing"
+    Screen.STREMIO -> "Stremio"
     Screen.SETTINGS -> "Settings"
     else -> ""
 }
@@ -582,6 +593,7 @@ private fun tileIcon(name: String) = when (name.lowercase()) {
     "source" -> Icons.Default.Input
     "remote" -> Icons.Default.SettingsRemote
     "video" -> Icons.Default.VideoLibrary
+    "youtube" -> Icons.Default.SmartDisplay
     else -> Icons.Default.MusicNote
 }
 
