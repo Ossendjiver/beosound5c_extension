@@ -344,6 +344,7 @@ private fun NowPlayingCard(controller: AppController, now: NowPlaying, settings:
                 }
             }
         }
+        }
         Surface(
             modifier = Modifier.align(Alignment.TopEnd).padding(10.dp).size(26.dp),
             shape = RoundedCornerShape(13.dp),
