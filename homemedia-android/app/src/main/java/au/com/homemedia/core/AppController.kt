@@ -16,6 +16,16 @@ import java.util.zip.ZipInputStream
 
 enum class Screen { ROOM, MEDIA, MASS_HOME, MASS_LIST, MASS_DETAIL, QUEUE, KODI, KODI_LIBRARY, YOUTUBE, SETTINGS }
 
+data class BluetoothCalibrationState(
+    val roomId: String = "",
+    val roomName: String = "",
+    val point: Int = 1,
+    val running: Boolean = false,
+    val captured: List<BluetoothCalibrationPoint> = emptyList(),
+    val lastSummary: String = "",
+    val complete: Boolean = false
+)
+
 class AppController(context: Context) {
     private val appContext = context.applicationContext
     private val store = SettingsStore(appContext)
@@ -86,6 +96,9 @@ class AppController(context: Context) {
 
     private val _pendingKodiItem = MutableStateFlow<KodiLibraryItem?>(null)
     val pendingKodiItem: StateFlow<KodiLibraryItem?> = _pendingKodiItem
+
+    private val _bluetoothCalibration = MutableStateFlow<BluetoothCalibrationState?>(null)
+    val bluetoothCalibration: StateFlow<BluetoothCalibrationState?> = _bluetoothCalibration
     private var kodiLibraryHostRoomId: String? = null
     private var kodiLibraryShared: Boolean = false
 
@@ -115,6 +128,61 @@ class AppController(context: Context) {
     fun goMedia() { _screen.value = Screen.MEDIA }
     fun goSettings() { _screen.value = Screen.SETTINGS }
     fun openYouTube() { _screen.value = Screen.YOUTUBE }
+
+    fun beginBluetoothCalibration(roomId: String) {
+        val room = _settings.value.rooms.firstOrNull { it.id == roomId } ?: return
+        _bluetoothCalibration.value = BluetoothCalibrationState(roomId = room.id, roomName = room.name)
+    }
+
+    fun cancelBluetoothCalibration() {
+        _bluetoothCalibration.value = null
+    }
+
+    fun captureBluetoothCalibrationPoint() {
+        val state = _bluetoothCalibration.value ?: return
+        if (state.running || state.complete) return
+        scope.launch {
+            _bluetoothCalibration.value = state.copy(running = true, lastSummary = "Scanning…")
+            val scan = bluetoothLocator.scanFingerprint(5500)
+            val useful = scan.samples.filter { it.rssi >= -92 }.take(12)
+            val strong = useful.count { it.rssi >= -68 }
+            val point = BluetoothCalibrationPoint(point = state.point, samples = useful)
+            val captured = state.captured.filterNot { it.point == state.point } + point
+            val summary = when {
+                useful.isEmpty() -> "No BLE devices detected"
+                strong == 0 -> "${useful.size} weak devices detected; no strong local beacon"
+                else -> "${useful.size} devices detected, $strong strong"
+            }
+
+            if (state.point < 3) {
+                _bluetoothCalibration.value = state.copy(
+                    point = state.point + 1,
+                    running = false,
+                    captured = captured.sortedBy { it.point },
+                    lastSummary = summary
+                )
+            } else {
+                val finalPoints = captured.sortedBy { it.point }.take(3)
+                val strongAcross = finalPoints.flatMap { it.samples }.count { it.rssi >= -68 }
+                val quiet = strongAcross == 0
+                val settings = _settings.value
+                val updatedRooms = settings.rooms.map { room ->
+                    if (room.id == state.roomId) room.copy(
+                        bluetoothCalibrationPoints = finalPoints,
+                        bluetoothQuietRoom = quiet
+                    ) else room
+                }
+                persist(settings.copy(rooms = updatedRooms))
+                _bluetoothCalibration.value = state.copy(
+                    point = 3,
+                    running = false,
+                    captured = finalPoints,
+                    lastSummary = if (quiet) "$summary · marked as Bluetooth-quiet" else summary,
+                    complete = true
+                )
+            }
+        }
+    }
 
     fun selectRoom(id: String) {
         if (_settings.value.rooms.none { it.id == id }) return
@@ -773,7 +841,14 @@ class AppController(context: Context) {
     private suspend fun refreshBluetoothLocation() {
         val settings = _settings.value
         if (!settings.bluetoothLocationEnabled || settings.rooms.none { it.bluetoothAnchors.isNotEmpty() }) return
-        val roomId = bluetoothLocator.resolveRoom(settings.rooms) ?: return
+        val match = bluetoothLocator.resolveRoom(settings.rooms) ?: return
+        val roomId = match.roomId
+        val current = settings.rooms.firstOrNull { it.id == _selectedRoomId.value }
+        val leavingQuietRoom = current?.bluetoothQuietRoom == true && roomId != current.id
+        if (leavingQuietRoom) {
+            val veryStrong = match.score <= 18.0 && match.confidenceMargin >= 14.0
+            if (!veryStrong) return
+        }
         if (settings.rooms.any { it.id == roomId } && roomId != _selectedRoomId.value) {
             _selectedRoomId.value = roomId
             persist(settings.copy(lastRoomId = roomId))
