@@ -626,8 +626,18 @@ class AppController(context: Context) {
                             if (!entry.isDirectory && entry.name.substringAfterLast('/').equals("settings.json", true)) {
                                 val json = zip.bufferedReader().readText()
                                 val imported = appSettingsFromJson(JSONObject(json))
+                                val current = _settings.value
+                                val merged = imported.copy(
+                                    homeAssistantUrl = imported.homeAssistantUrl.ifBlank { current.homeAssistantUrl },
+                                    homeAssistantToken = imported.homeAssistantToken.ifBlank { current.homeAssistantToken },
+                                    musicAssistantUrl = imported.musicAssistantUrl.ifBlank { current.musicAssistantUrl },
+                                    musicAssistantToken = imported.musicAssistantToken.ifBlank { current.musicAssistantToken },
+                                    youtubeApiKey = imported.youtubeApiKey.ifBlank { current.youtubeApiKey },
+                                    sharedMaQueueId = imported.sharedMaQueueId.ifBlank { current.sharedMaQueueId },
+                                    sharedMaQueueName = imported.sharedMaQueueName.ifBlank { current.sharedMaQueueName }
+                                )
                                 withContext(Dispatchers.Main) {
-                                    saveSettings(imported)
+                                    saveSettings(merged)
                                     _message.value = "Settings imported"
                                 }
                                 return@use
