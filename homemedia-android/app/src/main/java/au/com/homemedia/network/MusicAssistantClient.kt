@@ -62,7 +62,12 @@ class MusicAssistantClient {
                 if (search.isNotBlank()) put("search", search)
                 if (category == MassCategory.GENRES) put("hide_empty", true)
             }
-            val result = command("music/${category.apiName}/library_items", args) as? JSONArray ?: JSONArray()
+            val commandName = "music/${category.apiName}/library_items"
+            val raw = command(commandName, args)
+            val result = raw as? JSONArray ?: error(
+                "Unexpected Music Assistant response for $commandName: expected JSONArray, got " +
+                    (raw?.javaClass?.simpleName ?: "null") + " payload=" + raw.toString().take(500)
+            )
             for (i in 0 until result.length()) result.optJSONObject(i)?.let(::parseMediaItem)?.let(out::add)
             if (limit > 0 || result.length() < pageSize) break
             pageOffset += result.length()
@@ -301,12 +306,18 @@ class MusicAssistantClient {
 
             override fun onMessage(webSocket: okhttp3.WebSocket, text: String) {
                 val obj = runCatching { JSONObject(text) }.getOrElse { error ->
+                    val failure = IllegalStateException(
+                        "Invalid Music Assistant JSON for " + command + ": " +
+                            (error.message ?: error.javaClass.simpleName)
+                    )
                     debugLog?.invoke(
                         "MA",
                         "invalid websocket JSON command=" + command +
                             " error=" + (error.message ?: error.javaClass.simpleName) +
                             " payload=" + text.replace("\n", " ").take(500)
                     )
+                    if (!authDone.isCompleted) authDone.completeExceptionally(failure)
+                    if (!result.isCompleted) result.completeExceptionally(failure)
                     return
                 }
                 val messageId = obj.opt("message_id")?.toString().orEmpty()
