@@ -84,6 +84,11 @@ class AppController(context: Context) {
     private val _pendingYoutube = MutableStateFlow<YouTubeItem?>(null)
     val pendingYoutube: StateFlow<YouTubeItem?> = _pendingYoutube
 
+    private val _pendingKodiItem = MutableStateFlow<KodiLibraryItem?>(null)
+    val pendingKodiItem: StateFlow<KodiLibraryItem?> = _pendingKodiItem
+    private var kodiLibraryHostRoomId: String? = null
+    private var kodiLibraryShared: Boolean = false
+
     init {
         configureConnections(_settings.value)
         scope.launch {
@@ -138,14 +143,9 @@ class AppController(context: Context) {
         val room = currentRoom() ?: return
         when (tile.actionType) {
             TileActionType.OPEN_LIBRARY -> openLibrary()
-            TileActionType.OPEN_KODI -> openKodi()
+            TileActionType.OPEN_KODI -> openKodiLibrary(shared = false)
             TileActionType.OPEN_QUEUE -> openQueue()
-            TileActionType.SELECT_SOURCE -> scope.launch {
-                busyRun("Could not select ${tile.source}") {
-                    ensureRoomOn(room)
-                    if (!ha.selectSource(room.routeEntity, tile.source)) error("Home Assistant is not connected")
-                }
-            }
+            TileActionType.SELECT_SOURCE -> if (tile.source.isNotBlank()) selectRoomSource(tile.source)
             TileActionType.HA_SERVICE -> scope.launch {
                 busyRun("Home Assistant action failed") {
                     if (tile.service.domain == "media_player" && tile.service.service == "select_source") {
@@ -162,6 +162,25 @@ class AppController(context: Context) {
     fun previous() { activeTransportEntity()?.takeIf(String::isNotBlank)?.let(ha::previous) }
     fun volumeUp() { activeTransportEntity()?.takeIf(String::isNotBlank)?.let(ha::volumeUp) }
     fun volumeDown() { activeTransportEntity()?.takeIf(String::isNotBlank)?.let(ha::volumeDown) }
+
+    fun roomSourceOptions(room: RoomConfig): List<String> {
+        val dynamic = ha.states.value[room.routeEntity]?.attributes?.optJSONArray("source_list")
+        val fromHa = if (dynamic != null) {
+            (0 until dynamic.length()).mapNotNull { i -> dynamic.optString(i).takeIf(String::isNotBlank) }
+        } else emptyList()
+        return (fromHa + room.sourceOptions).distinctBy { it.lowercase() }
+    }
+
+    fun selectRoomSource(source: String) {
+        val room = currentRoom() ?: return
+        if (source.isBlank()) return
+        scope.launch {
+            busyRun("Could not select $source") {
+                ensureRoomOn(room)
+                if (!ha.selectSource(room.routeEntity, source)) error("Home Assistant is not connected")
+            }
+        }
+    }
 
     // ----- Context-sensitive room Join / Transfer -----
 
@@ -375,6 +394,7 @@ class AppController(context: Context) {
     fun cancelPendingPlayback() {
         _pendingMassPlayback.value = null
         _pendingYoutube.value = null
+        _pendingKodiItem.value = null
     }
 
     fun playbackTargets(includeKodi: Boolean = false): List<PlaybackTarget> = _settings.value.rooms.flatMap { room ->
