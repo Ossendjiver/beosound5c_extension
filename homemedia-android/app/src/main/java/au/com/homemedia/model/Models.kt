@@ -88,6 +88,7 @@ data class RoomConfig(
     val sourceOptions: List<String> = emptyList(),
     val bluetoothAnchors: List<BluetoothAnchorConfig> = emptyList(),
     val youtubeCastEntity: String = "",
+    val kodiSourceName: String = "Kodi",
     val presenceEntity: String = "",
     val presenceValue: String = "",
     val powerOnDelayMs: Long = 900,
@@ -107,16 +108,7 @@ data class RoomConfig(
 
     companion object {
         fun defaultTiles(): List<TileConfig> = listOf(
-            TileConfig(
-                title = "CD",
-                icon = "disc",
-                actionType = TileActionType.HA_SERVICE,
-                service = HaServiceSpec(
-                    domain = "media_player",
-                    service = "select_source",
-                    dataJson = "{\"source\":\"CD\"}"
-                )
-            ),
+            TileConfig(id = "__SOURCE__", title = "Source", icon = "source", actionType = TileActionType.SELECT_SOURCE),
             TileConfig(
                 title = "Morning news",
                 icon = "news",
@@ -366,6 +358,7 @@ fun RoomConfig.toJson(): JSONObject = JSONObject().apply {
     put("sourceOptions", JSONArray().apply { sourceOptions.forEach { put(it) } })
     put("bluetoothAnchors", JSONArray().apply { bluetoothAnchors.forEach { put(it.toJson()) } })
     put("youtubeCastEntity", youtubeCastEntity)
+    put("kodiSourceName", kodiSourceName)
     put("presenceEntity", presenceEntity); put("presenceValue", presenceValue)
     put("powerOnDelayMs", powerOnDelayMs); put("sourceConfirmTimeoutMs", sourceConfirmTimeoutMs)
     put("linkSourceName", linkSourceName); put("auxSourceName", auxSourceName)
@@ -442,6 +435,7 @@ fun roomFromJson(obj: JSONObject): RoomConfig = RoomConfig(
         (0 until arr.length()).mapNotNull { i -> arr.optJSONObject(i)?.let(::bluetoothAnchorFromJson) }
     } ?: emptyList(),
     youtubeCastEntity = obj.optString("youtubeCastEntity"),
+    kodiSourceName = obj.optString("kodiSourceName", "Kodi"),
     presenceEntity = obj.optString("presenceEntity"),
     presenceValue = obj.optString("presenceValue"),
     powerOnDelayMs = obj.optLong("powerOnDelayMs", 900),
@@ -452,7 +446,14 @@ fun roomFromJson(obj: JSONObject): RoomConfig = RoomConfig(
     kodi = obj.optJSONObject("kodi")?.let(::kodiFromJson) ?: KodiConfig(),
     tiles = obj.optJSONArray("tiles")?.let { arr ->
         (0 until arr.length()).mapNotNull { i -> arr.optJSONObject(i)?.let(::tileFromJson) }
-    }?.takeIf { it.isNotEmpty() } ?: RoomConfig.defaultTiles()
+    }?.takeIf { it.isNotEmpty() }?.let { raw ->
+        val withoutLegacySource = raw.filterNot { tile ->
+            tile.id == "__SOURCE__" ||
+                (tile.actionType == TileActionType.SELECT_SOURCE && tile.source.equals("CD", true)) ||
+                tile.title.equals("CD", true)
+        }
+        listOf(TileConfig(id = "__SOURCE__", title = "Source", icon = "source", actionType = TileActionType.SELECT_SOURCE)) + withoutLegacySource
+    } ?: RoomConfig.defaultTiles()
 )
 
 fun kodiFromJson(obj: JSONObject) = KodiConfig(
