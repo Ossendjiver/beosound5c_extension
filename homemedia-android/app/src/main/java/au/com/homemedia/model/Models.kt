@@ -133,8 +133,28 @@ data class RoomConfig(
     }
 }
 
-private fun mediaTiles(video: Boolean = false): List<TileConfig> = buildList {
-    add(TileConfig(title = "CD", icon = "disc", actionType = TileActionType.SELECT_SOURCE, source = "CD"))
+private fun mediaTiles(
+    video: Boolean = false,
+    includeCd: Boolean = true,
+    includeNews: Boolean = true
+): List<TileConfig> = buildList {
+    if (includeCd) {
+        add(TileConfig(title = "CD", icon = "disc", actionType = TileActionType.SELECT_SOURCE, source = "CD"))
+    }
+    if (includeNews) {
+        add(
+            TileConfig(
+                title = "Morning news",
+                icon = "news",
+                actionType = TileActionType.HA_SERVICE,
+                service = HaServiceSpec(
+                    domain = "script",
+                    service = "turn_on",
+                    targetEntity = "script.play_the_morning_news"
+                )
+            )
+        )
+    }
     add(TileConfig(title = "Music library", icon = "library", actionType = TileActionType.OPEN_LIBRARY))
     if (video) add(TileConfig(title = "Video library", icon = "video", actionType = TileActionType.OPEN_KODI))
     add(TileConfig(title = "Queue", icon = "queue", actionType = TileActionType.OPEN_QUEUE))
@@ -183,14 +203,14 @@ private fun presetRooms(): List<RoomConfig> = listOf(
         primaryPlayerEntity = "media_player.cuisine",
         mlgwEntity = "media_player.cuisine",
         sourceOptions = listOf("Link", "A.AUX"),
-        tiles = mediaTiles(video = true)
+        tiles = mediaTiles(video = true, includeCd = false)
     ),
     RoomConfig(
         id = "bathroom", name = "Bathroom",
         primaryPlayerEntity = "media_player.bl3500_2",
         mlgwEntity = "media_player.bl3500_2",
-        sourceOptions = listOf("Link", "A.AUX"),
-        tiles = mediaTiles(video = false)
+        sourceOptions = listOf("CD", "Link", "A.AUX"),
+        tiles = mediaTiles(video = false, includeCd = true)
     )
 )
 
