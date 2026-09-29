@@ -127,6 +127,15 @@ class MusicAssistantClient {
     }
 
     /** Resolve the queue currently owned/used by a native MA player, mirroring MA frontend behaviour. */
+    suspend fun resolvePlayerId(explicitId: String, nameHint: String): String {
+        if (explicitId.isNotBlank()) return explicitId
+        require(nameHint.isNotBlank()) { "Music Assistant player is not configured" }
+        val all = players()
+        return all.firstOrNull { it.displayName.equals(nameHint, ignoreCase = true) }?.playerId
+            ?: all.firstOrNull { it.playerId.equals(nameHint, ignoreCase = true) }?.playerId
+            ?: error("Music Assistant player '$nameHint' was not found")
+    }
+
     suspend fun resolvePlayerQueueId(playerId: String): String {
         require(playerId.isNotBlank()) { "Music Assistant player ID is not configured" }
         val activeSource = players().firstOrNull { it.playerId == playerId }?.activeSource.orEmpty()
