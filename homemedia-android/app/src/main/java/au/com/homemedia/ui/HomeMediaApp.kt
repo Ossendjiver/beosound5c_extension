@@ -10,6 +10,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -1143,7 +1144,7 @@ private fun SettingsScreen(controller: AppController, initial: AppSettings, onIm
                 }
                 item {
                     SettingsSection("${room.name} tiles") {
-                        SourceTileAdder(room) { updatedRoom ->
+                        SourceTileAdder(room, controller.availableSources(room)) { updatedRoom ->
                             draft = draft.copy(rooms = draft.rooms.map { if (it.id == room.id) updatedRoom else it })
                         }
                         if (room.sourceOptions.isNotEmpty()) HorizontalDivider(Modifier.padding(vertical = 8.dp))
@@ -1232,12 +1233,21 @@ private fun SecondaryPlayerEditor(player: SecondaryPlayerConfig, onChange: (Seco
 }
 
 @Composable
-private fun SourceTileAdder(room: RoomConfig, onChange: (RoomConfig) -> Unit) {
-    if (room.sourceOptions.isEmpty()) return
+private fun SourceTileAdder(
+    room: RoomConfig,
+    availableSources: List<String>,
+    onChange: (RoomConfig) -> Unit
+) {
+    if (availableSources.isEmpty()) return
     Text("Add source tile", color = TextMuted, fontSize = 12.sp)
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-        room.sourceOptions.take(4).forEach { source ->
-            val exists = room.tiles.any { it.actionType == TileActionType.SELECT_SOURCE && it.source.equals(source, true) }
+    Row(
+        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+        horizontalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        availableSources.forEach { source ->
+            val exists = room.tiles.any {
+                it.actionType == TileActionType.SELECT_SOURCE && it.source.equals(source, true)
+            }
             AssistChip(
                 onClick = {
                     if (!exists) onChange(room.copy(tiles = room.tiles + TileConfig(
