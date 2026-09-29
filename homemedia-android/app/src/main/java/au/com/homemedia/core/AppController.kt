@@ -146,7 +146,7 @@ class AppController(context: Context) {
     private var kodiLibraryShared: Boolean = false
 
     init {
-        debugLogger.setEnabled(_settings.value.debugMode)
+        debugLogger.setEnabled(_settings.value.debugEnabled)
         ma.setDebugLogger { tag, message -> debugLogger.log(tag, message) }
         ha.setDebugLogger { tag, message -> debugLogger.log(tag, message) }
         configureConnections(_settings.value)
@@ -173,8 +173,8 @@ class AppController(context: Context) {
 
     fun setDebugRuntimeEnabled(enabled: Boolean) {
         debugLogger.setEnabled(enabled)
-        if (_settings.value.debugMode != enabled) {
-            persist(_settings.value.copy(debugMode = enabled))
+        if (_settings.value.debugEnabled != enabled) {
+            persist(_settings.value.copy(debugEnabled = enabled))
         }
         debugLogger.log("DEBUG", "Runtime debug mode=$enabled")
     }
@@ -444,9 +444,9 @@ class AppController(context: Context) {
 
     fun saveSettings(newSettings: AppSettings) {
         val old = _settings.value
-        debugLogger.setEnabled(newSettings.debugMode)
+        debugLogger.setEnabled(newSettings.debugEnabled)
         persist(newSettings)
-        debugLogger.log("SETTINGS", "Saved settings debug=${newSettings.debugMode} automaticRoom=${newSettings.automaticRoom} bluetooth=${newSettings.bluetoothLocationEnabled}")
+        debugLogger.log("SETTINGS", "Saved settings debug=${newSettings.debugEnabled} automaticRoom=${newSettings.automaticRoom} bluetooth=${newSettings.bluetoothLocationEnabled}")
         if (_selectedRoomId.value.isBlank() || newSettings.rooms.none { it.id == _selectedRoomId.value }) {
             _selectedRoomId.value = resolveInitialRoomId(newSettings)
         }
@@ -1338,7 +1338,7 @@ class AppController(context: Context) {
         val settings = _settings.value
 
         val presenceMatches = settings.rooms.filter { room -> presenceMatchesRoom(room, states[room.presenceEntity]) }
-        if (settings.debugMode && settings.rooms.any { it.presenceEntity.isNotBlank() }) {
+        if (settings.debugEnabled && settings.rooms.any { it.presenceEntity.isNotBlank() }) {
             settings.rooms.filter { it.presenceEntity.isNotBlank() }.forEach { room ->
                 val st = states[room.presenceEntity]
                 debugLogger.log(
