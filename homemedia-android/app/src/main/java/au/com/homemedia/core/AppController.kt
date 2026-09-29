@@ -670,6 +670,17 @@ class AppController(context: Context) {
                             add(secondary.haEntity)
                         }
                     }
+                    states.values
+                        .filter { it.entityId.startsWith("media_player.") }
+                        .filter { state ->
+                            val id = state.entityId.lowercase().replace("_", " ")
+                            val name = state.attributes.optString("friendly_name").lowercase()
+                            id.contains("lounge mini") || name.contains("lounge mini") ||
+                                id.contains("bedroom mini") || name.contains("bedroom mini") ||
+                                id.contains("bedroomcast") || id.contains("bedroom cast") ||
+                                name.contains("bedroomcast") || name.contains("bedroom cast")
+                        }
+                        .forEach { add(it.entityId) }
                 }.filter(String::isNotBlank)
 
                 configuredTargets.forEach { entity ->
