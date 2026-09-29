@@ -758,7 +758,7 @@ private fun YouTubeScreen(controller: AppController) {
                 FilledIconButton(onClick = { controller.searchYouTube(query) }) { Icon(Icons.Default.Search, "Search") }
             }
             Text(
-                if (wifi) "On Wi‑Fi: choose where to play. Off Wi‑Fi: playback stays on this phone."
+                if (wifi) "Room tabs play to that room automatically. From Media, choose the playback target."
                 else "Not on Wi‑Fi: playback stays on this phone.",
                 color = TextMuted,
                 fontSize = 12.sp,
