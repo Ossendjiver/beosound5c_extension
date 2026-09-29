@@ -220,7 +220,7 @@ private fun presetRooms(): List<RoomConfig> = listOf(
         primaryPlayerEntity = "media_player.bv10_40",
         mlgwEntity = "media_player.bv10_40",
         sourceOptions = listOf("CD", "Link", "A.AUX", "Kodi"),
-        tiles = mediaTiles(video = true)
+        tiles = mediaTiles(video = true) + TileConfig(title = "YouTube", icon = "youtube", actionType = TileActionType.OPEN_YOUTUBE)
     ),
     RoomConfig(
         id = "kitchen", name = "Kitchen",
@@ -494,12 +494,19 @@ fun roomFromJson(obj: JSONObject): RoomConfig = RoomConfig(
     tiles = obj.optJSONArray("tiles")?.let { arr ->
         (0 until arr.length()).mapNotNull { i -> arr.optJSONObject(i)?.let(::tileFromJson) }
     }?.takeIf { it.isNotEmpty() }?.let { raw ->
+        val roomId = obj.optString("id")
         val withoutLegacySource = raw.filterNot { tile ->
             tile.id == "__SOURCE__" ||
                 (tile.actionType == TileActionType.SELECT_SOURCE && tile.source.equals("CD", true)) ||
                 tile.title.equals("CD", true)
         }
-        listOf(TileConfig(id = "__SOURCE__", title = "Source", icon = "source", actionType = TileActionType.SELECT_SOURCE)) + withoutLegacySource
+        buildList {
+            add(TileConfig(id = "__SOURCE__", title = "Source", icon = "source", actionType = TileActionType.SELECT_SOURCE))
+            addAll(withoutLegacySource)
+            if (roomId in setOf("lounge", "dining", "bedroom", "kitchen") && none { it.actionType == TileActionType.OPEN_YOUTUBE }) {
+                add(TileConfig(title = "YouTube", icon = "youtube", actionType = TileActionType.OPEN_YOUTUBE))
+            }
+        }
     } ?: RoomConfig.defaultTiles()
 )
 
