@@ -6,8 +6,10 @@ import au.com.homemedia.model.MassQueueInfo
 import au.com.homemedia.model.MassPlayerInfo
 import au.com.homemedia.model.MassQueueItem
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeout
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -16,6 +18,7 @@ import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import org.json.JSONArray
 import org.json.JSONObject
+import org.json.JSONTokener
 import java.net.URLEncoder
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
@@ -28,6 +31,11 @@ class MusicAssistantClient {
     private val ids = AtomicLong(0)
     private var baseUrl = ""
     private var token = ""
+    private var debugLog: ((String, String) -> Unit)? = null
+
+    fun setDebugLogger(logger: ((String, String) -> Unit)?) {
+        debugLog = logger
+    }
     private var debugSink: ((String) -> Unit)? = null
 
     fun configure(url: String, accessToken: String) {
@@ -270,135 +278,101 @@ class MusicAssistantClient {
         require(token.isNotBlank()) { "Music Assistant token is not configured" }
 
         val wsUrl = when {
-            baseUrl.startsWith("https://") -> "wss://" + baseUrl.removePrefix("https://")
-            baseUrl.startsWith("http://") -> "ws://" + baseUrl.removePrefix("http://")
-            baseUrl.startsWith("wss://") || baseUrl.startsWith("ws://") -> baseUrl
-            else -> "ws://$baseUrl"
-        }.trimEnd('/').let { if (it.endsWith("/ws")) it else "$it/ws" }
+            baseUrl.startsWith("https://") -> "wss://" + baseUrl.removePrefix("https://") + "/ws"
+            baseUrl.startsWith("http://") -> "ws://" + baseUrl.removePrefix("http://") + "/ws"
+            baseUrl.startsWith("wss://") || baseUrl.startsWith("ws://") -> baseUrl.trimEnd('/') + "/ws"
+            else -> "ws://" + baseUrl.trimEnd('/') + "/ws"
+        }
 
         val authId = "auth-" + ids.incrementAndGet()
         val commandId = ids.incrementAndGet().toString()
-        val resultDeferred = CompletableDeferred<Any?>()
+        val result = CompletableDeferred<Any?>()
+        val authDone = CompletableDeferred<Unit>()
         val partial = mutableListOf<Any?>()
-        var targetSent = false
-
-        fun errorFrom(obj: JSONObject): String =
-            obj.optString("details").ifBlank {
-                obj.opt("error_code")?.toString().orEmpty().ifBlank { "Music Assistant command failed" }
-            }
-
-        fun sendTarget(webSocket: WebSocket) {
-            if (targetSent) return
-            targetSent = true
-            val payload = JSONObject()
-                .put("message_id", commandId)
-                .put("command", command)
-                .put("args", args)
-            debugSink?.invoke("WS send command=$command id=$commandId args=${args.toString().take(500)}")
-            if (!webSocket.send(payload.toString())) {
-                resultDeferred.completeExceptionally(IllegalStateException("Could not send Music Assistant command"))
-            }
-        }
 
         val request = Request.Builder().url(wsUrl).build()
-        val webSocket = client.newWebSocket(request, object : WebSocketListener() {
-            override fun onOpen(webSocket: WebSocket, response: Response) {
-                debugSink?.invoke("WS connected endpoint=$wsUrl")
+        debugLog?.invoke("MA", "WS connect " + wsUrl.replace(Regex("(?<=://)[^/]+"), "<host>") + " command=" + command)
+
+        val socket = client.newWebSocket(request, object : okhttp3.WebSocketListener() {
+            override fun onOpen(webSocket: okhttp3.WebSocket, response: okhttp3.Response) {
+                val auth = JSONObject()
+                    .put("message_id", authId)
+                    .put("command", "auth")
+                    .put("args", JSONObject().put("token", token))
+                webSocket.send(auth.toString())
             }
 
-            override fun onMessage(webSocket: WebSocket, text: String) {
-                val obj = runCatching { JSONObject(text) }.getOrElse { err ->
-                    debugSink?.invoke("WS JSON parse failure bytes=${text.length} preview=${text.take(250)} error=${err.message}")
-                    if (!resultDeferred.isCompleted) {
-                        resultDeferred.completeExceptionally(IllegalStateException("Music Assistant returned invalid WebSocket JSON"))
-                    }
-                    return
-                }
-
-                if (obj.has("server_version") && obj.has("server_id") && !obj.has("event")) {
-                    debugSink?.invoke("WS server info version=${obj.optString("server_version")} schema=${obj.optInt("schema_version", -1)}")
-                    val authPayload = JSONObject()
-                        .put("message_id", authId)
-                        .put("command", "auth")
-                        .put(
-                            "args",
-                            JSONObject()
-                                .put("token", token)
-                                .put("device_name", "Home Media Android")
-                        )
-                    webSocket.send(authPayload.toString())
-                    return
-                }
-
-                val messageId = obj.optString("message_id")
-                if (messageId.isBlank()) return
-
+            override fun onMessage(webSocket: okhttp3.WebSocket, text: String) {
+                val obj = runCatching { JSONObject(text) }.getOrNull() ?: return
+                val messageId = obj.opt("message_id")?.toString().orEmpty()
                 if (messageId == authId) {
-                    if (obj.has("error_code")) {
-                        val msg = errorFrom(obj)
-                        debugSink?.invoke("WS auth failed code=${obj.optInt("error_code")} details=$msg")
-                        if (!resultDeferred.isCompleted) resultDeferred.completeExceptionally(IllegalStateException(msg))
-                    } else if (!obj.optBoolean("partial", false)) {
-                        debugSink?.invoke("WS authenticated")
-                        sendTarget(webSocket)
+                    if (obj.has("error_code") || obj.has("error")) {
+                        val msg = obj.optString("details").ifBlank { obj.optString("error") }.ifBlank { "Music Assistant authentication failed" }
+                        if (!authDone.isCompleted) authDone.completeExceptionally(IllegalStateException(msg))
+                        if (!result.isCompleted) result.completeExceptionally(IllegalStateException(msg))
+                        return
                     }
+                    if (!authDone.isCompleted) authDone.complete(Unit)
+                    val payload = JSONObject()
+                        .put("message_id", commandId)
+                        .put("command", command)
+                        .put("args", args)
+                    webSocket.send(payload.toString())
+                    debugLog?.invoke("MA", "command sent=" + command)
                     return
                 }
-
                 if (messageId != commandId) return
 
-                if (obj.has("error_code")) {
-                    val msg = errorFrom(obj)
-                    debugSink?.invoke("WS command error command=$command code=${obj.optInt("error_code")} details=$msg")
-                    if (!resultDeferred.isCompleted) resultDeferred.completeExceptionally(IllegalStateException(msg))
+                if (obj.has("error_code") || obj.has("error")) {
+                    val msg = obj.optString("details")
+                        .ifBlank { obj.optString("error") }
+                        .ifBlank { "Music Assistant command failed" }
+                    debugLog?.invoke("MA", "command error=" + command + " msg=" + msg)
+                    if (!result.isCompleted) result.completeExceptionally(IllegalStateException(msg))
                     return
                 }
 
-                val result = obj.opt("result")
-                if (obj.optBoolean("partial", false)) {
-                    when (result) {
-                        is JSONArray -> for (i in 0 until result.length()) partial.add(result.opt(i))
+                val raw = obj.opt("result")
+                val isPartial = obj.optBoolean("partial", false)
+                if (isPartial) {
+                    when (raw) {
+                        is JSONArray -> for (i in 0 until raw.length()) partial.add(raw.opt(i))
                         null, JSONObject.NULL -> Unit
-                        else -> partial.add(result)
+                        else -> partial.add(raw)
                     }
-                    debugSink?.invoke("WS partial command=$command items=${partial.size}")
                     return
                 }
 
                 val finalResult: Any? = if (partial.isNotEmpty()) {
-                    val array = JSONArray()
-                    partial.forEach { array.put(it) }
-                    if (result is JSONArray) {
-                        for (i in 0 until result.length()) array.put(result.opt(i))
+                    when (raw) {
+                        is JSONArray -> for (i in 0 until raw.length()) partial.add(raw.opt(i))
+                        null, JSONObject.NULL -> Unit
+                        else -> partial.add(raw)
                     }
-                    array
-                } else if (result == JSONObject.NULL) null else result
+                    JSONArray(partial)
+                } else raw.takeUnless { it === JSONObject.NULL }
 
-                debugSink?.invoke("WS result command=$command type=${finalResult?.javaClass?.simpleName ?: "null"} partialItems=${partial.size}")
-                if (!resultDeferred.isCompleted) resultDeferred.complete(finalResult)
+                debugLog?.invoke(
+                    "MA",
+                    "command result=" + command + " type=" + (finalResult?.javaClass?.simpleName ?: "null")
+                )
+                if (!result.isCompleted) result.complete(finalResult)
             }
 
-            override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                debugSink?.invoke("WS failure command=$command http=${response?.code ?: 0} error=${t.message}")
-                if (!resultDeferred.isCompleted) {
-                    resultDeferred.completeExceptionally(
-                        IllegalStateException("Music Assistant connection failed: ${t.message ?: "unknown error"}")
-                    )
-                }
-            }
-
-            override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-                debugSink?.invoke("WS closed code=$code reason=$reason")
-                if (!resultDeferred.isCompleted) {
-                    resultDeferred.completeExceptionally(IllegalStateException("Music Assistant connection closed before response"))
-                }
+            override fun onFailure(webSocket: okhttp3.WebSocket, t: Throwable, response: okhttp3.Response?) {
+                debugLog?.invoke("MA", "WS failure command=" + command + " error=" + (t.message ?: t.javaClass.simpleName))
+                if (!authDone.isCompleted) authDone.completeExceptionally(t)
+                if (!result.isCompleted) result.completeExceptionally(t)
             }
         })
 
         try {
-            withTimeout(35_000) { resultDeferred.await() }
+            withTimeout(15_000) {
+                authDone.await()
+                result.await()
+            }
         } finally {
-            webSocket.close(1000, "command complete")
+            socket.close(1000, "done")
         }
     }
 
