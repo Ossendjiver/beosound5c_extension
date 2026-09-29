@@ -23,17 +23,12 @@ class HomeAssistantClient {
     fun setDebugLogger(logger: ((String, String) -> Unit)?) {
         debugLog = logger
     }
-    private var debugSink: ((String) -> Unit)? = null
 
     private val _states = MutableStateFlow<Map<String, HaEntityState>>(emptyMap())
     val states: StateFlow<Map<String, HaEntityState>> = _states
 
     private val _connected = MutableStateFlow(false)
     val connected: StateFlow<Boolean> = _connected
-
-    fun setDebugLogger(logger: ((String) -> Unit)?) {
-        debugSink = logger
-    }
 
     fun connect(url: String, accessToken: String) {
         disconnect()
@@ -45,7 +40,7 @@ class HomeAssistantClient {
             baseUrl.startsWith("http://") -> "ws://${baseUrl.removePrefix("http://")}/api/websocket"
             else -> "ws://$baseUrl/api/websocket"
         }
-        debugSink?.invoke("Connecting websocket $wsUrl token=${if (token.isBlank()) "missing" else "present"}")
+        debugLog?.invoke("HA", "Connecting websocket $wsUrl token=${if (token.isBlank()) "missing" else "present"}")
         debugLog?.invoke("HA", "connect websocket configured")
         val request = Request.Builder().url(wsUrl).build()
         socket = http.newWebSocket(request, object : WebSocketListener() {
@@ -54,12 +49,12 @@ class HomeAssistantClient {
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-                debugSink?.invoke("WebSocket closed code=$code reason=$reason")
+                debugLog?.invoke("HA", "WebSocket closed code=$code reason=$reason")
                 _connected.value = false
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                debugSink?.invoke("WebSocket failure ${t.javaClass.simpleName}: ${t.message}; http=${response?.code}")
+                debugLog?.invoke("HA", "WebSocket failure ${t.javaClass.simpleName}: ${t.message}; http=${response?.code}")
                 _connected.value = false
             }
         })
@@ -116,7 +111,7 @@ class HomeAssistantClient {
         when (obj.optString("type")) {
             "auth_required" -> ws.send(JSONObject().put("type", "auth").put("access_token", token).toString())
             "auth_ok" -> {
-                debugSink?.invoke("Authenticated with Home Assistant")
+                debugLog?.invoke("HA", "Authenticated with Home Assistant")
                 _connected.value = true
                 ws.send(JSONObject().put("id", 1).put("type", "get_states").toString())
                 ws.send(
@@ -125,7 +120,7 @@ class HomeAssistantClient {
                 )
             }
             "auth_invalid" -> {
-                debugSink?.invoke("Home Assistant authentication failed")
+                debugLog?.invoke("HA", "Home Assistant authentication failed")
                 _connected.value = false
             }
             "result" -> if (obj.optInt("id") == 1 && obj.optBoolean("success")) {
@@ -136,7 +131,7 @@ class HomeAssistantClient {
                 }
                 _states.value = map
                 debugLog?.invoke("HA", "initial states=" + map.size)
-                debugSink?.invoke("Loaded ${map.size} Home Assistant states")
+                debugLog?.invoke("HA", "Loaded ${map.size} Home Assistant states")
             }
             "event" -> {
                 val event = obj.optJSONObject("event") ?: return
