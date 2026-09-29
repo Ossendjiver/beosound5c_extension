@@ -129,6 +129,9 @@ class AppController(context: Context) {
     private val _phoneVideo = MutableStateFlow<PhoneVideo?>(null)
     val phoneVideo: StateFlow<PhoneVideo?> = _phoneVideo
 
+    private val _phoneFullscreen = MutableStateFlow(false)
+    val phoneFullscreen: StateFlow<Boolean> = _phoneFullscreen
+
     private val _pendingYoutube = MutableStateFlow<YouTubeItem?>(null)
     val pendingYoutube: StateFlow<YouTubeItem?> = _pendingYoutube
 
