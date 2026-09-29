@@ -242,8 +242,13 @@ class AppController(context: Context) {
                     val primaryPlayerId = if (room.maPlayerId.isNotBlank() || room.maPlayerName.isNotBlank()) {
                         ma.resolvePlayerId(room.maPlayerId, room.maPlayerName)
                     } else ""
-                    if (hasQueue && primaryPlayerId.isNotBlank()) {
-                        val targetQueue = ma.resolvePlayerQueueId(primaryPlayerId)
+                    if (hasQueue) {
+                        val targetQueue = if (primaryPlayerId.isNotBlank()) {
+                            ma.resolvePlayerQueueId(primaryPlayerId)
+                        } else {
+                            prepareMlgwSource(room, room.sharedPlaybackSource)
+                            ma.resolveQueueId(_settings.value.sharedMaQueueId, _settings.value.sharedMaQueueName)
+                        }
                         ma.transferQueue(sourceQueue, targetQueue, autoPlay = true)
                     } else {
                         ma.playerStop(secondaryPlayerId)
