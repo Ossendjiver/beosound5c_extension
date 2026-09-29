@@ -283,7 +283,12 @@ class MusicAssistantClient {
         val partial = mutableListOf<Any?>()
 
         val request = Request.Builder().url(wsUrl).build()
-        debugLog?.invoke("MA", "WS connect " + wsUrl.replace(Regex("(?<=://)[^/]+"), "<host>") + " command=" + command)
+        val safeArgs = args.toString().take(700)
+        debugLog?.invoke(
+            "MA",
+            "WS connect " + wsUrl.replace(Regex("(?<=://)[^/]+"), "<host>") +
+                " command=" + command + " args=" + safeArgs
+        )
 
         val socket = client.newWebSocket(request, object : okhttp3.WebSocketListener() {
             override fun onOpen(webSocket: okhttp3.WebSocket, response: okhttp3.Response) {
@@ -295,7 +300,15 @@ class MusicAssistantClient {
             }
 
             override fun onMessage(webSocket: okhttp3.WebSocket, text: String) {
-                val obj = runCatching { JSONObject(text) }.getOrNull() ?: return
+                val obj = runCatching { JSONObject(text) }.getOrElse { error ->
+                    debugLog?.invoke(
+                        "MA",
+                        "invalid websocket JSON command=" + command +
+                            " error=" + (error.message ?: error.javaClass.simpleName) +
+                            " payload=" + text.replace("\n", " ").take(500)
+                    )
+                    return
+                }
                 val messageId = obj.opt("message_id")?.toString().orEmpty()
                 if (messageId == authId) {
                     if (obj.has("error_code") || obj.has("error")) {
@@ -332,6 +345,7 @@ class MusicAssistantClient {
                         null, JSONObject.NULL -> Unit
                         else -> partial.add(raw)
                     }
+                    debugLog?.invoke("MA", "partial command=" + command + " accumulated=" + partial.size)
                     return
                 }
 
@@ -344,10 +358,13 @@ class MusicAssistantClient {
                     JSONArray(partial)
                 } else raw.takeUnless { it === JSONObject.NULL }
 
-                debugLog?.invoke(
-                    "MA",
-                    "command result=" + command + " type=" + (finalResult?.javaClass?.simpleName ?: "null")
-                )
+                val resultSummary = when (finalResult) {
+                    is JSONArray -> "JSONArray count=" + finalResult.length()
+                    is JSONObject -> "JSONObject keys=" + finalResult.length()
+                    null -> "null"
+                    else -> finalResult.javaClass.simpleName
+                }
+                debugLog?.invoke("MA", "command result=" + command + " " + resultSummary)
                 if (!result.isCompleted) result.complete(finalResult)
             }
 
