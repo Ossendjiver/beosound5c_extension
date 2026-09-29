@@ -15,8 +15,8 @@ android {
         applicationId = "au.com.homemedia"
         minSdk = 28
         targetSdk = 36
-        versionCode = 10
-        versionName = "0.5.4"
+        versionCode = 11
+        versionName = "0.5.5"
     }
 
     buildFeatures {
