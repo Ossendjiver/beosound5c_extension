@@ -314,8 +314,13 @@ private fun RoomScreen(controller: AppController, room: RoomConfig?) {
         NowPlayingCard(controller, now, settings)
         Spacer(Modifier.height(16.dp))
 
-        val tiles = remember(room.tiles, joinSourceId) {
+        val kodiActive = now.source.equals(room.kodiSourceName, ignoreCase = true) ||
+            now.source.contains("kodi", ignoreCase = true)
+        val tiles = remember(room.tiles, joinSourceId, kodiActive) {
             room.tiles.toMutableList().apply {
+                if (kodiActive && room.kodi.baseUrl.isNotBlank()) {
+                    add(TileConfig(id = "__KODI_REMOTE__", title = "Kodi remote", icon = "remote"))
+                }
                 if (joinSourceId != null) add(TileConfig(id = "__JOIN__", title = "Join", icon = "join"))
             }
         }
@@ -337,7 +342,20 @@ private fun RoomScreen(controller: AppController, room: RoomConfig?) {
                 )
             }
             gridItems(tiles, key = { it.id }) { tile ->
-                if (tile.id == "__JOIN__" && joinRoom != null) {
+                if (tile.id == "__SOURCE__") {
+                    SourceTile(
+                        currentSource = now.source,
+                        sources = controller.availableSources(room),
+                        modifier = Modifier.fillMaxWidth().aspectRatio(1.12f),
+                        onSelect = controller::selectRoomSource
+                    )
+                } else if (tile.id == "__KODI_REMOTE__") {
+                    RoomTile(
+                        TileConfig(title = "Kodi remote", icon = "remote"),
+                        Modifier.fillMaxWidth().aspectRatio(1.12f),
+                        selected = true
+                    ) { controller.openKodi() }
+                } else if (tile.id == "__JOIN__" && joinRoom != null) {
                     JoinTile(
                         source = joinRoom,
                         modifier = Modifier.fillMaxWidth().aspectRatio(1.12f),
@@ -385,10 +403,10 @@ private fun NowPlayingCard(controller: AppController, now: NowPlaying, settings:
 }
 
 @Composable
-private fun RoomTile(tile: TileConfig, modifier: Modifier, onClick: () -> Unit) {
+private fun RoomTile(tile: TileConfig, modifier: Modifier, selected: Boolean = false, onClick: () -> Unit) {
     Card(
         modifier = modifier.combinedClickable(onClick = onClick, onLongClick = {}),
-        colors = CardDefaults.cardColors(containerColor = Panel2),
+        colors = CardDefaults.cardColors(containerColor = if (selected) Color(0xFF153822) else Panel2),
         shape = RoundedCornerShape(22.dp)
     ) {
         Column(Modifier.fillMaxSize().padding(18.dp), verticalArrangement = Arrangement.SpaceBetween) {
@@ -398,6 +416,50 @@ private fun RoomTile(tile: TileConfig, modifier: Modifier, onClick: () -> Unit) 
     }
 }
 
+
+@Composable
+private fun SourceTile(
+    currentSource: String,
+    sources: List<String>,
+    modifier: Modifier,
+    onSelect: (String) -> Unit
+) {
+    var menu by remember { mutableStateOf(false) }
+    val active = currentSource.isNotBlank()
+    Box {
+        Card(
+            modifier = modifier.combinedClickable(onClick = { menu = true }, onLongClick = { menu = true }),
+            colors = CardDefaults.cardColors(containerColor = if (active) Color(0xFF153822) else Panel2),
+            shape = RoundedCornerShape(22.dp)
+        ) {
+            Column(Modifier.fillMaxSize().padding(18.dp), verticalArrangement = Arrangement.SpaceBetween) {
+                Icon(Icons.Default.Input, null, tint = if (active) ActiveGreen else LocalContentColor.current, modifier = Modifier.size(31.dp))
+                Column {
+                    Text(currentSource.ifBlank { "Source" }, fontSize = 17.sp, fontWeight = FontWeight.SemiBold)
+                    Text("Source", color = if (active) ActiveGreen else TextMuted, fontSize = 12.sp)
+                }
+            }
+        }
+        DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+            if (sources.isEmpty()) {
+                DropdownMenuItem(text = { Text("No sources reported") }, enabled = false, onClick = {})
+            } else {
+                sources.forEach { source ->
+                    DropdownMenuItem(
+                        text = { Text(source) },
+                        leadingIcon = {
+                            if (source.equals(currentSource, true)) Icon(Icons.Default.Check, null, tint = ActiveGreen)
+                        },
+                        onClick = {
+                            menu = false
+                            onSelect(source)
+                        }
+                    )
+                }
+            }
+        }
+    }
+}
 
 @Composable
 private fun SecondaryPlayerTile(
@@ -508,6 +570,9 @@ private fun tileIcon(name: String) = when (name.lowercase()) {
     "tv", "kodi" -> Icons.Default.Tv
     "radio" -> Icons.Default.Radio
     "join" -> Icons.Default.SpeakerGroup
+    "source" -> Icons.Default.Input
+    "remote" -> Icons.Default.SettingsRemote
+    "video" -> Icons.Default.VideoLibrary
     else -> Icons.Default.MusicNote
 }
 
