@@ -483,6 +483,146 @@ private fun tileIcon(name: String) = when (name.lowercase()) {
     else -> Icons.Default.MusicNote
 }
 
+// ---------------- Unified media hub ----------------
+
+@Composable
+private fun MediaHubScreen(controller: AppController) {
+    val settings by controller.settings.collectAsState()
+    LazyVerticalGrid(
+        columns = GridCells.Adaptive(150.dp),
+        contentPadding = PaddingValues(16.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        item {
+            Card(
+                Modifier.fillMaxWidth().aspectRatio(1.15f).combinedClickable(onClick = controller::openLibrary, onLongClick = {}),
+                colors = CardDefaults.cardColors(containerColor = Panel2)
+            ) {
+                Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.SpaceBetween) {
+                    Icon(Icons.Default.LibraryMusic, null, modifier = Modifier.size(32.dp))
+                    Column {
+                        Text("Music", fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                        Text("Music Assistant", color = TextMuted, fontSize = 12.sp)
+                    }
+                }
+            }
+        }
+        item {
+            Card(
+                Modifier.fillMaxWidth().aspectRatio(1.15f).combinedClickable(onClick = controller::openYouTube, onLongClick = {}),
+                colors = CardDefaults.cardColors(containerColor = Panel2)
+            ) {
+                Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.SpaceBetween) {
+                    Icon(Icons.Default.SmartDisplay, null, modifier = Modifier.size(32.dp))
+                    Column {
+                        Text("YouTube", fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                        Text("Search and play", color = TextMuted, fontSize = 12.sp)
+                    }
+                }
+            }
+        }
+        gridItems(settings.rooms.filter { it.kodi.baseUrl.isNotBlank() }, key = { "kodi:${it.id}" }) { room ->
+            Card(
+                Modifier.fillMaxWidth().aspectRatio(1.15f).combinedClickable(
+                    onClick = { controller.selectRoom(room.id); controller.openKodiLibrary() },
+                    onLongClick = {}
+                ),
+                colors = CardDefaults.cardColors(containerColor = Panel2)
+            ) {
+                Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.SpaceBetween) {
+                    Icon(Icons.Default.VideoLibrary, null, modifier = Modifier.size(32.dp))
+                    Column {
+                        Text(room.name, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                        Text("Video library", color = TextMuted, fontSize = 12.sp)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun YouTubeScreen(controller: AppController) {
+    val results by controller.youtubeResults.collectAsState()
+    var query by remember { mutableStateOf("") }
+    Column(Modifier.fillMaxSize().padding(horizontal = 14.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            OutlinedTextField(
+                value = query,
+                onValueChange = { query = it },
+                placeholder = { Text("Search YouTube") },
+                singleLine = true,
+                modifier = Modifier.weight(1f)
+            )
+            Spacer(Modifier.width(8.dp))
+            FilledIconButton(onClick = { controller.searchYouTube(query) }) { Icon(Icons.Default.Search, "Search") }
+        }
+        Spacer(Modifier.height(10.dp))
+        if (results.isEmpty()) {
+            EmptyState("YouTube", "Search for a video. Playback asks which room/player to use.")
+        } else {
+            LazyColumn(contentPadding = PaddingValues(bottom = 28.dp)) {
+                items(results, key = { it.videoId }) { item ->
+                    Row(
+                        Modifier.fillMaxWidth().combinedClickable(
+                            onClick = { controller.requestYouTubePlayback(item) },
+                            onLongClick = { controller.requestYouTubePlayback(item) }
+                        ).padding(vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Surface(Modifier.size(84.dp, 48.dp), color = Panel2, shape = RoundedCornerShape(9.dp)) {
+                            if (item.thumbnail.isNotBlank()) AsyncImage(
+                                model = item.thumbnail,
+                                contentDescription = null,
+                                modifier = Modifier.fillMaxSize(),
+                                contentScale = ContentScale.Crop
+                            )
+                            else Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Icon(Icons.Default.SmartDisplay, null) }
+                        }
+                        Spacer(Modifier.width(12.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text(item.title, maxLines = 2, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.Medium)
+                            if (item.channel.isNotBlank()) Text(item.channel, color = TextMuted, fontSize = 12.sp)
+                        }
+                        Icon(Icons.Default.PlayArrow, null)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PlaybackTargetDialog(
+    title: String,
+    targets: List<PlaybackTarget>,
+    onDismiss: () -> Unit,
+    onTarget: (String) -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title, maxLines = 2, overflow = TextOverflow.Ellipsis) },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text("Choose playback device", color = TextMuted, fontSize = 13.sp)
+                targets.forEach { target ->
+                    TextButton(
+                        onClick = { onTarget(target.id) },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(if (target.kodi) Icons.Default.Tv else Icons.Default.Speaker, null)
+                        Spacer(Modifier.width(8.dp))
+                        Text(target.label, modifier = Modifier.weight(1f))
+                    }
+                }
+            }
+        },
+        confirmButton = {},
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
+    )
+}
+
 // ---------------- Music Assistant ----------------
 
 @Composable
