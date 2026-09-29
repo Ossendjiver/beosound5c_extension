@@ -1691,8 +1691,8 @@ private fun SettingsScreen(controller: AppController, initial: AppSettings, onIm
 
                     HorizontalDivider(Modifier.padding(vertical = 8.dp))
                     Text("Diagnostics", fontWeight = FontWeight.SemiBold)
-                    SettingSwitch("Debug mode", draft.debugMode) {
-                        draft = draft.copy(debugMode = it)
+                    SettingSwitch("Debug mode", draft.debugEnabled) {
+                        draft = draft.copy(debugEnabled = it)
                         controller.setDebugRuntimeEnabled(it)
                     }
                     Text(
@@ -1717,13 +1717,13 @@ private fun SettingsScreen(controller: AppController, initial: AppSettings, onIm
                         }
                         OutlinedButton(
                             onClick = { debugExportLauncher.launch("HomeMedia-debug.txt") },
-                            enabled = draft.debugMode
+                            enabled = draft.debugEnabled
                         ) {
                             Icon(Icons.Default.Share, null)
                             Spacer(Modifier.width(6.dp))
                             Text("Export log")
                         }
-                        OutlinedButton(onClick = controller::clearDebugLog, enabled = draft.debugMode) {
+                        OutlinedButton(onClick = controller::clearDebugLog, enabled = draft.debugEnabled) {
                             Icon(Icons.Default.DeleteSweep, null)
                             Spacer(Modifier.width(6.dp))
                             Text("Clear")
