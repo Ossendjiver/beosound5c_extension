@@ -82,6 +82,7 @@ class YouTubeClient {
                     videoId = id,
                     title = item.name,
                     channel = item.uploaderName,
+                    channelUrl = item.uploaderUrl.orEmpty(),
                     thumbnail = item.thumbnails.firstOrNull()?.url.orEmpty()
                 )
             }
