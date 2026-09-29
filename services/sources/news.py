@@ -214,9 +214,37 @@ class NewsService(SourceBase):
 
     def add_routes(self, app):
         app.router.add_get("/articles", self._handle_articles)
+        app.router.add_post("/read", self._handle_read)
 
     async def _handle_articles(self, request):
         return web.json_response(self._sections, headers=self._cors_headers())
+
+    async def _handle_read(self, request):
+        """Read arbitrary article text using the BS5c local Piper voice.
+
+        Home Media normally asks Home Assistant TTS to speak through the
+        currently selected room first. This endpoint is the reliable local
+        fallback when HA TTS is unavailable.
+        """
+        try:
+            data = await request.json()
+        except Exception:
+            data = {}
+        text = str(data.get("text") or data.get("title") or "").strip()
+        if not text:
+            return web.json_response(
+                {"status": "error", "message": "text is required"},
+                status=400,
+                headers=self._cors_headers(),
+            )
+        # Keep announcements bounded so a malformed/full-page payload cannot
+        # monopolise the local voice for minutes.
+        text = text[:12000]
+        room = str(data.get("room") or "").strip()
+        log.info("Read request%s: %s", f" for room {room}" if room else "", text[:100])
+        from lib.tts import tts_announce
+        asyncio.create_task(tts_announce(text))
+        return web.json_response({"status": "ok"}, headers=self._cors_headers())
 
     async def handle_status(self):
         return {
