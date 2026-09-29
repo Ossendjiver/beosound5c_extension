@@ -477,9 +477,8 @@ private fun DrawerAction(label: String, icon: androidx.compose.ui.graphics.vecto
 @Composable
 private fun RoomScreen(controller: AppController, room: RoomConfig?) {
     val now by controller.nowPlaying.collectAsState()
-    val joinSourceId by controller.joinSourceRoomId.collectAsState()
+    val joinSource by controller.joinSource.collectAsState()
     val settings by controller.settings.collectAsState()
-    val joinRoom = joinSourceId?.let { id -> settings.rooms.firstOrNull { it.id == id } }
     if (room == null) { EmptyState("No room configured", "Add a room in Settings."); return }
 
     val beforeTen = remember { java.time.LocalTime.now().hour < 10 }
@@ -515,13 +514,13 @@ private fun RoomScreen(controller: AppController, room: RoomConfig?) {
                         Modifier.fillMaxWidth().aspectRatio(1.12f),
                         selected = true
                     ) { controller.openKodi() }
-                    joinRoom != null -> JoinTile(
-                        source = joinRoom,
+                    joinSource != null -> JoinTile(
+                        sourceLabel = joinSource!!.label,
                         modifier = Modifier.fillMaxWidth().aspectRatio(1.12f),
                         onJoin = controller::joinActiveRoom,
-                        onTransfer = { controller.transferFromRoom(joinRoom.id) },
-                        onPause = { controller.pauseRoom(joinRoom.id) },
-                        onOff = { controller.turnOffRoom(joinRoom.id) }
+                        onTransfer = controller::transferJoinSource,
+                        onPause = controller::pauseJoinSource,
+                        onOff = controller::turnOffJoinSource
                     )
                     else -> RoomTile(
                         TileConfig(
@@ -731,7 +730,7 @@ private fun SecondaryPlayerTile(
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun JoinTile(
-    source: RoomConfig,
+    sourceLabel: String,
     modifier: Modifier,
     onJoin: () -> Unit,
     onTransfer: () -> Unit,
@@ -749,23 +748,23 @@ private fun JoinTile(
                 Icon(Icons.Default.SpeakerGroup, null, modifier = Modifier.size(32.dp))
                 Column {
                     Text("Join", fontSize = 18.sp, fontWeight = FontWeight.Bold)
-                    Text(source.name, color = TextMuted, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(sourceLabel, color = TextMuted, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
             }
         }
         DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
             DropdownMenuItem(
-                text = { Text("Transfer queue from ${source.name}") },
+                text = { Text("Transfer queue from ${sourceLabel}") },
                 leadingIcon = { Icon(Icons.Default.SwapHoriz, null) },
                 onClick = { menu = false; onTransfer() }
             )
             DropdownMenuItem(
-                text = { Text("Pause ${source.name}") },
+                text = { Text("Pause ${sourceLabel}") },
                 leadingIcon = { Icon(Icons.Default.Pause, null) },
                 onClick = { menu = false; onPause() }
             )
             DropdownMenuItem(
-                text = { Text("Turn off ${source.name}") },
+                text = { Text("Turn off ${sourceLabel}") },
                 leadingIcon = { Icon(Icons.Default.PowerSettingsNew, null) },
                 onClick = { menu = false; onOff() }
             )
