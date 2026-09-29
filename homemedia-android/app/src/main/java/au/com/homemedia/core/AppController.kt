@@ -1005,21 +1005,35 @@ class AppController(context: Context) {
                     hour >= 18 -> listOf("evening", "dinner", "chill")
                     else -> listOf("mix", "indie", "discover")
                 }
-                val recent = _nowPlaying.value.title.lowercase()
+                val recentQueue = runCatching {
+                    val currentQueue = resolveActiveQueueForRoom(room)
+                    ma.queueItems(currentQueue, limit = 12)
+                }.getOrDefault(emptyList())
+                val recentNames = (recentQueue.map { it.name.lowercase() } + _nowPlaying.value.title.lowercase())
+                    .filter { it.isNotBlank() }
+                val recentHint = recentQueue.asReversed()
+                    .map { it.subtitle.substringBefore(" · ").substringBefore(" - ").trim() }
+                    .firstOrNull { it.length >= 3 }
+                    .orEmpty()
+
                 var candidates = emptyList<MassMediaItem>()
                 for (term in moodTerms) {
                     candidates = ma.library(MassCategory.PLAYLISTS, search = term, limit = 30)
                     if (candidates.isNotEmpty()) break
                 }
+                if (candidates.isEmpty() && recentHint.isNotBlank()) {
+                    candidates = ma.library(MassCategory.PLAYLISTS, search = recentHint, limit = 30)
+                }
                 if (candidates.isEmpty()) candidates = ma.library(MassCategory.PLAYLISTS, limit = 50)
                 if (candidates.isEmpty()) candidates = ma.library(MassCategory.ALBUMS, limit = 50)
                 if (candidates.isEmpty()) candidates = ma.library(MassCategory.TRACKS, limit = 50)
-                val pick = candidates.firstOrNull { it.playable && !it.name.lowercase().contains(recent) }
-                    ?: candidates.firstOrNull { it.playable }
+                val pick = candidates.firstOrNull { item ->
+                    item.playable && recentNames.none { recent -> recent.isNotBlank() && item.name.lowercase().contains(recent) }
+                } ?: candidates.firstOrNull { it.playable }
                     ?: error("No playable Music Assistant fallback was found")
                 val queue = prepareActiveQueueForRoom(room)
                 ma.play(queue, pick.uri, "replace")
-                debugLogger.log("MA", "Dynamic play weather=$condition temp=$temperature mood=${moodTerms.first()} picked=${pick.name}")
+                debugLogger.log("MA", "Dynamic play weather=$condition temp=$temperature mood=${moodTerms.first()} recentHint=$recentHint picked=${pick.name}")
                 delay(250)
                 refreshQueueInternal(queue)
             }
@@ -2006,11 +2020,9 @@ class AppController(context: Context) {
         }
 
         val resolvedKey = when {
-            currentKey != "primary" &&
-                activeSecondaries.any { it.id == currentKey } -> currentKey
-            !primaryActive && activeSecondaries.size == 1 -> activeSecondaries.first().id
-            primaryActive && currentKey != "primary" &&
-                activeSecondaries.none { it.id == currentKey } -> "primary"
+            currentKey != "primary" && room.activePlayerKey == currentKey -> currentKey
+            currentKey != "primary" && activeSecondaries.any { it.id == currentKey } -> currentKey
+            currentKey == "primary" && !primaryActive && activeSecondaries.size == 1 -> activeSecondaries.first().id
             else -> currentKey
         }
 
@@ -2076,6 +2088,7 @@ class AppController(context: Context) {
         }
         val st = when {
             roomState != null && hasMediaMetadata(roomState) -> roomState
+            activeSecondary != null -> roomState
             fallbackState != null && isRoomActive(room, states) -> fallbackState
             else -> roomState ?: routeState
         }
