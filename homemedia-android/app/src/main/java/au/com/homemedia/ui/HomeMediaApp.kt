@@ -264,12 +264,15 @@ private fun DrawerAction(label: String, icon: androidx.compose.ui.graphics.vecto
 private fun RoomScreen(controller: AppController, room: RoomConfig?) {
     val now by controller.nowPlaying.collectAsState()
     val joinSourceId by controller.joinSourceRoomId.collectAsState()
+    val activePlayerKey by controller.activePlayerKey.collectAsState()
     val settings by controller.settings.collectAsState()
     val joinRoom = joinSourceId?.let { id -> settings.rooms.firstOrNull { it.id == id } }
     if (room == null) { EmptyState("No room configured", "Add a room in Settings."); return }
 
     Column(Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 6.dp)) {
-        NowPlayingCard(controller, now, settings)
+        val activeName = if (activePlayerKey == "primary") room.name
+        else room.secondaryPlayers.firstOrNull { it.id == activePlayerKey }?.name ?: room.name
+        NowPlayingCard(controller, now, settings, activeName)
         Spacer(Modifier.height(16.dp))
 
         val tiles = remember(room.tiles, joinSourceId) {
@@ -286,6 +289,17 @@ private fun RoomScreen(controller: AppController, room: RoomConfig?) {
             verticalArrangement = Arrangement.spacedBy(12.dp),
             modifier = Modifier.weight(1f)
         ) {
+            gridItems(room.secondaryPlayers, key = { "secondary:${it.id}" }) { secondary ->
+                SecondaryPlayerTile(
+                    secondary = secondary,
+                    active = activePlayerKey == secondary.id,
+                    modifier = Modifier.fillMaxWidth().aspectRatio(1.12f),
+                    onToggle = { controller.toggleSecondaryPlayer(secondary.id) },
+                    onPause = { controller.secondaryPause(secondary.id) },
+                    onStop = { controller.secondaryStop(secondary.id) },
+                    onAuxToggle = { controller.toggleSecondaryAux(secondary.id) }
+                )
+            }
             gridItems(tiles, key = { it.id }) { tile ->
                 if (tile.id == "__JOIN__" && joinRoom != null) {
                     JoinTile(
@@ -305,9 +319,10 @@ private fun RoomScreen(controller: AppController, room: RoomConfig?) {
 }
 
 @Composable
-private fun NowPlayingCard(controller: AppController, now: NowPlaying, settings: AppSettings) {
-    Card(colors = CardDefaults.cardColors(containerColor = Panel), shape = RoundedCornerShape(24.dp)) {
-        Row(Modifier.fillMaxWidth().padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+private fun NowPlayingCard(controller: AppController, now: NowPlaying, settings: AppSettings, activeName: String) {
+    Box {
+        Card(colors = CardDefaults.cardColors(containerColor = Panel), shape = RoundedCornerShape(24.dp)) {
+            Row(Modifier.fillMaxWidth().padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
             Surface(Modifier.size(88.dp), color = Panel2, shape = RoundedCornerShape(16.dp)) {
                 if (now.imageUrl.isNotBlank()) AuthImage(now.imageUrl, settings.homeAssistantUrl, settings.homeAssistantToken, Modifier.fillMaxSize())
                 else Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Icon(Icons.Default.MusicNote, null, tint = TextMuted, modifier = Modifier.size(36.dp)) }
@@ -329,6 +344,15 @@ private fun NowPlayingCard(controller: AppController, now: NowPlaying, settings:
                 }
             }
         }
+        Surface(
+            modifier = Modifier.align(Alignment.TopEnd).padding(10.dp).size(26.dp),
+            shape = RoundedCornerShape(13.dp),
+            color = ActiveGreen
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                Icon(Icons.Default.Speaker, activeName, tint = Color.Black, modifier = Modifier.size(16.dp))
+            }
+        }
     }
 }
 
@@ -342,6 +366,63 @@ private fun RoomTile(tile: TileConfig, modifier: Modifier, onClick: () -> Unit) 
         Column(Modifier.fillMaxSize().padding(18.dp), verticalArrangement = Arrangement.SpaceBetween) {
             Icon(tileIcon(tile.icon), null, modifier = Modifier.size(30.dp))
             Text(tile.title, fontSize = 17.sp, fontWeight = FontWeight.SemiBold)
+        }
+    }
+}
+
+
+@Composable
+private fun SecondaryPlayerTile(
+    secondary: SecondaryPlayerConfig,
+    active: Boolean,
+    modifier: Modifier,
+    onToggle: () -> Unit,
+    onPause: () -> Unit,
+    onStop: () -> Unit,
+    onAuxToggle: () -> Unit
+) {
+    var menu by remember { mutableStateOf(false) }
+    Box {
+        Card(
+            modifier = modifier.combinedClickable(
+                onClick = onToggle,
+                onDoubleClick = { menu = true },
+                onLongClick = { menu = true }
+            ),
+            colors = CardDefaults.cardColors(containerColor = if (active) Color(0xFF153822) else Panel2),
+            shape = RoundedCornerShape(22.dp)
+        ) {
+            Column(Modifier.fillMaxSize().padding(18.dp), verticalArrangement = Arrangement.SpaceBetween) {
+                Icon(Icons.Default.Speaker, null, tint = if (active) ActiveGreen else LocalContentColor.current, modifier = Modifier.size(31.dp))
+                Column {
+                    Text(secondary.name, fontSize = 17.sp, fontWeight = FontWeight.SemiBold)
+                    Text(if (active) "Active player" else "Secondary player", color = if (active) ActiveGreen else TextMuted, fontSize = 12.sp)
+                }
+            }
+        }
+        DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+            DropdownMenuItem(
+                text = { Text(if (active) "Transfer queue back to main player" else "Transfer active queue here") },
+                leadingIcon = { Icon(Icons.Default.SwapHoriz, null) },
+                onClick = { menu = false; onToggle() }
+            )
+            DropdownMenuItem(
+                text = { Text("Pause ${secondary.name}") },
+                leadingIcon = { Icon(Icons.Default.Pause, null) },
+                onClick = { menu = false; onPause() }
+            )
+            DropdownMenuItem(
+                text = { Text("Stop ${secondary.name}") },
+                leadingIcon = { Icon(Icons.Default.Stop, null) },
+                onClick = { menu = false; onStop() }
+            )
+            if (secondary.toggleEntity.isNotBlank()) {
+                DropdownMenuItem(
+                    text = { Text("Toggle BC9500") },
+                    leadingIcon = { Icon(Icons.Default.PowerSettingsNew, null) },
+                    onClick = { menu = false; onAuxToggle() }
+                )
+            }
         }
     }
 }
