@@ -1101,9 +1101,18 @@ class AppController(context: Context) {
 
     fun openMassCategory(category: MassCategory, search: String = "") {
         scope.launch {
+            _massCategory.value = category
+            if (search.isBlank()) {
+                val cached = withContext(Dispatchers.IO) { mediaCache.loadMass(category) }
+                if (cached.isNotEmpty()) {
+                    _massItems.value = cached
+                    _screen.value = Screen.MASS_LIST
+                }
+            }
             busyRun("Could not load ${category.label}") {
-                _massCategory.value = category
-                _massItems.value = ma.library(category, search)
+                val fresh = ma.library(category, search)
+                _massItems.value = fresh
+                if (search.isBlank()) withContext(Dispatchers.IO) { mediaCache.saveMass(category, fresh) }
                 _screen.value = Screen.MASS_LIST
             }
         }
@@ -1537,9 +1546,21 @@ class AppController(context: Context) {
     fun openKodiCategory(type: KodiBrowseType) {
         val room = kodiBrowseRoom() ?: return
         scope.launch {
+            pushKodiState()
+            if (type in setOf(KodiBrowseType.MOVIES, KodiBrowseType.TV_SHOWS, KodiBrowseType.MUSIC_VIDEOS)) {
+                val cached = withContext(Dispatchers.IO) { mediaCache.loadKodi(type) }
+                if (cached.isNotEmpty()) {
+                    _kodiBrowse.value = KodiBrowseState(type, when (type) {
+                        KodiBrowseType.MOVIES -> "Movies"
+                        KodiBrowseType.TV_SHOWS -> "TV shows"
+                        KodiBrowseType.MUSIC_VIDEOS -> "Music videos"
+                        else -> "Kodi"
+                    }, cached)
+                    _screen.value = Screen.KODI_LIBRARY
+                }
+            }
             busyRun("Could not load Kodi library") {
-                pushKodiState()
-                _kodiBrowse.value = when (type) {
+                val fresh = when (type) {
                     KodiBrowseType.MOVIES -> KodiBrowseState(type, "Movies", kodi.movies(room.kodi))
                     KodiBrowseType.TV_SHOWS -> KodiBrowseState(type, "TV shows", kodi.tvShows(room.kodi))
                     KodiBrowseType.MUSIC_VIDEOS -> KodiBrowseState(type, "Music videos", kodi.musicVideos(room.kodi))
@@ -1549,6 +1570,10 @@ class AppController(context: Context) {
                     KodiBrowseType.VIDEO_SOURCES -> KodiBrowseState(type, "Video files", kodi.sources(room.kodi, "video"), fileMedia = "video")
                     KodiBrowseType.MUSIC_SOURCES -> KodiBrowseState(type, "Music files", kodi.sources(room.kodi, "music"), fileMedia = "music")
                     else -> KodiBrowseState()
+                }
+                _kodiBrowse.value = fresh
+                if (type in setOf(KodiBrowseType.MOVIES, KodiBrowseType.TV_SHOWS, KodiBrowseType.MUSIC_VIDEOS)) {
+                    withContext(Dispatchers.IO) { mediaCache.saveKodi(type, fresh.items) }
                 }
                 _screen.value = Screen.KODI_LIBRARY
             }
