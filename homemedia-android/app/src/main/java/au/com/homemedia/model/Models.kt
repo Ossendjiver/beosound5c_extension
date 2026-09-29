@@ -251,6 +251,13 @@ private fun presetRooms(): List<RoomConfig> = listOf(
         id = "bedroom", name = "Bedroom",
         primaryPlayerEntity = "media_player.bv10_40",
         mlgwEntity = "media_player.bv10_40",
+        secondaryPlayers = listOf(
+            SecondaryPlayerConfig(
+                id = "bedroom_mini", name = "Bedroom Mini",
+                haEntity = "media_player.bedroom_mini_ma",
+                maPlayerName = "Bedroom Mini"
+            )
+        ),
         sourceOptions = listOf("CD", "Link", "A.AUX", "Kodi"),
         presenceEntity = "binary_sensor.bedroom_hlk_presence_stable",
         presenceValue = "on",
@@ -285,7 +292,7 @@ private fun migrateRoomId(id: String): String = when (id) {
 }
 
 data class AppSettings(
-    val schemaVersion: Int = 4,
+    val schemaVersion: Int = 5,
     val homeAssistantUrl: String = "",
     val homeAssistantToken: String = "",
     val musicAssistantUrl: String = "",
@@ -484,7 +491,7 @@ fun appSettingsFromJson(obj: JSONObject): AppSettings {
     val baseRooms = if (schema < 3 && legacyIds.any { it in setOf("bs3", "lounge_mini", "bv10_32", "bv10_40", "cuisine") }) {
         presetRooms()
     } else parsedRooms?.takeIf { it.isNotEmpty() } ?: presetRooms()
-    val rooms = if (schema < 4) {
+    val presenceMigratedRooms = if (schema < 4) {
         baseRooms.map { room ->
             val (entity, expected) = defaultPresenceForRoom(room.id)
             if (room.presenceEntity.isBlank() && entity.isNotBlank()) {
@@ -492,8 +499,22 @@ fun appSettingsFromJson(obj: JSONObject): AppSettings {
             } else room
         }
     } else baseRooms
+    val rooms = if (schema < 5) {
+        presenceMigratedRooms.map { room ->
+            if (room.id == "bedroom" && room.secondaryPlayers.none { it.id == "bedroom_mini" || it.name.equals("Bedroom Mini", true) }) {
+                room.copy(
+                    secondaryPlayers = room.secondaryPlayers + SecondaryPlayerConfig(
+                        id = "bedroom_mini",
+                        name = "Bedroom Mini",
+                        haEntity = "media_player.bedroom_mini_ma",
+                        maPlayerName = "Bedroom Mini"
+                    )
+                )
+            } else room
+        }
+    } else presenceMigratedRooms
     return AppSettings(
-        schemaVersion = 4,
+        schemaVersion = 5,
         homeAssistantUrl = obj.optString("homeAssistantUrl"),
         homeAssistantToken = obj.optString("homeAssistantToken"),
         musicAssistantUrl = obj.optString("musicAssistantUrl"),
