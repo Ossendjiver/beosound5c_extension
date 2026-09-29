@@ -652,9 +652,9 @@ private fun MediaHubScreen(controller: AppController, onAddLocal: () -> Unit) {
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                item { MediaHubTile("Music", "Music Assistant", Icons.Default.LibraryMusic, controller::openLibrary) }
+                item { MediaHubTile("Music", "Music Assistant", Icons.Default.LibraryMusic) { controller.openLibrary() } }
                 item { MediaHubTile("YouTube", "Channels, history & playlists", Icons.Default.SmartDisplay) { controller.openYouTube("Search") } }
-                item { MediaHubTile("Stremio", "Search, watch & cast", Icons.Default.MovieFilter, controller::openStremio) }
+                item { MediaHubTile("Stremio", "Search, watch & cast", Icons.Default.MovieFilter, { controller.openStremio() }) }
                 if (settings.rooms.any { it.kodi.baseUrl.isNotBlank() }) {
                     item { MediaHubTile("Video library", "Kodi + YouTube + Stremio", Icons.Default.VideoLibrary, controller::openSharedKodiLibrary) }
                 }
@@ -1650,7 +1650,7 @@ private fun KodiLibraryScreen(controller: AppController, room: RoomConfig?) {
                 }
             }
             item(span = { GridItemSpan(maxLineSpan) }) { Text("Stremio", fontWeight = FontWeight.Bold, fontSize = 20.sp, modifier = Modifier.padding(top = 10.dp)) }
-            item { MediaHubTile("Search Stremio", "Movies, series & streams", Icons.Default.MovieFilter, controller::openStremio) }
+            item { MediaHubTile("Search Stremio", "Movies, series & streams", Icons.Default.MovieFilter, { controller.openStremio() }) }
         }
         return
     }
