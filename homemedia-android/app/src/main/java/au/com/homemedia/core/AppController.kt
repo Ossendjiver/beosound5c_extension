@@ -24,7 +24,7 @@ import java.util.zip.ZipEntry
 import java.util.zip.ZipInputStream
 import java.util.zip.ZipOutputStream
 
-enum class Screen { ROOM, MEDIA, MASS_HOME, MASS_LIST, MASS_DETAIL, QUEUE, KODI, KODI_LIBRARY, YOUTUBE, PHONE_VIDEO, STREMIO, SETTINGS }
+enum class Screen { ROOM, MEDIA, MASS_HOME, MASS_LIST, MASS_DETAIL, QUEUE, KODI, KODI_LIBRARY, NEWS, YOUTUBE, PHONE_VIDEO, STREMIO, SETTINGS }
 
 data class BluetoothCalibrationState(
     val roomId: String = "",
@@ -45,6 +45,7 @@ class AppController(context: Context) {
     val kodi = KodiClient()
     val youtube = YouTubeClient()
     val stremio = StremioClient(appContext)
+    val news = NewsClient()
     private val bluetoothLocator = BluetoothLocator(appContext)
     private val wifiStatus = WifiStatus(appContext)
     private val youtubeStore = YouTubeLibraryStore(appContext)
@@ -97,8 +98,13 @@ class AppController(context: Context) {
     private val _message = MutableStateFlow<String?>(null)
     val message: StateFlow<String?> = _message
 
-    private val _activePlayerKey = MutableStateFlow("primary")
+    private val _activePlayerKey = MutableStateFlow(
+        _settings.value.rooms.firstOrNull { it.id == _selectedRoomId.value }?.activePlayerKey ?: "primary"
+    )
     val activePlayerKey: StateFlow<String> = _activePlayerKey
+
+    private val _newsSections = MutableStateFlow<List<NewsSection>>(emptyList())
+    val newsSections: StateFlow<List<NewsSection>> = _newsSections
 
     private val _pendingMassPlayback = MutableStateFlow<Pair<MassMediaItem, String>?>(null)
     val pendingMassPlayback: StateFlow<Pair<MassMediaItem, String>?> = _pendingMassPlayback
@@ -150,6 +156,8 @@ class AppController(context: Context) {
     private var pendingBleConfirmations: Int = 0
     private var mediaEntryRoomId: String? = null
     private var mediaOriginScreen: Screen = Screen.ROOM
+    private var lastPresenceStateSignature: String? = null
+    private var secondaryDiscoveryJob: Job? = null
 
     init {
         debugLogger.setEnabled(_settings.value.debugEnabled)
@@ -159,6 +167,11 @@ class AppController(context: Context) {
         scope.launch {
             ha.states.collect { states ->
                 if (_settings.value.automaticRoom && _wifiConnected.value) resolveAutomaticRoom(states)
+                if (secondaryDiscoveryJob?.isActive != true && states.isNotEmpty() &&
+                    _settings.value.rooms.any { room -> room.secondaryPlayers.any { it.haEntity.isBlank() || !states.containsKey(it.haEntity) || it.maPlayerId.isBlank() } }
+                ) {
+                    secondaryDiscoveryJob = scope.launch { discoverSecondaryPlayers() }
+                }
                 val activePlayerChanged = syncActivePlayerForCurrentRoom(states)
                 updateNowPlaying(states)
                 updateJoinCandidate(states)
@@ -540,6 +553,7 @@ class AppController(context: Context) {
                 val target = youtubePlaybackTargets().firstOrNull { it.id == targetId }
                     ?: error("Playback target not found")
                 val room = _settings.value.rooms.first { it.id == target.roomId }
+                resetRoomToPrimary(room.id)
                 when {
                     target.kodi -> kodi.openUrl(room.kodi, stream.url)
                     target.cast -> {
@@ -621,15 +635,40 @@ class AppController(context: Context) {
     }
 
     fun selectRoom(id: String) {
-        if (_settings.value.rooms.none { it.id == id }) return
+        val room = _settings.value.rooms.firstOrNull { it.id == id } ?: return
         _selectedRoomId.value = id
+        _activePlayerKey.value = room.activePlayerKey.takeIf { key ->
+            key == "primary" || room.secondaryPlayers.any { it.id == key }
+        } ?: "primary"
         persist(_settings.value.copy(lastRoomId = id))
         mediaEntryRoomId = null
         mediaOriginScreen = Screen.ROOM
         _screen.value = Screen.ROOM
-        _activePlayerKey.value = "primary"
+        syncActivePlayerForCurrentRoom(ha.states.value)
         updateNowPlaying(ha.states.value)
         updateJoinCandidate(ha.states.value)
+    }
+
+    fun selectActivePlayer(key: String) {
+        val room = currentRoom() ?: return
+        if (key != "primary" && room.secondaryPlayers.none { it.id == key }) return
+        _activePlayerKey.value = key
+        persistActivePlayer(room.id, key)
+        updateNowPlaying(ha.states.value)
+        if (_screen.value == Screen.QUEUE) refreshQueue()
+    }
+
+    private fun persistActivePlayer(roomId: String, key: String) {
+        val settings = _settings.value
+        val updated = settings.rooms.map { room ->
+            if (room.id == roomId) room.copy(activePlayerKey = key) else room
+        }
+        if (updated != settings.rooms) persist(settings.copy(rooms = updated))
+    }
+
+    private fun resetRoomToPrimary(roomId: String) {
+        if (_selectedRoomId.value == roomId) _activePlayerKey.value = "primary"
+        persistActivePlayer(roomId, "primary")
     }
 
     fun saveSettings(newSettings: AppSettings) {
@@ -858,6 +897,7 @@ class AppController(context: Context) {
                         ma.playerStop(secondaryPlayerId)
                     }
                     _activePlayerKey.value = "primary"
+                    persistActivePlayer(room.id, "primary")
                 } else {
                     val targetPlayerId = ma.resolvePlayerId(secondary.maPlayerId, secondary.maPlayerName)
                     val targetQueue = ma.resolvePlayerQueueId(targetPlayerId)
@@ -866,6 +906,7 @@ class AppController(context: Context) {
                         ma.transferQueue(sourceQueue, targetQueue, autoPlay = true)
                     }
                     _activePlayerKey.value = secondary.id
+                    persistActivePlayer(room.id, secondary.id)
                 }
                 updateNowPlaying(ha.states.value)
             }
@@ -904,6 +945,84 @@ class AppController(context: Context) {
             return
         }
         if (!ha.callService("homeassistant", "toggle", resolved)) _message.value = "Home Assistant is not connected"
+    }
+
+    // ----- News + dynamic play -----
+
+    fun openNews() {
+        mediaOriginScreen = Screen.ROOM
+        mediaEntryRoomId = _selectedRoomId.value
+        scope.launch {
+            busyRun("Could not load BS5c news") {
+                _newsSections.value = news.sections(_settings.value.beosound5cUrl)
+                _screen.value = Screen.NEWS
+            }
+        }
+    }
+
+    fun readNewsArticle(article: NewsArticle) {
+        val room = currentRoom() ?: return
+        scope.launch {
+            busyRun("Could not read news article") {
+                val mediaEntity = activeTransportEntity().orEmpty()
+                val ttsEntity = ha.states.value.values.firstOrNull { it.entityId.startsWith("tts.") }?.entityId.orEmpty()
+                val message = listOf(article.title, article.body).filter { it.isNotBlank() }.joinToString(". ").take(12000)
+                val sentToRoom = ttsEntity.isNotBlank() && mediaEntity.isNotBlank() &&
+                    ha.callService(
+                        "tts", "speak", ttsEntity,
+                        JSONObject().put("media_player_entity_id", mediaEntity).put("message", message)
+                    )
+                if (!sentToRoom) {
+                    debugLogger.log("NEWS", "HA TTS unavailable; using BS5c local fallback")
+                    news.readOnBs5c(_settings.value.beosound5cUrl, article, room.name)
+                }
+            }
+        }
+    }
+
+    fun playDynamicTile() {
+        val room = currentRoom() ?: return
+        scope.launch {
+            busyRun("Could not start dynamic play") {
+                val hour = java.time.LocalTime.now().hour
+                if (hour < 10) {
+                    val ok = ha.callService("script", "turn_on", "script.play_the_morning_news")
+                    if (!ok) {
+                        openNews()
+                    }
+                    return@busyRun
+                }
+
+                val weather = ha.states.value.values.firstOrNull { it.entityId.startsWith("weather.") }
+                val condition = weather?.state.orEmpty().lowercase()
+                val temperature = weather?.attributes?.optDouble("temperature", Double.NaN) ?: Double.NaN
+                val moodTerms = when {
+                    condition.contains("rain") || condition.contains("storm") -> listOf("chill", "acoustic", "downtempo")
+                    condition.contains("sun") || condition.contains("clear") || (!temperature.isNaN() && temperature >= 24) ->
+                        listOf("summer", "upbeat", "feel good")
+                    !temperature.isNaN() && temperature <= 13 -> listOf("warm", "soul", "jazz")
+                    hour >= 18 -> listOf("evening", "dinner", "chill")
+                    else -> listOf("mix", "indie", "discover")
+                }
+                val recent = _nowPlaying.value.title.lowercase()
+                var candidates = emptyList<MassMediaItem>()
+                for (term in moodTerms) {
+                    candidates = ma.library(MassCategory.PLAYLISTS, search = term, limit = 30)
+                    if (candidates.isNotEmpty()) break
+                }
+                if (candidates.isEmpty()) candidates = ma.library(MassCategory.PLAYLISTS, limit = 50)
+                if (candidates.isEmpty()) candidates = ma.library(MassCategory.ALBUMS, limit = 50)
+                if (candidates.isEmpty()) candidates = ma.library(MassCategory.TRACKS, limit = 50)
+                val pick = candidates.firstOrNull { it.playable && !it.name.lowercase().contains(recent) }
+                    ?: candidates.firstOrNull { it.playable }
+                    ?: error("No playable Music Assistant fallback was found")
+                val queue = prepareActiveQueueForRoom(room)
+                ma.play(queue, pick.uri, "replace")
+                debugLogger.log("MA", "Dynamic play weather=$condition temp=$temperature mood=${moodTerms.first()} picked=${pick.name}")
+                delay(250)
+                refreshQueueInternal(queue)
+            }
+        }
     }
 
     // ----- Music Assistant library -----
@@ -1275,6 +1394,7 @@ class AppController(context: Context) {
                 val target = youtubePlaybackTargets().firstOrNull { it.id == targetId }
                     ?: error("Playback target not found")
                 val room = _settings.value.rooms.first { it.id == target.roomId }
+                resetRoomToPrimary(room.id)
                 when {
                     target.kodi -> kodi.openUrl(room.kodi, "plugin://plugin.video.youtube/play/?video_id=${item.videoId}")
                     target.cast -> {
@@ -1332,6 +1452,7 @@ class AppController(context: Context) {
         val room = _settings.value.rooms.firstOrNull { it.id == target.roomId } ?: return
         scope.launch {
             busyRun("Kodi playback failed") {
+                resetRoomToPrimary(room.id)
                 kodi.open(room.kodi, item)
                 _selectedRoomId.value = room.id
                 _screen.value = Screen.KODI
@@ -1460,6 +1581,7 @@ class AppController(context: Context) {
 
     fun onForeground() {
         _wifiConnected.value = wifiStatus.isConnectedToWifi()
+        scope.launch { discoverSecondaryPlayers() }
         val s = _settings.value
         if (!ha.connected.value && s.homeAssistantUrl.isNotBlank() && s.homeAssistantToken.isNotBlank()) {
             ha.connect(s.homeAssistantUrl, s.homeAssistantToken)
@@ -1685,7 +1807,7 @@ class AppController(context: Context) {
     private fun activeTransportEntity(): String? {
         val room = currentRoom() ?: return null
         val key = _activePlayerKey.value
-        if (key != "primary") return room.secondaryPlayers.firstOrNull { it.id == key }?.haEntity
+        if (key != "primary") return room.secondaryPlayers.firstOrNull { it.id == key }?.let { secondaryHaEntity(it) }
         return transportEntity(room)
     }
 
@@ -1693,7 +1815,7 @@ class AppController(context: Context) {
         val room = currentRoom() ?: return null
         val key = _activePlayerKey.value
         if (key != "primary") {
-            return room.secondaryPlayers.firstOrNull { it.id == key }?.haEntity?.takeIf(String::isNotBlank)
+            return room.secondaryPlayers.firstOrNull { it.id == key }?.let { secondaryHaEntity(it) }?.takeIf(String::isNotBlank)
                 ?: room.primaryPlayerEntity.takeIf(String::isNotBlank)
                 ?: room.routeEntity.takeIf(String::isNotBlank)
         }
@@ -1726,9 +1848,8 @@ class AppController(context: Context) {
         if (key != "primary") {
             val secondary = room.secondaryPlayers.firstOrNull { it.id == key }
             if (secondary != null) {
-                return ma.resolvePlayerQueueId(
-                    ma.resolvePlayerId(secondary.maPlayerId, secondary.maPlayerName)
-                )
+                val playerId = ma.resolvePlayerId(secondary.maPlayerId, secondary.maPlayerName.ifBlank { secondary.name })
+                return ma.resolvePlayerQueueId(playerId)
             }
         }
         return prepareMassPlaybackTarget(room)
@@ -1738,7 +1859,7 @@ class AppController(context: Context) {
         val key = _activePlayerKey.value
         if (key != "primary") {
             val s = room.secondaryPlayers.firstOrNull { it.id == key }
-            if (s != null) return ma.resolvePlayerQueueId(ma.resolvePlayerId(s.maPlayerId, s.maPlayerName))
+            if (s != null) return ma.resolvePlayerQueueId(ma.resolvePlayerId(s.maPlayerId, s.maPlayerName.ifBlank { s.name }))
         }
         return resolveQueueIdForRoom(room)
     }
@@ -1775,6 +1896,11 @@ class AppController(context: Context) {
         _wifiConnected.value = wifiStatus.isConnectedToWifi()
         if (!_wifiConnected.value) return
         val settings = _settings.value
+        val signature = settings.rooms.joinToString("|") { room ->
+            room.presenceEntity + "=" + (states[room.presenceEntity]?.state ?: "<missing>")
+        }
+        if (signature == lastPresenceStateSignature) return
+        lastPresenceStateSignature = signature
 
         val presenceMatches = settings.rooms.filter { room -> presenceMatchesRoom(room, states[room.presenceEntity]) }
         if (settings.debugEnabled && settings.rooms.any { it.presenceEntity.isNotBlank() }) {
@@ -1805,6 +1931,9 @@ class AppController(context: Context) {
         if (resolved != null && resolved.id != _selectedRoomId.value) {
             debugLogger.log("LOCATION", "HA location changed ${_selectedRoomId.value} -> ${resolved.id}")
             _selectedRoomId.value = resolved.id
+            _activePlayerKey.value = resolved.activePlayerKey.takeIf { key ->
+                key == "primary" || resolved.secondaryPlayers.any { it.id == key }
+            } ?: "primary"
             persist(settings.copy(lastRoomId = resolved.id))
         }
     }
@@ -1858,7 +1987,7 @@ class AppController(context: Context) {
         val primary = states[room.primaryPlayerEntity]
         if (primary?.state in activeStates) return true
         if (room.secondaryPlayers.any { secondary ->
-                secondary.haEntity.isNotBlank() && states[secondary.haEntity]?.state in activeStates
+                secondaryHaEntity(secondary, states).takeIf(String::isNotBlank)?.let { states[it]?.state in activeStates } == true
             }) return true
         val routed = states[room.routeEntity] ?: return false
         if (routed.state in setOf("off", "unavailable", "unknown")) return false
@@ -1891,14 +2020,51 @@ class AppController(context: Context) {
                 "primaryActive=$primaryActive secondaries=${activeSecondaries.joinToString { it.name }}"
         )
         _activePlayerKey.value = resolvedKey
+        persistActivePlayer(room.id, resolvedKey)
         return true
+    }
+
+    private fun secondaryHaEntity(secondary: SecondaryPlayerConfig, states: Map<String, HaEntityState> = ha.states.value): String {
+        if (secondary.haEntity.isNotBlank() && states.containsKey(secondary.haEntity)) return secondary.haEntity
+        val needles = listOf(secondary.name, secondary.maPlayerName)
+            .map { it.lowercase().replace(Regex("[^a-z0-9]"), "") }
+            .filter { it.length >= 3 }
+        return states.values.firstOrNull { state ->
+            if (!state.entityId.startsWith("media_player.")) return@firstOrNull false
+            val hay = (state.entityId + " " + state.attributes.optString("friendly_name"))
+                .lowercase().replace(Regex("[^a-z0-9]"), "")
+            needles.any { it in hay }
+        }?.entityId.orEmpty()
+    }
+
+    private suspend fun discoverSecondaryPlayers() {
+        val states = ha.states.value
+        val massPlayers = runCatching { ma.players() }.getOrDefault(emptyList())
+        val settings = _settings.value
+        var changed = false
+        val updatedRooms = settings.rooms.map { room ->
+            val secondaries = room.secondaryPlayers.map { secondary ->
+                val haId = secondaryHaEntity(secondary, states).ifBlank { secondary.haEntity }
+                val maId = secondary.maPlayerId.ifBlank {
+                    val hints = listOf(secondary.maPlayerName, secondary.name).filter { it.isNotBlank() }
+                    massPlayers.firstOrNull { p -> hints.any { it.equals(p.displayName, true) } }?.playerId.orEmpty()
+                }
+                if (haId != secondary.haEntity || maId != secondary.maPlayerId) {
+                    changed = true
+                    debugLogger.log("PLAYER", "Discovered secondary room=${room.name} name=${secondary.name} ha=${haId.ifBlank { "<missing>" }} ma=${maId.ifBlank { "<missing>" }}")
+                    secondary.copy(haEntity = haId, maPlayerId = maId)
+                } else secondary
+            }
+            room.copy(secondaryPlayers = secondaries)
+        }
+        if (changed) persist(_settings.value.copy(rooms = updatedRooms))
     }
 
     private fun updateNowPlaying(states: Map<String, HaEntityState>) {
         val room = currentRoom()
         if (room == null) { _nowPlaying.value = NowPlaying(); return }
         val activeSecondary = room.secondaryPlayers.firstOrNull { it.id == _activePlayerKey.value }
-        val activeEntity = activeSecondary?.haEntity?.takeIf(String::isNotBlank) ?: room.primaryPlayerEntity
+        val activeEntity = activeSecondary?.let { secondaryHaEntity(it) }?.takeIf(String::isNotBlank) ?: room.primaryPlayerEntity
         val roomState = states[activeEntity]
         val routeState = if (activeSecondary == null) states[room.routeEntity] else roomState
         val source = routeState?.attributes?.optString("source").orEmpty()
