@@ -100,6 +100,7 @@ fun HomeMediaApp(controller: AppController) {
     val wifiConnected by controller.wifiConnected.collectAsState()
     val phoneFullscreen by controller.phoneFullscreen.collectAsState()
     val activePlayerKey by controller.activePlayerKey.collectAsState()
+    val volumeHud by controller.volumeHud.collectAsState()
     val activePlayerName = room?.let { r ->
         if (activePlayerKey == "primary") simplifyPlayerName(r.primaryPlayerEntity, r.name)
         else r.secondaryPlayers.firstOrNull { it.id == activePlayerKey }?.name ?: simplifyPlayerName(r.primaryPlayerEntity, r.name)
@@ -217,6 +218,34 @@ fun HomeMediaApp(controller: AppController) {
                         onSettings = { controller.goSettings(); drawerOpen = false }
                     )
                 }
+
+                volumeHud?.let { level ->
+                    Surface(
+                        modifier = Modifier
+                            .align(Alignment.CenterEnd)
+                            .padding(end = 18.dp)
+                            .width(58.dp),
+                        color = Color(0xEE153822),
+                        shape = RoundedCornerShape(20.dp),
+                        tonalElevation = 10.dp
+                    ) {
+                        Column(
+                            Modifier.padding(horizontal = 10.dp, vertical = 14.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Icon(Icons.Default.VolumeUp, "Volume", tint = ActiveGreen)
+                            Spacer(Modifier.height(8.dp))
+                            LinearProgressIndicator(
+                                progress = { level / 100f },
+                                modifier = Modifier.height(88.dp).width(8.dp).graphicsLayer { rotationZ = -90f },
+                                color = ActiveGreen,
+                                trackColor = Panel3
+                            )
+                            Spacer(Modifier.height(4.dp))
+                            Text("$level", color = ActiveGreen, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
             }
 
             message?.let { text ->
@@ -295,8 +324,8 @@ private fun AppTopBar(
             }
         },
         navigationIcon = {
-            IconButton(onClick = if (screen == Screen.ROOM) onMenu else onBack) {
-                Icon(if (screen == Screen.ROOM) Icons.Default.Menu else Icons.AutoMirrored.Filled.ArrowBack, null)
+            IconButton(onClick = onMenu) {
+                Icon(Icons.Default.Menu, "Rooms and media")
             }
         },
         actions = {
@@ -472,10 +501,17 @@ private fun RoomScreen(controller: AppController, room: RoomConfig?) {
                 )
             }
 
-            // R1 — Join when available; otherwise context-aware play.
+            // R1 — Kodi remote takes priority, then Join, then context-aware play.
             item(key = "__R1_FIXED__") {
-                if (joinRoom != null) {
-                    JoinTile(
+                val kodiActive = now.source.equals(room.kodiSourceName, ignoreCase = true) ||
+                    now.source.contains("kodi", ignoreCase = true)
+                when {
+                    kodiActive && room.kodi.baseUrl.isNotBlank() -> RoomTile(
+                        TileConfig(id = "__KODI_REMOTE__", title = "Kodi remote", icon = "remote"),
+                        Modifier.fillMaxWidth().aspectRatio(1.12f),
+                        selected = true
+                    ) { controller.openKodi() }
+                    joinRoom != null -> JoinTile(
                         source = joinRoom,
                         modifier = Modifier.fillMaxWidth().aspectRatio(1.12f),
                         onJoin = controller::joinActiveRoom,
@@ -483,8 +519,7 @@ private fun RoomScreen(controller: AppController, room: RoomConfig?) {
                         onPause = { controller.pauseRoom(joinRoom.id) },
                         onOff = { controller.turnOffRoom(joinRoom.id) }
                     )
-                } else {
-                    RoomTile(
+                    else -> RoomTile(
                         TileConfig(
                             id = "__DYNAMIC_PLAY__",
                             title = if (beforeTen) "Morning news" else "Play music",
@@ -607,6 +642,12 @@ private fun SourceTile(
             }
         }
         DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+            DropdownMenuItem(
+                text = { Text("Off") },
+                leadingIcon = { Icon(Icons.Default.PowerSettingsNew, null) },
+                onClick = { menu = false; onSelect("Off") }
+            )
+            HorizontalDivider()
             if (sources.isEmpty()) {
                 DropdownMenuItem(text = { Text("No sources reported") }, enabled = false, onClick = {})
             } else {
