@@ -2,6 +2,11 @@
 
 package au.com.homemedia.ui
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
@@ -52,6 +57,7 @@ private val Panel3 = Color(0xFF25292E)
 private val TextMuted = Color(0xFF9DA3AB)
 private val Accent = Color(0xFFE9E9E9)
 private val Danger = Color(0xFFFF6B6B)
+private val ActiveGreen = Color(0xFF35C759)
 
 private val HomeMediaDark = darkColorScheme(
     primary = Accent,
@@ -75,7 +81,23 @@ fun HomeMediaApp(controller: AppController) {
     val busy by controller.busy.collectAsState()
     val message by controller.message.collectAsState()
     val room = settings.rooms.firstOrNull { it.id == roomId } ?: settings.rooms.firstOrNull()
+    val pendingMass by controller.pendingMassPlayback.collectAsState()
+    val pendingYoutube by controller.pendingYoutube.collectAsState()
     var drawerOpen by remember { mutableStateOf(false) }
+    val context = LocalContext.current
+    val settingsZipLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        uri?.let(controller::importSettingsZip)
+    }
+    val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { }
+    LaunchedEffect(Unit) {
+        val wanted = if (Build.VERSION.SDK_INT >= 31) {
+            arrayOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT)
+        } else {
+            arrayOf(Manifest.permission.ACCESS_FINE_LOCATION)
+        }
+        val missing = wanted.filter { context.checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
+        if (missing.isNotEmpty()) permissionLauncher.launch(missing.toTypedArray())
+    }
 
     MaterialTheme(colorScheme = HomeMediaDark) {
         Surface(Modifier.fillMaxSize(), color = Bg) {
@@ -90,7 +112,7 @@ fun HomeMediaApp(controller: AppController) {
                                 Screen.ROOM -> drawerOpen = true
                                 Screen.MASS_DETAIL -> controller.backFromMassDetail()
                                 Screen.MASS_LIST -> controller.backToMassHome()
-                                Screen.MASS_HOME, Screen.QUEUE, Screen.KODI, Screen.SETTINGS -> controller.goRoom()
+                                Screen.MEDIA, Screen.MASS_HOME, Screen.QUEUE, Screen.KODI, Screen.YOUTUBE, Screen.SETTINGS -> controller.goRoom()
                                 Screen.KODI_LIBRARY -> {
                                     val state = controller.kodiBrowse.value
                                     if (state.type == KodiBrowseType.HOME) controller.openKodi() else controller.kodiBrowseBack()
@@ -101,13 +123,17 @@ fun HomeMediaApp(controller: AppController) {
                     Box(Modifier.fillMaxSize()) {
                         when (screen) {
                             Screen.ROOM -> RoomScreen(controller, room)
+                            Screen.MEDIA -> MediaHubScreen(controller)
                             Screen.MASS_HOME -> MassHomeScreen(controller)
                             Screen.MASS_LIST -> MassListScreen(controller)
                             Screen.MASS_DETAIL -> MassDetailScreen(controller)
                             Screen.QUEUE -> QueueScreen(controller)
                             Screen.KODI -> KodiRemoteScreen(controller, room)
                             Screen.KODI_LIBRARY -> KodiLibraryScreen(controller, room)
-                            Screen.SETTINGS -> SettingsScreen(controller, settings)
+                            Screen.YOUTUBE -> YouTubeScreen(controller)
+                            Screen.SETTINGS -> SettingsScreen(controller, settings) {
+                                settingsZipLauncher.launch(arrayOf("application/zip", "application/octet-stream"))
+                            }
                         }
                         if (busy) {
                             Box(
@@ -124,6 +150,7 @@ fun HomeMediaApp(controller: AppController) {
                         currentRoomId = roomId,
                         onClose = { drawerOpen = false },
                         onRoom = { controller.selectRoom(it); drawerOpen = false },
+                        onMedia = { controller.goMedia(); drawerOpen = false },
                         onLibrary = { controller.openLibrary(); drawerOpen = false },
                         onQueue = { controller.openQueue(); drawerOpen = false },
                         onKodi = { controller.openKodi(); drawerOpen = false },
@@ -138,6 +165,23 @@ fun HomeMediaApp(controller: AppController) {
                     confirmButton = { TextButton(onClick = controller::clearMessage) { Text("OK") } },
                     title = { Text("Home Media") },
                     text = { Text(text) }
+                )
+            }
+
+            pendingMass?.let { pending ->
+                PlaybackTargetDialog(
+                    title = "Play ${pending.first.name}",
+                    targets = controller.playbackTargets(),
+                    onDismiss = controller::cancelPendingPlayback,
+                    onTarget = controller::confirmMassPlayback
+                )
+            }
+            pendingYoutube?.let { item ->
+                PlaybackTargetDialog(
+                    title = "Play ${item.title}",
+                    targets = controller.playbackTargets(includeKodi = true),
+                    onDismiss = controller::cancelPendingPlayback,
+                    onTarget = controller::confirmYouTubePlayback
                 )
             }
         }
@@ -164,10 +208,12 @@ private fun AppTopBar(roomName: String, screen: Screen, onMenu: () -> Unit, onBa
 }
 
 private fun screenTitle(screen: Screen) = when (screen) {
+    Screen.MEDIA -> "Media"
     Screen.MASS_HOME, Screen.MASS_LIST, Screen.MASS_DETAIL -> "Music Assistant"
     Screen.QUEUE -> "Queue"
     Screen.KODI -> "Kodi remote"
     Screen.KODI_LIBRARY -> "Kodi library"
+    Screen.YOUTUBE -> "YouTube"
     Screen.SETTINGS -> "Settings"
     else -> ""
 }
@@ -178,6 +224,7 @@ private fun RoomDrawer(
     currentRoomId: String,
     onClose: () -> Unit,
     onRoom: (String) -> Unit,
+    onMedia: () -> Unit,
     onLibrary: () -> Unit,
     onQueue: () -> Unit,
     onKodi: () -> Unit,
@@ -198,6 +245,7 @@ private fun RoomDrawer(
                     )
                 }
                 item { HorizontalDivider(Modifier.padding(vertical = 10.dp)) }
+                item { DrawerAction("Media", Icons.Default.PermMedia, onMedia) }
                 item { DrawerAction("Music library", Icons.Default.LibraryMusic, onLibrary) }
                 item { DrawerAction("Queue", Icons.Default.QueueMusic, onQueue) }
                 item { DrawerAction("Kodi", Icons.Default.Tv, onKodi) }
