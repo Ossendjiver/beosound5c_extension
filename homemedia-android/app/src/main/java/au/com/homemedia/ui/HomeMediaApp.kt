@@ -1710,6 +1710,11 @@ private fun SettingsScreen(controller: AppController, initial: AppSettings, onIm
                             Spacer(Modifier.width(6.dp))
                             Text("Test location")
                         }
+                        OutlinedButton(onClick = controller::runHomeAssistantDiagnostic) {
+                            Icon(Icons.Default.Home, null)
+                            Spacer(Modifier.width(6.dp))
+                            Text("Test Home Assistant")
+                        }
                         OutlinedButton(onClick = controller::runMusicAssistantDiagnostic) {
                             Icon(Icons.Default.LibraryMusic, null)
                             Spacer(Modifier.width(6.dp))
@@ -1754,7 +1759,13 @@ private fun SettingsScreen(controller: AppController, initial: AppSettings, onIm
             if (room != null) {
                 item {
                     SettingsSection("${room.name} routing") {
-                        RoomEditor(room) { updated ->
+                        RoomEditor(
+                            room,
+                            haStates.keys.filter {
+                                it.startsWith("binary_sensor.") &&
+                                    (it.contains("presence", true) || it.contains("occupancy", true))
+                            }.sorted()
+                        ) { updated ->
                             draft = draft.copy(rooms = draft.rooms.map { if (it.id == updated.id) updated else it })
                         }
                         Spacer(Modifier.height(12.dp))
@@ -1781,8 +1792,10 @@ private fun SettingsScreen(controller: AppController, initial: AppSettings, onIm
 
                         val calibrated = room.bluetoothCalibrationPoints.size >= 3
                         val calibrationLabel = when {
-                            room.bluetoothQuietRoom && calibrated -> "3-point calibration complete · Bluetooth-quiet room"
-                            calibrated -> "3-point calibration complete"
+                            room.bluetoothQuietRoom && calibrated ->
+                                "3-point calibration complete · ${controller.bluetoothCalibrationQuality(room)}"
+                            calibrated ->
+                                "3-point calibration complete · ${controller.bluetoothCalibrationQuality(room)}"
                             else -> "Not calibrated"
                         }
                         Text(calibrationLabel, color = if (calibrated) ActiveGreen else TextMuted, fontSize = 12.sp)
@@ -1846,7 +1859,11 @@ private fun SettingsSection(title: String, content: @Composable ColumnScope.() -
 }
 
 @Composable
-private fun RoomEditor(room: RoomConfig, onChange: (RoomConfig) -> Unit) {
+private fun RoomEditor(
+    room: RoomConfig,
+    presenceEntities: List<String>,
+    onChange: (RoomConfig) -> Unit
+) {
     SettingsField("Room name", room.name) { onChange(room.copy(name = it)) }
     SettingsField("Primary HA media_player", room.primaryPlayerEntity) { onChange(room.copy(primaryPlayerEntity = it)) }
     SettingsField("MLGW HA entity (blank = primary)", room.mlgwEntity) { onChange(room.copy(mlgwEntity = it)) }
@@ -1875,7 +1892,12 @@ private fun RoomEditor(room: RoomConfig, onChange: (RoomConfig) -> Unit) {
     SettingsField("Minimum RSSI", anchor.minRssi.toString(), numeric = true) { value ->
         onChange(room.copy(bluetoothAnchors = listOf(anchor.copy(minRssi = value.toIntOrNull() ?: anchor.minRssi))))
     }
-    SettingsField("Presence entity", room.presenceEntity) { onChange(room.copy(presenceEntity = it)) }
+    PresenceEntitySelector(
+        selected = room.presenceEntity,
+        candidates = presenceEntities,
+        onSelected = { onChange(room.copy(presenceEntity = it)) }
+    )
+    SettingsField("Presence entity (manual)", room.presenceEntity) { onChange(room.copy(presenceEntity = it)) }
     SettingsField("Presence value", room.presenceValue) { onChange(room.copy(presenceValue = it)) }
     SettingsField("Link source label", room.linkSourceName) { onChange(room.copy(linkSourceName = it)) }
     SettingsField("A.AUX source label", room.auxSourceName) { onChange(room.copy(auxSourceName = it)) }
@@ -1888,6 +1910,52 @@ private fun RoomEditor(room: RoomConfig, onChange: (RoomConfig) -> Unit) {
     SettingsField("Kodi username", room.kodi.username) { onChange(room.copy(kodi = room.kodi.copy(username = it))) }
     SettingsField("Kodi password", room.kodi.password, secret = true) { onChange(room.copy(kodi = room.kodi.copy(password = it))) }
     SettingsField("Kodi source label", room.kodiSourceName) { onChange(room.copy(kodiSourceName = it)) }
+}
+
+@Composable
+private fun PresenceEntitySelector(
+    selected: String,
+    candidates: List<String>,
+    onSelected: (String) -> Unit
+) {
+    var expanded by remember { mutableStateOf(false) }
+    Column(Modifier.fillMaxWidth()) {
+        Text("Presence sensor", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+        OutlinedButton(
+            onClick = { expanded = true },
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text(
+                selected.ifBlank { "Select Home Assistant binary sensor" },
+                modifier = Modifier.weight(1f),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Icon(Icons.Default.ArrowDropDown, null)
+        }
+        DropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false }
+        ) {
+            if (candidates.isEmpty()) {
+                DropdownMenuItem(
+                    text = { Text("No presence binary sensors received") },
+                    onClick = { expanded = false },
+                    enabled = false
+                )
+            } else {
+                candidates.forEach { entity ->
+                    DropdownMenuItem(
+                        text = { Text(entity) },
+                        onClick = {
+                            onSelected(entity)
+                            expanded = false
+                        }
+                    )
+                }
+            }
+        }
+    }
 }
 
 @Composable
