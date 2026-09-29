@@ -84,6 +84,7 @@ fun HomeMediaApp(controller: AppController) {
     val room = settings.rooms.firstOrNull { it.id == roomId } ?: settings.rooms.firstOrNull()
     val pendingMass by controller.pendingMassPlayback.collectAsState()
     val pendingYoutube by controller.pendingYoutube.collectAsState()
+    val pendingKodi by controller.pendingKodiItem.collectAsState()
     val activePlayerKey by controller.activePlayerKey.collectAsState()
     val activePlayerName = room?.let { r ->
         if (activePlayerKey == "primary") r.name
@@ -122,7 +123,7 @@ fun HomeMediaApp(controller: AppController) {
                                 Screen.MEDIA, Screen.MASS_HOME, Screen.QUEUE, Screen.KODI, Screen.YOUTUBE, Screen.SETTINGS -> controller.goRoom()
                                 Screen.KODI_LIBRARY -> {
                                     val state = controller.kodiBrowse.value
-                                    if (state.type == KodiBrowseType.HOME) controller.openKodi() else controller.kodiBrowseBack()
+                                    if (state.type == KodiBrowseType.HOME) controller.exitKodiLibrary() else controller.kodiBrowseBack()
                                 }
                             }
                         }
