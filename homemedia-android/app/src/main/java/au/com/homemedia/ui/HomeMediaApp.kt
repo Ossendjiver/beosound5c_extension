@@ -319,24 +319,24 @@ private fun AppTopBar(
 }
 
 private fun simplifyPlayerName(entityId: String, fallback: String): String {
-    val raw = entityId.substringAfter('.').ifBlank { fallback }
-        .removeSuffix("_ma")
-        .replace("_2", "")
+    val id = entityId.substringAfter('.').ifBlank { fallback }.lowercase()
+    val cleaned = id.removeSuffix("_ma")
+
+    Regex("^bv(\\d+)_([0-9]+)(?:_[0-9]+)?$").matchEntire(cleaned)?.let { match ->
+        return "BV${match.groupValues[1]}-${match.groupValues[2]}"
+    }
+    Regex("^(bl|bs)(\\d+)(?:_[0-9]+)?$").matchEntire(cleaned)?.let { match ->
+        return match.groupValues[1].uppercase() + match.groupValues[2]
+    }
+
+    return cleaned
         .replace('_', ' ')
         .trim()
-
-    return raw
         .split(' ')
         .filter(String::isNotBlank)
         .joinToString(" ") { part ->
-            when {
-                part.startsWith("bv", true) && part.drop(2).all(Char::isDigit) -> "BV" + part.drop(2)
-                part.startsWith("bl", true) && part.drop(2).all(Char::isDigit) -> "BL" + part.drop(2)
-                part.startsWith("bs", true) && part.drop(2).all(Char::isDigit) -> "BS" + part.drop(2)
-                else -> part.replaceFirstChar { if (it.isLowerCase()) it.titlecase() else it.toString() }
-            }
+            part.replaceFirstChar { if (it.isLowerCase()) it.titlecase() else it.toString() }
         }
-        .replace(Regex("(BV|BL|BS)(\\d{2})(\\d{2})"), "$1$2-$3")
         .ifBlank { fallback }
 }
 
