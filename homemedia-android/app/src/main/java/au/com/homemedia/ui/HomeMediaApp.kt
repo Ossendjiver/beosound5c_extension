@@ -85,6 +85,7 @@ fun HomeMediaApp(controller: AppController) {
     val pendingMass by controller.pendingMassPlayback.collectAsState()
     val pendingYoutube by controller.pendingYoutube.collectAsState()
     val pendingKodi by controller.pendingKodiItem.collectAsState()
+    val calibration by controller.bluetoothCalibration.collectAsState()
     val activePlayerKey by controller.activePlayerKey.collectAsState()
     val activePlayerName = room?.let { r ->
         if (activePlayerKey == "primary") r.name
@@ -199,6 +200,14 @@ fun HomeMediaApp(controller: AppController) {
                     targets = controller.kodiPlaybackTargets(),
                     onDismiss = controller::cancelPendingPlayback,
                     onTarget = controller::confirmKodiPlayback
+                )
+            }
+
+            calibration?.let { state ->
+                BluetoothCalibrationDialog(
+                    state = state,
+                    onCapture = controller::captureBluetoothCalibrationPoint,
+                    onDismiss = controller::cancelBluetoothCalibration
                 )
             }
         }
@@ -686,6 +695,70 @@ private fun YouTubeScreen(controller: AppController) {
             }
         }
     }
+}
+
+@Composable
+private fun BluetoothCalibrationDialog(
+    state: au.com.homemedia.core.BluetoothCalibrationState,
+    onCapture: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    val instruction = when (state.point) {
+        1 -> "Stand at one side of the room where you normally use the phone."
+        2 -> "Move to the middle of the room, then capture the second point."
+        else -> "Move to the opposite side of the room for the final point."
+    }
+    AlertDialog(
+        onDismissRequest = { if (!state.running) onDismiss() },
+        title = { Text("Calibrate ${state.roomName}") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(
+                    if (state.complete) "Calibration complete"
+                    else "Point ${state.point} of 3",
+                    fontWeight = FontWeight.Bold,
+                    color = if (state.complete) ActiveGreen else LocalContentColor.current
+                )
+                if (!state.complete) Text(instruction)
+                Text(
+                    "Each point scans Bluetooth for about 5.5 seconds. Three spatial samples are compared when locating the room.",
+                    color = TextMuted,
+                    fontSize = 12.sp
+                )
+                if (state.lastSummary.isNotBlank()) {
+                    Surface(color = Panel2, shape = RoundedCornerShape(10.dp)) {
+                        Text(state.lastSummary, Modifier.padding(10.dp), fontSize = 13.sp)
+                    }
+                }
+                if (state.running) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp)
+                        Spacer(Modifier.width(10.dp))
+                        Text("Scanning… keep the phone roughly still")
+                    }
+                }
+                if (state.complete && state.lastSummary.contains("Bluetooth-quiet", ignoreCase = true)) {
+                    Text(
+                        "This room has been marked Bluetooth-quiet. Weak signals bleeding in from another room will not pull location away from it.",
+                        color = ActiveGreen,
+                        fontSize = 12.sp
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            if (state.complete) {
+                Button(onClick = onDismiss) { Text("Done") }
+            } else {
+                Button(onClick = onCapture, enabled = !state.running) {
+                    Text("Capture point ${state.point}")
+                }
+            }
+        },
+        dismissButton = {
+            if (!state.running && !state.complete) TextButton(onClick = onDismiss) { Text("Cancel") }
+        }
+    )
 }
 
 @Composable
@@ -1217,6 +1290,23 @@ private fun SettingsScreen(controller: AppController, initial: AppSettings, onIm
                     SettingsSection("${room.name} routing") {
                         RoomEditor(room) { updated ->
                             draft = draft.copy(rooms = draft.rooms.map { if (it.id == updated.id) updated else it })
+                        }
+                        Spacer(Modifier.height(12.dp))
+                        val calibrated = room.bluetoothCalibrationPoints.size >= 3
+                        val calibrationLabel = when {
+                            room.bluetoothQuietRoom && calibrated -> "3-point calibration complete · Bluetooth-quiet room"
+                            calibrated -> "3-point calibration complete"
+                            else -> "Not calibrated"
+                        }
+                        Text(calibrationLabel, color = if (calibrated) ActiveGreen else TextMuted, fontSize = 12.sp)
+                        Spacer(Modifier.height(6.dp))
+                        OutlinedButton(
+                            onClick = { controller.beginBluetoothCalibration(room.id) },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Icon(Icons.Default.BluetoothSearching, null)
+                            Spacer(Modifier.width(8.dp))
+                            Text(if (calibrated) "Recalibrate Bluetooth (3 points)" else "Calibrate Bluetooth (3 points)")
                         }
                     }
                 }
