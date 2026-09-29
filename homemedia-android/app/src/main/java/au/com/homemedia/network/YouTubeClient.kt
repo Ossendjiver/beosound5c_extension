@@ -12,6 +12,7 @@ import org.schabi.newpipe.extractor.downloader.Downloader
 import org.schabi.newpipe.extractor.downloader.Request
 import org.schabi.newpipe.extractor.downloader.Response
 import org.schabi.newpipe.extractor.search.SearchInfo
+import org.schabi.newpipe.extractor.stream.StreamInfo
 import org.schabi.newpipe.extractor.stream.StreamInfoItem
 import java.net.URI
 import java.util.concurrent.TimeUnit
@@ -82,6 +83,25 @@ class YouTubeClient {
                 )
             }
             .toList()
+    }
+
+    suspend fun directPlaybackUrl(videoId: String): String = withContext(Dispatchers.IO) {
+        require(videoId.isNotBlank()) { "YouTube video ID is blank" }
+        ensureNewPipe()
+        val info = StreamInfo.getInfo("https://www.youtube.com/watch?v=$videoId")
+        val progressive = info.videoStreams
+            .asSequence()
+            .filter { it.isUrl && !it.isVideoOnly }
+            .sortedWith(
+                compareByDescending<org.schabi.newpipe.extractor.stream.VideoStream> {
+                    val h = it.height
+                    if (h in 1..1080) h + 10_000 else h
+                }.thenByDescending { it.bitrate }
+            )
+            .firstOrNull()
+        progressive?.content
+            ?: info.hlsUrl.takeIf { it.isNotBlank() }
+            ?: error("No castable YouTube stream was found")
     }
 
     private fun videoIdFromUrl(url: String): String {
