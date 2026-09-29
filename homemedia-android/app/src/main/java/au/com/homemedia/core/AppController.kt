@@ -15,6 +15,7 @@ import au.com.homemedia.storage.YouTubeLibraryStore
 import au.com.homemedia.storage.LocalVideoStore
 import au.com.homemedia.storage.LocalVideoItem
 import au.com.homemedia.playback.PhonePlaybackService
+import au.com.homemedia.debug.DebugLogger
 import android.provider.OpenableColumns
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
@@ -46,6 +47,7 @@ class AppController(context: Context) {
     private val wifiStatus = WifiStatus(appContext)
     private val youtubeStore = YouTubeLibraryStore(appContext)
     private val localVideoStore = LocalVideoStore(appContext)
+    private val debugLogger = DebugLogger(appContext)
 
     private val _settings = MutableStateFlow(store.load())
     val settings: StateFlow<AppSettings> = _settings
@@ -144,6 +146,9 @@ class AppController(context: Context) {
     private var kodiLibraryShared: Boolean = false
 
     init {
+        debugLogger.setEnabled(_settings.value.debugEnabled)
+        ma.setDebugLogger { debugLogger.log("MA", it) }
+        ha.setDebugLogger { debugLogger.log("HA", it) }
         configureConnections(_settings.value)
         scope.launch {
             ha.states.collect { states ->
@@ -165,6 +170,93 @@ class AppController(context: Context) {
     fun joinSourceRoom(): RoomConfig? = _joinSourceRoomId.value?.let { id -> _settings.value.rooms.firstOrNull { it.id == id } }
 
     fun clearMessage() { _message.value = null }
+
+    fun setDebugRuntimeEnabled(enabled: Boolean) {
+        debugLogger.setEnabled(enabled)
+        debugLogger.log("DEBUG", "Runtime debug mode=$enabled")
+    }
+
+    fun clearDebugLog() {
+        debugLogger.clear()
+        _message.value = "Debug log cleared"
+    }
+
+    fun exportDebugLog(uri: Uri) {
+        scope.launch(Dispatchers.IO) {
+            runCatching {
+                val settings = _settings.value
+                val header = buildString {
+                    appendLine("Home Media diagnostic log")
+                    appendLine("Wi-Fi connected: ${wifiStatus.isConnectedToWifi()}")
+                    appendLine("HA connected: ${ha.connected.value}")
+                    appendLine("HA URL: ${settings.homeAssistantUrl}")
+                    appendLine("MA URL: ${settings.musicAssistantUrl}")
+                    appendLine("Selected room: ${_selectedRoomId.value}")
+                    settings.rooms.forEach { room ->
+                        appendLine(
+                            "Room ${room.name}: presence=${room.presenceEntity} expected=${room.presenceValue}; " +
+                                "BLE points=${room.bluetoothCalibrationPoints.size}; quiet=${room.bluetoothQuietRoom}"
+                        )
+                    }
+                    appendLine("Tokens: REDACTED")
+                }
+                debugLogger.export(uri, header)
+            }.onSuccess {
+                withContext(Dispatchers.Main) { _message.value = "Debug log exported" }
+            }.onFailure { e ->
+                withContext(Dispatchers.Main) { _message.value = e.message ?: "Could not export debug log" }
+            }
+        }
+    }
+
+    fun runLocationDiagnostic() {
+        scope.launch {
+            _busy.value = true
+            try {
+                val settings = _settings.value
+                val wifi = wifiStatus.isConnectedToWifi()
+                debugLogger.log("LOC", "Manual diagnostic started wifi=$wifi selected=${_selectedRoomId.value}")
+                if (!wifi) {
+                    _message.value = "Location diagnostics are disabled off Wi-Fi"
+                    return@launch
+                }
+
+                val presenceLines = settings.rooms.mapNotNull { room ->
+                    if (room.presenceEntity.isBlank()) return@mapNotNull null
+                    val st = ha.states.value[room.presenceEntity]
+                    val line = "${room.name}: ${room.presenceEntity} state=${st?.state ?: "<missing>"} expected=${room.presenceValue.ifBlank { "<auto>" }}"
+                    debugLogger.log("PRESENCE", line)
+                    line
+                }
+
+                val scan = bluetoothLocator.scanFingerprint(3500)
+                val top = scan.samples.take(8).joinToString { "${it.name.ifBlank { it.address }}=${it.rssi}" }
+                debugLogger.log("BLE", "Scan devices=${scan.samples.size} top=[$top]")
+                settings.rooms.forEach { room ->
+                    debugLogger.log(
+                        "BLE",
+                        "Calibration room=${room.name} points=${room.bluetoothCalibrationPoints.size} quiet=${room.bluetoothQuietRoom}"
+                    )
+                }
+                val match = bluetoothLocator.resolveRoom(settings.rooms, scanMs = 1800)
+                val matchText = match?.let {
+                    "${settings.rooms.firstOrNull { r -> r.id == it.roomId }?.name ?: it.roomId} score=${"%.1f".format(it.score)} margin=${"%.1f".format(it.confidenceMargin)}"
+                } ?: "no confident BLE match"
+                debugLogger.log("BLE", "Prediction: $matchText")
+
+                _message.value = buildString {
+                    append("Presence: ")
+                    append(if (presenceLines.isEmpty()) "none configured" else presenceLines.joinToString(" | "))
+                    append("\nBLE: ${scan.samples.size} devices; $matchText")
+                }
+            } catch (e: Exception) {
+                debugLogger.log("LOC", "Diagnostic failure: ${e.javaClass.simpleName}: ${e.message}")
+                _message.value = e.message ?: "Location diagnostic failed"
+            } finally {
+                _busy.value = false
+            }
+        }
+    }
     fun goRoom() { _screen.value = Screen.ROOM }
     fun goMedia() { _screen.value = Screen.MEDIA }
     fun goSettings() { _screen.value = Screen.SETTINGS }
@@ -330,7 +422,9 @@ class AppController(context: Context) {
 
     fun saveSettings(newSettings: AppSettings) {
         val old = _settings.value
+        debugLogger.setEnabled(newSettings.debugEnabled)
         persist(newSettings)
+        debugLogger.log("SETTINGS", "Saved settings debug=${newSettings.debugEnabled} automaticRoom=${newSettings.automaticRoom} bluetooth=${newSettings.bluetoothLocationEnabled}")
         if (_selectedRoomId.value.isBlank() || newSettings.rooms.none { it.id == _selectedRoomId.value }) {
             _selectedRoomId.value = resolveInitialRoomId(newSettings)
         }
@@ -1135,8 +1229,16 @@ class AppController(context: Context) {
         val anyBluetoothData = settings.rooms.any {
             it.bluetoothAnchors.isNotEmpty() || it.bluetoothCalibrationPoints.size >= 3
         }
-        if (!settings.bluetoothLocationEnabled || !anyBluetoothData) return
-        val match = bluetoothLocator.resolveRoom(settings.rooms) ?: return
+        if (!settings.bluetoothLocationEnabled || !anyBluetoothData) {
+            debugLogger.log("BLE", "Skip automatic BLE: enabled=${settings.bluetoothLocationEnabled} anyData=$anyBluetoothData")
+            return
+        }
+        val match = bluetoothLocator.resolveRoom(settings.rooms)
+        if (match == null) {
+            debugLogger.log("BLE", "No confident automatic BLE room match")
+            return
+        }
+        debugLogger.log("BLE", "Automatic match room=${match.roomId} score=${match.score} margin=${match.confidenceMargin}")
         val roomId = match.roomId
         val current = settings.rooms.firstOrNull { it.id == _selectedRoomId.value }
         val leavingQuietRoom = current?.bluetoothQuietRoom == true && roomId != current.id
@@ -1189,6 +1291,7 @@ class AppController(context: Context) {
     }
 
     private fun configureConnections(settings: AppSettings) {
+        debugLogger.log("CONNECT", "Configuring HA=${settings.homeAssistantUrl} MA=${settings.musicAssistantUrl}")
         ma.configure(settings.musicAssistantUrl, settings.musicAssistantToken)
         ha.connect(settings.homeAssistantUrl, settings.homeAssistantToken)
     }
@@ -1197,14 +1300,57 @@ class AppController(context: Context) {
         _wifiConnected.value = wifiStatus.isConnectedToWifi()
         if (!_wifiConnected.value) return
         val settings = _settings.value
-        val presenceMatch = settings.rooms.firstOrNull { room ->
-            room.presenceEntity.isNotBlank() && room.presenceValue.isNotBlank() &&
-                states[room.presenceEntity]?.state.equals(room.presenceValue, ignoreCase = true)
+
+        val presenceMatches = settings.rooms.filter { room -> presenceMatchesRoom(room, states[room.presenceEntity]) }
+        if (settings.debugEnabled && settings.rooms.any { it.presenceEntity.isNotBlank() }) {
+            settings.rooms.filter { it.presenceEntity.isNotBlank() }.forEach { room ->
+                val st = states[room.presenceEntity]
+                debugLogger.log(
+                    "PRESENCE",
+                    "room=${room.name} entity=${room.presenceEntity} actual=${st?.state ?: "<missing>"} expected=${room.presenceValue.ifBlank { "<auto>" }} match=${room in presenceMatches}"
+                )
+            }
         }
-        val resolved = presenceMatch ?: if (settings.activePlayerLocationFallback) {
+
+        val presenceMatch = when {
+            presenceMatches.size == 1 -> presenceMatches.first()
+            presenceMatches.any { it.id == _selectedRoomId.value } -> presenceMatches.first { it.id == _selectedRoomId.value }
+            presenceMatches.size > 1 -> {
+                debugLogger.log("PRESENCE", "Ambiguous presence matches=${presenceMatches.joinToString { it.name }}; retaining current room")
+                null
+            }
+            else -> null
+        }
+
+        val activeFallback = if (presenceMatch == null && settings.activePlayerLocationFallback) {
             settings.rooms.filter { room -> states[room.primaryPlayerEntity]?.state in setOf("playing", "paused", "buffering") }.singleOrNull()
         } else null
-        if (resolved != null && resolved.id != _selectedRoomId.value) _selectedRoomId.value = resolved.id
+
+        val resolved = presenceMatch ?: activeFallback
+        if (resolved != null && resolved.id != _selectedRoomId.value) {
+            debugLogger.log("LOCATION", "HA location changed ${_selectedRoomId.value} -> ${resolved.id}")
+            _selectedRoomId.value = resolved.id
+            persist(settings.copy(lastRoomId = resolved.id))
+        }
+    }
+
+    private fun presenceMatchesRoom(room: RoomConfig, state: HaEntityState?): Boolean {
+        if (room.presenceEntity.isBlank() || state == null) return false
+        val actual = state.state.trim()
+        val expected = room.presenceValue.trim()
+
+        fun eq(a: String, b: String) = a.trim().equals(b.trim(), ignoreCase = true)
+        val attrs = listOf("room", "location", "area", "presence", "occupancy")
+            .mapNotNull { key -> state.attributes.optString(key).takeIf(String::isNotBlank) }
+
+        if (expected.isNotBlank()) {
+            return eq(actual, expected) || attrs.any { eq(it, expected) }
+        }
+
+        val roomNames = listOf(room.id, room.name)
+        if (roomNames.any { eq(actual, it) } || attrs.any { attr -> roomNames.any { eq(attr, it) } }) return true
+
+        return actual.lowercase() in setOf("on", "home", "present", "occupied", "detected", "true", "yes")
     }
 
     private fun updateJoinCandidate(states: Map<String, HaEntityState>) {
@@ -1352,7 +1498,10 @@ class AppController(context: Context) {
     private suspend fun busyRun(defaultError: String, block: suspend () -> Unit) {
         _busy.value = true
         try { block() }
-        catch (e: Exception) { _message.value = e.message ?: defaultError }
+        catch (e: Exception) {
+            debugLogger.log("ERROR", "$defaultError: ${e.javaClass.simpleName}: ${e.message}")
+            _message.value = e.message ?: defaultError
+        }
         finally { _busy.value = false }
     }
 
