@@ -18,6 +18,11 @@ class HomeAssistantClient {
     private var baseUrl: String = ""
     private var token: String = ""
     private val ids = AtomicInteger(10)
+    private var debugLog: ((String, String) -> Unit)? = null
+
+    fun setDebugLogger(logger: ((String, String) -> Unit)?) {
+        debugLog = logger
+    }
     private var debugSink: ((String) -> Unit)? = null
 
     private val _states = MutableStateFlow<Map<String, HaEntityState>>(emptyMap())
@@ -41,6 +46,7 @@ class HomeAssistantClient {
             else -> "ws://$baseUrl/api/websocket"
         }
         debugSink?.invoke("Connecting websocket $wsUrl token=${if (token.isBlank()) "missing" else "present"}")
+        debugLog?.invoke("HA", "connect websocket configured")
         val request = Request.Builder().url(wsUrl).build()
         socket = http.newWebSocket(request, object : WebSocketListener() {
             override fun onMessage(webSocket: WebSocket, text: String) {
@@ -129,6 +135,7 @@ class HomeAssistantClient {
                     result.optJSONObject(i)?.let(::parseState)?.let { map[it.entityId] = it }
                 }
                 _states.value = map
+                debugLog?.invoke("HA", "initial states=" + map.size)
                 debugSink?.invoke("Loaded ${map.size} Home Assistant states")
             }
             "event" -> {
