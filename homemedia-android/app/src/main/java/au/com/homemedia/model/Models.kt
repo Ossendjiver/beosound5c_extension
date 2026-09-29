@@ -292,11 +292,12 @@ private fun migrateRoomId(id: String): String = when (id) {
 }
 
 data class AppSettings(
-    val schemaVersion: Int = 5,
+    val schemaVersion: Int = 6,
     val homeAssistantUrl: String = "",
     val homeAssistantToken: String = "",
     val musicAssistantUrl: String = "",
     val musicAssistantToken: String = "",
+    val beosound5cUrl: String = "http://beosound5c.local",
     val youtubeApiKey: String = "",
     val stremioStreamAddonManifests: List<String> = emptyList(),
     val debugEnabled: Boolean = false,
@@ -418,6 +419,7 @@ fun AppSettings.toJson(): JSONObject = JSONObject().apply {
     put("homeAssistantToken", homeAssistantToken)
     put("musicAssistantUrl", musicAssistantUrl)
     put("musicAssistantToken", musicAssistantToken)
+    put("beosound5cUrl", beosound5cUrl)
     put("youtubeApiKey", youtubeApiKey)
     put("stremioStreamAddonManifests", JSONArray().apply { stremioStreamAddonManifests.forEach { put(it) } })
     put("debugEnabled", debugEnabled)
@@ -514,11 +516,12 @@ fun appSettingsFromJson(obj: JSONObject): AppSettings {
         }
     } else presenceMigratedRooms
     return AppSettings(
-        schemaVersion = 5,
+        schemaVersion = 6,
         homeAssistantUrl = obj.optString("homeAssistantUrl"),
         homeAssistantToken = obj.optString("homeAssistantToken"),
         musicAssistantUrl = obj.optString("musicAssistantUrl"),
         musicAssistantToken = obj.optString("musicAssistantToken"),
+        beosound5cUrl = obj.optString("beosound5cUrl", "http://beosound5c.local"),
         youtubeApiKey = obj.optString("youtubeApiKey"),
         stremioStreamAddonManifests = obj.optJSONArray("stremioStreamAddonManifests")?.let { arr ->
             (0 until arr.length()).mapNotNull { i -> arr.optString(i).takeIf(String::isNotBlank) }
