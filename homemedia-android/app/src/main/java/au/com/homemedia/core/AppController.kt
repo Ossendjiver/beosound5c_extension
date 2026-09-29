@@ -12,6 +12,10 @@ import au.com.homemedia.network.WifiStatus
 import au.com.homemedia.network.StremioClient
 import au.com.homemedia.storage.SettingsStore
 import au.com.homemedia.storage.YouTubeLibraryStore
+import au.com.homemedia.storage.LocalVideoStore
+import au.com.homemedia.storage.LocalVideoItem
+import au.com.homemedia.playback.PhonePlaybackService
+import android.provider.OpenableColumns
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import org.json.JSONObject
@@ -41,6 +45,7 @@ class AppController(context: Context) {
     private val bluetoothLocator = BluetoothLocator(appContext)
     private val wifiStatus = WifiStatus(appContext)
     private val youtubeStore = YouTubeLibraryStore(appContext)
+    private val localVideoStore = LocalVideoStore(appContext)
 
     private val _settings = MutableStateFlow(store.load())
     val settings: StateFlow<AppSettings> = _settings
@@ -100,6 +105,24 @@ class AppController(context: Context) {
     private val _youtubeLibrary = MutableStateFlow(youtubeStore.load())
     val youtubeLibrary: StateFlow<YouTubeLibraryStore.State> = _youtubeLibrary
 
+    private val _youtubeSection = MutableStateFlow("Search")
+    val youtubeSection: StateFlow<String> = _youtubeSection
+
+    private val _localVideos = MutableStateFlow(localVideoStore.load())
+    val localVideos: StateFlow<List<LocalVideoItem>> = _localVideos
+
+    private val _stremioResults = MutableStateFlow<List<StremioMetaItem>>(emptyList())
+    val stremioResults: StateFlow<List<StremioMetaItem>> = _stremioResults
+
+    private val _selectedStremio = MutableStateFlow<StremioMetaItem?>(null)
+    val selectedStremio: StateFlow<StremioMetaItem?> = _selectedStremio
+
+    private val _stremioStreams = MutableStateFlow<List<StremioStreamItem>>(emptyList())
+    val stremioStreams: StateFlow<List<StremioStreamItem>> = _stremioStreams
+
+    private val _pendingStremio = MutableStateFlow<Pair<StremioMetaItem, StremioStreamItem>?>(null)
+    val pendingStremio: StateFlow<Pair<StremioMetaItem, StremioStreamItem>?> = _pendingStremio
+
     private val _wifiConnected = MutableStateFlow(wifiStatus.isConnectedToWifi())
     val wifiConnected: StateFlow<Boolean> = _wifiConnected
 
@@ -146,10 +169,81 @@ class AppController(context: Context) {
     fun openStremio() { _screen.value = Screen.STREMIO }
     fun stremioBoard() { runCatching { stremio.openBoard() }.onFailure { _message.value = it.message ?: "Stremio is not installed" } }
     fun stremioLibrary() { runCatching { stremio.openLibrary() }.onFailure { _message.value = it.message ?: "Stremio is not installed" } }
+
     fun stremioSearch(query: String) {
         if (query.isBlank()) return
-        runCatching { stremio.search(query) }.onFailure { _message.value = it.message ?: "Stremio is not installed" }
+        scope.launch {
+            busyRun("Stremio search failed") {
+                _selectedStremio.value = null
+                _stremioStreams.value = emptyList()
+                _stremioResults.value = stremio.search(query)
+                _screen.value = Screen.STREMIO
+            }
+        }
     }
+
+    fun selectStremioItem(item: StremioMetaItem) {
+        _selectedStremio.value = item
+        _stremioStreams.value = emptyList()
+        if (item.type == "series") return
+        scope.launch {
+            busyRun("Could not load Stremio streams") {
+                _stremioStreams.value = stremio.streams(item, _settings.value.stremioStreamAddonManifests)
+            }
+        }
+    }
+
+    fun openStremioItemInApp(item: StremioMetaItem) {
+        runCatching { stremio.openDetail(item) }.onFailure { _message.value = it.message ?: "Stremio is not installed" }
+    }
+
+    fun requestStremioPlayback(item: StremioMetaItem, stream: StremioStreamItem) {
+        if (!stream.directlyPlayable) {
+            if (stream.externalUrl.isNotBlank()) runCatching { stremio.openExternal(stream.externalUrl) }
+            else openStremioItemInApp(item)
+            return
+        }
+        _wifiConnected.value = wifiStatus.isConnectedToWifi()
+        if (_wifiConnected.value) {
+            _pendingStremio.value = item to stream
+        } else {
+            playStremioOnPhone(item, stream)
+        }
+    }
+
+    private fun playStremioOnPhone(item: StremioMetaItem, stream: StremioStreamItem) {
+        _phoneVideo.value = PhoneVideo(item.name, stream.url)
+        PhonePlaybackService.play(appContext, stream.url, item.name)
+        _screen.value = Screen.PHONE_VIDEO
+    }
+
+    fun confirmStremioPlayback(targetId: String) {
+        val pending = _pendingStremio.value ?: return
+        _pendingStremio.value = null
+        val item = pending.first
+        val stream = pending.second
+        if (targetId == "phone") {
+            playStremioOnPhone(item, stream)
+            return
+        }
+        scope.launch {
+            busyRun("Could not start Stremio stream") {
+                val target = youtubePlaybackTargets().firstOrNull { it.id == targetId }
+                    ?: error("Playback target not found")
+                val room = _settings.value.rooms.first { it.id == target.roomId }
+                when {
+                    target.kodi -> kodi.openUrl(room.kodi, stream.url)
+                    target.cast -> {
+                        val entity = resolveYouTubeCastEntity(room)
+                        val data = JSONObject().put("media_content_id", stream.url).put("media_content_type", "video")
+                        if (!ha.callService("media_player", "play_media", entity, data)) error("Home Assistant is not connected")
+                    }
+                }
+            }
+        }
+    }
+
+    fun cancelPendingStremio() { _pendingStremio.value = null }
     fun stopPhoneVideo() { _phoneVideo.value = null; _screen.value = Screen.YOUTUBE }
 
     fun beginBluetoothCalibration(roomId: String) {
@@ -246,7 +340,7 @@ class AppController(context: Context) {
             TileActionType.OPEN_LIBRARY -> openLibrary()
             TileActionType.OPEN_KODI -> openKodiLibrary(shared = false)
             TileActionType.OPEN_QUEUE -> openQueue()
-            TileActionType.OPEN_YOUTUBE -> openYouTube()
+            TileActionType.OPEN_YOUTUBE -> openYouTube("Search")
             TileActionType.SELECT_SOURCE -> if (tile.source.isNotBlank()) selectRoomSource(tile.source)
             TileActionType.HA_SERVICE -> scope.launch {
                 busyRun("Home Assistant action failed") {
@@ -611,6 +705,34 @@ class AppController(context: Context) {
         refreshKodi()
     }
 
+    fun addLocalVideo(uri: Uri) {
+        runCatching {
+            appContext.contentResolver.takePersistableUriPermission(
+                uri,
+                android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION
+            )
+        }
+        val name = runCatching {
+            appContext.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
+                if (cursor.moveToFirst()) cursor.getString(0) else null
+            }
+        }.getOrNull().orEmpty().ifBlank { uri.lastPathSegment ?: "Local video" }
+        val item = LocalVideoItem(uri.toString(), name)
+        localVideoStore.add(item)
+        _localVideos.value = localVideoStore.load()
+    }
+
+    fun removeLocalVideo(uri: String) {
+        localVideoStore.remove(uri)
+        _localVideos.value = localVideoStore.load()
+    }
+
+    fun playLocalVideo(item: LocalVideoItem) {
+        _phoneVideo.value = PhoneVideo(item.name, item.uri)
+        PhonePlaybackService.play(appContext, item.uri, item.name)
+        _screen.value = Screen.PHONE_VIDEO
+    }
+
     fun searchYouTube(query: String) {
         scope.launch {
             busyRun("YouTube search failed") {
@@ -702,6 +824,7 @@ class AppController(context: Context) {
                 val stream = youtube.directPlaybackUrl(item.videoId)
                 markYouTubeWatched(item)
                 _phoneVideo.value = PhoneVideo(item.title, stream, item)
+                PhonePlaybackService.play(appContext, stream, item.title)
                 _screen.value = Screen.PHONE_VIDEO
             }
         }
@@ -721,6 +844,7 @@ class AppController(context: Context) {
                     val stream = youtube.directPlaybackUrl(item.videoId)
                     markYouTubeWatched(item)
                     _phoneVideo.value = PhoneVideo(item.title, stream, item)
+                    PhonePlaybackService.play(appContext, stream, item.title)
                     _screen.value = Screen.PHONE_VIDEO
                     return@busyRun
                 }
