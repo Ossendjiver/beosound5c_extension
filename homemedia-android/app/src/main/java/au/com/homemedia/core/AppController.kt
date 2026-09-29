@@ -1,23 +1,30 @@
 package au.com.homemedia.core
 
 import android.content.Context
+import android.net.Uri
+import au.com.homemedia.location.BluetoothLocator
 import au.com.homemedia.model.*
 import au.com.homemedia.network.HomeAssistantClient
 import au.com.homemedia.network.KodiClient
 import au.com.homemedia.network.MusicAssistantClient
+import au.com.homemedia.network.YouTubeClient
 import au.com.homemedia.storage.SettingsStore
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import org.json.JSONObject
+import java.util.zip.ZipInputStream
 
-enum class Screen { ROOM, MASS_HOME, MASS_LIST, MASS_DETAIL, QUEUE, KODI, KODI_LIBRARY, SETTINGS }
+enum class Screen { ROOM, MEDIA, MASS_HOME, MASS_LIST, MASS_DETAIL, QUEUE, KODI, KODI_LIBRARY, YOUTUBE, SETTINGS }
 
 class AppController(context: Context) {
-    private val store = SettingsStore(context.applicationContext)
+    private val appContext = context.applicationContext
+    private val store = SettingsStore(appContext)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     val ha = HomeAssistantClient()
     val ma = MusicAssistantClient()
     val kodi = KodiClient()
+    val youtube = YouTubeClient()
+    private val bluetoothLocator = BluetoothLocator(appContext)
 
     private val _settings = MutableStateFlow(store.load())
     val settings: StateFlow<AppSettings> = _settings
@@ -65,6 +72,18 @@ class AppController(context: Context) {
     private val _message = MutableStateFlow<String?>(null)
     val message: StateFlow<String?> = _message
 
+    private val _activePlayerKey = MutableStateFlow("primary")
+    val activePlayerKey: StateFlow<String> = _activePlayerKey
+
+    private val _pendingMassPlayback = MutableStateFlow<Pair<MassMediaItem, String>?>(null)
+    val pendingMassPlayback: StateFlow<Pair<MassMediaItem, String>?> = _pendingMassPlayback
+
+    private val _youtubeResults = MutableStateFlow<List<YouTubeItem>>(emptyList())
+    val youtubeResults: StateFlow<List<YouTubeItem>> = _youtubeResults
+
+    private val _pendingYoutube = MutableStateFlow<YouTubeItem?>(null)
+    val pendingYoutube: StateFlow<YouTubeItem?> = _pendingYoutube
+
     init {
         configureConnections(_settings.value)
         scope.launch {
@@ -88,13 +107,16 @@ class AppController(context: Context) {
 
     fun clearMessage() { _message.value = null }
     fun goRoom() { _screen.value = Screen.ROOM }
+    fun goMedia() { _screen.value = Screen.MEDIA }
     fun goSettings() { _screen.value = Screen.SETTINGS }
+    fun openYouTube() { _screen.value = Screen.YOUTUBE }
 
     fun selectRoom(id: String) {
         if (_settings.value.rooms.none { it.id == id }) return
         _selectedRoomId.value = id
         persist(_settings.value.copy(lastRoomId = id))
         _screen.value = Screen.ROOM
+        _activePlayerKey.value = "primary"
         updateNowPlaying(ha.states.value)
         updateJoinCandidate(ha.states.value)
     }
