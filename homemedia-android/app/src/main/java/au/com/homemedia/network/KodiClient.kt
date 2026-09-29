@@ -213,6 +213,11 @@ class KodiClient {
         }
     }
 
+    suspend fun openUrl(config: KodiConfig, url: String) {
+        require(url.isNotBlank()) { "Kodi URL is blank" }
+        rpc(config, "Player.Open", JSONObject().put("item", JSONObject().put("file", url)))
+    }
+
     suspend fun open(config: KodiConfig, item: KodiLibraryItem) {
         val target = JSONObject()
         when (item.mediaType.lowercase()) {
