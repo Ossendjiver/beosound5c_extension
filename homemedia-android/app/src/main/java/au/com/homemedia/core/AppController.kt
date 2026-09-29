@@ -20,7 +20,9 @@ import android.provider.OpenableColumns
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import org.json.JSONObject
+import java.util.zip.ZipEntry
 import java.util.zip.ZipInputStream
+import java.util.zip.ZipOutputStream
 
 enum class Screen { ROOM, MEDIA, MASS_HOME, MASS_LIST, MASS_DETAIL, QUEUE, KODI, KODI_LIBRARY, YOUTUBE, PHONE_VIDEO, STREMIO, SETTINGS }
 
@@ -172,6 +174,30 @@ class AppController(context: Context) {
         ?: _settings.value.rooms.firstOrNull()
 
     fun bluetoothCalibrationQuality(room: RoomConfig): String = bluetoothLocator.calibrationQuality(room)
+
+    fun roomMediaKind(room: RoomConfig): String? {
+        val states = ha.states.value
+        if (!isRoomActive(room, states)) return null
+
+        val primary = states[room.primaryPlayerEntity]
+        val routed = states[room.routeEntity]
+        val source = (routed?.attributes?.optString("source").orEmpty() + " " +
+            primary?.attributes?.optString("source").orEmpty()).lowercase()
+        val mediaType = listOfNotNull(primary, routed)
+            .map { it.attributes.optString("media_content_type").lowercase() }
+            .firstOrNull { it.isNotBlank() }
+            .orEmpty()
+        val title = listOfNotNull(primary, routed)
+            .joinToString(" ") { it.attributes.optString("media_title") }
+            .lowercase()
+
+        val video = source.contains("kodi") || source.contains("youtube") ||
+            source.contains("video") || source.contains("cast") || source.contains("tv") ||
+            mediaType in setOf("video", "movie", "episode", "tvshow") ||
+            title.contains("youtube")
+
+        return if (video) "video" else "music"
+    }
 
     fun joinSourceRoom(): RoomConfig? = _joinSourceRoomId.value?.let { id -> _settings.value.rooms.firstOrNull { it.id == id } }
 
@@ -1420,6 +1446,38 @@ class AppController(context: Context) {
             ha.connect(s.homeAssistantUrl, s.homeAssistantToken)
         }
         if (_wifiConnected.value) scope.launch { refreshBluetoothLocation() }
+    }
+
+    fun exportSettingsZip(uri: Uri) {
+        scope.launch(Dispatchers.IO) {
+            runCatching {
+                val output = appContext.contentResolver.openOutputStream(uri)
+                    ?: error("Could not create settings backup")
+                output.use { raw ->
+                    ZipOutputStream(raw).use { zip ->
+                        zip.putNextEntry(ZipEntry("settings.json"))
+                        zip.write(_settings.value.toJson().toString(2).toByteArray(Charsets.UTF_8))
+                        zip.closeEntry()
+
+                        zip.putNextEntry(ZipEntry("README.txt"))
+                        zip.write(
+                            (
+                                "Home Media settings backup\n" +
+                                    "WARNING: this backup contains authentication tokens, passwords, IP addresses and local network configuration.\n" +
+                                    "Keep it private. Import it from Home Media Settings to restore the configuration.\n"
+                                ).toByteArray(Charsets.UTF_8)
+                        )
+                        zip.closeEntry()
+                    }
+                }
+            }.onSuccess {
+                withContext(Dispatchers.Main) { _message.value = "Full settings backup exported" }
+            }.onFailure { e ->
+                withContext(Dispatchers.Main) {
+                    _message.value = e.message ?: "Could not export settings backup"
+                }
+            }
+        }
     }
 
     fun importSettingsZip(uri: Uri) {
