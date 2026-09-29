@@ -636,6 +636,20 @@ private fun MediaHubScreen(controller: AppController) {
                 }
             }
         }
+        item {
+            Card(
+                Modifier.fillMaxWidth().aspectRatio(1.15f).combinedClickable(onClick = controller::openStremio, onLongClick = {}),
+                colors = CardDefaults.cardColors(containerColor = Panel2)
+            ) {
+                Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.SpaceBetween) {
+                    Icon(Icons.Default.MovieFilter, null, modifier = Modifier.size(32.dp))
+                    Column {
+                        Text("Stremio", fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                        Text("Search and library", color = TextMuted, fontSize = 12.sp)
+                    }
+                }
+            }
+        }
         if (settings.rooms.any { it.kodi.baseUrl.isNotBlank() }) {
             item {
                 Card(
