@@ -668,14 +668,27 @@ class AppController(context: Context) {
     private fun resolveYouTubeCastEntity(room: RoomConfig): String {
         if (room.youtubeCastEntity.isNotBlank()) return room.youtubeCastEntity
         val candidates = ha.states.value.values.filter { it.entityId.startsWith("media_player.") }
-        val exact = candidates.firstOrNull { state ->
+        val bedroomCandidates = candidates.filter { state ->
             val id = state.entityId.lowercase()
             val name = state.attributes.optString("friendly_name").lowercase()
-            (id.contains("bedroom") || name.contains("bedroom")) &&
-                (id.contains("cast") || id.contains("chromecast") || name.contains("cast") || name.contains("chromecast"))
+            id.contains(room.id.lowercase()) || id.contains(room.name.lowercase()) ||
+                name.contains(room.name.lowercase())
         }
-        return exact?.entityId
-            ?: error("Bedroom Cast player was not found. Set its HA entity in Bedroom settings.")
+        val explicitCast = bedroomCandidates.firstOrNull { state ->
+            val id = state.entityId.lowercase()
+            val name = state.attributes.optString("friendly_name").lowercase()
+            id.contains("cast") || id.contains("chromecast") || name.contains("cast") || name.contains("chromecast")
+        }
+        if (explicitCast != null) return explicitCast.entityId
+
+        val excluded = buildSet {
+            add(room.primaryPlayerEntity)
+            add(room.routeEntity)
+            room.secondaryPlayers.mapTo(this) { it.haEntity }
+        }
+        val remaining = bedroomCandidates.filter { it.entityId !in excluded }
+        return remaining.singleOrNull()?.entityId
+            ?: error("Bedroom Cast player was not found automatically. Set its HA entity in Bedroom settings.")
     }
 
     private suspend fun refreshBluetoothLocation() {
