@@ -1710,6 +1710,11 @@ private fun SettingsScreen(controller: AppController, initial: AppSettings, onIm
                             Spacer(Modifier.width(6.dp))
                             Text("Test location")
                         }
+                        OutlinedButton(onClick = controller::runMusicAssistantDiagnostic) {
+                            Icon(Icons.Default.LibraryMusic, null)
+                            Spacer(Modifier.width(6.dp))
+                            Text("Test Music Assistant")
+                        }
                         OutlinedButton(
                             onClick = { debugExportLauncher.launch("HomeMedia-debug.txt") },
                             enabled = draft.debugEnabled
