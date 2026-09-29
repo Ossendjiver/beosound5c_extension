@@ -1571,6 +1571,7 @@ class AppController(context: Context) {
                             if (kodiLibraryShared) {
                                 _pendingKodiItem.value = item
                             } else {
+                                resetRoomToPrimary(room.id)
                                 kodi.open(room.kodi, item)
                                 delay(150); refreshKodi(); _screen.value = Screen.KODI
                             }
