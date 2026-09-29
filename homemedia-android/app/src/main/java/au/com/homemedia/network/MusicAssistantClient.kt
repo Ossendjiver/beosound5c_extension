@@ -6,10 +6,8 @@ import au.com.homemedia.model.MassQueueInfo
 import au.com.homemedia.model.MassPlayerInfo
 import au.com.homemedia.model.MassQueueItem
 import kotlinx.coroutines.CompletableDeferred
-import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeout
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -18,7 +16,6 @@ import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import org.json.JSONArray
 import org.json.JSONObject
-import org.json.JSONTokener
 import java.net.URLEncoder
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
@@ -36,16 +33,11 @@ class MusicAssistantClient {
     fun setDebugLogger(logger: ((String, String) -> Unit)?) {
         debugLog = logger
     }
-    private var debugSink: ((String) -> Unit)? = null
 
     fun configure(url: String, accessToken: String) {
         baseUrl = url.trim().trimEnd('/').removeSuffix("/api")
         token = accessToken.trim()
-        debugSink?.invoke("Configured base URL=$baseUrl token=${if (token.isBlank()) "missing" else "present"}")
-    }
-
-    fun setDebugLogger(logger: ((String) -> Unit)?) {
-        debugSink = logger
+        debugLog?.invoke("MA", "Configured base URL=$baseUrl token=${if (token.isBlank()) "missing" else "present"}")
     }
 
     fun imageBaseUrl(): String = baseUrl
