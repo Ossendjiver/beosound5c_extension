@@ -25,10 +25,16 @@ class MusicAssistantClient {
     private val ids = AtomicLong(0)
     private var baseUrl = ""
     private var token = ""
+    private var debugSink: ((String) -> Unit)? = null
 
     fun configure(url: String, accessToken: String) {
-        baseUrl = url.trimEnd('/')
+        baseUrl = url.trim().trimEnd('/').removeSuffix("/api")
         token = accessToken.trim()
+        debugSink?.invoke("Configured base URL=$baseUrl token=${if (token.isBlank()) "missing" else "present"}")
+    }
+
+    fun setDebugLogger(logger: ((String) -> Unit)?) {
+        debugSink = logger
     }
 
     fun imageBaseUrl(): String = baseUrl
@@ -263,16 +269,40 @@ class MusicAssistantClient {
             .put("message_id", ids.incrementAndGet().toString())
             .put("command", command)
             .put("args", args)
+        val endpoint = "${baseUrl.trimEnd('/')}/api"
+        debugSink?.invoke("POST $endpoint command=$command args=${args.toString().take(400)}")
         val request = Request.Builder()
-            .url("${baseUrl.trimEnd('/')}/api")
+            .url(endpoint)
             .header("Authorization", "Bearer $token")
-            .header("Accept", "application/json")
+            .header("Accept", "application/json, text/html")
             .post(payload.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
             .build()
         client.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) error("Music Assistant HTTP ${response.code}")
             val body = response.body?.string().orEmpty()
-            val obj = runCatching { JSONObject(body) }.getOrElse { error("Music Assistant returned invalid JSON") }
+            val contentType = response.header("Content-Type").orEmpty()
+            val cleaned = body.trim().removePrefix("\uFEFF")
+            val preview = cleaned.take(300).replace(
+                Regex("(?i)Bearer\\s+[A-Za-z0-9._~+/-]+"),
+                "Bearer [redacted]"
+            )
+            debugSink?.invoke("HTTP ${response.code} command=$command contentType=$contentType bytes=${body.length} preview=$preview")
+            if (!response.isSuccessful) error("Music Assistant HTTP ${response.code}")
+            if (cleaned.isBlank()) error("Music Assistant returned an empty response")
+            if (cleaned.startsWith("<")) {
+                error("Music Assistant returned HTML instead of JSON. Check the MA URL and authentication.")
+            }
+            val parsed: Any = try {
+                when {
+                    cleaned.startsWith("{") -> JSONObject(cleaned)
+                    cleaned.startsWith("[") -> JSONArray(cleaned)
+                    else -> error("Music Assistant returned non-JSON data")
+                }
+            } catch (e: Exception) {
+                debugSink?.invoke("JSON parse failure command=$command error=${e.message}")
+                error("Music Assistant returned invalid JSON (${contentType.ifBlank { "unknown content type" }})")
+            }
+            if (parsed is JSONArray) return@use parsed
+            val obj = parsed as JSONObject
             if (obj.has("error_code") || obj.has("error")) {
                 val err = obj.opt("error")
                 val message = when (err) {
