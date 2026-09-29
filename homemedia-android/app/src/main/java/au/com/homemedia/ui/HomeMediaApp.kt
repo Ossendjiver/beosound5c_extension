@@ -745,8 +745,9 @@ private fun YouTubeScreen(controller: AppController) {
     val results by controller.youtubeResults.collectAsState()
     val library by controller.youtubeLibrary.collectAsState()
     val wifi by controller.wifiConnected.collectAsState()
+    val requestedSection by controller.youtubeSection.collectAsState()
     var query by remember { mutableStateOf("") }
-    var mode by remember { mutableStateOf("Search") }
+    var mode by remember(requestedSection) { mutableStateOf(requestedSection) }
     var playlistName by remember { mutableStateOf("") }
 
     Column(Modifier.fillMaxSize().padding(horizontal = 14.dp)) {
