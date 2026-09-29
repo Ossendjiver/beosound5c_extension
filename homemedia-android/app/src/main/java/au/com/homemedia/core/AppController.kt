@@ -146,9 +146,9 @@ class AppController(context: Context) {
     private var kodiLibraryShared: Boolean = false
 
     init {
-        debugLogger.setEnabled(_settings.value.debugEnabled)
-        ma.setDebugLogger { debugLogger.log("MA", it) }
-        ha.setDebugLogger { debugLogger.log("HA", it) }
+        debugLogger.setEnabled(_settings.value.debugMode)
+        ma.setDebugLogger { tag, message -> debugLogger.log(tag, message) }
+        ha.setDebugLogger { tag, message -> debugLogger.log(tag, message) }
         configureConnections(_settings.value)
         scope.launch {
             ha.states.collect { states ->
@@ -173,8 +173,8 @@ class AppController(context: Context) {
 
     fun setDebugRuntimeEnabled(enabled: Boolean) {
         debugLogger.setEnabled(enabled)
-        if (_settings.value.debugEnabled != enabled) {
-            persist(_settings.value.copy(debugEnabled = enabled))
+        if (_settings.value.debugMode != enabled) {
+            persist(_settings.value.copy(debugMode = enabled))
         }
         debugLogger.log("DEBUG", "Runtime debug mode=$enabled")
     }
@@ -444,9 +444,9 @@ class AppController(context: Context) {
 
     fun saveSettings(newSettings: AppSettings) {
         val old = _settings.value
-        debugLogger.setEnabled(newSettings.debugEnabled)
+        debugLogger.setEnabled(newSettings.debugMode)
         persist(newSettings)
-        debugLogger.log("SETTINGS", "Saved settings debug=${newSettings.debugEnabled} automaticRoom=${newSettings.automaticRoom} bluetooth=${newSettings.bluetoothLocationEnabled}")
+        debugLogger.log("SETTINGS", "Saved settings debug=${newSettings.debugMode} automaticRoom=${newSettings.automaticRoom} bluetooth=${newSettings.bluetoothLocationEnabled}")
         if (_selectedRoomId.value.isBlank() || newSettings.rooms.none { it.id == _selectedRoomId.value }) {
             _selectedRoomId.value = resolveInitialRoomId(newSettings)
         }
@@ -1251,6 +1251,17 @@ class AppController(context: Context) {
         _wifiConnected.value = wifiStatus.isConnectedToWifi()
         if (!_wifiConnected.value) return
         val settings = _settings.value
+        val activePresence = settings.rooms.firstOrNull { room ->
+            presenceMatchesRoom(room, ha.states.value[room.presenceEntity])
+        }
+        if (activePresence != null) {
+            debugLogger.log("BLE", "Skip BLE override because HA presence matches room=${activePresence.name}")
+            if (activePresence.id != _selectedRoomId.value) {
+                _selectedRoomId.value = activePresence.id
+                persist(settings.copy(lastRoomId = activePresence.id))
+            }
+            return
+        }
         val anyBluetoothData = settings.rooms.any {
             it.bluetoothAnchors.isNotEmpty() || it.bluetoothCalibrationPoints.size >= 3
         }
@@ -1327,7 +1338,7 @@ class AppController(context: Context) {
         val settings = _settings.value
 
         val presenceMatches = settings.rooms.filter { room -> presenceMatchesRoom(room, states[room.presenceEntity]) }
-        if (settings.debugEnabled && settings.rooms.any { it.presenceEntity.isNotBlank() }) {
+        if (settings.debugMode && settings.rooms.any { it.presenceEntity.isNotBlank() }) {
             settings.rooms.filter { it.presenceEntity.isNotBlank() }.forEach { room ->
                 val st = states[room.presenceEntity]
                 debugLogger.log(
