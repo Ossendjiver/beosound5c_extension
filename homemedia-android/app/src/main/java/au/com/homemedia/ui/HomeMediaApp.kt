@@ -235,12 +235,16 @@ fun HomeMediaApp(controller: AppController) {
                         ) {
                             Icon(Icons.Default.VolumeUp, "Volume", tint = ActiveGreen)
                             Spacer(Modifier.height(8.dp))
-                            LinearProgressIndicator(
-                                progress = { level / 100f },
-                                modifier = Modifier.height(88.dp).width(8.dp).graphicsLayer { rotationZ = -90f },
-                                color = ActiveGreen,
-                                trackColor = Panel3
-                            )
+                            Box(
+                                Modifier.height(88.dp).width(8.dp).clip(RoundedCornerShape(4.dp)).background(Panel3),
+                                contentAlignment = Alignment.BottomCenter
+                            ) {
+                                Box(
+                                    Modifier.fillMaxWidth()
+                                        .fillMaxHeight((level / 100f).coerceIn(0f, 1f))
+                                        .background(ActiveGreen)
+                                )
+                            }
                             Spacer(Modifier.height(4.dp))
                             Text("$level", color = ActiveGreen, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                         }
@@ -1393,7 +1397,12 @@ private fun MassListScreen(controller: AppController) {
     val category by controller.massCategory.collectAsState()
     val settings by controller.settings.collectAsState()
     var search by remember(category) { mutableStateOf("") }
-    Column(Modifier.fillMaxSize().padding(horizontal = 14.dp)) {
+    val artworkGrid = category in setOf(
+        MassCategory.ALBUMS, MassCategory.ARTISTS, MassCategory.PLAYLISTS,
+        MassCategory.RADIOS, MassCategory.PODCASTS, MassCategory.AUDIOBOOKS
+    )
+
+    Column(Modifier.fillMaxSize().padding(horizontal = 12.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             OutlinedTextField(
                 value = search,
@@ -1406,17 +1415,66 @@ private fun MassListScreen(controller: AppController) {
             FilledIconButton(onClick = { controller.searchMass(search) }) { Icon(Icons.Default.Search, "Search") }
         }
         Spacer(Modifier.height(10.dp))
-        if (items.isEmpty()) EmptyState("Nothing found", "Check Music Assistant or change the search.")
-        else LazyColumn(contentPadding = PaddingValues(bottom = 30.dp)) {
-            items(items, key = { it.uri.ifBlank { "${it.mediaType}:${it.itemId}:${it.provider}" } }) { item ->
-                val browsable = item.mediaType.lowercase() in setOf("artist", "album", "playlist", "podcast", "genre")
-                MassItemRow(
-                    item, settings,
-                    onOpen = { controller.openMassItem(item) },
-                    onPlay = { controller.playMassItem(item, "replace") },
-                    onQueueOption = { option -> controller.playMassItem(item, option) }
-                )
+        if (items.isEmpty()) {
+            EmptyState("Nothing found", "Check Music Assistant or change the search.")
+        } else if (artworkGrid) {
+            LazyVerticalGrid(
+                columns = GridCells.Fixed(3),
+                contentPadding = PaddingValues(bottom = 30.dp),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp)
+            ) {
+                gridItems(items, key = { it.uri.ifBlank { "${it.mediaType}:${it.itemId}:${it.provider}" } }) { item ->
+                    MassArtworkCard(
+                        item = item,
+                        settings = settings,
+                        onOpen = { controller.openMassItem(item) },
+                        onPlay = { controller.playMassItem(item, "replace") }
+                    )
+                }
             }
+        } else {
+            LazyColumn(contentPadding = PaddingValues(bottom = 30.dp)) {
+                items(items, key = { it.uri.ifBlank { "${it.mediaType}:${it.itemId}:${it.provider}" } }) { item ->
+                    MassItemRow(
+                        item, settings,
+                        onOpen = { controller.openMassItem(item) },
+                        onPlay = { controller.playMassItem(item, "replace") },
+                        onQueueOption = { option -> controller.playMassItem(item, option) }
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun MassArtworkCard(
+    item: MassMediaItem,
+    settings: AppSettings,
+    onOpen: () -> Unit,
+    onPlay: () -> Unit
+) {
+    Column(
+        Modifier.fillMaxWidth().combinedClickable(onClick = onOpen, onLongClick = onPlay)
+    ) {
+        Surface(
+            Modifier.fillMaxWidth().aspectRatio(1f),
+            color = Panel2,
+            shape = RoundedCornerShape(12.dp)
+        ) {
+            if (item.imageUrl.isNotBlank()) {
+                AuthImage(item.imageUrl, settings.musicAssistantUrl, settings.musicAssistantToken, Modifier.fillMaxSize())
+            } else {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Icon(Icons.Default.Album, null, tint = TextMuted, modifier = Modifier.size(34.dp))
+                }
+            }
+        }
+        Spacer(Modifier.height(6.dp))
+        Text(item.name, fontWeight = FontWeight.Medium, fontSize = 13.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+        if (item.subtitle.isNotBlank()) {
+            Text(item.subtitle, color = TextMuted, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
     }
 }
@@ -1785,92 +1843,87 @@ private fun KodiDpad(onInput: (String) -> Unit) {
 private fun KodiLibraryScreen(controller: AppController, room: RoomConfig?) {
     val state by controller.kodiBrowse.collectAsState()
     val artworkRoom = controller.kodiLibraryHostRoom() ?: room
+
     if (state.type == KodiBrowseType.HOME) {
-        val youtubeLibrary by controller.youtubeLibrary.collectAsState()
-        val combinedYoutube = remember(youtubeLibrary) {
-            (youtubeLibrary.history + youtubeLibrary.playlists.flatMap { it.videos }).distinctBy { it.videoId }
-        }
-        val categories = listOf(
-            KodiBrowseType.MOVIES to "Movies",
-            KodiBrowseType.TV_SHOWS to "TV shows",
-            KodiBrowseType.MUSIC_VIDEOS to "Music videos",
-            KodiBrowseType.VIDEO_SOURCES to "Video files"
+        val tiles = listOf(
+            Triple("Movies", Icons.Default.Movie, { controller.openKodiCategory(KodiBrowseType.MOVIES) }),
+            Triple("TV shows", Icons.Default.LiveTv, { controller.openKodiCategory(KodiBrowseType.TV_SHOWS) }),
+            Triple("Music videos", Icons.Default.MusicVideo, { controller.openKodiCategory(KodiBrowseType.MUSIC_VIDEOS) }),
+            Triple("Video files", Icons.Default.Folder, { controller.openKodiCategory(KodiBrowseType.VIDEO_SOURCES) }),
+            Triple("YouTube", Icons.Default.SmartDisplay, { controller.openYouTube("Search") }),
+            Triple("Stremio", Icons.Default.MovieFilter, { controller.openStremio() })
         )
         LazyVerticalGrid(
-            columns = GridCells.Adaptive(145.dp),
+            columns = GridCells.Fixed(2),
             contentPadding = PaddingValues(16.dp),
             horizontalArrangement = Arrangement.spacedBy(12.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            item(span = { GridItemSpan(maxLineSpan) }) { Text("Kodi", fontWeight = FontWeight.Bold, fontSize = 20.sp) }
-            gridItems(categories, key = { "kodi-" + it.first.name }) { (type, title) ->
+            gridItems(tiles, key = { it.first }) { tile ->
                 Card(
-                    Modifier.fillMaxWidth().aspectRatio(1.2f).combinedClickable(onClick = { controller.openKodiCategory(type) }, onLongClick = {}),
-                    colors = CardDefaults.cardColors(containerColor = Panel2)
+                    Modifier.fillMaxWidth().aspectRatio(1.2f).combinedClickable(onClick = tile.third, onLongClick = {}),
+                    colors = CardDefaults.cardColors(containerColor = Panel2),
+                    shape = RoundedCornerShape(20.dp)
                 ) {
                     Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.SpaceBetween) {
-                        Icon(kodiCategoryIcon(type), null, modifier = Modifier.size(30.dp))
-                        Text(title, fontWeight = FontWeight.SemiBold)
+                        Icon(tile.second, null, modifier = Modifier.size(32.dp))
+                        Text(tile.first, fontWeight = FontWeight.SemiBold, fontSize = 17.sp)
                     }
                 }
             }
-            item(span = { GridItemSpan(maxLineSpan) }) {
-                Row(Modifier.fillMaxWidth().padding(top = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Text("YouTube library", fontWeight = FontWeight.Bold, fontSize = 20.sp, modifier = Modifier.weight(1f))
-                    TextButton(onClick = { controller.openYouTube("History") }) { Text("Open YouTube") }
-                }
-            }
-            if (combinedYoutube.isEmpty()) {
-                item(span = { GridItemSpan(maxLineSpan) }) { Text("Watched and playlist videos will appear here.", color = TextMuted, fontSize = 13.sp) }
-            } else {
-                gridItems(combinedYoutube, key = { "yt-" + it.videoId }) { video ->
-                    Card(
-                        Modifier.fillMaxWidth().combinedClickable(onClick = { controller.requestYouTubePlayback(video) }, onLongClick = { controller.openYouTube("History") }),
-                        colors = CardDefaults.cardColors(containerColor = Panel2)
-                    ) {
-                        Column {
-                            Surface(Modifier.fillMaxWidth().aspectRatio(16f / 9f), color = Panel3) {
-                                if (video.thumbnail.isNotBlank()) AsyncImage(video.thumbnail, null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
-                                else Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Icon(Icons.Default.SmartDisplay, null) }
-                            }
-                            Column(Modifier.padding(10.dp)) {
-                                Text(video.title, maxLines = 2, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.Medium)
-                                if (video.channel.isNotBlank()) Text(video.channel, color = TextMuted, fontSize = 11.sp, maxLines = 1)
-                            }
-                        }
-                    }
-                }
-            }
-            if (youtubeLibrary.channels.isNotEmpty()) {
-                item(span = { GridItemSpan(maxLineSpan) }) { Text("Saved YouTube channels", fontWeight = FontWeight.Bold, fontSize = 18.sp, modifier = Modifier.padding(top = 10.dp)) }
-                gridItems(youtubeLibrary.channels, key = { "channel-" + it.url }) { channel ->
-                    Card(
-                        Modifier.fillMaxWidth().aspectRatio(1.2f).combinedClickable(onClick = { controller.openSavedYouTubeChannel(channel) }, onLongClick = { controller.openYouTube("Channels") }),
-                        colors = CardDefaults.cardColors(containerColor = Panel2)
-                    ) {
-                        Column(Modifier.fillMaxSize().padding(14.dp), verticalArrangement = Arrangement.SpaceBetween) {
-                            Icon(Icons.Default.Subscriptions, null, modifier = Modifier.size(30.dp))
-                            Text(channel.name, fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                        }
-                    }
-                }
-            }
-            item(span = { GridItemSpan(maxLineSpan) }) { Text("Stremio", fontWeight = FontWeight.Bold, fontSize = 20.sp, modifier = Modifier.padding(top = 10.dp)) }
-            item { MediaHubTile("Search Stremio", "Movies, series & streams", Icons.Default.MovieFilter, { controller.openStremio() }) }
         }
         return
     }
 
+    val posterGrid = state.type in setOf(
+        KodiBrowseType.MOVIES, KodiBrowseType.TV_SHOWS, KodiBrowseType.MUSIC_VIDEOS, KodiBrowseType.EPISODES
+    )
+
     Column(Modifier.fillMaxSize()) {
-        Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-            IconButton(onClick = controller::kodiBrowseBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") }
-            Text(state.title, fontWeight = FontWeight.Bold, fontSize = 20.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-        }
-        if (state.items.isEmpty()) EmptyState("Nothing here", "Kodi returned no items.")
-        else LazyColumn(contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)) {
-            items(state.items, key = { "${state.type}:${it.id}:${it.file}:${it.label}" }) { item ->
-                KodiItemRow(item, artworkRoom) { controller.kodiSelectItem(item) }
+        if (state.items.isEmpty()) {
+            EmptyState("Nothing here", "Kodi returned no items.")
+        } else if (posterGrid) {
+            LazyVerticalGrid(
+                columns = GridCells.Fixed(3),
+                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                gridItems(state.items, key = { "${state.type}:${it.id}:${it.file}:${it.label}" }) { item ->
+                    KodiPosterCard(item, artworkRoom) { controller.kodiSelectItem(item) }
+                }
             }
+        } else {
+            LazyColumn(contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)) {
+                items(state.items, key = { "${state.type}:${it.id}:${it.file}:${it.label}" }) { item ->
+                    KodiItemRow(item, artworkRoom) { controller.kodiSelectItem(item) }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun KodiPosterCard(item: KodiLibraryItem, room: RoomConfig?, onClick: () -> Unit) {
+    Column(Modifier.fillMaxWidth().combinedClickable(onClick = onClick, onLongClick = {})) {
+        Surface(
+            Modifier.fillMaxWidth().aspectRatio(2f / 3f),
+            color = Panel2,
+            shape = RoundedCornerShape(10.dp)
+        ) {
+            val imageUrl = room?.kodi?.let { kodiImageUrl(it, item.thumbnail) }.orEmpty()
+            if (imageUrl.isNotBlank() && room != null) {
+                KodiImage(imageUrl, room.kodi, Modifier.fillMaxSize())
+            } else {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Icon(Icons.Default.Movie, null, tint = TextMuted, modifier = Modifier.size(34.dp))
+                }
+            }
+        }
+        Spacer(Modifier.height(5.dp))
+        Text(item.label, fontWeight = FontWeight.Medium, fontSize = 12.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+        if (item.subtitle.isNotBlank()) {
+            Text(item.subtitle, color = TextMuted, fontSize = 10.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
     }
 }
