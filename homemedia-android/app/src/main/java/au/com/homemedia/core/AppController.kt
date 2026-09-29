@@ -293,8 +293,20 @@ class AppController(context: Context) {
 
     fun toggleSecondaryAux(id: String) {
         val s = secondaryPlayer(id) ?: return
-        if (s.toggleEntity.isBlank()) return
-        if (!ha.callService("homeassistant", "toggle", s.toggleEntity)) _message.value = "Home Assistant is not connected"
+        val configured = s.toggleEntity
+        val resolved = configured.takeIf { it.isNotBlank() && ha.states.value.containsKey(it) }
+            ?: ha.states.value.values.firstOrNull { state ->
+                if (!state.entityId.startsWith("switch.")) return@firstOrNull false
+                val idText = state.entityId.lowercase()
+                val name = state.attributes.optString("friendly_name").lowercase()
+                idText.contains("bc9500") || name.contains("bc9500")
+            }?.entityId
+            ?: configured
+        if (resolved.isBlank()) {
+            _message.value = "BC9500 switch was not found. Set its entity in Dining settings."
+            return
+        }
+        if (!ha.callService("homeassistant", "toggle", resolved)) _message.value = "Home Assistant is not connected"
     }
 
     // ----- Music Assistant library -----
@@ -607,11 +619,13 @@ class AppController(context: Context) {
                                 kodi.directory(room.kodi, item.file, media), directory = item.file, fileMedia = media
                             )
                         } else {
+                            refreshBluetoothLocation()
                             kodi.open(room.kodi, item)
                             delay(150); refreshKodi(); _screen.value = Screen.KODI
                         }
                     }
                     KodiBrowseType.MOVIES, KodiBrowseType.EPISODES, KodiBrowseType.MUSIC_VIDEOS, KodiBrowseType.SONGS -> {
+                        refreshBluetoothLocation()
                         kodi.open(room.kodi, item)
                         delay(150); refreshKodi(); _screen.value = Screen.KODI
                     }
