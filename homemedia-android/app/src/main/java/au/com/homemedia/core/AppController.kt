@@ -225,6 +225,66 @@ class AppController(context: Context) {
         if (!ha.turnOff(entity)) _message.value = "Home Assistant is not connected"
     }
 
+    // ----- In-room secondary players -----
+
+    fun secondaryPlayer(id: String): SecondaryPlayerConfig? = currentRoom()?.secondaryPlayers?.firstOrNull { it.id == id }
+
+    fun toggleSecondaryPlayer(id: String) {
+        val room = currentRoom() ?: return
+        val secondary = room.secondaryPlayers.firstOrNull { it.id == id } ?: return
+        scope.launch {
+            busyRun("Could not switch to ${secondary.name}") {
+                refreshBluetoothLocation()
+                if (_activePlayerKey.value == secondary.id) {
+                    val secondaryPlayerId = ma.resolvePlayerId(secondary.maPlayerId, secondary.maPlayerName)
+                    val sourceQueue = ma.resolvePlayerQueueId(secondaryPlayerId)
+                    val hasQueue = ma.queueItems(sourceQueue, limit = 1).isNotEmpty()
+                    val primaryPlayerId = if (room.maPlayerId.isNotBlank() || room.maPlayerName.isNotBlank()) {
+                        ma.resolvePlayerId(room.maPlayerId, room.maPlayerName)
+                    } else ""
+                    if (hasQueue && primaryPlayerId.isNotBlank()) {
+                        val targetQueue = ma.resolvePlayerQueueId(primaryPlayerId)
+                        ma.transferQueue(sourceQueue, targetQueue, autoPlay = true)
+                    } else {
+                        ma.playerStop(secondaryPlayerId)
+                    }
+                    _activePlayerKey.value = "primary"
+                } else {
+                    val targetPlayerId = ma.resolvePlayerId(secondary.maPlayerId, secondary.maPlayerName)
+                    val targetQueue = ma.resolvePlayerQueueId(targetPlayerId)
+                    val sourceQueue = resolveActiveQueueForRoom(room)
+                    if (sourceQueue.isNotBlank() && sourceQueue != targetQueue) {
+                        ma.transferQueue(sourceQueue, targetQueue, autoPlay = true)
+                    }
+                    _activePlayerKey.value = secondary.id
+                }
+                updateNowPlaying(ha.states.value)
+            }
+        }
+    }
+
+    fun secondaryPause(id: String) {
+        val s = secondaryPlayer(id) ?: return
+        scope.launch {
+            runCatching { ma.playerPause(ma.resolvePlayerId(s.maPlayerId, s.maPlayerName)) }
+                .onFailure { _message.value = it.message }
+        }
+    }
+
+    fun secondaryStop(id: String) {
+        val s = secondaryPlayer(id) ?: return
+        scope.launch {
+            runCatching { ma.playerStop(ma.resolvePlayerId(s.maPlayerId, s.maPlayerName)) }
+                .onFailure { _message.value = it.message }
+        }
+    }
+
+    fun toggleSecondaryAux(id: String) {
+        val s = secondaryPlayer(id) ?: return
+        if (s.toggleEntity.isBlank()) return
+        if (!ha.callService("homeassistant", "toggle", s.toggleEntity)) _message.value = "Home Assistant is not connected"
+    }
+
     // ----- Music Assistant library -----
 
     fun openLibrary() {
