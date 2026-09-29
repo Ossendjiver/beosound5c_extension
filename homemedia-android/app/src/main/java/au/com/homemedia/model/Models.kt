@@ -162,7 +162,7 @@ private fun presetRooms(): List<RoomConfig> = listOf(
                 maPlayerName = "Lounge Mini"
             )
         ),
-        sourceOptions = listOf("CD", "Link", "A.AUX"),
+        sourceOptions = listOf("CD", "Link", "A.AUX", "Kodi"),
         youtubeCastEntity = "",
         tiles = mediaTiles(video = true)
     ),
@@ -178,21 +178,21 @@ private fun presetRooms(): List<RoomConfig> = listOf(
                 toggleEntity = "switch.bc9500"
             )
         ),
-        sourceOptions = listOf("CD", "Link", "A.AUX"),
+        sourceOptions = listOf("CD", "Link", "A.AUX", "Kodi"),
         tiles = mediaTiles(video = true)
     ),
     RoomConfig(
         id = "bedroom", name = "Bedroom",
         primaryPlayerEntity = "media_player.bv10_40",
         mlgwEntity = "media_player.bv10_40",
-        sourceOptions = listOf("CD", "Link", "A.AUX"),
+        sourceOptions = listOf("CD", "Link", "A.AUX", "Kodi"),
         tiles = mediaTiles(video = true)
     ),
     RoomConfig(
         id = "kitchen", name = "Kitchen",
         primaryPlayerEntity = "media_player.cuisine",
         mlgwEntity = "media_player.cuisine",
-        sourceOptions = listOf("Link", "A.AUX"),
+        sourceOptions = listOf("Link", "A.AUX", "Kodi"),
         tiles = mediaTiles(video = true, includeCd = false)
     ),
     RoomConfig(
