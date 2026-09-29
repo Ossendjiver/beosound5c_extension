@@ -273,6 +273,7 @@ data class AppSettings(
     val musicAssistantToken: String = "",
     val youtubeApiKey: String = "",
     val stremioStreamAddonManifests: List<String> = emptyList(),
+    val debugEnabled: Boolean = false,
     val bluetoothLocationEnabled: Boolean = true,
     /** Shared MA output used by Master Link rooms. The known player name is Link; ID is resolved at runtime if blank. */
     val sharedMaQueueId: String = "",
@@ -393,6 +394,7 @@ fun AppSettings.toJson(): JSONObject = JSONObject().apply {
     put("musicAssistantToken", musicAssistantToken)
     put("youtubeApiKey", youtubeApiKey)
     put("stremioStreamAddonManifests", JSONArray().apply { stremioStreamAddonManifests.forEach { put(it) } })
+    put("debugEnabled", debugEnabled)
     put("bluetoothLocationEnabled", bluetoothLocationEnabled)
     put("sharedMaQueueId", sharedMaQueueId)
     put("sharedMaQueueName", sharedMaQueueName)
@@ -473,6 +475,7 @@ fun appSettingsFromJson(obj: JSONObject): AppSettings {
         stremioStreamAddonManifests = obj.optJSONArray("stremioStreamAddonManifests")?.let { arr ->
             (0 until arr.length()).mapNotNull { i -> arr.optString(i).takeIf(String::isNotBlank) }
         } ?: emptyList(),
+        debugEnabled = obj.optBoolean("debugEnabled", false),
         bluetoothLocationEnabled = obj.optBoolean("bluetoothLocationEnabled", true),
         sharedMaQueueId = obj.optString("sharedMaQueueId"),
         sharedMaQueueName = obj.optString("sharedMaQueueName", "Link"),
