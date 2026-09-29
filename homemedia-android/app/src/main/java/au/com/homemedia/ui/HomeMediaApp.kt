@@ -192,6 +192,15 @@ fun HomeMediaApp(controller: AppController) {
                     onTarget = controller::confirmYouTubePlayback
                 )
             }
+
+            pendingKodi?.let { item ->
+                PlaybackTargetDialog(
+                    title = "Play ${item.label}",
+                    targets = controller.kodiPlaybackTargets(),
+                    onDismiss = controller::cancelPendingPlayback,
+                    onTarget = controller::confirmKodiPlayback
+                )
+            }
         }
     }
 }
