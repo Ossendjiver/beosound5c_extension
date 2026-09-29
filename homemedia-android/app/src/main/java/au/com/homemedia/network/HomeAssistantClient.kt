@@ -97,6 +97,7 @@ class HomeAssistantClient {
     fun turnOff(entityId: String) = callService("media_player", "turn_off", entityId)
     fun pause(entityId: String) = callService("media_player", "media_pause", entityId)
     fun play(entityId: String) = callService("media_player", "media_play", entityId)
+    fun stop(entityId: String) = callService("media_player", "media_stop", entityId)
     fun selectSource(entityId: String, source: String) = callService(
         "media_player", "select_source", entityId, JSONObject().put("source", source)
     )
