@@ -83,6 +83,11 @@ fun HomeMediaApp(controller: AppController) {
     val room = settings.rooms.firstOrNull { it.id == roomId } ?: settings.rooms.firstOrNull()
     val pendingMass by controller.pendingMassPlayback.collectAsState()
     val pendingYoutube by controller.pendingYoutube.collectAsState()
+    val activePlayerKey by controller.activePlayerKey.collectAsState()
+    val activePlayerName = room?.let { r ->
+        if (activePlayerKey == "primary") r.name
+        else r.secondaryPlayers.firstOrNull { it.id == activePlayerKey }?.name ?: r.name
+    }.orEmpty()
     var drawerOpen by remember { mutableStateOf(false) }
     val context = LocalContext.current
     val settingsZipLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
@@ -106,6 +111,7 @@ fun HomeMediaApp(controller: AppController) {
                     AppTopBar(
                         roomName = room?.name ?: "Home Media",
                         screen = screen,
+                        activePlayerName = activePlayerName,
                         onMenu = { drawerOpen = true },
                         onBack = {
                             when (screen) {
@@ -190,7 +196,13 @@ fun HomeMediaApp(controller: AppController) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun AppTopBar(roomName: String, screen: Screen, onMenu: () -> Unit, onBack: () -> Unit) {
+private fun AppTopBar(
+    roomName: String,
+    screen: Screen,
+    activePlayerName: String,
+    onMenu: () -> Unit,
+    onBack: () -> Unit
+) {
     TopAppBar(
         title = {
             Column {
@@ -201,6 +213,24 @@ private fun AppTopBar(roomName: String, screen: Screen, onMenu: () -> Unit, onBa
         navigationIcon = {
             IconButton(onClick = if (screen == Screen.ROOM) onMenu else onBack) {
                 Icon(if (screen == Screen.ROOM) Icons.Default.Menu else Icons.AutoMirrored.Filled.ArrowBack, null)
+            }
+        },
+        actions = {
+            if (screen == Screen.ROOM && activePlayerName.isNotBlank()) {
+                Surface(
+                    modifier = Modifier.padding(end = 18.dp).size(27.dp),
+                    shape = RoundedCornerShape(14.dp),
+                    color = ActiveGreen
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            Icons.Default.Speaker,
+                            activePlayerName,
+                            tint = Color.Black,
+                            modifier = Modifier.size(16.dp)
+                        )
+                    }
+                }
             }
         },
         colors = TopAppBarDefaults.topAppBarColors(containerColor = Bg)
@@ -270,9 +300,7 @@ private fun RoomScreen(controller: AppController, room: RoomConfig?) {
     if (room == null) { EmptyState("No room configured", "Add a room in Settings."); return }
 
     Column(Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 6.dp)) {
-        val activeName = if (activePlayerKey == "primary") room.name
-        else room.secondaryPlayers.firstOrNull { it.id == activePlayerKey }?.name ?: room.name
-        NowPlayingCard(controller, now, settings, activeName)
+        NowPlayingCard(controller, now, settings)
         Spacer(Modifier.height(16.dp))
 
         val tiles = remember(room.tiles, joinSourceId) {
@@ -319,13 +347,14 @@ private fun RoomScreen(controller: AppController, room: RoomConfig?) {
 }
 
 @Composable
-private fun NowPlayingCard(controller: AppController, now: NowPlaying, settings: AppSettings, activeName: String) {
-    Box {
-        Card(colors = CardDefaults.cardColors(containerColor = Panel), shape = RoundedCornerShape(24.dp)) {
-            Row(Modifier.fillMaxWidth().padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+private fun NowPlayingCard(controller: AppController, now: NowPlaying, settings: AppSettings) {
+    Card(colors = CardDefaults.cardColors(containerColor = Panel), shape = RoundedCornerShape(24.dp)) {
+        Row(Modifier.fillMaxWidth().padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
             Surface(Modifier.size(88.dp), color = Panel2, shape = RoundedCornerShape(16.dp)) {
                 if (now.imageUrl.isNotBlank()) AuthImage(now.imageUrl, settings.homeAssistantUrl, settings.homeAssistantToken, Modifier.fillMaxSize())
-                else Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Icon(Icons.Default.MusicNote, null, tint = TextMuted, modifier = Modifier.size(36.dp)) }
+                else Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Icon(Icons.Default.MusicNote, null, tint = TextMuted, modifier = Modifier.size(36.dp))
+                }
             }
             Spacer(Modifier.width(14.dp))
             Column(Modifier.weight(1f)) {
@@ -342,16 +371,6 @@ private fun NowPlayingCard(controller: AppController, now: NowPlaying, settings:
                     IconButton(onClick = controller::volumeDown) { Icon(Icons.Default.VolumeDown, "Volume down") }
                     IconButton(onClick = controller::volumeUp) { Icon(Icons.Default.VolumeUp, "Volume up") }
                 }
-            }
-        }
-        }
-        Surface(
-            modifier = Modifier.align(Alignment.TopEnd).padding(10.dp).size(26.dp),
-            shape = RoundedCornerShape(13.dp),
-            color = ActiveGreen
-        ) {
-            Box(contentAlignment = Alignment.Center) {
-                Icon(Icons.Default.Speaker, activeName, tint = Color.Black, modifier = Modifier.size(16.dp))
             }
         }
     }
@@ -612,7 +631,7 @@ private fun PlaybackTargetDialog(
                         onClick = { onTarget(target.id) },
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        Icon(if (target.kodi) Icons.Default.Tv else Icons.Default.Speaker, null)
+                        Icon(when { target.kodi -> Icons.Default.Tv; target.cast -> Icons.Default.Cast; else -> Icons.Default.Speaker }, null)
                         Spacer(Modifier.width(8.dp))
                         Text(target.label, modifier = Modifier.weight(1f))
                     }
@@ -1095,7 +1114,7 @@ private fun SettingsScreen(controller: AppController, initial: AppSettings, onIm
                     SettingsField("Home Assistant token", draft.homeAssistantToken, secret = true) { draft = draft.copy(homeAssistantToken = it) }
                     SettingsField("Music Assistant URL", draft.musicAssistantUrl) { draft = draft.copy(musicAssistantUrl = it) }
                     SettingsField("Music Assistant token", draft.musicAssistantToken, secret = true) { draft = draft.copy(musicAssistantToken = it) }
-                    SettingsField("YouTube Data API key", draft.youtubeApiKey, secret = true) { draft = draft.copy(youtubeApiKey = it) }
+                    Text("YouTube search uses NewPipeExtractor — no API key required.", color = TextMuted, fontSize = 12.sp, modifier = Modifier.padding(vertical = 4.dp))
                     SettingSwitch("Bluetooth room detection", draft.bluetoothLocationEnabled) { draft = draft.copy(bluetoothLocationEnabled = it) }
                     OutlinedButton(onClick = onImportSettings, modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
                         Icon(Icons.Default.FolderZip, null)
@@ -1169,6 +1188,7 @@ private fun RoomEditor(room: RoomConfig, onChange: (RoomConfig) -> Unit) {
     SettingsField("MLGW HA entity (blank = primary)", room.mlgwEntity) { onChange(room.copy(mlgwEntity = it)) }
     SettingsField("Native Music Assistant player/queue ID", room.maPlayerId) { onChange(room.copy(maPlayerId = it)) }
     SettingsField("Native Music Assistant player name", room.maPlayerName) { onChange(room.copy(maPlayerName = it)) }
+    SettingsField("YouTube Cast HA entity (optional; Bedroom auto-detects)", room.youtubeCastEntity) { onChange(room.copy(youtubeCastEntity = it)) }
     SettingsField("Source options (comma separated)", room.sourceOptions.joinToString(", ")) {
         onChange(room.copy(sourceOptions = it.split(",").map(String::trim).filter(String::isNotBlank)))
     }
