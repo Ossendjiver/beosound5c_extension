@@ -24,17 +24,18 @@ class DefaultTopologyTest {
     }
 
     @Test
-    fun bathroomKeepsMorningNewsAndCd() {
+    fun bathroomKeepsMorningNewsAndCdAsSourceOption() {
         val bathroom = AppSettings().rooms.first { it.id == "bathroom" }
         assertTrue(bathroom.tiles.any { it.title == "Morning news" })
-        assertTrue(bathroom.tiles.any { it.actionType == TileActionType.SELECT_SOURCE && it.source == "CD" })
+        assertTrue(bathroom.tiles.any { it.id == "__SOURCE__" })
         assertTrue("CD" in bathroom.sourceOptions)
     }
 
     @Test
-    fun kitchenDoesNotExposeCdByDefault() {
+    fun kitchenUsesSourceTileWithoutCdFallback() {
         val kitchen = AppSettings().rooms.first { it.id == "kitchen" }
-        assertTrue(kitchen.tiles.none { it.actionType == TileActionType.SELECT_SOURCE && it.source == "CD" })
+        assertTrue(kitchen.tiles.any { it.id == "__SOURCE__" })
+        assertTrue("CD" !in kitchen.sourceOptions)
     }
 
     @Test
