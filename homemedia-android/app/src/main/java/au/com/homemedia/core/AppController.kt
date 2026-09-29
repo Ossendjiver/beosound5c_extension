@@ -173,6 +173,9 @@ class AppController(context: Context) {
 
     fun setDebugRuntimeEnabled(enabled: Boolean) {
         debugLogger.setEnabled(enabled)
+        if (_settings.value.debugEnabled != enabled) {
+            persist(_settings.value.copy(debugEnabled = enabled))
+        }
         debugLogger.log("DEBUG", "Runtime debug mode=$enabled")
     }
 
