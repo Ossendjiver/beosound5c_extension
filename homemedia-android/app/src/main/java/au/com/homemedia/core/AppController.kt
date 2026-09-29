@@ -821,9 +821,17 @@ class AppController(context: Context) {
         scope.launch {
             busyRun("Could not select $source") {
                 if (source.equals("Off", true)) {
-                    resetRoomToPrimary(room.id)
-                    if (!ha.turnOff(room.routeEntity)) error("Home Assistant is not connected")
+                    val secondary = selectedSecondaryForRoom(room)
+                    if (secondary != null) {
+                        ma.playerStop(ma.resolvePlayerId(
+                            secondary.maPlayerId,
+                            secondary.maPlayerName.ifBlank { secondary.name }
+                        ))
+                    } else {
+                        if (!ha.turnOff(room.routeEntity)) error("Home Assistant is not connected")
+                    }
                 } else {
+                    // Hardware input/source selection belongs to the room's primary B&O system.
                     resetRoomToPrimary(room.id)
                     ensureRoomOn(room)
                     if (!ha.selectSource(room.routeEntity, source)) error("Home Assistant is not connected")
@@ -919,9 +927,22 @@ class AppController(context: Context) {
 
     fun turnOffRoom(roomId: String) {
         val room = _settings.value.rooms.firstOrNull { it.id == roomId } ?: return
-        val entity = room.routeEntity
-        if (entity.isBlank()) { _message.value = "${room.name} has no MLGW/HA entity configured"; return }
-        if (!ha.turnOff(entity)) _message.value = "Home Assistant is not connected"
+        scope.launch {
+            runCatching {
+                val secondary = selectedSecondaryForRoom(room)
+                if (secondary != null) {
+                    val playerId = ma.resolvePlayerId(
+                        secondary.maPlayerId,
+                        secondary.maPlayerName.ifBlank { secondary.name }
+                    )
+                    ma.playerStop(playerId)
+                } else {
+                    val entity = room.routeEntity
+                    if (entity.isBlank()) error("${room.name} has no MLGW/HA entity configured")
+                    if (!ha.turnOff(entity)) error("Home Assistant is not connected")
+                }
+            }.onFailure { _message.value = it.message ?: "Could not turn off ${room.name}" }
+        }
     }
 
     // ----- In-room secondary players -----
@@ -2023,10 +2044,12 @@ class AppController(context: Context) {
             val s = room.secondaryPlayers.first { it.id == target.secondaryId }
             _selectedRoomId.value = room.id
             _activePlayerKey.value = s.id
-            ma.resolvePlayerQueueId(ma.resolvePlayerId(s.maPlayerId, s.maPlayerName))
+            persistActivePlayer(room.id, s.id)
+            ma.resolvePlayerQueueId(ma.resolvePlayerId(s.maPlayerId, s.maPlayerName.ifBlank { s.name }))
         } else {
             _selectedRoomId.value = room.id
             _activePlayerKey.value = "primary"
+            persistActivePlayer(room.id, "primary")
             prepareMassPlaybackTarget(room)
         }
     }
