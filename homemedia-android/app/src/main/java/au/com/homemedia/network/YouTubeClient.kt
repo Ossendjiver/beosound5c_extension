@@ -70,7 +70,8 @@ class YouTubeClient {
         require(query.isNotBlank()) { "Enter a YouTube search" }
         ensureNewPipe()
         val service = NewPipe.getService("YouTube")
-        val info = SearchInfo.getInfo(service.getSearchExtractor(query))
+        val queryHandler = service.searchQHFactory.fromQuery(query)
+        val info = SearchInfo.getInfo(service, queryHandler)
         val results = info.relatedItems
             .asSequence()
             .filterIsInstance<StreamInfoItem>()
