@@ -168,8 +168,12 @@ class AppController(context: Context) {
     fun goRoom() { _screen.value = Screen.ROOM }
     fun goMedia() { _screen.value = Screen.MEDIA }
     fun goSettings() { _screen.value = Screen.SETTINGS }
-    fun openYouTube() { _screen.value = Screen.YOUTUBE }
+    fun openYouTube(section: String = "Search") {
+        _youtubeSection.value = section
+        _screen.value = Screen.YOUTUBE
+    }
     fun openStremio() { _screen.value = Screen.STREMIO }
+    fun setPhoneFullscreen(enabled: Boolean) { _phoneFullscreen.value = enabled }
     fun stremioBoard() { runCatching { stremio.openBoard() }.onFailure { _message.value = it.message ?: "Stremio is not installed" } }
     fun stremioLibrary() { runCatching { stremio.openLibrary() }.onFailure { _message.value = it.message ?: "Stremio is not installed" } }
 
