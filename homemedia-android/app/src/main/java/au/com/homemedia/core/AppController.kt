@@ -794,6 +794,7 @@ class AppController(context: Context) {
         if (source.isBlank()) return
         scope.launch {
             busyRun("Could not select $source") {
+                resetRoomToPrimary(room.id)
                 ensureRoomOn(room)
                 if (!ha.selectSource(room.routeEntity, source)) error("Home Assistant is not connected")
             }
@@ -965,7 +966,7 @@ class AppController(context: Context) {
         val room = currentRoom() ?: return
         scope.launch {
             busyRun("Could not read news article") {
-                val mediaEntity = activeTransportEntity().orEmpty()
+                val mediaEntity = activeVolumeEntity().orEmpty()
                 val ttsEntity = ha.states.value.values.firstOrNull { it.entityId.startsWith("tts.") }?.entityId.orEmpty()
                 val message = listOf(article.title, article.body).filter { it.isNotBlank() }.joinToString(". ").take(12000)
                 val sentToRoom = ttsEntity.isNotBlank() && mediaEntity.isNotBlank() &&
@@ -987,10 +988,10 @@ class AppController(context: Context) {
             busyRun("Could not start dynamic play") {
                 val hour = java.time.LocalTime.now().hour
                 if (hour < 10) {
-                    val ok = ha.callService("script", "turn_on", "script.play_the_morning_news")
-                    if (!ok) {
-                        openNews()
-                    }
+                    val scriptEntity = "script.play_the_morning_news"
+                    val ok = ha.states.value.containsKey(scriptEntity) &&
+                        ha.callService("script", "turn_on", scriptEntity)
+                    if (!ok) openNews()
                     return@busyRun
                 }
 
