@@ -675,51 +675,281 @@ private fun MediaHubScreen(controller: AppController) {
 @Composable
 private fun YouTubeScreen(controller: AppController) {
     val results by controller.youtubeResults.collectAsState()
+    val library by controller.youtubeLibrary.collectAsState()
+    val wifi by controller.wifiConnected.collectAsState()
     var query by remember { mutableStateOf("") }
+    var mode by remember { mutableStateOf("Search") }
+    var playlistName by remember { mutableStateOf("") }
+
     Column(Modifier.fillMaxSize().padding(horizontal = 14.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            OutlinedTextField(
-                value = query,
-                onValueChange = { query = it },
-                placeholder = { Text("Search YouTube") },
-                singleLine = true,
-                modifier = Modifier.weight(1f)
-            )
-            Spacer(Modifier.width(8.dp))
-            FilledIconButton(onClick = { controller.searchYouTube(query) }) { Icon(Icons.Default.Search, "Search") }
+        Row(
+            Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(bottom = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            listOf("Search", "Channels", "History", "Playlists").forEach { label ->
+                FilterChip(selected = mode == label, onClick = { mode = label }, label = { Text(label) })
+            }
         }
-        Spacer(Modifier.height(10.dp))
-        if (results.isEmpty()) {
-            EmptyState("YouTube", "Search for a video. Playback asks which room/player to use.")
-        } else {
-            LazyColumn(contentPadding = PaddingValues(bottom = 28.dp)) {
-                items(results, key = { it.videoId }) { item ->
-                    Row(
-                        Modifier.fillMaxWidth().combinedClickable(
-                            onClick = { controller.requestYouTubePlayback(item) },
-                            onLongClick = { controller.requestYouTubePlayback(item) }
-                        ).padding(vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Surface(Modifier.size(84.dp, 48.dp), color = Panel2, shape = RoundedCornerShape(9.dp)) {
-                            if (item.thumbnail.isNotBlank()) AsyncImage(
-                                model = item.thumbnail,
-                                contentDescription = null,
-                                modifier = Modifier.fillMaxSize(),
-                                contentScale = ContentScale.Crop
+
+        if (mode == "Search") {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                OutlinedTextField(
+                    value = query,
+                    onValueChange = { query = it },
+                    placeholder = { Text("Search YouTube") },
+                    singleLine = true,
+                    modifier = Modifier.weight(1f)
+                )
+                Spacer(Modifier.width(8.dp))
+                FilledIconButton(onClick = { controller.searchYouTube(query) }) { Icon(Icons.Default.Search, "Search") }
+            }
+            Text(
+                if (wifi) "On Wi‑Fi: choose where to play. Off Wi‑Fi: playback stays on this phone."
+                else "Not on Wi‑Fi: playback stays on this phone.",
+                color = TextMuted,
+                fontSize = 12.sp,
+                modifier = Modifier.padding(vertical = 8.dp)
+            )
+            YouTubeVideoList(
+                videos = results,
+                playlists = library.playlists,
+                onPlay = controller::requestYouTubePlayback,
+                onSaveChannel = controller::saveYouTubeChannel,
+                onAddToPlaylist = controller::addYouTubeToPlaylist
+            )
+        } else if (mode == "Channels") {
+            if (library.channels.isEmpty()) {
+                EmptyState("No saved channels", "Save a channel from a YouTube result.")
+            } else {
+                LazyColumn {
+                    items(library.channels, key = { it.url }) { channel ->
+                        ListItem(
+                            headlineContent = { Text(channel.name) },
+                            supportingContent = { Text(channel.url, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                            leadingContent = { Icon(Icons.Default.Subscriptions, null) },
+                            trailingContent = {
+                                IconButton(onClick = { controller.removeYouTubeChannel(channel.url) }) {
+                                    Icon(Icons.Default.DeleteOutline, "Remove")
+                                }
+                            },
+                            modifier = Modifier.combinedClickable(
+                                onClick = { controller.openSavedYouTubeChannel(channel); mode = "Search" },
+                                onLongClick = {}
                             )
-                            else Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Icon(Icons.Default.SmartDisplay, null) }
+                        )
+                    }
+                }
+            }
+        } else if (mode == "History") {
+            if (library.history.isEmpty()) {
+                EmptyState("No watch history", "Videos you start will appear here.")
+            } else {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                    TextButton(onClick = controller::clearYouTubeHistory) { Text("Clear history") }
+                }
+                YouTubeVideoList(
+                    videos = library.history,
+                    playlists = library.playlists,
+                    onPlay = controller::requestYouTubePlayback,
+                    onSaveChannel = controller::saveYouTubeChannel,
+                    onAddToPlaylist = controller::addYouTubeToPlaylist
+                )
+            }
+        } else {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                OutlinedTextField(
+                    value = playlistName,
+                    onValueChange = { playlistName = it },
+                    placeholder = { Text("New playlist name") },
+                    singleLine = true,
+                    modifier = Modifier.weight(1f)
+                )
+                Spacer(Modifier.width(8.dp))
+                FilledIconButton(onClick = {
+                    controller.createYouTubePlaylist(playlistName)
+                    playlistName = ""
+                }) { Icon(Icons.Default.PlaylistAdd, "Create playlist") }
+            }
+            Spacer(Modifier.height(8.dp))
+            if (library.playlists.isEmpty()) {
+                EmptyState("No playlists", "Create a local playlist above.")
+            } else {
+                LazyColumn {
+                    library.playlists.forEach { playlist ->
+                        item(key = "header-" + playlist.id) {
+                            Text(
+                                playlist.name,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 18.sp,
+                                modifier = Modifier.padding(vertical = 10.dp)
+                            )
                         }
-                        Spacer(Modifier.width(12.dp))
-                        Column(Modifier.weight(1f)) {
-                            Text(item.title, maxLines = 2, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.Medium)
-                            if (item.channel.isNotBlank()) Text(item.channel, color = TextMuted, fontSize = 12.sp)
+                        items(playlist.videos, key = { playlist.id + "-" + it.videoId }) { video ->
+                            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                                YouTubeCompactRow(
+                                    item = video,
+                                    onPlay = { controller.requestYouTubePlayback(video) },
+                                    modifier = Modifier.weight(1f)
+                                )
+                                IconButton(onClick = { controller.removeYouTubeFromPlaylist(playlist.id, video.videoId) }) {
+                                    Icon(Icons.Default.RemoveCircleOutline, "Remove")
+                                }
+                            }
                         }
-                        Icon(Icons.Default.PlayArrow, null)
                     }
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun YouTubeVideoList(
+    videos: List<YouTubeItem>,
+    playlists: List<YouTubePlaylist>,
+    onPlay: (YouTubeItem) -> Unit,
+    onSaveChannel: (YouTubeItem) -> Unit,
+    onAddToPlaylist: (String, YouTubeItem) -> Unit
+) {
+    if (videos.isEmpty()) {
+        EmptyState("YouTube", "Search for a video or open a saved channel.")
+        return
+    }
+    LazyColumn(contentPadding = PaddingValues(bottom = 28.dp)) {
+        items(videos, key = { it.videoId }) { item ->
+            var menu by remember(item.videoId) { mutableStateOf(false) }
+            Row(
+                Modifier.fillMaxWidth()
+                    .combinedClickable(onClick = { onPlay(item) }, onLongClick = { menu = true })
+                    .padding(vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Surface(Modifier.size(84.dp, 48.dp), color = Panel2, shape = RoundedCornerShape(9.dp)) {
+                    if (item.thumbnail.isNotBlank()) {
+                        AsyncImage(
+                            model = item.thumbnail,
+                            contentDescription = null,
+                            modifier = Modifier.fillMaxSize(),
+                            contentScale = ContentScale.Crop
+                        )
+                    } else {
+                        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Icon(Icons.Default.SmartDisplay, null) }
+                    }
+                }
+                Spacer(Modifier.width(12.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(item.title, maxLines = 2, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.Medium)
+                    if (item.channel.isNotBlank()) Text(item.channel, color = TextMuted, fontSize = 12.sp)
+                }
+                Box {
+                    IconButton(onClick = { menu = true }) { Icon(Icons.Default.MoreVert, "More") }
+                    DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                        DropdownMenuItem(
+                            text = { Text("Save channel") },
+                            leadingIcon = { Icon(Icons.Default.Subscriptions, null) },
+                            enabled = item.channelUrl.isNotBlank(),
+                            onClick = { menu = false; onSaveChannel(item) }
+                        )
+                        playlists.forEach { playlist ->
+                            DropdownMenuItem(
+                                text = { Text("Add to " + playlist.name) },
+                                leadingIcon = { Icon(Icons.Default.PlaylistAdd, null) },
+                                onClick = { menu = false; onAddToPlaylist(playlist.id, item) }
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun YouTubeCompactRow(item: YouTubeItem, onPlay: () -> Unit, modifier: Modifier = Modifier) {
+    Row(
+        modifier.combinedClickable(onClick = onPlay, onLongClick = {}).padding(vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        if (item.thumbnail.isNotBlank()) {
+            AsyncImage(
+                model = item.thumbnail,
+                contentDescription = null,
+                modifier = Modifier.size(72.dp, 42.dp),
+                contentScale = ContentScale.Crop
+            )
+        } else {
+            Box(Modifier.size(72.dp, 42.dp), contentAlignment = Alignment.Center) { Icon(Icons.Default.SmartDisplay, null) }
+        }
+        Spacer(Modifier.width(10.dp))
+        Column(Modifier.weight(1f)) {
+            Text(item.title, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            if (item.channel.isNotBlank()) Text(item.channel, color = TextMuted, fontSize = 12.sp)
+        }
+    }
+}
+
+@Composable
+private fun PhoneVideoScreen(controller: AppController) {
+    val video by controller.phoneVideo.collectAsState()
+    val context = LocalContext.current
+    val current = video ?: run {
+        EmptyState("Nothing playing", "Return to YouTube.")
+        return
+    }
+    val player = remember(current.streamUrl) {
+        ExoPlayer.Builder(context).build().apply {
+            setMediaItem(MediaItem.fromUri(current.streamUrl))
+            prepare()
+            playWhenReady = true
+        }
+    }
+    DisposableEffect(player) {
+        onDispose { player.release() }
+    }
+    Column(Modifier.fillMaxSize()) {
+        AndroidView(
+            factory = { ctx -> PlayerView(ctx).apply { this.player = player } },
+            update = { it.player = player },
+            modifier = Modifier.fillMaxWidth().weight(1f)
+        )
+        Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text(current.title, modifier = Modifier.weight(1f), maxLines = 2, overflow = TextOverflow.Ellipsis)
+            TextButton(onClick = controller::stopPhoneVideo) { Text("Close") }
+        }
+    }
+}
+
+@Composable
+private fun StremioScreen(controller: AppController) {
+    var query by remember { mutableStateOf("") }
+    Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Text(
+            "Stremio search and library use Stremio's documented deep links and open in the installed Stremio app.",
+            color = TextMuted,
+            fontSize = 13.sp
+        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            OutlinedTextField(
+                value = query,
+                onValueChange = { query = it },
+                placeholder = { Text("Search Stremio") },
+                singleLine = true,
+                modifier = Modifier.weight(1f)
+            )
+            Spacer(Modifier.width(8.dp))
+            FilledIconButton(onClick = { controller.stremioSearch(query) }) { Icon(Icons.Default.Search, "Search") }
+        }
+        Button(onClick = controller::stremioBoard, modifier = Modifier.fillMaxWidth()) {
+            Icon(Icons.Default.Dashboard, null); Spacer(Modifier.width(8.dp)); Text("Open Stremio Board")
+        }
+        Button(onClick = controller::stremioLibrary, modifier = Modifier.fillMaxWidth()) {
+            Icon(Icons.Default.VideoLibrary, null); Spacer(Modifier.width(8.dp)); Text("Open Stremio Library")
+        }
+        Text(
+            "Home Media does not bundle third-party streaming addons; Stremio keeps control of your installed addons and playback.",
+            color = TextMuted,
+            fontSize = 12.sp
+        )
     }
 }
 
