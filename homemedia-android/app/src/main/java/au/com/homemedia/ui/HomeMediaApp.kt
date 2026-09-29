@@ -101,9 +101,13 @@ fun HomeMediaApp(controller: AppController) {
     val phoneFullscreen by controller.phoneFullscreen.collectAsState()
     val activePlayerKey by controller.activePlayerKey.collectAsState()
     val activePlayerName = room?.let { r ->
-        if (activePlayerKey == "primary") r.name
-        else r.secondaryPlayers.firstOrNull { it.id == activePlayerKey }?.name ?: r.name
+        if (activePlayerKey == "primary") simplifyPlayerName(r.primaryPlayerEntity, r.name)
+        else r.secondaryPlayers.firstOrNull { it.id == activePlayerKey }?.name ?: simplifyPlayerName(r.primaryPlayerEntity, r.name)
     }.orEmpty()
+    val haStates by controller.ha.states.collectAsState()
+    val activeRoomMediaKinds = remember(settings.rooms, haStates) {
+        settings.rooms.associate { it.id to controller.roomMediaKind(it) }
+    }
     var drawerOpen by remember { mutableStateOf(false) }
     BackHandler(enabled = drawerOpen || screen != Screen.ROOM) {
         if (drawerOpen) drawerOpen = false else controller.navigateBack()
@@ -112,6 +116,9 @@ fun HomeMediaApp(controller: AppController) {
     val settingsZipLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         uri?.let(controller::importSettingsZip)
     }
+    val settingsExportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/zip")
+    ) { uri -> uri?.let(controller::exportSettingsZip) }
     val localVideoLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         uri?.let(controller::addLocalVideo)
     }
@@ -165,9 +172,16 @@ fun HomeMediaApp(controller: AppController) {
                             Screen.YOUTUBE -> YouTubeScreen(controller)
                             Screen.PHONE_VIDEO -> PhoneVideoScreen(controller)
                             Screen.STREMIO -> StremioScreen(controller)
-                            Screen.SETTINGS -> SettingsScreen(controller, settings) {
-                                settingsZipLauncher.launch(arrayOf("application/zip", "application/octet-stream"))
-                            }
+                            Screen.SETTINGS -> SettingsScreen(
+                                controller = controller,
+                                initial = settings,
+                                onImportSettings = {
+                                    settingsZipLauncher.launch(arrayOf("application/zip", "application/octet-stream"))
+                                },
+                                onExportSettings = {
+                                    settingsExportLauncher.launch("HomeMedia-settings-backup.zip")
+                                }
+                            )
                         }
                         if (busy) {
                             Box(
@@ -182,6 +196,7 @@ fun HomeMediaApp(controller: AppController) {
                     RoomDrawer(
                         settings = settings,
                         currentRoomId = roomId,
+                        activeMediaKinds = activeRoomMediaKinds,
                         onClose = { drawerOpen = false },
                         onRoom = { controller.selectRoom(it); drawerOpen = false },
                         onMedia = { controller.goMedia(); drawerOpen = false },
@@ -273,16 +288,27 @@ private fun AppTopBar(
         actions = {
             if (screen == Screen.ROOM && activePlayerName.isNotBlank()) {
                 Surface(
-                    modifier = Modifier.padding(end = 18.dp).size(27.dp),
-                    shape = RoundedCornerShape(14.dp),
-                    color = ActiveGreen
+                    modifier = Modifier.padding(end = 12.dp),
+                    shape = RoundedCornerShape(16.dp),
+                    color = Panel2
                 ) {
-                    Box(contentAlignment = Alignment.Center) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
                         Icon(
                             Icons.Default.Speaker,
                             activePlayerName,
-                            tint = Color.Black,
+                            tint = ActiveGreen,
                             modifier = Modifier.size(16.dp)
+                        )
+                        Text(
+                            activePlayerName,
+                            color = Color.White,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1
                         )
                     }
                 }
@@ -290,6 +316,28 @@ private fun AppTopBar(
         },
         colors = TopAppBarDefaults.topAppBarColors(containerColor = Bg)
     )
+}
+
+private fun simplifyPlayerName(entityId: String, fallback: String): String {
+    val raw = entityId.substringAfter('.').ifBlank { fallback }
+        .removeSuffix("_ma")
+        .replace("_2", "")
+        .replace('_', ' ')
+        .trim()
+
+    return raw
+        .split(' ')
+        .filter(String::isNotBlank)
+        .joinToString(" ") { part ->
+            when {
+                part.startsWith("bv", true) && part.drop(2).all(Char::isDigit) -> "BV" + part.drop(2)
+                part.startsWith("bl", true) && part.drop(2).all(Char::isDigit) -> "BL" + part.drop(2)
+                part.startsWith("bs", true) && part.drop(2).all(Char::isDigit) -> "BS" + part.drop(2)
+                else -> part.replaceFirstChar { if (it.isLowerCase()) it.titlecase() else it.toString() }
+            }
+        }
+        .replace(Regex("(BV|BL|BS)(\\d{2})(\\d{2})"), "$1$2-$3")
+        .ifBlank { fallback }
 }
 
 private fun screenTitle(screen: Screen) = when (screen) {
@@ -309,6 +357,7 @@ private fun screenTitle(screen: Screen) = when (screen) {
 private fun RoomDrawer(
     settings: AppSettings,
     currentRoomId: String,
+    activeMediaKinds: Map<String, String?>,
     onClose: () -> Unit,
     onRoom: (String) -> Unit,
     onMedia: () -> Unit,
@@ -325,10 +374,21 @@ private fun RoomDrawer(
                     Text("ROOMS", color = TextMuted, fontSize = 12.sp, modifier = Modifier.padding(12.dp, 12.dp, 12.dp, 8.dp))
                 }
                 items(settings.rooms, key = { it.id }) { room ->
+                    val mediaKind = activeMediaKinds[room.id]
                     NavigationDrawerItem(
                         label = { Text(room.name) },
                         selected = room.id == currentRoomId,
-                        icon = { Icon(Icons.Default.Speaker, null) },
+                        icon = {
+                            Icon(
+                                when (mediaKind) {
+                                    "video" -> Icons.Default.OndemandVideo
+                                    "music" -> Icons.Default.MusicNote
+                                    else -> Icons.Default.Speaker
+                                },
+                                if (mediaKind == "video") "Video active" else if (mediaKind == "music") "Music active" else null,
+                                tint = if (mediaKind != null) ActiveGreen else LocalContentColor.current
+                            )
+                        },
                         onClick = { onRoom(room.id) }
                     )
                 }
@@ -1708,7 +1768,12 @@ private fun kodiImageUrl(config: KodiConfig, raw: String): String {
 // ---------------- Settings ----------------
 
 @Composable
-private fun SettingsScreen(controller: AppController, initial: AppSettings, onImportSettings: () -> Unit) {
+private fun SettingsScreen(
+    controller: AppController,
+    initial: AppSettings,
+    onImportSettings: () -> Unit,
+    onExportSettings: () -> Unit
+) {
     var draft by remember(initial) { mutableStateOf(initial) }
     val haStates by controller.ha.states.collectAsState()
     val debugExportLauncher = rememberLauncherForActivityResult(
@@ -1781,11 +1846,22 @@ private fun SettingsScreen(controller: AppController, initial: AppSettings, onIm
                     }
 
                     SettingSwitch("Bluetooth room detection", draft.bluetoothLocationEnabled) { draft = draft.copy(bluetoothLocationEnabled = it) }
-                    OutlinedButton(onClick = onImportSettings, modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
+                    OutlinedButton(onClick = onImportSettings, modifier = Modifier.fillMaxWidth().padding(top = 6.dp)) {
                         Icon(Icons.Default.FolderZip, null)
                         Spacer(Modifier.width(8.dp))
                         Text("Import settings ZIP")
                     }
+                    OutlinedButton(onClick = onExportSettings, modifier = Modifier.fillMaxWidth().padding(bottom = 6.dp)) {
+                        Icon(Icons.Default.SaveAlt, null)
+                        Spacer(Modifier.width(8.dp))
+                        Text("Export full settings backup")
+                    }
+                    Text(
+                        "Full settings backups include tokens, passwords, IP addresses and local network configuration. Keep the ZIP private.",
+                        color = Danger,
+                        fontSize = 11.sp,
+                        modifier = Modifier.padding(bottom = 6.dp)
+                    )
                     SettingsField("Shared MA queue/player ID", draft.sharedMaQueueId) { draft = draft.copy(sharedMaQueueId = it) }
                     SettingsField("Shared MA queue/player name", draft.sharedMaQueueName) { draft = draft.copy(sharedMaQueueName = it) }
                     SettingsField("Global media entity", draft.globalMediaEntity) { draft = draft.copy(globalMediaEntity = it) }
