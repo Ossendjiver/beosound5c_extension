@@ -5,12 +5,15 @@ import au.com.homemedia.model.MassMediaItem
 import au.com.homemedia.model.MassQueueInfo
 import au.com.homemedia.model.MassPlayerInfo
 import au.com.homemedia.model.MassQueueItem
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import okhttp3.MediaType.Companion.toMediaType
+import kotlinx.coroutines.withTimeout
 import okhttp3.OkHttpClient
 import okhttp3.Request
-import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.Response
+import okhttp3.WebSocket
+import okhttp3.WebSocketListener
 import org.json.JSONArray
 import org.json.JSONObject
 import java.net.URLEncoder
@@ -265,53 +268,137 @@ class MusicAssistantClient {
     private suspend fun command(command: String, args: JSONObject = JSONObject()): Any? = withContext(Dispatchers.IO) {
         require(baseUrl.isNotBlank()) { "Music Assistant URL is not configured" }
         require(token.isNotBlank()) { "Music Assistant token is not configured" }
-        val payload = JSONObject()
-            .put("message_id", ids.incrementAndGet().toString())
-            .put("command", command)
-            .put("args", args)
-        val endpoint = "${baseUrl.trimEnd('/')}/api"
-        debugSink?.invoke("POST $endpoint command=$command args=${args.toString().take(400)}")
-        val request = Request.Builder()
-            .url(endpoint)
-            .header("Authorization", "Bearer $token")
-            .header("Accept", "application/json, text/html")
-            .post(payload.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
-            .build()
-        client.newCall(request).execute().use { response ->
-            val body = response.body?.string().orEmpty()
-            val contentType = response.header("Content-Type").orEmpty()
-            val cleaned = body.trim().removePrefix("\uFEFF")
-            val preview = cleaned.take(300).replace(
-                Regex("(?i)Bearer\\s+[A-Za-z0-9._~+/-]+"),
-                "Bearer [redacted]"
-            )
-            debugSink?.invoke("HTTP ${response.code} command=$command contentType=$contentType bytes=${body.length} preview=$preview")
-            if (!response.isSuccessful) error("Music Assistant HTTP ${response.code}")
-            if (cleaned.isBlank()) error("Music Assistant returned an empty response")
-            if (cleaned.startsWith("<")) {
-                error("Music Assistant returned HTML instead of JSON. Check the MA URL and authentication.")
+
+        val wsUrl = when {
+            baseUrl.startsWith("https://") -> "wss://" + baseUrl.removePrefix("https://")
+            baseUrl.startsWith("http://") -> "ws://" + baseUrl.removePrefix("http://")
+            baseUrl.startsWith("wss://") || baseUrl.startsWith("ws://") -> baseUrl
+            else -> "ws://$baseUrl"
+        }.trimEnd('/').let { if (it.endsWith("/ws")) it else "$it/ws" }
+
+        val authId = "auth-" + ids.incrementAndGet()
+        val commandId = ids.incrementAndGet().toString()
+        val resultDeferred = CompletableDeferred<Any?>()
+        val partial = mutableListOf<Any?>()
+        var targetSent = false
+
+        fun errorFrom(obj: JSONObject): String =
+            obj.optString("details").ifBlank {
+                obj.opt("error_code")?.toString().orEmpty().ifBlank { "Music Assistant command failed" }
             }
-            val parsed: Any = try {
-                when {
-                    cleaned.startsWith("{") -> JSONObject(cleaned)
-                    cleaned.startsWith("[") -> JSONArray(cleaned)
-                    else -> error("Music Assistant returned non-JSON data")
+
+        fun sendTarget(webSocket: WebSocket) {
+            if (targetSent) return
+            targetSent = true
+            val payload = JSONObject()
+                .put("message_id", commandId)
+                .put("command", command)
+                .put("args", args)
+            debugSink?.invoke("WS send command=$command id=$commandId args=${args.toString().take(500)}")
+            if (!webSocket.send(payload.toString())) {
+                resultDeferred.completeExceptionally(IllegalStateException("Could not send Music Assistant command"))
+            }
+        }
+
+        val request = Request.Builder().url(wsUrl).build()
+        val webSocket = client.newWebSocket(request, object : WebSocketListener() {
+            override fun onOpen(webSocket: WebSocket, response: Response) {
+                debugSink?.invoke("WS connected endpoint=$wsUrl")
+            }
+
+            override fun onMessage(webSocket: WebSocket, text: String) {
+                val obj = runCatching { JSONObject(text) }.getOrElse { err ->
+                    debugSink?.invoke("WS JSON parse failure bytes=${text.length} preview=${text.take(250)} error=${err.message}")
+                    if (!resultDeferred.isCompleted) {
+                        resultDeferred.completeExceptionally(IllegalStateException("Music Assistant returned invalid WebSocket JSON"))
+                    }
+                    return
                 }
-            } catch (e: Exception) {
-                debugSink?.invoke("JSON parse failure command=$command error=${e.message}")
-                error("Music Assistant returned invalid JSON (${contentType.ifBlank { "unknown content type" }})")
-            }
-            if (parsed is JSONArray) return@use parsed
-            val obj = parsed as JSONObject
-            if (obj.has("error_code") || obj.has("error")) {
-                val err = obj.opt("error")
-                val message = when (err) {
-                    is JSONObject -> err.optString("message").ifBlank { err.toString() }
-                    else -> err?.toString().orEmpty()
+
+                if (obj.has("server_version") && obj.has("server_id") && !obj.has("event")) {
+                    debugSink?.invoke("WS server info version=${obj.optString("server_version")} schema=${obj.optInt("schema_version", -1)}")
+                    val authPayload = JSONObject()
+                        .put("message_id", authId)
+                        .put("command", "auth")
+                        .put(
+                            "args",
+                            JSONObject()
+                                .put("token", token)
+                                .put("device_name", "Home Media Android")
+                        )
+                    webSocket.send(authPayload.toString())
+                    return
                 }
-                error(message.ifBlank { "Music Assistant command failed" })
+
+                val messageId = obj.optString("message_id")
+                if (messageId.isBlank()) return
+
+                if (messageId == authId) {
+                    if (obj.has("error_code")) {
+                        val msg = errorFrom(obj)
+                        debugSink?.invoke("WS auth failed code=${obj.optInt("error_code")} details=$msg")
+                        if (!resultDeferred.isCompleted) resultDeferred.completeExceptionally(IllegalStateException(msg))
+                    } else if (!obj.optBoolean("partial", false)) {
+                        debugSink?.invoke("WS authenticated")
+                        sendTarget(webSocket)
+                    }
+                    return
+                }
+
+                if (messageId != commandId) return
+
+                if (obj.has("error_code")) {
+                    val msg = errorFrom(obj)
+                    debugSink?.invoke("WS command error command=$command code=${obj.optInt("error_code")} details=$msg")
+                    if (!resultDeferred.isCompleted) resultDeferred.completeExceptionally(IllegalStateException(msg))
+                    return
+                }
+
+                val result = obj.opt("result")
+                if (obj.optBoolean("partial", false)) {
+                    when (result) {
+                        is JSONArray -> for (i in 0 until result.length()) partial.add(result.opt(i))
+                        null, JSONObject.NULL -> Unit
+                        else -> partial.add(result)
+                    }
+                    debugSink?.invoke("WS partial command=$command items=${partial.size}")
+                    return
+                }
+
+                val finalResult: Any? = if (partial.isNotEmpty()) {
+                    val array = JSONArray()
+                    partial.forEach { array.put(it) }
+                    if (result is JSONArray) {
+                        for (i in 0 until result.length()) array.put(result.opt(i))
+                    }
+                    array
+                } else if (result == JSONObject.NULL) null else result
+
+                debugSink?.invoke("WS result command=$command type=${finalResult?.javaClass?.simpleName ?: "null"} partialItems=${partial.size}")
+                if (!resultDeferred.isCompleted) resultDeferred.complete(finalResult)
             }
-            obj.opt("result")
+
+            override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                debugSink?.invoke("WS failure command=$command http=${response?.code ?: 0} error=${t.message}")
+                if (!resultDeferred.isCompleted) {
+                    resultDeferred.completeExceptionally(
+                        IllegalStateException("Music Assistant connection failed: ${t.message ?: "unknown error"}")
+                    )
+                }
+            }
+
+            override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                debugSink?.invoke("WS closed code=$code reason=$reason")
+                if (!resultDeferred.isCompleted) {
+                    resultDeferred.completeExceptionally(IllegalStateException("Music Assistant connection closed before response"))
+                }
+            }
+        })
+
+        try {
+            withTimeout(35_000) { resultDeferred.await() }
+        } finally {
+            webSocket.close(1000, "command complete")
         }
     }
 
