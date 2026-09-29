@@ -38,6 +38,15 @@ class DefaultTopologyTest {
     }
 
     @Test
+    fun allRoomsUseUniversalSourceTile() {
+        AppSettings().rooms.forEach { room ->
+            val source = room.tiles.firstOrNull { it.id == "__SOURCE__" }
+            assertTrue("Missing Source tile in ${room.name}", source != null)
+            assertEquals("Source", source?.title)
+        }
+    }
+
+    @Test
     fun videoTilesExistForRequestedRooms() {
         val settings = AppSettings()
         listOf("lounge", "dining", "bedroom", "kitchen").forEach { id ->
