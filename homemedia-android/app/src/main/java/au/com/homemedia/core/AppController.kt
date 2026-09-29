@@ -176,6 +176,25 @@ class AppController(context: Context) {
         debugLogger.log("DEBUG", "Runtime debug mode=$enabled")
     }
 
+    fun runMusicAssistantDiagnostic() {
+        scope.launch {
+            _busy.value = true
+            try {
+                debugLogger.log("MA", "Manual Music Assistant diagnostic started")
+                val queues = ma.queues()
+                debugLogger.log("MA", "Queue listing OK count=${queues.size}")
+                val albums = ma.library(MassCategory.ALBUMS, limit = 3)
+                debugLogger.log("MA", "Album library OK count=${albums.size} sample=${albums.joinToString { it.name }.take(300)}")
+                _message.value = "Music Assistant OK · ${queues.size} queues · ${albums.size} album samples"
+            } catch (e: Exception) {
+                debugLogger.log("MA", "Diagnostic failed ${e.javaClass.simpleName}: ${e.message}")
+                _message.value = "Music Assistant failed: ${e.message ?: e.javaClass.simpleName}"
+            } finally {
+                _busy.value = false
+            }
+        }
+    }
+
     fun clearDebugLog() {
         debugLogger.clear()
         _message.value = "Debug log cleared"
@@ -431,6 +450,9 @@ class AppController(context: Context) {
         if (old.homeAssistantUrl != newSettings.homeAssistantUrl || old.homeAssistantToken != newSettings.homeAssistantToken ||
             old.musicAssistantUrl != newSettings.musicAssistantUrl || old.musicAssistantToken != newSettings.musicAssistantToken
         ) configureConnections(newSettings)
+        if (newSettings.automaticRoom && wifiStatus.isConnectedToWifi()) {
+            resolveAutomaticRoom(ha.states.value)
+        }
         updateNowPlaying(ha.states.value)
         updateJoinCandidate(ha.states.value)
     }
@@ -1337,20 +1359,32 @@ class AppController(context: Context) {
     private fun presenceMatchesRoom(room: RoomConfig, state: HaEntityState?): Boolean {
         if (room.presenceEntity.isBlank() || state == null) return false
         val actual = state.state.trim()
-        val expected = room.presenceValue.trim()
+        val expectedRaw = room.presenceValue.trim()
 
         fun eq(a: String, b: String) = a.trim().equals(b.trim(), ignoreCase = true)
-        val attrs = listOf("room", "location", "area", "presence", "occupancy")
-            .mapNotNull { key -> state.attributes.optString(key).takeIf(String::isNotBlank) }
+        val attrs = listOf(
+            "room", "room_name", "location", "area", "area_name",
+            "zone", "presence", "occupancy"
+        ).mapNotNull { key ->
+            state.attributes.optString(key).trim().takeIf(String::isNotBlank)
+        }
 
-        if (expected.isNotBlank()) {
-            return eq(actual, expected) || attrs.any { eq(it, expected) }
+        if (expectedRaw.isNotBlank()) {
+            val expectedValues = expectedRaw
+                .split(',', '|', ';')
+                .map(String::trim)
+                .filter(String::isNotBlank)
+            return expectedValues.any { expected ->
+                eq(actual, expected) || attrs.any { eq(it, expected) }
+            }
         }
 
         val roomNames = listOf(room.id, room.name)
         if (roomNames.any { eq(actual, it) } || attrs.any { attr -> roomNames.any { eq(attr, it) } }) return true
 
-        return actual.lowercase() in setOf("on", "home", "present", "occupied", "detected", "true", "yes")
+        return actual.lowercase() in setOf(
+            "on", "home", "present", "occupied", "detected", "true", "yes"
+        )
     }
 
     private fun updateJoinCandidate(states: Map<String, HaEntityState>) {
