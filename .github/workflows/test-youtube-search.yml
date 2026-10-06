@@ -19,6 +19,6 @@ jobs:
           node-version: '22'
       - run: pip install -r tests/requirements.txt
       - name: Search, MASS and Frame regression tests
-        run: python -m pytest -q tests/unit/python/test_youtube_search.py tests/unit/python/test_mass_voice_search.py tests/unit/python/test_mass_library_identity.py tests/unit/python/test_mass_music_video.py tests/unit/python/test_mass_playback_mode.py tests/unit/python/test_hass_volume.py tests/unit/python/test_frame_youtube_volume.py tests/unit/python/test_cross_source_import.py tests/unit/python/test_service_import_order.py
+        run: python -m pytest -q tests/unit/python/test_youtube_search.py tests/unit/python/test_ui_chromium_flags.py tests/unit/python/test_mass_voice_search.py tests/unit/python/test_mass_library_identity.py tests/unit/python/test_mass_music_video.py tests/unit/python/test_mass_playback_mode.py tests/unit/python/test_hass_volume.py tests/unit/python/test_frame_youtube_volume.py tests/unit/python/test_cross_source_import.py tests/unit/python/test_service_import_order.py
       - name: JavaScript regressions
         run: node --test tests/unit/js/test_*.js
