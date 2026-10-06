@@ -66,7 +66,7 @@ class YouTubeSearch:
                 "image": str(raw.get("artwork") or ""), "duration": raw.get("duration", 0),
                 "url": f"youtube://video/{video_id}" if video else self.bridge + "/audio/" + video_id,
                 "media_type": "video" if video else "track", "provider": "youtube",
-                "youtube_video": video, "live_search": True,
+                "youtube_video": video, "live_search": True, "channel_url": str(raw.get("channel_url") or ""),
                 "subtitle": str(raw.get("channel") or "") + (" · Samsung Frame" if video else " · YouTube Music"),
             })
             if len(items) >= limit:
@@ -106,6 +106,22 @@ class YouTubeSearch:
             async with session.request(method, self.ha_url + "/api/" + path, json=data) as response:
                 response.raise_for_status()
                 return await response.json()
+
+    async def save_channel_podcast(self, channel_url, mass_command):
+        metadata = await self._bridge_json("/channel?" + urlencode({"url": str(channel_url)}), timeout=120)
+        channel_id = str(metadata.get("channel_id") or "")
+        if not re.fullmatch(r"UC[A-Za-z0-9_-]{22}", channel_id):
+            raise ValueError("Bridge did not return a valid channel ID")
+        feed = self.bridge + "/podcast/" + channel_id + ".xml"
+        # Read configs first; never create a second provider for the same feed.
+        configs = await mass_command("config/providers", provider_domain="podcastfeed", include_values=True)
+        if not isinstance(configs, list):
+            raise ValueError("Could not check existing MA podcasts")
+        for config in configs:
+            if config.get("values", {}).get("feed_url", {}).get("value") == feed:
+                return {"state": "podcast_exists", "feed_url": feed}
+        await mass_command("config/providers/save", provider_domain="podcastfeed", values={"feed_url": feed})
+        return {"state": "podcast_saved", "feed_url": feed}
 
     async def play_video(self, uri):
         match = VIDEO_URI.fullmatch(str(uri))

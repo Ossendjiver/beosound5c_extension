@@ -117,3 +117,18 @@ async def test_http_search_and_voice_forward_independent_flags_without_network_o
             source._search_enabled_sources.assert_awaited_with('Blender',music=False,videos=True)
     finally:
         await runner.cleanup()
+
+@pytest.mark.asyncio
+async def test_channel_podcast_subscription_deduplicates_and_uses_stable_feed():
+    bridge=YouTubeSearch({},'http://192.168.4.103:8089')
+    bridge._bridge_json=AsyncMock(return_value={'channel_id':'UCSMOQeBJ2RAnuFungnQOxLg'})
+    command=AsyncMock(side_effect=[[],{}])
+    result=await bridge.save_channel_podcast('https://www.youtube.com/@BlenderOfficial',command)
+    feed='http://192.168.4.103:8089/podcast/UCSMOQeBJ2RAnuFungnQOxLg.xml'
+    assert result['state']=='podcast_saved'
+    command.assert_any_await('config/providers/save',provider_domain='podcastfeed',values={'feed_url':feed})
+    command=AsyncMock(return_value=[{'values':{'feed_url':{'value':feed}}}])
+    assert (await bridge.save_channel_podcast('https://www.youtube.com/@BlenderOfficial',command))['state']=='podcast_exists'
+    assert command.await_count==1
+    bridge._bridge_json=AsyncMock(return_value={'channel_id':'../../bad'})
+    with pytest.raises(ValueError):await bridge.save_channel_podcast('url',command)

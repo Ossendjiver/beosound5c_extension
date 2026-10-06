@@ -2252,10 +2252,14 @@
 
             const buildMassOptionsEntries = (item) => {
                 const safeItem = childNameMapper(item || {}, 0, [item || {}]);
+                const podcastAction = safeItem.channel_url ? {
+                    id: 'save_channel_podcast', icon: 'broadcast', title: 'Save channel as podcast',
+                    onSelect: async () => { dismissOptionsMenu(false); await arcList.sendGoWebhook('save_channel_podcast', safeItem); },
+                } : null;
                 if (safeItem.youtube_video) return [{
                     id: 'play_now', icon: 'youtube-logo', title: 'Play on Samsung Frame',
                     onSelect: async () => { dismissOptionsMenu(false); await arcList.sendGoWebhook('play_now', safeItem); },
-                }];
+                }, podcastAction].filter(Boolean);
                 const metadata = getItemMeta(safeItem);
                 const uri = String(safeItem?.url || safeItem?.play_url || '').trim();
                 const artist = cleanTitle(deriveSectionArtist(safeItem, getCurrentRootSectionId()) || metadata.artist || safeItem?.artist || '');
@@ -2265,6 +2269,7 @@
                 const isLeaf = !Array.isArray(safeItem?.tracks) || safeItem.tracks.length === 0;
                 const canInspect = !safeItem.youtube_video && !!getDetailSpec(safeItem);
                 const entries = [
+                    podcastAction,
                     {
                         id: 'play_now',
                         icon: 'play-circle',
@@ -2775,7 +2780,7 @@
                 if (detailState?.loading) return;
                 if (current.search_root) return openSearchComposer();
                 if (current.search_group) return enterFolder(current);
-                if (current.youtube_video && !['play_item', 'play_now'].includes(command)) return;
+                if (current.youtube_video && !['play_item', 'play_now', 'save_channel_podcast'].includes(command)) return;
 
 
                 const playUri = String(
@@ -2801,6 +2806,7 @@
                     queue_item:   { pending: 'Adding to queue…', error: 'Error adding to queue', queued: 'Added to queue', playing: 'Added to queue' },
                     play_radio:   { pending: 'Starting radio…', error: 'Error starting radio', queued: 'Starting radio', playing: 'Starting radio' },
                     favorite_add: { pending: 'Adding to favorites…', error: 'Error adding to favorites', favorited: 'Added to favorites' },
+                    save_channel_podcast: { pending: 'Subscribing to channel…', error: 'Could not save podcast — check MA admin permissions', podcast_saved: 'Channel saved in MA Podcasts', podcast_exists: 'Channel already subscribed' },
                     playlist_add: { pending: 'Adding to playlist…', error: 'Error adding to playlist', playlist_added: 'Added to playlist' },
                 };
                 const copy = commandMessages[command] || commandMessages.play_item;
@@ -2810,6 +2816,7 @@
                     url: current.url || '',
                     play_url: current.play_url || '',
                     youtube_video: !!current.youtube_video,
+                    channel_url: current.channel_url || '', 
                 }, current.youtube_video ? {} : activeMassTargetPayload(), extraPayload || {});
 
                 showActionToast(copy.pending);

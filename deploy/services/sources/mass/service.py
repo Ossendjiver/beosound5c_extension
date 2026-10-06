@@ -5567,6 +5567,12 @@ class MassSource(SourceBase):
 
     async def handle_command(self, cmd, data) -> dict:
         uri = self._resolve_command_url(data)
+        if cmd == "save_channel_podcast":
+            try:
+                return await self._youtube_search().save_channel_podcast(data.get("channel_url", ""), self.send_command)
+            except Exception as exc:
+                logger.warning("YouTube podcast subscription failed (%s)", type(exc).__name__)
+                return {"state": "error", "reason": "podcast_save_failed", "message": "Check the bridge and MA admin permissions"}
         if VIDEO_URI.fullmatch(str(uri)):
             if cmd not in {"play_item", "play_now"}:
                 return {"state": "error", "reason": "video_action_unsupported"}
