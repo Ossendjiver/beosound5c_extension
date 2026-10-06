@@ -580,7 +580,7 @@ class LibraryService:
         context = self._context_for_room(room)
         if context.get("post_run_actionable"):
             marker = context.get("run_marker") or "run"
-            return {
+            suggestion = {
                 "id": f"yoga:{marker}",
                 "kind": "yoga",
                 "question": "Time for some yoga?",
@@ -591,24 +591,36 @@ class LibraryService:
                 ],
                 "context": context,
             }
-        hour = int(context.get("hour", 12))
-        if hour < 10:
-            day = dt.date.today().isoformat()
-            return {
-                "id": f"news:{day}",
-                "kind": "news",
-                "question": "Would you like to play the news?",
-                "options": [{"id": "play", "label": "Yes"}, {"id": "dismiss", "label": "No thanks"}],
-                "context": context,
-            }
-        bucket = hour // 3
-        return {
-            "id": f"music:{dt.date.today().isoformat()}:{bucket}",
-            "kind": "music",
-            "question": "Would you like to play some music?",
-            "options": [{"id": "play", "label": "Yes"}, {"id": "dismiss", "label": "No thanks"}],
-            "context": context,
-        }
+        else:
+            hour = int(context.get("hour", 12))
+            if hour < 10:
+                day = dt.date.today().isoformat()
+                suggestion = {
+                    "id": f"news:{day}",
+                    "kind": "news",
+                    "question": "Would you like to play the news?",
+                    "options": [
+                        {"id": "play", "label": "Yes"},
+                        {"id": "dismiss", "label": "No thanks"},
+                    ],
+                    "context": context,
+                }
+            else:
+                bucket = hour // 3
+                suggestion = {
+                    "id": f"music:{dt.date.today().isoformat()}:{bucket}",
+                    "kind": "music",
+                    "question": "Would you like to play some music?",
+                    "options": [
+                        {"id": "play", "label": "Yes"},
+                        {"id": "dismiss", "label": "No thanks"},
+                    ],
+                    "context": context,
+                }
+
+        if self.model.get_kv("handled_prompt_id", "") == suggestion["id"]:
+            return {}
+        return suggestion
 
     async def _play_music_local(self) -> dict[str, Any]:
         assert self.session
@@ -838,6 +850,7 @@ class LibraryService:
         room = str(payload.get("room") or "")
         if prompt_id:
             self.model.record_prompt(prompt_id, kind, action, room)
+            self.model.put_kv("handled_prompt_id", prompt_id)
         if kind == "yoga" and action in {"dismiss", "lounge", "bedroom", "accepted"}:
             marker = self.context.get("run_marker")
             if marker:
@@ -854,6 +867,7 @@ class LibraryService:
         if action == "dismiss":
             if prompt_id:
                 self.model.record_prompt(prompt_id, kind, action, room)
+                self.model.put_kv("handled_prompt_id", prompt_id)
             if kind == "yoga":
                 marker = self.context.get("run_marker")
                 if marker:
@@ -880,6 +894,7 @@ class LibraryService:
 
         if prompt_id:
             self.model.record_prompt(prompt_id, kind, action, room)
+            self.model.put_kv("handled_prompt_id", prompt_id)
         return web.json_response({"status": "ok", **result}, headers={"Access-Control-Allow-Origin": "*"})
 
     async def options(self, _request: web.Request) -> web.Response:
