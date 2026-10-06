@@ -101,3 +101,21 @@ This fork is based on **BeoSound 5c by Markus Kirsten**. Upstream credit, GPL-3.
 Arc geometry in `web/js/arcs.js` derived from [Beolyd5](https://github.com/larsbaunwall/Beolyd5) by Lars Baunwall (Apache 2.0). 
 
 This project is not affiliated with Bang & Olufsen. "Bang & Olufsen", "BeoSound", "BeoRemote", and "MasterLink" are trademarks of Bang & Olufsen A/S.
+
+
+### Context-aware library service
+
+`beo-library.service` (port **8788**) learns listening preferences locally on the
+BeoSound 5c and builds Music Assistant queues using listening history plus room,
+time of day, weekday/weekend, weather and temperature context. The model and
+prompt history are stored only on the BS5c in
+`/media/local/cache/library_recommender.sqlite3`.
+
+The service exposes `/library/recommend/music`, `/library/suggestions`,
+`/library/event` and `/library/action`. It can show non-waking UI prompts for
+morning news, contextual music, and post-run yoga. Garmin/run detection is read
+from Home Assistant; post-run yoga is selected from the configured Exercise
+directory and can target Lounge or Bedroom Kodi.
+
+Configure optional entities/targets under `library` in `config.json`. The
+Home Assistant token remains in `/etc/beosound5c/secrets.env`.
