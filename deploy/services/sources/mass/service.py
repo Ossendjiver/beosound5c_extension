@@ -24,6 +24,7 @@ Node contracts (enforced at construction + _finalize_node):
 
 import asyncio
 import datetime
+import difflib
 import hashlib
 import html
 import json
@@ -53,6 +54,7 @@ from lib.mass_playback import (
 )
 from lib.playback_targets import get_audio_targets
 from lib.source_base import SourceBase
+from lib.youtube_search import YouTubeSearch, search_flag, VIDEO_URI
 
 # ── CONFIG ────────────────────────────────────────────────────────────────────
 def _mass_ws_url():
@@ -69,6 +71,7 @@ def _mass_ws_url():
 
 MASS_URI = _mass_ws_url()
 MASS_TOKEN = os.getenv("MASS_TOKEN", "").strip()
+ROUTER_PLAYBACK_URL = "http://127.0.0.1:8770/router/playback"
 TARGET_QUEUE_ID = (
     os.getenv("MASS_QUEUE_ID")
     or os.getenv("BS5C_MASS_TARGET_QUEUE_ID")
@@ -170,6 +173,11 @@ LOCAL_IMAGE_SUFFIXES = (
     ".ico",
     ".avif",
     ".tiff",
+)
+NON_ARTWORK_MEDIA_SUFFIXES = (
+    ".aac", ".aif", ".aiff", ".alac", ".flac", ".m4a", ".mp3", ".oga",
+    ".ogg", ".opus", ".wav", ".wma", ".avi", ".m4v", ".mkv", ".mov",
+    ".mp4", ".webm",
 )
 
 
@@ -274,6 +282,7 @@ class MassSource(SourceBase):
         self._local_queue_monitor_task = None
         self._local_queue_transition_deadline = 0.0
         self._local_queue_last_player_state = "stopped"
+        self._remote_metadata_signature = None
         self.has_cache    = self._load_local_cache()
 
     def _detect_player(self):
@@ -337,6 +346,7 @@ class MassSource(SourceBase):
         await self.register("available")
         self._spawn(self._maintain_connection(), name="mass_connection")
         self._spawn(self._schedule_sync_loop(), name="mass_sync_loop")
+        self._spawn(self._remote_metadata_monitor_loop(), name="mass_metadata_monitor")
 
     async def on_stop(self):
         await self._stop_local_queue_monitor()
@@ -463,6 +473,42 @@ class MassSource(SourceBase):
                 return any("capture" in line.lower() for line in handle)
         except OSError:
             return False
+
+    def _youtube_search(self):
+        host = urllib.parse.urlsplit(MASS_URI).hostname or "localhost"
+        return YouTubeSearch(cfg("mass", "youtube_search", default={}) or {}, f"http://{host}:8089",
+                             VOICE_SEARCH_HA_URL, VOICE_SEARCH_HA_TOKEN)
+
+    async def _search_enabled_sources(self, query, limit=8, music=None, videos=None):
+        bridge = self._youtube_search()
+        music, videos = bridge.flags(music, videos)
+        query = self._clean_voice_query(query)
+        if len(query) < 2 or len(query) > 200:
+            raise VoiceSearchError("invalid_query", "Enter between two and 200 characters.")
+        limit = max(1, min(20, int(limit or 8)))
+        warnings = []
+        try:
+            payload = await self._search_all_mass_providers(query, limit)
+        except VoiceSearchError:
+            if not (music or videos):
+                raise
+            payload = {"query": query, "transcript": query, "groups": [], "scope": "all_mass_providers"}
+            warnings.append("Music Assistant search unavailable")
+        kinds = [kind for kind, active in (("music", music), ("video", videos)) if active]
+        results = await asyncio.gather(*(bridge.search(query, kind, limit) for kind in kinds), return_exceptions=True)
+        for kind, group in zip(kinds, results):
+            if isinstance(group, asyncio.CancelledError):
+                raise group
+            if isinstance(group, Exception):
+                logger.warning("YouTube %s search unavailable (%s)", kind, type(group).__name__)
+                warnings.append(f"YouTube {kind} search unavailable")
+            elif group:
+                payload["groups"].append(group)
+        payload["state"] = "ready" if payload["groups"] else "empty"
+        payload["total"] = sum(len(group["tracks"]) for group in payload["groups"])
+        payload["warnings"] = warnings
+        payload["youtube_options"] = {"youtube_music": music, "youtube_videos": videos}
+        return payload
 
     def _voice_search_status(self):
         reason = ""
@@ -760,29 +806,92 @@ class MassSource(SourceBase):
         if not images:
             return ""
 
+        resolved = []
+        for image in images:
+            if not isinstance(image, dict):
+                continue
+            url = self._image_proxy_url(
+                image.get("path", ""),
+                image.get("provider", "library"),
+                base,
+            )
+            if url:
+                resolved.append((image, url))
+        if not resolved:
+            return ""
         best = next(
-            (img for img in images if isinstance(img, dict)
-             and img.get("type") in ("thumb", "landscape", "poster")),
-            images[0],
+            (entry for entry in resolved
+             if entry[0].get("type") in ("thumb", "landscape", "poster")),
+            resolved[0],
         )
+        return best[1]
 
-        if isinstance(best, dict):
-            path     = best.get("path", "")
-            provider = best.get("provider", "library")
-            if path:
-                clean = urllib.parse.unquote(path)
-                if "tidal" in provider.lower() and not clean.endswith(".jpg"):
-                    clean = (
-                        clean + "x750.jpg" if clean.endswith("750")
-                        else clean.rstrip("/") + "/750x750.jpg"
-                    )
-                encoded = (
-                    urllib.parse.quote(urllib.parse.quote(clean, safe=''), safe='')
-                    if clean.startswith("http")
-                    else urllib.parse.quote(clean, safe='')
-                )
-                return f"{base}/imageproxy?path={encoded}&provider={provider}&size=256"
-        return ""
+    @staticmethod
+    def _is_non_artwork_media_path(value):
+        text = str(value or "").strip()
+        if not text:
+            return False
+        parsed = urllib.parse.urlparse(text)
+        if parsed.path.rstrip("/").endswith("/imageproxy"):
+            proxy_path = urllib.parse.parse_qs(parsed.query).get("path", [""])[0]
+            for _ in range(2):
+                decoded = urllib.parse.unquote(proxy_path)
+                if decoded == proxy_path:
+                    break
+                proxy_path = decoded
+            if proxy_path:
+                text = proxy_path
+                parsed = urllib.parse.urlparse(text)
+        path = str(parsed.path or text).split("?", 1)[0].lower()
+        return any(path.endswith(suffix) for suffix in NON_ARTWORK_MEDIA_SUFFIXES)
+
+    @staticmethod
+    def _image_proxy_url(path, provider, base):
+        clean = urllib.parse.unquote(str(path or "").strip())
+        if not clean or MassSource._is_non_artwork_media_path(clean):
+            return ""
+        provider = str(provider or "library").strip() or "library"
+        if "tidal" in provider.lower() and not clean.endswith(".jpg"):
+            clean = (
+                clean + "x750.jpg" if clean.endswith("750")
+                else clean.rstrip("/") + "/750x750.jpg"
+            )
+        if not base:
+            return clean if clean.startswith("http") else ""
+        encoded = (
+            urllib.parse.quote(urllib.parse.quote(clean, safe=''), safe='')
+            if clean.startswith("http")
+            else urllib.parse.quote(clean, safe='')
+        )
+        return f"{base}/imageproxy?path={encoded}&provider={provider}&size=256"
+
+    def _normalize_artwork_value(self, image_value, base=""):
+        if isinstance(image_value, str):
+            value = image_value.strip()
+            return "" if self._is_non_artwork_media_path(value) else value
+        if isinstance(image_value, list):
+            for candidate in image_value:
+                normalized = self._normalize_artwork_value(candidate, base)
+                if normalized:
+                    return normalized
+            return ""
+        if not isinstance(image_value, dict):
+            return ""
+
+        nested_direct = self._normalize_artwork_value(image_value.get("image"), base)
+        if nested_direct:
+            return nested_direct
+
+        for key in ("url", "src", "href"):
+            value = image_value.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+
+        path = image_value.get("path")
+        if isinstance(path, str) and path.strip():
+            return self._image_proxy_url(path, image_value.get("provider", "library"), base)
+
+        return self._get_img(image_value, base) if base else ""
 
     def _placeholder_art(self, title, subtitle=""):
         safe_title = html.escape((title or "Unknown")[:22])
@@ -1063,6 +1172,7 @@ class MassSource(SourceBase):
         return ""
 
     async def _cache_image_locally(self, image_url):
+        image_url = self._normalize_artwork_value(image_url, "")
         if not image_url or not image_url.startswith("http"):
             return image_url
 
@@ -1077,9 +1187,11 @@ class MassSource(SourceBase):
             os.makedirs(ART_CACHE_DIR, exist_ok=True)
             async with self._art_http_session.get(image_url) as response:
                 if response.status != 200:
-                    return image_url
+                    return ""
                 payload = await response.read()
                 content_type = response.headers.get("Content-Type", "")
+                if content_type and not content_type.lower().startswith("image/"):
+                    return ""
 
             cache_name = self._art_cache_name(image_url, content_type)
             cache_path = os.path.join(ART_CACHE_DIR, cache_name)
@@ -1508,6 +1620,7 @@ class MassSource(SourceBase):
                     artist=resolved_artist,
                     album=self._get_album_name(track, album_name),
                     url=track.get("uri", ""),
+                    image=self._resolve_track_image(track, base),
                 ),
                 media_type="track",
                 item_id=track.get("item_id", ""),
@@ -1535,6 +1648,9 @@ class MassSource(SourceBase):
                 image=self._get_img(album, base),
                 url=album.get("uri", ""),
             )
+            album_year = self._extract_item_year(album)
+            if album_year:
+                album_node["year"] = album_year
             self._apply_media_identity(
                 album_node,
                 media_type="album",
@@ -1795,6 +1911,7 @@ class MassSource(SourceBase):
                                     artist=self._get_artist_name(t, a.get('name', '')),
                                     album=self._get_album_name(t, alb.get('name', '')),
                                     url=t.get('uri', ''),
+                                    image=self._resolve_track_image(t, base),
                                 ),
                                 media_type="track",
                                 item_id=t.get("item_id", ""),
@@ -1842,6 +1959,7 @@ class MassSource(SourceBase):
                                 artist=self._get_track_artist_for_album(a_name, t),
                                 album=self._get_album_name(t, alb.get('name', '')),
                                 url=t.get('uri', ''),
+                                image=self._resolve_track_image(t, base),
                             ),
                             media_type="track",
                             item_id=t.get("item_id", ""),
@@ -1866,6 +1984,7 @@ class MassSource(SourceBase):
                             artist=self._get_artist_name(s, ""),
                             album=self._get_album_name(s, ""),
                             url=s.get('uri', ''),
+                            image=self._resolve_track_image(s, base),
                         ),
                         media_type="track",
                         item_id=s.get("item_id", ""),
@@ -2000,10 +2119,9 @@ class MassSource(SourceBase):
             )
 
         async def _handle_now_playing(request):
-            for queue_id in await self._resolve_queue_candidates():
-                payload = await self._build_now_playing_payload(queue_id)
-                if payload:
-                    return web.json_response(payload, headers=self._cors_headers())
+            payload = await self._best_now_playing_payload()
+            if payload:
+                return web.json_response(payload, headers=self._cors_headers())
             return web.json_response(
                 {"state": "empty"},
                 headers=self._cors_headers(),
@@ -2028,7 +2146,8 @@ class MassSource(SourceBase):
             query = str(request.query.get("q") or "").strip()
             try:
                 limit = int(request.query.get("limit") or 8)
-                payload = await self._search_all_mass_providers(query, limit)
+                payload = await self._search_enabled_sources(query, limit,
+                    search_flag(request.query.get("youtube_music")), search_flag(request.query.get("youtube_videos")))
                 return web.json_response(payload, headers=self._cors_headers())
             except ValueError:
                 return web.json_response(
@@ -2053,11 +2172,18 @@ class MassSource(SourceBase):
                 )
             paused_player_id = ""
             try:
+                options = await request.json() if request.can_read_body else {}
+                music = search_flag(options.get("youtube_music"))
+                videos = search_flag(options.get("youtube_videos"))
                 paused_player_id = await self._pause_for_voice_capture()
                 transcript = await self._transcribe_microphone()
-                payload = await self._search_all_mass_providers(transcript)
+                payload = await self._search_enabled_sources(transcript, music=music, videos=videos)
                 payload["transcript"] = transcript
                 return web.json_response(payload, headers=self._cors_headers())
+            except (ValueError, TypeError) as exc:
+                return web.json_response(
+                    {"state": "error", "reason": "invalid_options", "message": "Search switches must be on or off."},
+                    status=400, headers=self._cors_headers())
             except VoiceSearchError as exc:
                 logger.warning("Voice search failed [%s]: %s", exc.code, exc)
                 status = 408 if exc.code in {"voice_timeout", "no_speech"} else 503
@@ -2069,14 +2195,504 @@ class MassSource(SourceBase):
             finally:
                 await self._resume_after_voice_capture(paused_player_id)
 
+        async def _handle_library_match(request):
+            try:
+                body = await request.json()
+            except (json.JSONDecodeError, TypeError):
+                body = {}
+            payload = self._match_library_album(
+                artist=body.get("artist", ""),
+                album=body.get("album", ""),
+                track_count=body.get("track_count", 0),
+            )
+            return web.json_response(payload, headers=self._cors_headers())
+
+        async def _handle_library_path(request):
+            path = await self._filesystem_library_path()
+            return web.json_response(
+                {"path": path, "provider": "filesystem_local"},
+                headers=self._cors_headers(),
+            )
+
+        async def _handle_library_refresh(request):
+            try:
+                body = await request.json()
+            except (json.JSONDecodeError, TypeError):
+                body = {}
+            result = await self._refresh_filesystem_library(
+                path=str(body.get("path") or "").strip()
+            )
+            return web.json_response(result, headers=self._cors_headers())
+
+        async def _handle_filesystem_queue(request):
+            try:
+                body = await request.json()
+            except (json.JSONDecodeError, TypeError):
+                body = {}
+            payload = await self._queue_filesystem_media(body)
+            status = 200 if payload.get("state") != "error" else 503
+            return web.json_response(payload, status=status, headers=self._cors_headers())
+
+        async def _handle_external_play(request):
+            body = await request.json()
+            payload = await self._play_external_media(body)
+            status = 200 if payload.get("state") != "error" else 503
+            return web.json_response(payload, status=status, headers=self._cors_headers())
+
+        async def _handle_external_control(request):
+            body = await request.json()
+            payload = await self._control_external_player(body)
+            status = 200 if payload.get("state") != "error" else 503
+            return web.json_response(payload, status=status, headers=self._cors_headers())
+
+        async def _handle_external_status(request):
+            target_player_id = str(request.query.get("target_player_id") or "").strip()
+            payload = await self._external_player_status(target_player_id)
+            return web.json_response(payload, headers=self._cors_headers())
+
         app.router.add_get('/playlists', _handle_playlists)
         app.router.add_get('/artist_bio', _handle_artist_bio)
         app.router.add_get('/now_playing', _handle_now_playing)
         app.router.add_get('/item_info', _handle_item_info)
         app.router.add_get('/art/{filename}', _handle_art)
+        async def _handle_search_options(request):
+            return web.json_response(self._youtube_search().options(), headers=self._cors_headers())
+
+        app.router.add_get('/search_options', _handle_search_options)
         app.router.add_get('/search', _handle_search)
         app.router.add_post('/voice_search', _handle_voice_search)
         app.router.add_options('/voice_search', self._handle_cors)
+        app.router.add_post('/library/match', _handle_library_match)
+        app.router.add_options('/library/match', self._handle_cors)
+        app.router.add_get('/library/path', _handle_library_path)
+        app.router.add_post('/library/refresh', _handle_library_refresh)
+        app.router.add_options('/library/refresh', self._handle_cors)
+        app.router.add_post('/filesystem/queue', _handle_filesystem_queue)
+        app.router.add_options('/filesystem/queue', self._handle_cors)
+        app.router.add_post('/external/play', _handle_external_play)
+        app.router.add_options('/external/play', self._handle_cors)
+        app.router.add_post('/external/control', _handle_external_control)
+        app.router.add_options('/external/control', self._handle_cors)
+        app.router.add_get('/external/status', _handle_external_status)
+
+    @staticmethod
+    def _match_text(value):
+        return re.sub(r"[^a-z0-9]+", " ", str(value or "").casefold()).strip()
+
+    def _match_library_album(self, *, artist, album, track_count=0):
+        requested_artist = self._match_text(artist)
+        requested_album = self._match_text(album)
+        try:
+            requested_tracks = max(0, int(track_count or 0))
+        except (TypeError, ValueError):
+            requested_tracks = 0
+        if not requested_album:
+            return {"match": "none", "matches": []}
+
+        matches = []
+        for item in self._library_root("albums").get("tracks") or []:
+            if not isinstance(item, dict):
+                continue
+            item_album = self._match_text(item.get("name"))
+            item_artist = self._match_text(item.get("artist"))
+            album_score = difflib.SequenceMatcher(None, requested_album, item_album).ratio()
+            artist_score = (
+                difflib.SequenceMatcher(None, requested_artist, item_artist).ratio()
+                if requested_artist and item_artist else 0.5
+            )
+            item_tracks = len(item.get("tracks") or [])
+            track_score = (
+                1.0 if requested_tracks and item_tracks == requested_tracks
+                else 0.75 if not requested_tracks or not item_tracks
+                else max(0.0, 1.0 - abs(requested_tracks - item_tracks) / max(requested_tracks, item_tracks))
+            )
+            combined = album_score * 0.62 + artist_score * 0.28 + track_score * 0.10
+            exact = (
+                requested_album == item_album
+                and (not requested_artist or requested_artist == item_artist)
+                and (not requested_tracks or not item_tracks or requested_tracks == item_tracks)
+            )
+            if exact or combined >= 0.76:
+                same_tracks = bool(
+                    requested_tracks and item_tracks and requested_tracks == item_tracks)
+                reason_parts = []
+                if album_score >= 0.96:
+                    reason_parts.append("same album title")
+                elif album_score >= 0.76:
+                    reason_parts.append("similar album title")
+                if requested_artist and item_artist:
+                    if artist_score >= 0.96:
+                        reason_parts.append("same artist")
+                    elif artist_score >= 0.76:
+                        reason_parts.append("similar artist")
+                if same_tracks:
+                    reason_parts.append("same track count")
+                elif requested_tracks and item_tracks:
+                    reason_parts.append(
+                        f"{item_tracks} library tracks vs {requested_tracks} on CD")
+                matches.append({
+                    "id": item.get("id") or "",
+                    "album": item.get("name") or "Unknown Album",
+                    "artist": item.get("artist") or "Unknown Artist",
+                    "year": str(item.get("year") or "").strip(),
+                    "image": str(item.get("image") or "").strip(),
+                    "track_count": item_tracks,
+                    "score": round(combined, 6),
+                    "score_percent": int(round(combined * 100)),
+                    "reason": ", ".join(reason_parts),
+                    "exact": exact,
+                })
+        matches.sort(key=lambda entry: (entry["exact"], entry["score"]), reverse=True)
+        if any(entry["exact"] for entry in matches):
+            match_type = "exact"
+        elif matches:
+            match_type = "similar"
+        else:
+            match_type = "none"
+        return {"match": match_type, "matches": matches[:5]}
+
+    async def _filesystem_providers(self):
+        """Return configured local-filesystem instances and their mounted roots."""
+        providers = await self.send_command("config/providers")
+        provider_items = providers.get("items", []) if isinstance(providers, dict) else (
+            providers if isinstance(providers, list) else []
+        )
+        result = []
+        for provider in provider_items:
+            if not isinstance(provider, dict) or provider.get("domain") != "filesystem_local":
+                continue
+            instance_id = str(provider.get("instance_id") or "").strip()
+            if not instance_id:
+                continue
+            details = await self.send_command("config/providers/get", instance_id=instance_id)
+            values = details.get("values", {}) if isinstance(details, dict) else {}
+            path_entry = values.get("path", {}) if isinstance(values, dict) else {}
+            path = path_entry.get("value") if isinstance(path_entry, dict) else path_entry
+            if str(path or "").strip():
+                result.append({
+                    "instance_id": instance_id,
+                    "path": os.path.realpath(os.path.abspath(str(path).strip())),
+                })
+        return result
+
+    async def _filesystem_library_path(self):
+        providers = await self._filesystem_providers()
+        if providers:
+            return providers[0]["path"]
+        return "/media/local/music"
+
+    @staticmethod
+    def _path_within_root(path, root):
+        try:
+            return os.path.commonpath((path, root)) == root
+        except (OSError, ValueError):
+            return False
+
+    async def _filesystem_provider_for_path(self, path):
+        target = os.path.realpath(os.path.abspath(str(path or "").strip()))
+        matches = [
+            provider
+            for provider in await self._filesystem_providers()
+            if self._path_within_root(target, provider["path"])
+        ]
+        if not matches:
+            return None
+        # When providers overlap, use the narrowest matching root. We never
+        # create an overlapping CD-rips provider ourselves.
+        return max(matches, key=lambda provider: len(provider["path"]))
+
+    async def _refresh_filesystem_library(self, path=""):
+        providers = await self._filesystem_providers()
+        if path:
+            matched = await self._filesystem_provider_for_path(path)
+            providers = [matched] if matched else []
+        if not providers:
+            return {"state": "error", "reason": "filesystem_provider_not_found"}
+
+        # A completed album belongs to exactly one provider. Keep the sync
+        # provider-scoped; filesystem_local will checksum-gate unchanged files.
+        instance_id = providers[0]["instance_id"]
+        attempts = []
+        attempts.extend([
+            ("music/sync", {"provider_instance_id_or_domain": instance_id}),
+            ("music/providers/sync", {"provider_instance_id_or_domain": instance_id}),
+        ])
+        for command, kwargs in attempts:
+            response = await self._send_command_response(command, **kwargs)
+            if self._api_response_ok(response):
+                self._spawn(self.update_library_cache(), name="mass_post_rip_library_sync")
+                return {
+                    "state": "refreshing",
+                    "command": command,
+                    "provider_instance_id": instance_id,
+                }
+        return {
+            "state": "error",
+            "reason": "refresh_failed",
+            "provider_instance_id": instance_id,
+        }
+
+    async def _resolve_filesystem_track(self, file_path):
+        """Resolve one finalised FLAC through its native MASS provider."""
+        target = os.path.realpath(os.path.abspath(str(file_path or "").strip()))
+        if not target.lower().endswith(".flac") or not os.path.isfile(target):
+            return None, None, "file_not_ready"
+        provider = await self._filesystem_provider_for_path(target)
+        if not provider:
+            return None, None, "filesystem_provider_not_found"
+        relative_path = os.path.relpath(target, provider["path"]).replace(os.sep, "/")
+        track = await self.send_command(
+            "music/tracks/get",
+            item_id=relative_path,
+            provider_instance_id_or_domain=provider["instance_id"],
+        )
+        if not isinstance(track, dict) or track.get("media_type") != "track":
+            return None, None, "track_resolution_failed"
+        return track, provider, ""
+
+    async def _queue_filesystem_media(self, data):
+        """Queue finalised ripped files without proxying their audio through BS5c."""
+        target_player_id = str(
+            data.get("target_player_id") or data.get("audio_target_id") or ""
+        ).strip()
+        paths = data.get("paths") or ([data.get("path")] if data.get("path") else [])
+        paths = [str(path).strip() for path in paths if str(path or "").strip()]
+        option = str(data.get("option") or "add").strip().lower()
+        start_playback = bool(data.get("start_playback"))
+        if start_playback:
+            option = "replace"
+        elif option not in {"add", "next", "replace_next"}:
+            option = "add"
+        if not target_player_id:
+            return {"state": "error", "reason": "missing_target_player"}
+        if not paths:
+            return {"state": "error", "reason": "missing_media"}
+
+        tracks = []
+        queued_items = []
+        provider_instance_id = ""
+        for path in paths:
+            track, provider, reason = await self._resolve_filesystem_track(path)
+            if not track:
+                return {
+                    "state": "error",
+                    "reason": reason,
+                    "path": path,
+                    "queued_items": queued_items,
+                }
+            tracks.append(track)
+            provider_instance_id = provider["instance_id"]
+            queued_items.append({
+                "path": os.path.realpath(os.path.abspath(path)),
+                "uri": str(track.get("uri") or "").strip(),
+            })
+
+        for queue_id in await self._queue_candidates_for_target(target_player_id):
+            response = await self._send_command_response(
+                "player_queues/play_media",
+                queue_id=queue_id,
+                media=tracks,
+                option=option,
+                radio_mode=False,
+            )
+            if not self._api_response_ok(response):
+                continue
+            if start_playback:
+                await self._kick_player_transport(queue_id)
+            return {
+                "state": "playing" if start_playback else "queued",
+                "target_player_id": target_player_id,
+                "queue_id": queue_id,
+                "items": len(tracks),
+                "queued_items": queued_items,
+                "provider_instance_id": provider_instance_id,
+            }
+        return {
+            "state": "error",
+            "reason": "queue_failed",
+            "target_player_id": target_player_id,
+            "queued_items": [],
+        }
+
+    async def _play_external_media(self, data):
+        target_player_id = str(
+            data.get("target_player_id") or data.get("audio_target_id") or ""
+        ).strip()
+        urls = data.get("urls") or ([data.get("url")] if data.get("url") else [])
+        urls = [str(url).strip() for url in urls if str(url or "").strip()]
+        if not target_player_id:
+            return {"state": "error", "reason": "missing_target_player"}
+        if not urls:
+            return {"state": "error", "reason": "missing_media"}
+
+        media = urls
+        if len(urls) == 1 and any(
+            str(data.get(field) or "").strip()
+            for field in ("title", "artist", "album", "image_url")
+        ):
+            url = urls[0]
+            title = str(data.get("title") or "Audio CD").strip()
+            artist = str(data.get("artist") or "Unknown Artist").strip()
+            album = str(data.get("album") or "Audio CD").strip()
+            image_url = str(data.get("image_url") or "").strip()
+            content_type = str(data.get("content_type") or "wav").strip().lower()
+            try:
+                duration = max(0, int(round(float(data.get("duration") or 0))))
+            except (TypeError, ValueError):
+                duration = 0
+            try:
+                track_number = max(0, int(data.get("track_number") or 0))
+            except (TypeError, ValueError):
+                track_number = 0
+            try:
+                year = int(data.get("year") or 0) or None
+            except (TypeError, ValueError):
+                year = None
+
+            artist_mapping = {
+                "media_type": "artist",
+                "item_id": artist,
+                "provider": "builtin",
+                "name": artist,
+                "available": True,
+            }
+            album_mapping = {
+                "media_type": "album",
+                "item_id": str(data.get("release_id") or data.get("disc_id") or album),
+                "provider": "builtin",
+                "name": album,
+                "available": True,
+                "year": year,
+            }
+            metadata = {}
+            if image_url:
+                metadata["images"] = [{
+                    "type": "thumb",
+                    "path": image_url,
+                    "provider": "builtin",
+                    "remotely_accessible": image_url.startswith(("http://", "https://")),
+                }]
+            media = [{
+                "media_type": "track",
+                "item_id": url,
+                "provider": "builtin",
+                "name": title,
+                "duration": duration,
+                "artists": [artist_mapping],
+                "album": album_mapping,
+                "disc_number": 1,
+                "track_number": track_number,
+                "metadata": metadata,
+                "provider_mappings": [{
+                    "item_id": url,
+                    "provider_domain": "builtin",
+                    "provider_instance": "builtin",
+                    "available": True,
+                    "audio_format": {
+                        "content_type": content_type,
+                        "sample_rate": 44100,
+                        "bit_depth": 16,
+                        "channels": 2,
+                        "bit_rate": 1411,
+                    },
+                }],
+            }]
+
+        # Never fall through to another room: the CD source must obey the
+        # router's selected playback target even when that target is offline.
+        queue_candidates = await self._queue_candidates_for_target(target_player_id)
+        for queue_id in queue_candidates:
+            response = await self._send_command_response(
+                "player_queues/play_media",
+                queue_id=queue_id,
+                media=media,
+                option="replace",
+                radio_mode=False,
+            )
+            if not self._api_response_ok(response):
+                logger.warning(
+                    "MASS external play rejected queue=%s target=%s media=%s response=%r",
+                    queue_id,
+                    target_player_id,
+                    media,
+                    response,
+                )
+                continue
+            await self._kick_player_transport(queue_id)
+            return {
+                "state": "playing",
+                "target_player_id": target_player_id,
+                "queue_id": queue_id,
+                "items": len(urls),
+            }
+        return {"state": "error", "reason": "play_failed", "target_player_id": target_player_id}
+
+    async def _queue_candidates_for_target(self, target_player_id):
+        candidates = []
+
+        def add(value):
+            value = str(value or "").strip()
+            if value and value not in candidates:
+                candidates.append(value)
+
+        active = await self.send_command(
+            "player_queues/get_active_queue",
+            player_id=target_player_id,
+        )
+        if isinstance(active, dict):
+            add(active.get("queue_id") or active.get("player_id") or active.get("id"))
+        add(target_player_id)
+        return candidates
+
+    async def _control_external_player(self, data):
+        target_player_id = str(
+            data.get("target_player_id") or data.get("audio_target_id") or ""
+        ).strip()
+        action = str(data.get("action") or "").strip().lower()
+        if not target_player_id or action not in {"play", "pause", "next", "previous", "stop"}:
+            return {"state": "error", "reason": "invalid_control"}
+        queue_commands = {
+            "play": "player_queues/resume",
+            "pause": "player_queues/pause",
+            "next": "player_queues/next",
+            "previous": "player_queues/previous",
+            "stop": "player_queues/stop",
+        }
+        player_commands = {
+            "play": "players/cmd/play",
+            "pause": "players/cmd/pause",
+            "next": "players/cmd/next",
+            "previous": "players/cmd/previous",
+            "stop": "players/cmd/stop",
+        }
+        attempts = [
+            (queue_commands[action], {"queue_id": queue_id})
+            for queue_id in await self._queue_candidates_for_target(target_player_id)
+        ]
+        attempts.append((player_commands[action], {"player_id": target_player_id}))
+        for command, kwargs in attempts:
+            response = await self._send_command_response(command, **kwargs)
+            if self._api_response_ok(response):
+                state = "paused" if action == "pause" else "stopped" if action == "stop" else "playing"
+                return {"state": state, "action": action, "command": command}
+        return {"state": "error", "reason": "control_failed", "action": action}
+
+    async def _external_player_status(self, target_player_id):
+        if not target_player_id:
+            return {"state": "idle", "current_uri": "", "target_player_id": ""}
+        snapshot = await self._get_queue_snapshot(target_player_id)
+        player = await self._get_player_state(target_player_id)
+        current_item = self._extract_current_queue_item(snapshot)
+        current_uri = self._extract_queue_uri(current_item)
+        if not current_uri:
+            current_uri = self._extract_player_current_uri(player)
+        state = self._extract_playback_state(player) or self._extract_playback_state(snapshot) or "idle"
+        return {
+            "state": state,
+            "current_uri": current_uri,
+            "target_player_id": target_player_id,
+            "queue_id": str(snapshot.get("resolved_queue_id") or target_player_id).strip(),
+        }
 
     def _library_root(self, root_id):
         for node in self._library_data or []:
@@ -2101,6 +2717,44 @@ class MassSource(SourceBase):
             {"id": target["id"], "name": target.get("name") or target["id"]}
             for target in get_audio_targets()
         ]
+
+    async def _available_transfer_targets(self):
+        """Return live MASS players, preserving configured order where possible."""
+        configured = self._configured_transfer_targets()
+        players = await self.send_command("players/all")
+        player_items = players.get("items", []) if isinstance(players, dict) else (
+            players if isinstance(players, list) else []
+        )
+        discovered = {}
+        for player in player_items:
+            if not isinstance(player, dict):
+                continue
+            player_id = str(player.get("player_id") or player.get("id") or "").strip()
+            if not player_id or player.get("enabled") is False or player.get("available") is False:
+                continue
+            name = str(
+                player.get("name")
+                or player.get("display_name")
+                or player.get("provider_name")
+                or player_id
+            ).strip()
+            discovered[player_id] = {"id": player_id, "name": name or player_id}
+
+        if not discovered:
+            return configured
+
+        ordered = []
+        seen = set()
+        for target in configured:
+            player_id = str(target.get("id") or "").strip()
+            if player_id in discovered and player_id not in seen:
+                ordered.append(discovered[player_id])
+                seen.add(player_id)
+        for target in sorted(discovered.values(), key=lambda item: item["name"].casefold()):
+            if target["id"] not in seen:
+                ordered.append(target)
+                seen.add(target["id"])
+        return ordered
 
     async def _build_queue_status(self):
         for queue_id in await self._resolve_queue_candidates():
@@ -2145,7 +2799,7 @@ class MassSource(SourceBase):
                 },
                 "library": self._build_library_status(),
                 "queue": await self._build_queue_status(),
-                "transfer_targets": self._configured_transfer_targets(),
+                "transfer_targets": await self._available_transfer_targets(),
                 "voice_search": self._voice_search_status(),
             }
         )
@@ -2827,6 +3481,7 @@ class MassSource(SourceBase):
                     id_=f"{LOCAL_QUEUE_ITEM_PREFIX}{index}",
                     name=str(entry.get("title") or f"Queue Item {index + 1}"),
                     artist=artist,
+                    album=str(entry.get("album") or "").strip(),
                     url=str(entry.get("source_uri") or "").strip(),
                     image=str(entry.get("artwork") or "").strip(),
                 )
@@ -3105,6 +3760,9 @@ class MassSource(SourceBase):
         return candidates
 
     async def _resolve_media_candidates(self, uri):
+        youtube_item = await self._youtube_search().audio_item(uri, self.send_command)
+        if youtube_item:
+            return [youtube_item]
         candidates = [[uri]]
         item = await self.send_command("music/item_by_uri", uri=uri)
         if item:
@@ -3141,6 +3799,14 @@ class MassSource(SourceBase):
         if isinstance(current_item, dict) and current_item:
             return True
         return bool(MassSource._extract_queue_items(payload))
+
+    @staticmethod
+    def _snapshot_can_present_now_playing(payload):
+        if not isinstance(payload, dict):
+            return False
+        if MassSource._snapshot_has_loaded_media(payload):
+            return True
+        return MassSource._extract_queue_size(payload) > 0
 
     @staticmethod
     def _extract_progress_marker(payload):
@@ -3688,7 +4354,9 @@ class MassSource(SourceBase):
         if not uri_text:
             return {"state": "error", "error": "missing_uri"}
 
-        item = await self.send_command("music/item_by_uri", uri=uri_text)
+        item = await self._youtube_search().audio_item(uri_text, self.send_command)
+        if item is None:
+            item = await self.send_command("music/item_by_uri", uri=uri_text)
         if not isinstance(item, dict):
             return {"state": "error", "error": "item_not_found", "uri": uri_text}
 
@@ -3838,7 +4506,7 @@ class MassSource(SourceBase):
         current_media = self._extract_player_current_media(payload)
         media_item = current_media.get("media_item") if isinstance(current_media.get("media_item"), dict) else {}
         artwork = (
-            current_media.get("image")
+            self._normalize_artwork_value(current_media.get("image"), base)
             or self._get_img(current_media, base)
             or self._get_img(media_item, base)
             or ""
@@ -3941,6 +4609,103 @@ class MassSource(SourceBase):
             artwork = await self._cache_image_locally(artwork)
         return artwork
 
+    async def _refresh_preferred_player_from_router(self):
+        """Adopt the system playback target before inspecting MASS queues."""
+        if not self._art_http_session or self._art_http_session.closed:
+            return self._preferred_player_id
+        try:
+            async with self._art_http_session.get(
+                ROUTER_PLAYBACK_URL,
+                timeout=ClientTimeout(total=2),
+            ) as response:
+                if response.status != 200:
+                    return self._preferred_player_id
+                data = await response.json(content_type=None)
+        except Exception as exc:
+            logger.debug("Unable to read router playback target: %s", exc)
+            return self._preferred_player_id
+        target = str((data or {}).get("audio_target_id") or "").strip()
+        if target:
+            self._preferred_player_id = target
+        return self._preferred_player_id
+
+    async def _best_now_playing_payload(self):
+        """Prefer the targeted active queue; keep idle data only as fallback."""
+        await self._refresh_preferred_player_from_router()
+        idle_fallback = None
+        loaded_fallback = None
+        for queue_id in await self._resolve_queue_candidates():
+            payload = await self._build_now_playing_payload(queue_id)
+            if not isinstance(payload, dict):
+                continue
+            has_identity = bool(
+                str(payload.get("title") or "").strip()
+                or str(payload.get("uri") or "").strip()
+            )
+            if self._is_active_state(payload.get("state")) and has_identity:
+                return payload
+            if has_identity and loaded_fallback is None:
+                loaded_fallback = payload
+            if idle_fallback is None:
+                idle_fallback = payload
+        return loaded_fallback or idle_fallback
+
+    async def _remote_metadata_monitor_loop(self):
+        """Publish external/automatic MASS queue changes to the router.
+
+        MASS WebSocket events are not command responses and were previously
+        ignored by this service.  A small read-only monitor closes that gap,
+        including automatic queue advancement initiated by another client.
+        It never powers a player on and emits only when item/state changes.
+        """
+        while True:
+            try:
+                if not self._connected or self._local_queue_active:
+                    await asyncio.sleep(1.0)
+                    continue
+                payload = await self._best_now_playing_payload()
+                if not isinstance(payload, dict):
+                    await asyncio.sleep(2.0)
+                    continue
+                state = str(payload.get("state") or "").strip().lower()
+                register_state = "paused" if state == "paused" else (
+                    "playing" if self._is_active_state(state) else "available"
+                )
+                signature = (
+                    str(payload.get("queue_id") or ""),
+                    str(payload.get("uri") or ""),
+                    str(payload.get("title") or ""),
+                    str(payload.get("artist") or ""),
+                    str(payload.get("album") or ""),
+                    str(payload.get("artwork") or ""),
+                    register_state,
+                )
+                if signature != self._remote_metadata_signature:
+                    previous = self._remote_metadata_signature
+                    self._remote_metadata_signature = signature
+                    await self.register(register_state, auto_power=False)
+                    if register_state in {"playing", "paused"} and payload.get("title"):
+                        reason = "track_change" if not previous or signature[1:3] != previous[1:3] else "state_change"
+                        await self.post_media_update(
+                            title=str(payload.get("title") or "").strip(),
+                            artist=str(payload.get("artist") or "").strip(),
+                            album=str(payload.get("album") or "").strip(),
+                            artwork=str(payload.get("artwork") or "").strip(),
+                            state=register_state,
+                            reason=reason,
+                            track_uri=str(payload.get("uri") or "").strip(),
+                        )
+                        logger.info(
+                            "MASS metadata monitor published queue=%s title=%r state=%s",
+                            payload.get("queue_id", ""), payload.get("title", ""), register_state,
+                        )
+                await asyncio.sleep(2.0)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.debug("MASS metadata monitor error: %s", exc)
+                await asyncio.sleep(2.0)
+
     async def _build_now_playing_payload(self, queue_id):
         if self._local_queue_active:
             return await self._build_local_now_playing_payload()
@@ -3949,6 +4714,9 @@ class MassSource(SourceBase):
             return None
 
         resolved_queue_id = str(snapshot.get("resolved_queue_id") or queue_id).strip()
+        state = self._extract_playback_state(snapshot) or "idle"
+        if not self._snapshot_can_present_now_playing(snapshot) and not self._is_active_state(state):
+            return {"state": state, "queue_id": resolved_queue_id}
         base = MASS_URI.replace("/ws", "").replace("ws://", "http://").replace("wss://", "https://")
         for player_id in await self._resolve_player_candidates(resolved_queue_id or queue_id):
             player_state = await self._get_player_state(player_id)
@@ -3966,7 +4734,11 @@ class MassSource(SourceBase):
                         queue_uri = self._extract_queue_uri(current_item)
                         if not current_uri or queue_uri == current_uri:
                             media_item = current_item.get("media_item") if isinstance(current_item.get("media_item"), dict) else {}
-                            artwork = current_item.get("image") or self._get_img(media_item, base) or ""
+                            artwork = (
+                                self._normalize_artwork_value(current_item.get("image"), base)
+                                or self._get_img(media_item, base)
+                                or ""
+                            )
                             if artwork:
                                 artwork = await self._cache_image_locally(artwork)
                 return {
@@ -3981,12 +4753,15 @@ class MassSource(SourceBase):
                 }
 
         current_item = self._extract_current_queue_item(snapshot)
-        state = self._extract_playback_state(snapshot) or "idle"
         if not current_item:
             return {"state": state, "queue_id": resolved_queue_id}
 
         media_item = current_item.get("media_item") if isinstance(current_item.get("media_item"), dict) else {}
-        artwork = current_item.get("image") or self._get_img(media_item, base) or ""
+        artwork = (
+            self._normalize_artwork_value(current_item.get("image"), base)
+            or self._get_img(media_item, base)
+            or ""
+        )
         if artwork:
             artwork = await self._cache_image_locally(artwork)
 
@@ -4005,6 +4780,7 @@ class MassSource(SourceBase):
             local_queue = self._build_local_queue_root()
             if local_queue:
                 return local_queue
+        await self._refresh_preferred_player_from_router()
         base = MASS_URI.replace("/ws", "").replace("ws://", "http://").replace("wss://", "https://")
         queue_ids = await self._resolve_queue_candidates()
         if not queue_ids:
@@ -4014,11 +4790,16 @@ class MassSource(SourceBase):
         queue_id = ""
         for candidate in queue_ids:
             candidate_snapshot = await self._get_queue_snapshot(candidate)
-            if candidate_snapshot:
+            if not candidate_snapshot:
+                continue
+            has_items = bool(self._extract_queue_items(candidate_snapshot))
+            if not snapshot or (has_items and not self._extract_queue_items(snapshot)):
                 snapshot = candidate_snapshot
                 queue_id = str(candidate_snapshot.get("resolved_queue_id") or candidate).strip()
-                if self._extract_queue_items(candidate_snapshot):
-                    break
+            if has_items and self._is_active_state(self._extract_playback_state(candidate_snapshot)):
+                snapshot = candidate_snapshot
+                queue_id = str(candidate_snapshot.get("resolved_queue_id") or candidate).strip()
+                break
 
         queue_items = self._extract_queue_items(snapshot)
         if not queue_items:
@@ -4060,7 +4841,11 @@ class MassSource(SourceBase):
             uri = self._extract_queue_uri(item)
 
             artist = self._extract_queue_artist(item)
-            image = item.get("image") or self._get_img(media_item, base) or ""
+            image = (
+                self._normalize_artwork_value(item.get("image"), base)
+                or self._get_img(media_item, base)
+                or ""
+            )
             if isinstance(image, str) and image.startswith("http"):
                 # Queue requests must stay fast enough for the router timeout;
                 # reuse cached artwork when available but never block on a
@@ -4070,6 +4855,7 @@ class MassSource(SourceBase):
                     image = f"{ART_ROUTE_PREFIX}/{cached_name}"
 
             name = self._extract_queue_name(item, f"Queue Item {index + 1}")
+            album = self._extract_queue_album(item)
             marker = self._extract_queue_item_marker(item, index)
             is_current = bool(current_marker and marker and marker == current_marker)
             if not is_current and current_index == index:
@@ -4083,6 +4869,7 @@ class MassSource(SourceBase):
                     id_=f"queue_item_{queue_item_id}",
                     name=name,
                     artist=artist,
+                    album=album,
                     url=uri,
                     image=image,
                 )
@@ -4093,6 +4880,19 @@ class MassSource(SourceBase):
 
         self._finalize_node(queue_node)
         queue_node["queue_id"] = queue_id
+        queue_node["player_id"] = queue_id
+        queue_name = str(
+            snapshot.get("display_name")
+            or snapshot.get("name")
+            or snapshot.get("queue_name")
+            or ""
+        ).strip()
+        for target in await self._available_transfer_targets():
+            if str(target.get("id") or "").strip() == queue_id:
+                queue_name = str(target.get("name") or queue_name or queue_id).strip()
+                break
+        queue_node["queue_name"] = queue_name or queue_id
+        queue_node["state"] = self._extract_playback_state(snapshot) or "idle"
         queue_node["current_index"] = resolved_current_index
         return queue_node
 
@@ -4137,11 +4937,16 @@ class MassSource(SourceBase):
                 "current": current or index == current_index,
             })
 
+        player_id = str(queue_node.get("player_id") or queue_node.get("queue_id") or "").strip()
+        await self._sync_router_audio_target(player_id)
         return {
             "tracks": tracks,
             "current_index": current_index,
             "total": len(all_tracks),
             "queue_id": queue_node.get("queue_id", ""),
+            "player_id": queue_node.get("player_id", queue_node.get("queue_id", "")),
+            "queue_name": queue_node.get("queue_name", queue_node.get("queue_id", "")),
+            "state": queue_node.get("state", "idle"),
         }
 
     def _queue_has_progressed(self, before, after):
@@ -4368,6 +5173,16 @@ class MassSource(SourceBase):
         return target_player_id
 
     @staticmethod
+    def _explicit_queue_id(data):
+        if not isinstance(data, dict):
+            return ""
+        return str(
+            data.get("source_queue_id")
+            or data.get("queue_id")
+            or ""
+        ).strip()
+
+    @staticmethod
     def _clean_queue_item_id(value):
         text = str(value or "").strip()
         if text.startswith("queue_item_"):
@@ -4383,7 +5198,9 @@ class MassSource(SourceBase):
             requested_index = int(raw_index)
         except (TypeError, ValueError):
             requested_index = -1
-        for queue_id in await self._resolve_queue_candidates():
+        explicit_queue_id = self._explicit_queue_id(data)
+        queue_candidates = [explicit_queue_id] if explicit_queue_id else await self._resolve_queue_candidates()
+        for queue_id in queue_candidates:
             snapshot = await self._get_queue_snapshot(queue_id)
             items = self._extract_queue_items(snapshot)
             for index, item in enumerate(items):
@@ -4392,27 +5209,106 @@ class MassSource(SourceBase):
                     return str(snapshot.get("resolved_queue_id") or queue_id).strip(), item, index, snapshot
         return "", {}, -1, {}
 
+    def _queue_item_index(self, snapshot, queue_item_id):
+        queue_item_id = self._clean_queue_item_id(queue_item_id)
+        for index, item in enumerate(self._extract_queue_items(snapshot)):
+            marker = self._clean_queue_item_id(self._extract_queue_item_marker(item, index))
+            if marker == queue_item_id:
+                return index
+        return -1
+
+    async def _wait_for_queue_item_state(
+        self,
+        queue_id,
+        queue_item_id,
+        *,
+        expected_index=None,
+        absent=False,
+        current=False,
+        attempts=6,
+    ):
+        """Wait briefly for MASS to publish the result of a queue command."""
+        snapshot = {}
+        index = -1
+        for attempt in range(max(1, attempts)):
+            if attempt:
+                await asyncio.sleep(0.15)
+            snapshot = await self._get_queue_snapshot(queue_id)
+            index = self._queue_item_index(snapshot, queue_item_id)
+            has_item_listing = "items" in snapshot or "queue_items" in snapshot
+            matched = index < 0 and has_item_listing if absent else index >= 0
+            if matched and expected_index is not None:
+                matched = index == expected_index
+            if matched and current:
+                current_item = self._extract_current_queue_item(snapshot)
+                current_marker = self._clean_queue_item_id(
+                    self._extract_queue_item_marker(current_item, index)
+                )
+                try:
+                    current_index = int(snapshot.get("current_index"))
+                except (TypeError, ValueError):
+                    current_index = -1
+                matched = current_marker == self._clean_queue_item_id(queue_item_id)
+                if not matched and index >= 0:
+                    matched = current_index == index
+                if matched:
+                    matched = self._extract_playback_state(snapshot).lower() in ACTIVE_PLAYBACK_STATES
+            if matched:
+                return index, snapshot, True
+        return index, snapshot, False
+
+    async def _handle_clear_queue_command(self, data):
+        explicit_queue_id = self._explicit_queue_id(data)
+        queue_candidates = [explicit_queue_id] if explicit_queue_id else await self._resolve_queue_candidates()
+        for candidate in queue_candidates:
+            snapshot = await self._get_queue_snapshot(candidate)
+            if not isinstance(snapshot, dict):
+                continue
+            queue_id = str(snapshot.get("resolved_queue_id") or candidate).strip()
+            if not queue_id:
+                continue
+            response = await self._send_command_response(
+                "player_queues/clear",
+                queue_id=queue_id,
+            )
+            if self._api_response_ok(response):
+                return {
+                    "state": "cleared",
+                    "queue_id": queue_id,
+                    "command": "player_queues/clear",
+                }
+        return {"state": "error", "reason": "clear_failed"}
+
     async def _handle_queue_remove_command(self, data):
         queue_id, item, index, _snapshot = await self._resolve_queue_command_item(data)
         if not queue_id or not item:
             return {"state": "error", "reason": "queue_item_not_found"}
         queue_item_id = self._clean_queue_item_id(self._extract_queue_item_marker(item, index))
+        # MASS 2.8 calls this argument item_id_or_index. Older argument names can
+        # return a successful response without mutating the queue, so verify the
+        # item has actually disappeared before reporting success.
         attempts = [
-            ("player_queues/delete_item", {"queue_id": queue_id, "queue_item_id": queue_item_id}),
-            ("player_queues/remove_item", {"queue_id": queue_id, "queue_item_id": queue_item_id}),
-            ("player_queues/delete_item", {"queue_id": queue_id, "item_id": queue_item_id}),
-            ("player_queues/remove_item", {"queue_id": queue_id, "item_id": queue_item_id}),
+            {"queue_id": queue_id, "item_id_or_index": queue_item_id},
+            {"queue_id": queue_id, "item_id_or_index": index},
         ]
-        for command, kwargs in attempts:
-            response = await self._send_command_response(command, **kwargs)
+        for kwargs in attempts:
+            response = await self._send_command_response("player_queues/delete_item", **kwargs)
             if self._api_response_ok(response):
-                return {
-                    "state": "removed",
-                    "queue_id": queue_id,
-                    "queue_item_id": queue_item_id,
-                    "index": index,
-                    "command": command,
-                }
+                updated_index, _updated_snapshot, removed = await self._wait_for_queue_item_state(
+                    queue_id,
+                    queue_item_id,
+                    absent=True,
+                )
+                if removed:
+                    logger.info("MASS queue item removed queue=%s item=%s", queue_id, queue_item_id)
+                    return {
+                        "state": "removed",
+                        "queue_id": queue_id,
+                        "queue_item_id": queue_item_id,
+                        "index": index,
+                        "command": "player_queues/delete_item",
+                    }
+        logger.warning("MASS queue remove did not change queue=%s item=%s", queue_id, queue_item_id)
         return {"state": "error", "reason": "remove_failed", "queue_item_id": queue_item_id}
 
     async def _handle_queue_play_next_command(self, data):
@@ -4420,32 +5316,59 @@ class MassSource(SourceBase):
         if not queue_id or not item:
             return {"state": "error", "reason": "queue_item_not_found"}
         queue_item_id = self._clean_queue_item_id(self._extract_queue_item_marker(item, index))
-        current_index = snapshot.get("current_index")
-        try:
-            current_index = int(current_index)
-        except (TypeError, ValueError):
-            current_index = -1
-        target_index = max(0, current_index + 1) if current_index >= 0 else 0
-        if index <= target_index and current_index >= 0:
-            target_index = max(0, current_index)
+        protected_index = -1
+        for value in (snapshot.get("current_index"), snapshot.get("index_in_buffer")):
+            try:
+                protected_index = max(protected_index, int(value))
+            except (TypeError, ValueError):
+                continue
+        target_index = max(0, protected_index + 1)
+        if index == target_index:
+            return {
+                "state": "unchanged",
+                "reason": "already_next",
+                "queue_id": queue_id,
+                "queue_item_id": queue_item_id,
+                "index": index,
+                "target_index": target_index,
+            }
+        if index <= protected_index:
+            return {
+                "state": "error",
+                "reason": "queue_item_already_buffered",
+                "queue_id": queue_id,
+                "queue_item_id": queue_item_id,
+                "index": index,
+            }
         pos_shift = target_index - index
-        attempts = [
-            ("player_queues/move_item", {"queue_id": queue_id, "queue_item_id": queue_item_id, "pos_shift": pos_shift}),
-            ("player_queues/move_item", {"queue_id": queue_id, "queue_item_id": queue_item_id, "position": target_index}),
-            ("player_queues/move_item", {"queue_id": queue_id, "item_id": queue_item_id, "pos_shift": pos_shift}),
-            ("player_queues/move_item", {"queue_id": queue_id, "item_id": queue_item_id, "position": target_index}),
-        ]
-        for command, kwargs in attempts:
-            response = await self._send_command_response(command, **kwargs)
-            if self._api_response_ok(response):
+        response = await self._send_command_response(
+            "player_queues/move_item",
+            queue_id=queue_id,
+            queue_item_id=queue_item_id,
+            pos_shift=pos_shift,
+        )
+        if self._api_response_ok(response):
+            updated_index, _updated_snapshot, moved = await self._wait_for_queue_item_state(
+                queue_id,
+                queue_item_id,
+                expected_index=target_index,
+            )
+            if moved:
+                logger.info(
+                    "MASS queue item moved next queue=%s item=%s index=%s",
+                    queue_id,
+                    queue_item_id,
+                    target_index,
+                )
                 return {
                     "state": "moved",
                     "queue_id": queue_id,
                     "queue_item_id": queue_item_id,
                     "index": index,
                     "target_index": target_index,
-                    "command": command,
+                    "command": "player_queues/move_item",
                 }
+        logger.warning("MASS queue move did not reach target queue=%s item=%s", queue_id, queue_item_id)
         return {"state": "error", "reason": "move_failed", "queue_item_id": queue_item_id}
 
     async def _handle_queue_play_index_command(self, data):
@@ -4470,34 +5393,36 @@ class MassSource(SourceBase):
         if not queue_id or not item:
             return {"state": "error", "reason": "queue_item_not_found"}
         queue_item_id = self._clean_queue_item_id(self._extract_queue_item_marker(item, index))
-        attempts = [
-            ("player_queues/play_item", {"queue_id": queue_id, "queue_item_id": queue_item_id}),
-            ("player_queues/play_item", {"queue_id": queue_id, "item_id": queue_item_id}),
-            ("player_queues/play_index", {"queue_id": queue_id, "index": index}),
-            ("player_queues/resume", {"queue_id": queue_id, "queue_item_id": queue_item_id}),
-        ]
-        for command, kwargs in attempts:
-            response = await self._send_command_response(command, **kwargs)
+        # MASS accepts either an integer index or a queue-item id in the `index`
+        # argument. Use the stable id first so stale UI indexes cannot play the
+        # wrong item, then verify the active item before closing the overlay.
+        for requested_index in (queue_item_id, index):
+            response = await self._send_command_response(
+                "player_queues/play_index",
+                queue_id=queue_id,
+                index=requested_index,
+            )
             if self._api_response_ok(response):
-                await asyncio.sleep(0.25)
-                await self._publish_now_playing(queue_id, reason="queue_play", force_state="playing")
-                return {
-                    "state": "playing",
-                    "queue_id": queue_id,
-                    "index": index,
-                    "queue_item_id": queue_item_id,
-                    "command": command,
-                }
+                updated_index, _updated_snapshot, is_current = await self._wait_for_queue_item_state(
+                    queue_id,
+                    queue_item_id,
+                    current=True,
+                )
+                if is_current:
+                    await self._publish_now_playing(queue_id, reason="queue_play", force_state="playing")
+                    logger.info("MASS queue item playing queue=%s item=%s", queue_id, queue_item_id)
+                    return {
+                        "state": "playing",
+                        "queue_id": queue_id,
+                        "index": updated_index,
+                        "queue_item_id": queue_item_id,
+                        "command": "player_queues/play_index",
+                    }
 
-        uri = self._extract_queue_uri(item)
-        if uri:
-            fallback = dict(data)
-            fallback["url"] = uri
-            return await self.handle_command("play_now", fallback)
+        logger.warning("MASS queue play did not select queue=%s item=%s", queue_id, queue_item_id)
         return {"state": "error", "reason": "play_index_failed", "queue_item_id": queue_item_id}
 
     async def _handle_transfer_queue_command(self, data):
-        self._apply_playback_target_from_data(data)
         target_player_id = str(
             data.get("target_player_id")
             or data.get("player_id")
@@ -4508,10 +5433,12 @@ class MassSource(SourceBase):
         if not target_queue_id and not target_player_id:
             return {"state": "error", "reason": "missing_target_player"}
 
-        source_queue_id = ""
+        source_queue_id = str(data.get("source_queue_id") or "").strip()
         source_player_id = ""
         snapshot = {}
-        for queue_id in await self._resolve_queue_candidates():
+        queue_candidates = [source_queue_id] if source_queue_id else await self._resolve_queue_candidates()
+        source_queue_id = ""
+        for queue_id in queue_candidates:
             candidate = await self._get_queue_snapshot(queue_id)
             if not isinstance(candidate, dict):
                 continue
@@ -4529,60 +5456,26 @@ class MassSource(SourceBase):
 
         source_player_id = source_player_id or source_queue_id
         target_player_id = target_player_id or target_queue_id
+        if source_queue_id == target_queue_id:
+            self._preferred_player_id = target_player_id
+            await self._sync_router_audio_target(target_player_id)
+            return {
+                "state": "unchanged",
+                "reason": "already_on_target",
+                "source_queue_id": source_queue_id,
+                "source_player_id": source_player_id,
+                "target_player_id": target_player_id,
+                "target_queue_id": target_queue_id,
+            }
+
+        auto_play = data.get("auto_play") is not False
         attempts = [
             (
                 "player_queues/transfer",
                 {
                     "source_queue_id": source_queue_id,
                     "target_queue_id": target_queue_id,
-                },
-            ),
-            (
-                "player_queues/transfer",
-                {
-                    "source_queue_id": source_queue_id,
-                    "target_queue_id": target_queue_id,
-                    "auto_play": True,
-                },
-            ),
-            (
-                "player_queues/transfer_queue",
-                {
-                    "source_queue_id": source_queue_id,
-                    "target_player_id": target_player_id,
-                    "auto_play": True,
-                },
-            ),
-            (
-                "player_queues/transfer_queue",
-                {
-                    "queue_id": source_queue_id,
-                    "target_player_id": target_player_id,
-                    "auto_play": True,
-                },
-            ),
-            (
-                "player_queues/transfer_queue",
-                {
-                    "source_player_id": source_player_id,
-                    "target_player_id": target_player_id,
-                    "auto_play": True,
-                },
-            ),
-            (
-                "player_queues/transfer_queue",
-                {
-                    "source_queue_id": source_queue_id,
-                    "target_queue_id": target_player_id,
-                    "auto_play": True,
-                },
-            ),
-            (
-                "player_queues/transfer",
-                {
-                    "source_player_id": source_player_id,
-                    "target_player_id": target_player_id,
-                    "auto_play": True,
+                    "auto_play": auto_play,
                 },
             ),
         ]
@@ -4592,6 +5485,7 @@ class MassSource(SourceBase):
             response = await self._send_command_response(api_command, **kwargs)
             if self._api_response_ok(response):
                 self._preferred_player_id = target_player_id
+                await self._sync_router_audio_target(target_player_id)
                 await asyncio.sleep(0.35)
                 published = None
                 for queue_id in await self._resolve_queue_candidates():
@@ -4630,6 +5524,25 @@ class MassSource(SourceBase):
             "target_queue_id": target_queue_id,
         }
 
+    async def _sync_router_audio_target(self, player_id):
+        player_id = str(player_id or "").strip()
+        if not player_id or not self._art_http_session or self._art_http_session.closed:
+            return False
+        try:
+            async with self._art_http_session.post(
+                ROUTER_PLAYBACK_URL,
+                json={
+                    "audio_target_id": player_id,
+                    "audio_targets": await self._available_transfer_targets(),
+                    "queue_sync": True,
+                },
+                timeout=ClientTimeout(total=3),
+            ) as response:
+                return response.status == 200
+        except Exception as exc:
+            logger.debug("Unable to sync active MASS queue to router: %s", exc)
+            return False
+
     async def _kick_player_transport(self, queue_id):
         kicked = False
 
@@ -4653,22 +5566,49 @@ class MassSource(SourceBase):
         return kicked
 
     async def handle_command(self, cmd, data) -> dict:
+        uri = self._resolve_command_url(data)
+        if cmd == "save_channel_podcast":
+            try:
+                return await self._youtube_search().save_channel_podcast(data.get("channel_url", ""), self.send_command)
+            except Exception as exc:
+                logger.warning("YouTube podcast subscription failed (%s)", type(exc).__name__)
+                return {"state": "error", "reason": "podcast_save_failed", "message": "Check the bridge and MA admin permissions"}
+        if VIDEO_URI.fullmatch(str(uri)):
+            if cmd not in {"play_item", "play_now"}:
+                return {"state": "error", "reason": "video_action_unsupported"}
+            try:
+                return await self._youtube_search().play_video(uri)
+            except Exception as exc:
+                logger.warning("Frame YouTube request failed (%s)", type(exc).__name__)
+                return {"state": "error", "reason": "frame_youtube_failed"}
         source_switch_stop = cmd == "transport_stop" and str(data.get("action") or "").strip().lower() == "stop"
-        if not source_switch_stop:
-            self._apply_playback_target_from_data(data)
         if cmd in {"transport_toggle", "transport_stop", "transport_next", "transport_previous"}:
+            if not source_switch_stop:
+                self._apply_playback_target_from_data(data)
             return await self._handle_transport_command(
                 cmd,
                 preferred_player="" if source_switch_stop else None,
             )
         if cmd == "transfer_queue":
             return await self._handle_transfer_queue_command(data)
+        if cmd == "clear_queue":
+            return await self._handle_clear_queue_command(data)
         if cmd == "queue_remove":
             return await self._handle_queue_remove_command(data)
         if cmd == "queue_play_next":
             return await self._handle_queue_play_next_command(data)
         if cmd == "play_index":
             return await self._handle_queue_play_index_command(data)
+        if cmd == "set_playback_target":
+            player_id = self._apply_playback_target_from_data(data)
+            return {
+                "state": "target_selected" if player_id else "error",
+                "player_id": player_id,
+                "reason": "" if player_id else "missing_target_player",
+            }
+
+        if not source_switch_stop:
+            self._apply_playback_target_from_data(data)
 
         uri = self._resolve_command_url(data)
         if not uri:

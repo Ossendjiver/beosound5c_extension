@@ -467,6 +467,60 @@
       "type": "object",
       "description": "Music Assistant source settings. Connection credentials and target queue/player pins live in /etc/beosound5c/secrets.env.",
       "properties": {
+        "youtube_search": {
+          "type": "object",
+          "description": "Optional public NewPipe searches alongside configured MA providers. Video selections launch the configured Frame Tube app and linked YouTube on TV entity.",
+          "properties": {
+            "music_enabled": {
+              "type": [
+                "boolean",
+                "string"
+              ],
+              "default": false,
+              "description": "Default YouTube Music search switch; browser search panel can override.",
+              "enum": [
+                true,
+                false,
+                "true",
+                "false"
+              ]
+            },
+            "videos_enabled": {
+              "type": [
+                "boolean",
+                "string"
+              ],
+              "default": false,
+              "description": "Default YouTube video search switch; browser search panel can override.",
+              "enum": [
+                true,
+                false,
+                "true",
+                "false"
+              ]
+            },
+            "bridge_url": {
+              "type": "string",
+              "default": "",
+              "description": "Blank uses the configured MA host at port 8089."
+            },
+            "frame_entity": {
+              "type": "string",
+              "default": "",
+              "description": "Physical Samsung Frame HA media player; launch and wake only."
+            },
+            "playback_entity": {
+              "type": "string",
+              "default": "",
+              "description": "Linked YouTube on TV HA media player used for video IDs and playback controls."
+            },
+            "app_id": {
+              "type": "string",
+              "default": "tUb3Xq7Lm9.Tube"
+            }
+          },
+          "additionalProperties": false
+        },
         "playback_mode": {
           "type": "string",
           "enum": ["auto", "remote", "local"],

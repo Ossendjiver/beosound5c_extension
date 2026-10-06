@@ -393,6 +393,12 @@ const CFG_SOURCE_DEFS = [
         { fid: 'playback_mode', label: 'Playback mode', path: ['mass','playback_mode'], options: MASS_PLAYBACK_MODE_OPTIONS, hint: 'Auto prefers local playback on PowerLink/HDMI/SPDIF/RCA-style outputs and remote playback on Sonos, BlueSound, or hass. Forced local mode needs player.type = local.' },
         { fid: 'ws_url', label: 'WebSocket URL', secretKey: 'mass_ws_url', placeholder: 'ws://musicassistant.local:8095/ws', optional: true, hint: 'Leave blank to keep the current MASS_WS_URL in /etc/beosound5c/secrets.env.' },
         { fid: 'token', label: 'Access token', secretKey: 'mass_token', type: 'password', placeholder: 'Leave blank to keep existing token', optional: true },
+        { fid: 'youtube_music', label: 'Include YouTube Music in search', path: ['mass','youtube_search','music_enabled'], options: [{value:'false',label:'Off'},{value:'true',label:'On'}], hint: 'Public YouTube Music songs through NewPipe, without a YouTube Music account. Also switch this on/off in Search.' },
+        { fid: 'youtube_videos', label: 'Include YouTube videos in search', path: ['mass','youtube_search','videos_enabled'], options: [{value:'false',label:'Off'},{value:'true',label:'On'}] },
+        { fid: 'youtube_bridge', label: 'NewPipe bridge base URL', path: ['mass','youtube_search','bridge_url'], optional: true, placeholder: 'http://musicassistant-host:8089', hint: 'Blank uses the configured MA host on port 8089.' },
+        { fid: 'youtube_frame', label: 'Samsung Frame physical HA entity', path: ['mass','youtube_search','frame_entity'], optional: true, placeholder: 'media_player.the_frame' },
+        { fid: 'youtube_playback', label: 'YouTube on TV playback HA entity', path: ['mass','youtube_search','playback_entity'], optional: true, placeholder: 'media_player.youtube_on_frame_65' },
+        { fid: 'youtube_app', label: 'Frame YouTube app ID', path: ['mass','youtube_search','app_id'], optional: true, placeholder: 'tUb3Xq7Lm9.Tube', hint: 'Blank uses tUb3Xq7Lm9.Tube. Video launches the app then sends the ID to the linked YouTube on TV entity; it never selects BS3 or powers the Frame off.' },
         { fid: 'queue_id', label: 'Queue ID pin', secretKey: 'mass_queue_id', placeholder: 'Optional queue id override', optional: true, hint: 'Optional: pin the queue when auto-discovery picks the wrong target.' },
         { fid: 'player_id', label: 'Player ID pin', secretKey: 'mass_player_id', placeholder: 'Optional player id override', optional: true, hint: 'Optional: pin the player when auto-discovery picks the wrong target.' },
     ]},
@@ -840,6 +846,12 @@ function normalizeMasterlinkRole(role) {
 function renderMasterlink(cfg) {
     const ml = cfg.masterlink || {};
     const role = normalizeMasterlinkRole(ml.role || 'master');
+    const clockSync = ml.clock_sync || {};
+    const clockEnabled = clockSync.enabled !== undefined
+        ? clockSync.enabled === true
+        : role === 'master';
+    const clockInterval = Math.max(30, Math.min(86400,
+        parseInt(clockSync.interval_seconds, 10) || 60));
     const ir = ml.ir || {};
     const audioIr = ir.audio !== false;
     const videoIr = ir.video !== false;
@@ -873,10 +885,21 @@ function renderMasterlink(cfg) {
             <option value="master"   ${role==='master'?'selected':''}>Audio master (default)</option>
             <option value="provider" ${role==='provider'?'selected':''}>N.MUSIC / N.RADIO provider</option>
             <option value="link"     ${role==='link'?'selected':''}>Audio slave / link room</option>
-            <option value="ir_only"  ${role==='ir_only'?'selected':''}>IR only (passive, no ML traffic)</option>
+            <option value="ir_only"  ${role==='ir_only'?'selected':''}>IR only (passive receive)</option>
             <option value="none"     ${role==='none'?'selected':''}>None / off (disable PC2 + ML)</option>
         </select>
-        <div class="hint"><strong>IR only</strong> opens the PC2 in passive Beoport mode so local Beo4 IR keypresses still reach the router, but the BS5c ignores ML telegrams and never transmits on the bus. <strong>None / off</strong> disables PC2 + ML handling entirely.</div>
+        <div class="hint"><strong>IR only</strong> opens the PC2 in passive Beoport mode. It ignores inbound ML telegrams; the only permitted transmissions are All Standby and optional clock sync below. <strong>None / off</strong> disables PC2 + ML handling entirely.</div>
+
+        <div style="margin-top:18px; padding-top:14px; border-top:1px solid #1a1a1a">
+            <div style="font-size:11px; font-weight:600; color:#666; letter-spacing:0.1em; text-transform:uppercase; margin-bottom:12px">Clock sync</div>
+            <label style="display:flex;align-items:center;gap:8px;margin:0;font-weight:400;cursor:pointer">
+                <input id="cfg-ml-clock-enabled" type="checkbox" ${clockEnabled?'checked':''}>
+                Broadcast this BS5c's local time on Master Link
+            </label>
+            <label for="cfg-ml-clock-interval" style="margin-top:10px">Interval (seconds)</label>
+            <input id="cfg-ml-clock-interval" type="number" min="30" max="86400" value="${clockInterval}">
+            <div class="hint">Audio-master mode enables clock sync by default. In IR-only mode, enable it only when no other ML Audio Master is supplying time. Home Assistant can also request a one-shot update with <code>POST http://beosound5c:8768/ml/clock</code>.</div>
+        </div>
 
         <div id="cfg-ml-provider-cond" class="cfg-cond${role==='provider'?' show':''}">
             <label for="cfg-ml-nmusic">Source for N.MUSIC</label>
@@ -2170,6 +2193,11 @@ function buildConfig() {
     const role = normalizeMasterlinkRole(document.getElementById('cfg-ml-role')?.value || 'master');
     cfg.masterlink = cfg.masterlink || {};
     cfg.masterlink.role = role;
+    cfg.masterlink.clock_sync = {
+        enabled: !!document.getElementById('cfg-ml-clock-enabled')?.checked,
+        interval_seconds: Math.max(30, Math.min(86400,
+            parseInt(document.getElementById('cfg-ml-clock-interval')?.value, 10) || 60)),
+    };
     cfg.masterlink.ir = {
         audio: !!document.getElementById('cfg-ml-ir-audio')?.checked,
         video: !!document.getElementById('cfg-ml-ir-video')?.checked,

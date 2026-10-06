@@ -280,7 +280,7 @@ xinit /bin/bash -c '
       --remote-debugging-port=9222 \
       --user-data-dir="$CHROMIUM_DATA_DIR" \
       --force-dark-mode \
-      --enable-features=WebUIDarkMode \
+      --enable-features=WebUIDarkMode,OverlayScrollbar \
       --disable-application-cache \
       --disable-cache \
       --disable-offline-load-stale-cache \
@@ -297,20 +297,16 @@ xinit /bin/bash -c '
       --disable-infobars \
       --disable-translate \
       --disable-session-crashed-bubble \
-      --disable-features=TranslateUI \
+      --disable-features=TranslateUI,IsolateOrigins,site-per-process,MediaRouter,InfiniteSessionRestore \
       --no-first-run \
       --disable-default-apps \
       --disable-component-extensions-with-background-pages \
       --disable-background-networking \
       --disable-sync \
       --ignore-certificate-errors \
-      --disable-features=IsolateOrigins,site-per-process \
       --disable-extensions \
       --disable-dev-shm-usage \
-      --enable-features=OverlayScrollbar \
       --overscroll-history-navigation=0 \
-      --disable-features=MediaRouter \
-      --disable-features=InfiniteSessionRestore \
       --disable-pinch \
       --disable-gesture-typing \
       --disable-hang-monitor \
