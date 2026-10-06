@@ -1,6 +1,5 @@
 {
   "device": "Development",
-
   "menu": {
     "PLAYING": "playing",
     "JOIN": "join",
@@ -15,25 +14,52 @@
     "RADIO": "radio",
     "KODI": "kodi",
     "SCENES": "scenes",
-    "SECURITY": { "url": "softarc/security.html" },
+    "SECURITY": {
+      "url": "softarc/security.html"
+    },
     "SYSTEM": "system",
     "SHOWING": "showing"
   },
-
   "scenes": [
-    { "id": "dinner", "name": "Dinner", "icon": "fork-knife", "color": "#fa0" },
-    { "id": "cozy", "name": "Cozy", "icon": "fire", "color": "#fa0" },
-    { "id": "all_on", "name": "All on", "icon": "sun", "color": "#fa0" },
-    { "id": "all_off", "name": "All off", "icon": "power", "color": "#c55" }
+    {
+      "id": "dinner",
+      "name": "Dinner",
+      "icon": "fork-knife",
+      "color": "#fa0"
+    },
+    {
+      "id": "cozy",
+      "name": "Cozy",
+      "icon": "fire",
+      "color": "#fa0"
+    },
+    {
+      "id": "all_on",
+      "name": "All on",
+      "icon": "sun",
+      "color": "#fa0"
+    },
+    {
+      "id": "all_off",
+      "name": "All off",
+      "icon": "power",
+      "color": "#c55"
+    }
   ],
-
-  "player": { "type": "sonos", "ip": "192.168.1.100" },
-  "bluetooth": { "remote_mac": "" },
+  "player": {
+    "type": "sonos",
+    "ip": "192.168.1.100"
+  },
+  "bluetooth": {
+    "remote_mac": ""
+  },
   "home_assistant": {
     "url": "http://homeassistant.local:8123",
     "webhook_url": "http://homeassistant.local:8123/api/webhook/beosound5c"
   },
-  "transport": { "mode": "webhook" },
+  "transport": {
+    "mode": "webhook"
+  },
   "volume": {
     "type": "sonos",
     "host": "192.168.1.100",
@@ -41,9 +67,25 @@
     "step": 3,
     "output_name": "Sonos"
   },
-  "cd": { "device": "/dev/sr0" },
+  "cd": {
+    "device": "/dev/sr0"
+  },
   "join": {},
-  "spotify": { "client_id": "" },
-  "radio": { "source": "radio" },
-  "news": { "guardian_api_key": "test" }
+  "spotify": {
+    "client_id": ""
+  },
+  "radio": {
+    "source": "radio"
+  },
+  "news": {
+    "guardian_api_key": "test"
+  },
+  "library": {
+    "weather_entity": "",
+    "garmin_run_entities": [],
+    "post_run_window_minutes": 90,
+    "post_run_yoga_directory": "smb://LOUNGE/SSD/Exercise/",
+    "post_run_yoga_script": "",
+    "yoga_targets": {}
+  }
 }
