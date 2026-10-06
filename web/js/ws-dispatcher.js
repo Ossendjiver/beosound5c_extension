@@ -160,6 +160,10 @@ function processWebSocketEvent(message) {
             document.dispatchEvent(new CustomEvent('bs5c:skip'));
             break;
 
+        case 'context_suggestion':
+            showContextSuggestion(data);
+            break;
+
         default:
             // Generic source update: "{sourceId}_update" → SourcePresets[sourceId].controller
             if (type.endsWith('_update')) {
@@ -170,6 +174,88 @@ function processWebSocketEvent(message) {
             } else {
                 console.log(`[EVENT] Unknown event type: ${type}`);
             }
+    }
+}
+
+
+// ── Context-aware library suggestions ──
+let _activeContextSuggestion = null;
+let _contextSuggestionTimer = null;
+
+function _libraryBaseUrl() {
+    return `${window.location.protocol}//${window.location.hostname}:8788`;
+}
+
+function hideContextSuggestion() {
+    const overlay = document.getElementById('context-suggestion-overlay');
+    if (overlay) overlay.hidden = true;
+    _activeContextSuggestion = null;
+    if (_contextSuggestionTimer) {
+        clearTimeout(_contextSuggestionTimer);
+        _contextSuggestionTimer = null;
+    }
+}
+
+async function contextSuggestionAction(optionId) {
+    const suggestion = _activeContextSuggestion;
+    if (!suggestion) return;
+    // Hide immediately; no backlight or wake call is made.
+    hideContextSuggestion();
+    try {
+        const response = await fetch(_libraryBaseUrl() + '/library/action', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                kind: suggestion.kind,
+                action: optionId,
+                prompt_id: suggestion.id,
+                room: suggestion.room || ''
+            })
+        });
+        if (!response.ok) {
+            console.warn('[LIBRARY] Suggestion action returned HTTP', response.status);
+        }
+    } catch (err) {
+        console.warn('[LIBRARY] Suggestion action failed', err);
+    }
+}
+
+function showContextSuggestion(data) {
+    if (!data || !data.id || !data.question) return;
+    const overlay = document.getElementById('context-suggestion-overlay');
+    const question = document.getElementById('context-suggestion-question');
+    const options = document.getElementById('context-suggestion-options');
+    if (!overlay || !question || !options) return;
+
+    if (_activeContextSuggestion?.id === data.id && !overlay.hidden) return;
+    _activeContextSuggestion = data;
+    question.textContent = data.question;
+    options.replaceChildren();
+
+    (Array.isArray(data.options) ? data.options : []).forEach(option => {
+        const button = document.createElement('button');
+        button.className = 'context-suggestion-option';
+        button.type = 'button';
+        button.textContent = option.label || option.id || 'Select';
+        button.addEventListener('click', () => contextSuggestionAction(option.id));
+        options.appendChild(button);
+    });
+    overlay.hidden = false;
+
+    if (_contextSuggestionTimer) clearTimeout(_contextSuggestionTimer);
+    // Suggestions are ephemeral UI only; stale ones disappear without waking
+    // or changing the physical display/backlight state.
+    _contextSuggestionTimer = setTimeout(hideContextSuggestion, 12 * 60 * 1000);
+}
+
+async function refreshContextSuggestion() {
+    try {
+        const response = await fetch(_libraryBaseUrl() + '/library/suggestions');
+        if (!response.ok) return;
+        const payload = await response.json();
+        if (payload?.primary) showContextSuggestion(payload.primary);
+    } catch (_err) {
+        // Library service is optional during upgrade/boot.
     }
 }
 
@@ -498,6 +584,7 @@ function initMediaWebSocket() {
             if (window.uiStore) {
                 window.uiStore.menu?.fetchMenu();
             }
+            refreshContextSuggestion();
         };
 
         mediaWs.onclose = () => {
