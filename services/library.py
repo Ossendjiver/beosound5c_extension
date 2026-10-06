@@ -37,11 +37,9 @@ from aiohttp import web
 
 # Allow running both from repo and installed ~/beosound5c/services.
 HERE = Path(__file__).resolve().parent
-import sys
-if str(HERE) not in sys.path:
-    sys.path.insert(0, str(HERE))
 
 from lib.config import cfg
+from lib.background_tasks import BackgroundTaskSet
 
 log = logging.getLogger("beo-library")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -315,7 +313,7 @@ class LibraryService:
         self._last_run_marker = ""
         self._last_broadcast_prompt = ""
         self._last_broadcast_ts = 0.0
-        self._tasks: list[asyncio.Task] = []
+        self._background = BackgroundTaskSet(log, label="library")
 
     def _base_context(self, room: str = "") -> dict[str, Any]:
         now = dt.datetime.now()
@@ -333,17 +331,12 @@ class LibraryService:
 
     async def start(self, _app: web.Application) -> None:
         self.session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=12))
-        self._tasks = [
-            asyncio.create_task(self._context_loop(), name="library_context"),
-            asyncio.create_task(self._listening_loop(), name="library_listening"),
-            asyncio.create_task(self._suggestion_loop(), name="library_suggestions"),
-        ]
+        self._background.spawn(self._context_loop(), name="library_context")
+        self._background.spawn(self._listening_loop(), name="library_listening")
+        self._background.spawn(self._suggestion_loop(), name="library_suggestions")
 
     async def stop(self, _app: web.Application) -> None:
-        for task in self._tasks:
-            task.cancel()
-        if self._tasks:
-            await asyncio.gather(*self._tasks, return_exceptions=True)
+        await self._background.cancel_all()
         if self._current_media:
             self._finish_current()
         if self._external_media:
