@@ -73,9 +73,12 @@ class AppleMusicService(DigitPlaylistMixin, SourceBase):
     id = "apple_music"
     name = "Apple Music"
     port = 8774
+    # DigitPlaylistMixin reads this off the class — without it, digit
+    # playlists silently no-op (AttributeError swallowed in the mixin).
+    DIGIT_PLAYLISTS_FILE = DIGIT_PLAYLISTS_FILE
     action_map = {
-        "play": "toggle",
-        "pause": "toggle",
+        "play": "play",
+        "pause": "pause",
         "go": "toggle",
         "next": "next",
         "prev": "prev",
@@ -110,6 +113,12 @@ class AppleMusicService(DigitPlaylistMixin, SourceBase):
         if has_creds:
             self._load_playlists()
             self._detect_player()
+
+            if self.player == "local":
+                log.warning(
+                    "Apple Music is configured but the local player cannot "
+                    "decrypt Apple Music streams. Playback will fail. Use a "
+                    "Sonos (ShareLink) or BlueSound player to play Apple Music.")
 
             caps = await self.player_capabilities()
             if caps:
@@ -181,6 +190,7 @@ class AppleMusicService(DigitPlaylistMixin, SourceBase):
             'playlist_count': len(self.playlists),
             'has_credentials': self.auth.is_configured,
             'needs_reauth': self.auth.revoked,
+            'developer_token_expired': not self.auth.developer_token_valid,
             'last_refresh': self._last_refresh_wall.isoformat() if self._last_refresh_wall else None,
             'last_refresh_duration': self._last_refresh_duration,
             'digit_playlists': self._get_digit_names(),
@@ -363,6 +373,10 @@ class AppleMusicService(DigitPlaylistMixin, SourceBase):
 
     async def _refresh_playlists(self):
         """Re-fetch playlists by running fetch.py."""
+        if getattr(self, '_refresh_running', False):
+            log.info("Playlist refresh already running — skipping duplicate")
+            return
+        self._refresh_running = True
         if self.auth.revoked:
             return
         self._fetching_playlists = True
@@ -396,8 +410,15 @@ class AppleMusicService(DigitPlaylistMixin, SourceBase):
             elif proc.returncode == 1:
                 output = stdout.decode()[-500:]
                 if '401' in output:
-                    self.auth.revoked = True
-                    log.error("User token expired — re-authentication required")
+                    if not self.auth.developer_token_valid:
+                        # 401 caused by the EXPIRED DEVELOPER token — do not
+                        # tell the user to re-auth; it can't help.
+                        log.error("401 from Apple Music: developer token "
+                                  "expired — set APPLE_MUSIC_DEV_TOKEN or "
+                                  "update BeoSound 5c")
+                    else:
+                        self.auth.revoked = True
+                        log.error("User token expired — re-authentication required")
                 elif '403' in output:
                     log.error("Apple Music subscription required (403) — library inaccessible")
                 else:
@@ -405,11 +426,18 @@ class AppleMusicService(DigitPlaylistMixin, SourceBase):
             else:
                 log.error("fetch.py failed (rc=%d): %s", proc.returncode, stdout.decode()[-500:])
         except asyncio.TimeoutError:
-            log.error("Playlist refresh timed out")
+            # wait_for cancels the communicate() await but does NOT kill the
+            # child — an orphan with a full stdout pipe blocks forever and
+            # its late JSON write races the next refresh.  Reap it.
+            log.error("Playlist refresh timed out — killing fetch subprocess")
+            if proc.returncode is None:
+                proc.kill()
+                await proc.wait()
         except Exception as e:
             log.error("Playlist refresh failed: %s", e)
         finally:
             self._fetching_playlists = False
+            self._refresh_running = False
 
     async def _delayed_refresh(self, delay):
         try:

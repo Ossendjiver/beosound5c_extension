@@ -71,14 +71,20 @@ def test_03_stale_register_rejected():
 
 
 def test_04_stale_player_play_rejected():
-    """player_play() with an old action_ts is rejected."""
+    """player_play() with a slightly-older action_ts is rejected.
+
+    The player drops stale plays only within a 3-second window — beyond
+    that, an older ts is assumed to come from a different source's
+    legitimate activation rather than a duplicate of the current one.
+    """
     stop_all()
 
     router_event(src_a)
     time.sleep(2)
     current_ts = router_status()["latest_action_ts"]
 
-    result = player_play(action_ts=current_ts - 10.0,
+    # 1 second older — within the dedup window
+    result = player_play(action_ts=current_ts - 1.0,
                          url="http://example.com/stale.mp3")
     assert result.get("status") == "dropped", f"Expected dropped, got {result}"
     assert result.get("reason") == "stale"
@@ -190,8 +196,8 @@ def test_10_player_tracks_latest_ts():
     player_ts = ps.get("latest_action_ts", 0)
     assert player_ts > 0, "Player should have a non-zero action_ts"
 
-    # Play with older ts — rejected
-    result = player_play(action_ts=player_ts - 10.0, url="http://example.com/old.mp3")
+    # Play with slightly-older ts (within 3s dedup window) — rejected
+    result = player_play(action_ts=player_ts - 1.0, url="http://example.com/old.mp3")
     assert result.get("status") == "dropped"
 
     # Play with same ts — accepted (>= check)
@@ -207,17 +213,26 @@ def test_11_concurrent_stale_commands():
 
     router_event(src_b)
     time.sleep(2)
-    current_ts = router_status()["latest_action_ts"]
+    # Stamp the player with a known ts so the dedup window is anchored
+    # there, regardless of whether activation forwarded to it.
+    anchor_ts = router_status()["latest_action_ts"]
+    player_play(action_ts=anchor_ts, url="http://example.com/anchor.mp3")
+    time.sleep(0.3)
+    player_ts = player_status().get("latest_action_ts", anchor_ts)
 
-    stale_base = current_ts - 20.0
-    for i in range(5):
-        result = player_play(action_ts=stale_base + i,
+    # Each stale ts must sit within the 3-second player dedup window.
+    offsets = [-2.5, -2.0, -1.5, -1.0, -0.5]
+    for i, off in enumerate(offsets):
+        result = player_play(action_ts=player_ts + off,
                              url=f"http://example.com/{i}.mp3")
         assert result.get("status") == "dropped", \
-            f"Stale play #{i} not dropped: {result}"
+            f"Stale play #{i} (offset {off}) not dropped: {result}"
 
+    # Source registrations use strict-less-than ordering, so the wider
+    # 20-second offsets here are still valid (and safer for the burst).
+    stale_register_base = player_ts - 20.0
     for i in range(3):
-        router_source(src_a, "playing", action_ts=stale_base + i,
+        router_source(src_a, "playing", action_ts=stale_register_base + i,
                       name=src_a.upper(),
                       command_url=f"http://localhost:{SOURCE_PORTS[src_a]}/command",
                       player="local")
@@ -296,18 +311,26 @@ def test_15_rapid_switch_no_overlap():
 
     This is the exact race condition that caused overlapping audio:
     src_a's play arrives at the player AFTER src_b's play, but src_a's
-    action_ts is older so the player drops it.
+    action_ts is older so the player drops it. The player's stale
+    window is 3 seconds, so src_a's ts must sit within that of ts_b.
     """
     stop_all()
 
+    # Use small spacing (<3s) so ts_a stays inside the player's dedup
+    # window when ts_b is the current latest.
     router_event(src_a)
-    time.sleep(2)
+    time.sleep(1)
     ts_a = router_status()["latest_action_ts"]
 
     router_event(src_b)
-    time.sleep(2)
+    time.sleep(1)
     ts_b = router_status()["latest_action_ts"]
     assert ts_b > ts_a
+    # Stamp the player with ts_b explicitly — router activation forwards
+    # to a source service, which only reaches the player if a stream
+    # plays. Avoid that dependency by setting the authority directly.
+    player_play(action_ts=ts_b, url="http://example.com/b.mp3")
+    time.sleep(0.3)
 
     # Simulate src_a's late play arriving after src_b already took over
     result = player_play(action_ts=ts_a, url="http://example.com/stale-source.mp3")

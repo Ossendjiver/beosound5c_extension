@@ -796,6 +796,10 @@ class ArcList {
         }
     }
 
+    handleButtonFromParent(button) {
+        this.handleButton(button);
+    }
+
     /** Check if an item is actionable (GO does something).
      *  Explicit `actionable` field wins; otherwise defaults to leaf. */
     isActionable(item) {
@@ -855,7 +859,7 @@ class ArcList {
         // postMessage from parent iframe
         this._messageHandler = (event) => {
             if (event.data?.type === 'button') {
-                this.handleButton(event.data.button || event.data.data?.button);
+                this.handleButtonFromParent(event.data.button || event.data.data?.button);
             } else if (event.data?.type === 'nav') {
                 this.handleNavFromParent(event.data.data);
             } else if (event.data?.type === 'keyboard') {
@@ -1308,7 +1312,7 @@ class ArcList {
 
     _handleWebSocketMessage(data) {
         if (data.type === 'button' && data.data?.button) {
-            this.handleButton(data.data.button);
+            this.handleButtonFromParent(data.data.button);
             return;
         }
 
@@ -1405,7 +1409,7 @@ class ArcList {
         if (!this._messageHandler) {
             this._messageHandler = (event) => {
                 if (event.data?.type === 'button') {
-                    this.handleButton(event.data.button || event.data.data?.button);
+                    this.handleButtonFromParent(event.data.button || event.data.data?.button);
                 } else if (event.data?.type === 'nav') {
                     this.handleNavFromParent(event.data.data);
                 } else if (event.data?.type === 'keyboard') {

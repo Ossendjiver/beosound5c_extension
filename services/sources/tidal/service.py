@@ -73,8 +73,8 @@ class TidalService(DigitPlaylistMixin, SourceBase):
     name = "TIDAL"
     port = 8777
     action_map = {
-        "play": "toggle",
-        "pause": "toggle",
+        "play": "play",
+        "pause": "pause",
         "go": "toggle",
         "next": "next",
         "prev": "prev",
@@ -109,11 +109,21 @@ class TidalService(DigitPlaylistMixin, SourceBase):
         self._current_index = 0
 
     async def on_start(self):
-        has_creds = self.auth.load()
+        # auth.load() may perform a blocking token refresh + profile fetch
+        # against TIDAL with no timeout — keep it off the event loop so an
+        # unreachable TIDAL at boot can't hang the service silently.
+        loop = asyncio.get_running_loop()
+        has_creds = await loop.run_in_executor(None, self.auth.load)
 
         if has_creds:
             self._load_playlists()
             self._detect_player()
+
+            if self.player == "local":
+                log.warning(
+                    "TIDAL is configured but the local player cannot decrypt "
+                    "TIDAL streams. Playback will fail. Use a Sonos (ShareLink) "
+                    "or BlueSound player to play TIDAL.")
 
             caps = await self.player_capabilities()
             if caps:
@@ -455,6 +465,10 @@ class TidalService(DigitPlaylistMixin, SourceBase):
 
     async def _refresh_playlists(self):
         """Re-fetch playlists by running fetch.py."""
+        if getattr(self, '_refresh_running', False):
+            log.info("Playlist refresh already running — skipping duplicate")
+            return
+        self._refresh_running = True
         if self.auth.revoked:
             return
         self._fetching_playlists = True
@@ -491,11 +505,18 @@ class TidalService(DigitPlaylistMixin, SourceBase):
                 err_msg = (stdout.decode() + stderr.decode())[-500:]
                 log.error("fetch.py failed (rc=%d): %s", proc.returncode, err_msg)
         except asyncio.TimeoutError:
-            log.error("Playlist refresh timed out")
+            # wait_for cancels the communicate() await but does NOT kill the
+            # child — an orphan with a full stdout pipe blocks forever and
+            # its late JSON write races the next refresh.  Reap it.
+            log.error("Playlist refresh timed out — killing fetch subprocess")
+            if proc.returncode is None:
+                proc.kill()
+                await proc.wait()
         except Exception as e:
             log.error("Playlist refresh failed: %s", e)
         finally:
             self._fetching_playlists = False
+            self._refresh_running = False
 
     async def _delayed_refresh(self, delay):
         try:

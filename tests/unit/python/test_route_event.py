@@ -55,7 +55,7 @@ def _make_router():
 
     # volume adapter — None for most tests (no hardware)
     r._volume = None
-    r._volume_step = 5
+    r._remote_volume_step = 5
     r._balance_step = 1
     r.volume = 30
     r.balance = 0
@@ -190,7 +190,7 @@ class TestSourceButtonPress:
 class TestVolumeBalance:
     def test_volup_increments_by_step(self):
         r = _make_router()
-        r._volume_step = 5
+        r._remote_volume_step = 5
         r.volume = 40
         _run(r.route_event({"action": "volup", "device_type": "Audio"}))
         # set_volume called with 45 (then spawned and awaited via _spawn).
@@ -199,7 +199,7 @@ class TestVolumeBalance:
 
     def test_voldown_increments_by_step(self):
         r = _make_router()
-        r._volume_step = 3
+        r._remote_volume_step = 3
         r.volume = 40
         _run(r.route_event({"action": "voldown", "device_type": "Audio"}))
         r.set_volume.assert_called_once_with(37)
@@ -207,14 +207,14 @@ class TestVolumeBalance:
 
     def test_volup_clamps_at_100(self):
         r = _make_router()
-        r._volume_step = 10
+        r._remote_volume_step = 10
         r.volume = 95
         _run(r.route_event({"action": "volup", "device_type": "Audio"}))
         r.set_volume.assert_called_once_with(100)
 
     def test_voldown_clamps_at_0(self):
         r = _make_router()
-        r._volume_step = 10
+        r._remote_volume_step = 10
         r.volume = 3
         _run(r.route_event({"action": "voldown", "device_type": "Audio"}))
         r.set_volume.assert_called_once_with(0)
@@ -244,6 +244,50 @@ class TestVolumeBalance:
         r._volume.power_off = AsyncMock()
         _run(r.route_event({"action": "off", "device_type": "Audio"}))
         assert "off_power" in r._spawned_names
+
+    def test_off_forwards_stop_to_active_source(self):
+        """Standby must also stop the active source directly — on
+        player.type "none" devices there is no player service on :8766,
+        so sources playing through their own local pipeline (in-process
+        mpv in USB/CD) would otherwise keep playing."""
+        r = _make_router()
+        _make_source(r.registry, "usb",
+                     handles={"play", "pause", "stop"}, state="playing")
+        r.registry._active_id = "usb"
+        _run(r.route_event({"action": "off", "device_type": "Audio"}))
+        assert "off_stop" in r._spawned_names  # player stop kept
+        assert "off_source_stop" in r._spawned_names
+        r._forward_to_source.assert_called_once()
+        args, _ = r._forward_to_source.call_args
+        assert args[0].id == "usb"
+        assert args[1]["action"] == "stop"
+
+    def test_alloff_forwards_stop_to_active_source(self):
+        r = _make_router()
+        _make_source(r.registry, "usb",
+                     handles={"play", "pause", "stop"}, state="playing")
+        r.registry._active_id = "usb"
+        _run(r.route_event({"action": "alloff", "device_type": "All"}))
+        assert "off_source_stop" in r._spawned_names
+        assert "alloff_ml" in r._spawned_names
+        r._forward_to_source.assert_called_once()
+        assert r._forward_to_source.call_args.args[1]["action"] == "stop"
+
+    def test_off_without_active_source_skips_source_stop(self):
+        r = _make_router()
+        _run(r.route_event({"action": "off", "device_type": "Audio"}))
+        assert "off_stop" in r._spawned_names
+        assert "off_source_stop" not in r._spawned_names
+        r._forward_to_source.assert_not_called()
+
+    def test_off_active_source_without_stop_handle_skipped(self):
+        r = _make_router()
+        _make_source(r.registry, "news",
+                     handles={"go", "left", "right"}, state="playing")
+        r.registry._active_id = "news"
+        _run(r.route_event({"action": "off", "device_type": "Audio"}))
+        assert "off_source_stop" not in r._spawned_names
+        r._forward_to_source.assert_not_called()
 
 
 # ── Fallthrough to HA ────────────────────────────────────────────────

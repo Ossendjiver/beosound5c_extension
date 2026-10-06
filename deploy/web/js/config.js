@@ -58,6 +58,11 @@ const AppConfig = {
         media: 'ws://localhost:8770/router/ws'
     },
 
+    // Screen / immersive policy
+    screen: {
+        immersiveDelaySeconds: 180
+    },
+
     // Camera overlay configuration
     cameras: [
         { id: 'door', title: 'Front door', entity: 'camera.doorbell_medium_resolution_channel' },
@@ -85,6 +90,12 @@ const AppConfig = {
         if (config.scenes) AppConfig.scenes = config.scenes;
         if (config.home_assistant) {
             if (config.home_assistant.url) AppConfig.homeAssistant.url = config.home_assistant.url;
+        }
+        if (config.screen) {
+            const immersiveDelaySeconds = Number(config.screen.immersive_delay_s);
+            if (Number.isFinite(immersiveDelaySeconds) && immersiveDelaySeconds > 0) {
+                AppConfig.screen.immersiveDelaySeconds = immersiveDelaySeconds;
+            }
         }
     }
 

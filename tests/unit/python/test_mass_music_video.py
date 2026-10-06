@@ -92,6 +92,255 @@ class TestMassNowPlayingPayload:
         assert payload["uri"] == "mass://queue-track"
 
 
+class TestMassQueuePayload:
+    def test_extracts_paginated_queue_items(self):
+        source = _make_mass_source()
+
+        payload = {
+            "items": {
+                "items": [
+                    {"queue_item_id": "one", "name": "Track One", "uri": "mass://one"},
+                    {"queue_item_id": "two", "name": "Track Two", "uri": "mass://two"},
+                ],
+                "total": 2,
+            }
+        }
+
+        items = source._extract_queue_items(payload)
+
+        assert [item["name"] for item in items] == ["Track One", "Track Two"]
+
+    def test_get_queue_returns_standard_source_queue_shape(self):
+        source = _make_mass_source()
+        source._get_queue_snapshot = AsyncMock(return_value={
+            "resolved_queue_id": "queue-main",
+            "current_index": 1,
+            "items": {
+                "items": [
+                    {"queue_item_id": "one", "name": "Track One", "artist": "Artist A", "uri": "mass://one"},
+                    {"queue_item_id": "two", "name": "Track Two", "artist": "Artist B", "uri": "mass://two"},
+                ]
+            },
+        })
+        source._resolve_queue_candidates = AsyncMock(return_value=["queue-main"])
+        source._cache_image_locally = AsyncMock(side_effect=lambda image: image)
+
+        queue = _run(source.get_queue())
+
+        assert queue["queue_id"] == "queue-main"
+        assert queue["total"] == 2
+        assert queue["current_index"] == 1
+        assert queue["tracks"][1]["title"] == "Track Two"
+        assert queue["tracks"][1]["current"] is True
+
+    def test_get_queue_keeps_items_without_playable_uri(self):
+        source = _make_mass_source()
+        source._get_queue_snapshot = AsyncMock(return_value={
+            "resolved_queue_id": "queue-main",
+            "current_index": 0,
+            "items": {
+                "items": [
+                    {
+                        "queue_item_id": "one",
+                        "media_item": {
+                            "item_id": "track-one",
+                            "name": "Track One",
+                            "metadata": {
+                                "images": [
+                                    {
+                                        "type": "thumb",
+                                        "path": "https://images.example/track-one.jpg",
+                                        "provider": "library",
+                                    },
+                                ],
+                            },
+                        },
+                    },
+                    {
+                        "queue_item_id": "two",
+                        "name": "Track Two",
+                        "artist": "Artist B",
+                    },
+                ]
+            },
+        })
+        source._resolve_queue_candidates = AsyncMock(return_value=["queue-main"])
+        source._cache_image_locally = AsyncMock(side_effect=lambda image: image)
+
+        queue = _run(source.get_queue())
+
+        assert queue["total"] == 2
+        assert [track["title"] for track in queue["tracks"]] == ["Track One", "Track Two"]
+        assert queue["tracks"][0]["uri"] == ""
+        assert queue["tracks"][0]["current"] is True
+        assert "imageproxy?path=" in queue["tracks"][0]["artwork"]
+        source._cache_image_locally.assert_not_called()
+
+
+class TestMassLibraryMenu:
+    def test_normalize_renames_legacy_mixes_root_to_radio(self):
+        source = _make_mass_source()
+        tree = [
+            {"id": "mixes", "name": "Mixes", "tracks": []},
+            {"id": "playlist_mixes", "name": "Old", "tracks": []},
+        ]
+
+        source._normalize_library_tree(tree)
+
+        assert tree[0]["name"] == "Radio"
+        assert tree[1]["name"] == "Mixes"
+
+    def test_identifies_library_mixes_playlist(self):
+        source = _make_mass_source()
+
+        assert source._is_mixes_playlist({
+            "item_id": "98",
+            "provider": "library",
+            "uri": "playlist://library/98",
+        })
+
+    def test_build_playlist_folder_node_can_create_mixes_root(self):
+        source = _make_mass_source()
+
+        node = source._build_playlist_folder_node(
+            {
+                "item_id": "98",
+                "name": "Anything",
+                "provider": "library",
+            },
+            [
+                {"item_id": "track-1", "name": "Track One", "uri": "mass://track-one"},
+            ],
+            "http://mass.example",
+            root_id="playlist_mixes",
+            root_name="Mixes",
+        )
+
+        assert node["id"] == "playlist_mixes"
+        assert node["name"] == "Mixes"
+        assert node["url"] == "playlist://library/98"
+        assert node["tracks"][0]["url"] == "mass://track-one"
+
+    def test_build_playlist_folder_node_uses_album_art_when_playlist_art_is_missing(self):
+        source = _make_mass_source()
+
+        node = source._build_playlist_folder_node(
+            {
+                "item_id": "11",
+                "name": "Fallback Playlist",
+                "provider": "library",
+                "metadata": {"images": []},
+            },
+            [
+                {
+                    "item_id": "track-1",
+                    "name": "Track One",
+                    "provider": "library",
+                    "uri": "mass://track-one",
+                    "metadata": {"images": []},
+                    "album": {
+                        "name": "Album One",
+                        "metadata": {
+                            "images": [
+                                {"type": "thumb", "path": "album-art.jpg", "provider": "library"}
+                            ]
+                        },
+                    },
+                    "artists": [{"name": "Artist One"}],
+                }
+            ],
+            "http://mass.example",
+        )
+
+        assert "/imageproxy?" in node["image"]
+        assert "/imageproxy?" in node["tracks"][0]["image"]
+
+    def test_build_playlist_folder_node_keeps_placeholder_art_after_finalize(self):
+        source = _make_mass_source()
+
+        node = source._build_playlist_folder_node(
+            {
+                "item_id": "12",
+                "name": "Sparse Playlist",
+                "provider": "library",
+                "metadata": {"images": []},
+            },
+            [
+                {
+                    "item_id": "track-2",
+                    "name": "Track Two",
+                    "provider": "library",
+                    "uri": "mass://track-two",
+                    "metadata": {"images": []},
+                    "album": {"name": "Album Two", "metadata": {"images": []}},
+                    "artists": [{"name": "Artist Two", "metadata": {"images": []}}],
+                }
+            ],
+            "http://mass.example",
+        )
+        source._finalize_node(node)
+
+        assert node["image"].startswith("data:image/svg+xml")
+        assert node["tracks"][0]["image"].startswith("data:image/svg+xml")
+
+    def test_backfill_cached_playlist_art_repairs_legacy_cache_nodes(self):
+        source = _make_mass_source()
+        tree = [
+            {
+                "id": "playlists",
+                "name": "Playlists",
+                "tracks": [
+                    {
+                        "id": "playlist:1",
+                        "name": "Legacy Playlist",
+                        "tracks": [
+                            {"id": "track:1", "name": "First Track", "artist": "Artist A", "image": ""},
+                            {"id": "track:2", "name": "Second Track", "artist": "Artist B"},
+                        ],
+                    }
+                ],
+            }
+        ]
+
+        changed = source._backfill_cached_playlist_art(tree)
+
+        assert changed is True
+        playlist = tree[0]["tracks"][0]
+        assert playlist["image"].startswith("data:image/svg+xml")
+        assert playlist["tracks"][0]["image"] == playlist["image"]
+        assert playlist["tracks"][1]["image"] == playlist["image"]
+
+    def test_normalize_renames_and_preserves_podcasts_root_order(self):
+        source = _make_mass_source()
+        tree = [
+            {
+                "id": "podcasts",
+                "name": "Old",
+                "tracks": [
+                    {"id": "b", "name": "Zulu"},
+                    {"id": "a", "name": "Alpha"},
+                ],
+            },
+        ]
+
+        source._normalize_library_tree(tree)
+
+        assert tree[0]["name"] == "Podcasts"
+        assert [item["name"] for item in tree[0]["tracks"]] == ["Zulu", "Alpha"]
+
+    def test_library_status_includes_podcasts(self):
+        source = _make_mass_source()
+        source._library_data = [
+            {"id": "podcasts", "tracks": [{}, {}]},
+            {"id": "playlist_mixes", "tracks": [{}]},
+        ]
+
+        status = source._build_library_status()
+
+        assert status["podcasts"] == 2
+        assert status["mixes"] == 1
+
+
 class TestMassMusicVideoRouting:
     def test_router_surfaces_cached_music_video_for_mass_payload(self):
         router = router_module.EventRouter()

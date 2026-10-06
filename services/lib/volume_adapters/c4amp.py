@@ -18,6 +18,8 @@ Config (config.json "volume" section):
   - max: max volume percentage (default 70)
 """
 
+from __future__ import annotations
+
 import asyncio
 import logging
 import random

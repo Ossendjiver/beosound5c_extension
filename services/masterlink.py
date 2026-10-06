@@ -3,6 +3,32 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
 # Attribution required — see LICENSE, Section 7(b).
+#
+# -----------------------------------------------------------------------------
+# This file is substantially a derivative work of libpc2 by Tore Sinding
+# Bekkedal (GPL-3.0), https://github.com/toresbe/libpc2.  The following parts
+# are ports (logic + boilerplate byte sequences) from libpc2 source:
+#
+#   PC2Device.init                       ← pc2/pc2device.cpp   PC2Device::init
+#   PC2Device.set_address_filter         ← pc2/pc2device.cpp   PC2Device::set_address_filter
+#   PC2Device.speaker_power              ← pc2/mixer.cpp       PC2Mixer::speaker_power
+#   PC2Device.speaker_mute               ← pc2/mixer.cpp       PC2Mixer::speaker_mute
+#   PC2Device.set_volume (0xEB stepping) ← pc2/mixer.cpp       PC2Mixer::adjust_volume
+#   PC2Device.set_routing                ← pc2/mixer.cpp       PC2Mixer::send_routing_state
+#   PC2Device.set_parameters             ← pc2/mixer.cpp       PC2Mixer::set_parameters
+#   PC2Device.send_ml_telegram           ← masterlink/telegram.cpp MasterlinkTelegram::serialize
+#
+# Role-specific telegram handling (master replies, provider source-burst,
+# link discovery) lives in lib/masterlink_{master,provider,link}.py and
+# carries its own libpc2 attribution.
+#
+# Decode tables (_ML_TELEGRAM_TYPES, _ML_PAYLOAD_TYPES, _ML_NODES) are the
+# same facts libpc2 publishes in masterlink/telegram.hpp and
+# masterlink/masterlink.hpp; most values are also in B&O's MLGW02 spec.
+#
+# Both projects are GPL-3.0-or-later compatible.  See THIRDPARTY.md for the
+# repo-wide summary of third-party code this project builds on.
+# -----------------------------------------------------------------------------
 
 import usb.core
 import usb.util
@@ -10,6 +36,7 @@ import time
 import threading
 import sys
 import json
+import logging
 import os
 import shlex
 import aiohttp
@@ -26,9 +53,54 @@ from lib.config import cfg
 from lib.correlation import install_logging
 from lib.endpoints import INPUT_LED_PULSE, ROUTER_EVENT
 from lib.loop_monitor import LoopMonitor
+from lib.masterlink_link import LinkRole
+from lib.masterlink_master import MasterRole
+from lib.masterlink_provider import (
+    PC2_SESSION_AUDIO,
+    PC2_SESSION_ML,
+    ProviderRole,
+)
 from lib.watchdog import watchdog_loop
 
 logger = install_logging('beo-masterlink')
+
+# Supported role names. Canonical roles are what the runtime actually
+# implements; a couple of aliases are accepted so the config UI and hand-
+# edited configs can use more human language without breaking startup.
+_CANONICAL_ML_ROLES = {"master", "provider", "link", "ir_only", "none"}
+_ML_ROLE_ALIASES = {
+    "audio_slave": "link",
+    "slave": "link",
+    "ir": "ir_only",
+    "ir-only": "ir_only",
+    "passive": "ir_only",
+    "off": "none",
+    "disabled": "none",
+}
+
+
+def normalize_masterlink_role(value):
+    role = str(value or "").strip().lower()
+    if not role:
+        return "master"
+    return _ML_ROLE_ALIASES.get(role, role if role in _CANONICAL_ML_ROLES else "master")
+
+
+def address_filter_payload_for_role(role):
+    """Return the libpc2-derived 0xF6 address-filter payload for ``role``.
+
+    audio-master: claim node 0xC1 and engage the PC2's audio-master path.
+    beoport: passive / local PC2 mode that does not claim audio-master.
+    """
+    canonical = normalize_masterlink_role(role)
+    if canonical in ("none", "ir_only"):
+        # Beoport PC2 mode from libpc2's set_address_filter().
+        return [0xF6, 0x00, 0x82, 0x80, 0x83]
+    # Master / provider / link keep today's audio-master filter because the
+    # provider/link roles still depend on the PC2's current receive/audio
+    # behaviour. See docs/plan-masterlink-roles.md for the open filter work.
+    return [0xF6, 0x10, 0xC1, 0x80, 0x83, 0x05, 0x00, 0x00]
+
 
 # Configuration variables
 BEOSOUND_DEVICE_NAME = cfg("device", default="BeoSound5c")
@@ -41,12 +113,131 @@ MIXER_PORT = int(os.getenv('MIXER_PORT', '8768'))
 VOL_MAX = int(cfg("volume", "max", default=70))
 VOL_DEFAULT = int(cfg("volume", "default", default=30))
 
+# Four orthogonal concerns this service owns:
+#
+#   (1) Decode IR — every Beo4 keycode the PC2 sees on USB (msg type 0x02)
+#       is forwarded to beo-router whenever the PC2 is active. This runs
+#       in master/provider/link/ir_only. In true ``none`` mode the PC2 is
+#       disabled, so there is no local IR decode path. The only knobs are
+#       the per-device-class toggles ml.ir.{audio,video} which gate
+#       forwarding by device_type byte.
+#
+#   (2) Audio master role — BS5c is the audio master on the ML bus.  Replies
+#       to MASTER_PRESENT / AUDIO_BUS / GOTO_SOURCE,
+#       forwards Beo4 transport keys from link devices (BeoLab 2000 /
+#       3500 / Passive), and engages distribute when a link is present.
+#       Default; standalone collapses into this (no link = no-op).
+#       Handler: lib/masterlink_master.MasterRole.  BeoLab 2000 verified
+#       on Office 05/2026.
+#
+#   (3) Provider role — N.MUSIC / N.RADIO source-center for an external
+#       audio master (BS9000 / BC2).  Streams audio + metadata when the
+#       master activates the source.  Handler: lib/masterlink_provider.
+#       ProviderRole.  N.MUSIC BC2-verified 04/2026; N.RADIO unverified.
+#
+#   (4) Link role — BS5c is a link speaker; some other device is master.
+#       Receives sources, decodes track metadata for the UI.  Handler:
+#       lib/masterlink_link.LinkRole.
+#
+#   (5) IR-only passive role — open the PC2 in Beoport passive mode so
+#       locally-received Beo4 IR keycodes still surface on USB, but do not
+#       process or answer Master Link telegrams in software.  Two narrow TX
+#       paths remain available: all-standby and optional clock sync.
+#
+#   (6) None / off role — true no-bus mode. Keep the HTTP side alive (tone
+#       endpoints etc.) but do not open/init the PC2, do not set an address
+#       filter, and do not participate in ML traffic at all. Useful when ML
+#       should not compete with external HA / MLGW / A.AUX routing.
+#
+# Roles 2/3/4/5/6 are mutually exclusive — pick exactly one via
+# masterlink.role.
+# IR decoding (1) runs alongside whichever role is selected.  Outstanding
+# work tracked in docs/plan-masterlink-roles.md.  cfg() is two-level only;
+# nested fields go through dict access on the masterlink block.
+_ML_CFG = cfg("masterlink", default={}) or {}
+ML_ROLE_RAW = _ML_CFG.get("role") or "master"
+ML_ROLE = normalize_masterlink_role(ML_ROLE_RAW)
+_ML_IR = _ML_CFG.get("ir") or {}
+ML_IR_AUDIO = bool(_ML_IR.get("audio", True))
+ML_IR_VIDEO = bool(_ML_IR.get("video", True))
+_ML_PROVIDER = _ML_CFG.get("provider") or {}
+ML_PROVIDER_NMUSIC = _ML_PROVIDER.get("nmusic_source", "") or ""
+ML_PROVIDER_NRADIO = _ML_PROVIDER.get("nradio_source", "") or ""
+ML_LINK_SOURCES = (_ML_CFG.get("link") or {}).get("sources") or []
+_ML_CLOCK = _ML_CFG.get("clock_sync") or {}
+ML_CLOCK_SYNC_ENABLED = bool(
+    _ML_CLOCK.get("enabled", ML_ROLE == "master")
+)
+try:
+    ML_CLOCK_SYNC_INTERVAL = float(_ML_CLOCK.get("interval_seconds", 60.0))
+except (TypeError, ValueError):
+    ML_CLOCK_SYNC_INTERVAL = 60.0
+ML_CLOCK_SYNC_INTERVAL = max(30.0, min(86400.0, ML_CLOCK_SYNC_INTERVAL))
+ML_CLOCK_SOURCE_NODE = 0xC1  # CLOCK status originates at Audio Master
+
+
+def build_ml_clock_payload(local_time=None):
+    """Build the 11-byte CLOCK payload using local time and packed BCD.
+
+    The payload shape is the working MasterDataTool clock frame. Keeping the
+    builder independent from the selected ML role lets a passive Beoport/PC2
+    provide time without claiming Audio Master in its address filter.
+    """
+    t = local_time or time.localtime()
+
+    def bcd(value):
+        return ((value // 10) << 4) | (value % 10)
+
+    return [
+        0x0A, 0x00, 0x03,
+        bcd(t.tm_hour), bcd(t.tm_min), bcd(t.tm_sec),
+        0x00,
+        bcd(t.tm_mday), bcd(t.tm_mon), bcd(t.tm_year % 100),
+        0x0A,
+    ]
+
+
+_VIDEO_SOURCE_ACTIONS = {
+    "tv", "v.aux", "vmem", "dvd", "dtv", "pc", "youtube", "doorcam",
+    "photo", "usb2", "media", "camera", "text",
+}
 # Message processing settings
 MESSAGE_TIMEOUT = 2.0  # Discard messages older than 2 seconds
 DEDUP_COMMANDS = ["volup", "voldown", "left", "right"]  # Commands to deduplicate
 WEBHOOK_INTERVAL = 0.2  # Send webhook at least every 0.2 seconds for deduped commands
 MAX_QUEUE_SIZE = 10  # Maximum number of messages to keep in queue
 sys.stdout.reconfigure(line_buffering=True)
+
+
+class NoBusRole:
+    """True off mode: no PC2 and no ML bus participation."""
+
+    def __init__(self, pc2):
+        self.pc2 = pc2
+
+    def start(self, loop):
+        logger.info("ML role 'none': PC2 disabled, no ML bus participation")
+
+    def handle_telegram(self, ttype, ptype, src_node, dest_node, src_src, payload):
+        logger.debug(
+            "ML role 'none': ignoring telegram src=0x%02X dest=0x%02X t=0x%02X p=0x%02X",
+            src_node, dest_node, ttype, ptype,
+        )
+
+class PassiveRole:
+    """IR-only passive mode: decode local IR but ignore ML telegrams."""
+
+    def __init__(self, pc2):
+        self.pc2 = pc2
+
+    def start(self, loop):
+        logger.info("ML IR-only role: Beoport passive mode, local IR decode only")
+
+    def handle_telegram(self, ttype, ptype, src_node, dest_node, src_src, payload):
+        logger.debug(
+            "ML IR-only role: ignoring telegram src=0x%02X dest=0x%02X t=0x%02X p=0x%02X",
+            src_node, dest_node, ttype, ptype,
+        )
 
 class MessageQueue:
     """Thread-safe queue with lossy behavior and deduplication."""
@@ -141,6 +332,22 @@ class PC2Device:
     EP_OUT = 0x01  # For sending data to device
     EP_IN = 0x81   # For receiving data from device (LIBUSB_ENDPOINT_IN | 1)
 
+    # Default ML bus identity — overridden in __init__ based on ML_ROLE.
+    # master   = 0xC1 AUDIO_MASTER (matches the 0xF6 filter and the PC2's
+    #            internal audio-output engagement)
+    # provider = 0xC2 SOURCE_CENTER (matches the BC2-tested raw frames in
+    #            masterlink_provider.py which embed src=0xC2)
+    # link     = 0xC2 (no separate "link speaker" ID is enumerated in the
+    #            spec; 0xC2 avoids colliding with the bus master at 0xC1)
+    # ir_only / none = 0x82 BEOport/PC2 passive local interface
+    #            (does not claim the audio-master role on the bus)
+    # Provider/link keep the PC2's USB-side address filter in audio-master
+    # mode today because that's the verified receive/audio behaviour.
+    # IR-only uses Beoport passive mode so the card no longer claims
+    # audio-master. Receiving traffic specifically addressed to 0xC2 may
+    # still need a future filter flip; tracked in docs/plan-masterlink-roles.md.
+    OUR_NODE_ID = 0xC1  # AUDIO_MASTER (default; instance overrides for non-master roles)
+
     # Reconnect settings
     RECONNECT_BASE_DELAY = 2.0    # Initial retry delay in seconds
     RECONNECT_MAX_DELAY = 30.0    # Max retry delay
@@ -150,11 +357,15 @@ class PC2Device:
         self.dev = None
         self.running = False
         self.connected = False
+        self._ml_tx_ready = False
+        self._pc2_enabled = (ML_ROLE != "none")
+        self._ml_bus_enabled = ML_ROLE in {"master", "provider", "link"}
         self.message_queue = MessageQueue()
         self.sniffer_thread = None
         self.sender_thread = None
         self.session = None
         self.loop = None
+        self._clock_task = None
         self._background_tasks = BackgroundTaskSet(logger, label="masterlink")
         self.mixer_state = {
             'speakers_on': False,
@@ -176,6 +387,39 @@ class PC2Device:
         self.sniff_mode = False
         self._mixer_runner = None  # aiohttp AppRunner for cleanup
         self._vol_lock = threading.Lock()  # serialize step-based volume changes
+        self._address_filter_role = ML_ROLE
+        # Serializes USB TX across the three threads that send frames:
+        # the sniffer thread (ML role replies), the sender-loop thread
+        # (clock broadcasts), and default-executor threads (mixer HTTP).
+        # Held per-frame in send_message and across the multi-frame
+        # sequences whose ordering libpc2 warns about ("the PC2 crashing
+        # very hard if this is fudged").  RLock so sequences can nest
+        # (audio_on → set_routing → send_message).
+        self._tx_lock = threading.RLock()
+        # Track unknown USB message types we've already logged at INFO so
+        # recurring background heartbeats (e.g. type 0x01, 0x1C every ~30s
+        # on Church) don't flood the journal.
+        self._unknown_usb_seen = set()
+
+        # Role wiring.  Each of the three roles is a sibling module under
+        # lib/masterlink_*.py with the same shape: __init__(pc2), start(loop),
+        # handle_telegram(...).  OUR_NODE_ID gets the role-appropriate value
+        # so outbound src bytes don't collide with the bus master at 0xC1.
+        self._session_mode = None
+        if ML_ROLE == "provider":
+            self.OUR_NODE_ID = 0xC2
+            self._role = ProviderRole(self)
+        elif ML_ROLE == "link":
+            self.OUR_NODE_ID = 0xC2
+            self._role = LinkRole(self)
+        elif ML_ROLE == "ir_only":
+            self.OUR_NODE_ID = 0x82
+            self._role = PassiveRole(self)
+        elif ML_ROLE == "none":
+            self.OUR_NODE_ID = 0x82
+            self._role = NoBusRole(self)
+        else:  # "master" (default) — anything unknown collapses to master
+            self._role = MasterRole(self)
 
     def open(self):
         """Find and open the PC2 device"""
@@ -199,19 +443,26 @@ class PC2Device:
     def _release_device(self):
         """Release the USB device handle (best-effort, ignores errors)."""
         self.connected = False
-        if self.dev is not None:
-            try:
-                usb.util.release_interface(self.dev, 0)
-            except Exception:
-                pass
-            try:
-                usb.util.dispose_resources(self.dev)
-            except Exception:
-                pass
-            self.dev = None
+        self._ml_tx_ready = False
+        # TX lock so we don't yank the handle out from under a thread
+        # that's mid-send_message.
+        with self._tx_lock:
+            if self.dev is not None:
+                try:
+                    usb.util.release_interface(self.dev, 0)
+                except Exception:
+                    pass
+                try:
+                    usb.util.dispose_resources(self.dev)
+                except Exception:
+                    pass
+                self.dev = None
 
     def _reconnect(self):
         """Try to reconnect to the PC2 device with exponential backoff."""
+        if not self._pc2_enabled:
+            logger.info("PC2 reconnect skipped: PC2 disabled for role=%s", ML_ROLE)
+            return False
         self._release_device()
         delay = self.RECONNECT_BASE_DELAY
 
@@ -236,84 +487,108 @@ class PC2Device:
 
     def init(self):
         """Initialize the device with required commands"""
-        self.send_message([0xf1])
-        time.sleep(0.1)
-        self.send_message([0x80, 0x01, 0x00])
+        with self._tx_lock:
+            self.send_message([0xf1])
+            time.sleep(0.1)
+            self.send_message([0x80, 0x01, 0x00])
 
     def send_message(self, message):
         """Send a message to the device"""
+        if not self.dev or not self.connected:
+            logger.warning("Ignoring PC2 message while device is unavailable: %s",
+                           " ".join([f"{x:02X}" for x in message]))
+            return
         telegram = [0x60, len(message)] + list(message) + [0x61]
         logger.debug("Sending: %s", " ".join([f"{x:02X}" for x in telegram]))
-        self.dev.write(self.EP_OUT, telegram, 0)
+        with self._tx_lock:
+            dev = self.dev
+            if dev is None:
+                raise RuntimeError("PC2 device not connected")
+            dev.write(self.EP_OUT, telegram, 0)
 
     def set_address_filter(self):
-        """Set the address filter to capture all data."""
-        self.send_message([0xF6, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF])
-        logger.info("Address filter set")
+        """Claim the Audio Master identity on the ML bus.
+
+        0xF6 is the PC2's address-filter opcode. libpc2's three modes are
+        audio-master / promiscuous / beoport-pc2; only audio-master causes
+        the PC2 to answer as 0xC1 and engage its audio output path.  The
+        previous 0xFF-wildcard value sniffed traffic but the card never
+        behaved as a master, which is why control messages flowed but audio
+        didn't.
+        Constants from libpc2 set_address_filter() (no code copied)."""
+        payload = address_filter_payload_for_role(self._address_filter_role)
+        self.send_message(payload)
+        passive_mode = normalize_masterlink_role(self._address_filter_role) in ("none", "ir_only")
+        mode = "Beoport passive mode" if passive_mode else "Audio Master mode"
+        logger.info("Address filter set (%s)", mode)
+        self._ml_tx_ready = True
 
     def start_sniffing(self):
         """Start sniffing USB messages and sending them via webhook"""
         self.running = True
         self.loop = asyncio.new_event_loop()
 
-        self.sniffer_thread = threading.Thread(target=self._sniff_loop)
-        self.sniffer_thread.daemon = True
-        self.sniffer_thread.start()
+        if self._pc2_enabled:
+            self.sniffer_thread = threading.Thread(target=self._sniff_loop)
+            self.sniffer_thread.daemon = True
+            self.sniffer_thread.start()
 
         self.sender_thread = threading.Thread(target=self._sender_loop_wrapper)
         self.sender_thread.daemon = True
         self.sender_thread.start()
 
-        logger.info("USB message sniffer and sender threads started")
+        if self._pc2_enabled:
+            logger.info("USB message sniffer and sender threads started")
+        else:
+            logger.info("Sender thread started (PC2 disabled)")
 
     def _sniff_loop(self):
         """Background thread to continuously read USB messages and add to queue.
-        Automatically reconnects if the USB device disconnects."""
+        Automatically reconnects if the USB device disconnects.
+
+        USB reads are not frame-aligned — the PC2 endpoint can split a single
+        ``0x60 LEN ... 0x61`` frame across multiple reads.  We buffer bytes
+        and only dispatch when a complete frame is in hand.  Without this,
+        link-device pings from a BeoLab 2000 (~17-byte frames) consistently
+        arrive as 7+7+3 chunks and get dropped as ``Short ML telegram``."""
+        rx_buffer = bytearray()
         while self.running:
             if not self.connected:
                 # Device was lost — try to reconnect
                 if not self._reconnect():
                     break  # self.running became False
+                rx_buffer.clear()
                 continue
 
             try:
                 data = self.dev.read(self.EP_IN, 1024, timeout=500)
+                if not data:
+                    continue
+                rx_buffer.extend(data)
 
-                if data and len(data) > 0:
-                    message = list(data)
-                    timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
-                    msg_type = message[2] if len(message) > 2 else None
+                while True:
+                    # Drop bytes before the first STX so a desync recovers.
+                    stx = rx_buffer.find(0x60)
+                    if stx < 0:
+                        rx_buffer.clear()
+                        break
+                    if stx > 0:
+                        del rx_buffer[:stx]
+                    if len(rx_buffer) < 2:
+                        break  # need LEN byte
 
-                    if self.sniff_mode:
-                        hex_str = " ".join(f"{b:02X}" for b in message)
-                        logger.info("USB RX [type=0x%02X, len=%d]: %s",
-                                    msg_type or 0, len(message), hex_str)
+                    # Frame layout: 0x60 LEN <LEN bytes> 0x61.  Total = LEN+3.
+                    frame_len = rx_buffer[1] + 3
+                    if len(rx_buffer) < frame_len:
+                        break  # wait for more bytes
+                    if rx_buffer[frame_len - 1] != 0x61:
+                        # Bad framing — discard this STX and resync.
+                        del rx_buffer[0]
+                        continue
 
-                    # Mixer state feedback (0x03 / 0x1D) — update confirmed volume
-                    if len(message) >= 5 and msg_type in (0x03, 0x1D):
-                        vol = message[3] & 0x7F
-                        self.mixer_state['volume_confirmed'] = vol
-                        self.mixer_state['volume'] = vol
-                        logger.debug("Mixer feedback: volume=%d", vol)
-
-                    # Beo4 keycode (local IR or link-room IR forwarded by PC2)
-                    elif msg_type == 0x02:
-                        msg_data = self.process_beo4_keycode(timestamp, message)
-                        if msg_data:
-                            self.message_queue.add(msg_data)
-
-                    # Raw MasterLink telegram forwarded by PC2 — source status,
-                    # track info, goto-source, master-present, etc.  Decoded
-                    # and logged only; no routing yet.
-                    elif msg_type == 0x00:
-                        self._log_ml_telegram(message)
-
-                    elif msg_type is not None:
-                        hex_str = " ".join(f"{b:02X}" for b in message[:32])
-                        logger.info("Unknown USB message [type=0x%02X]: %s%s",
-                                    msg_type, hex_str,
-                                    "…" if len(message) > 32 else "")
-
+                    message = list(rx_buffer[:frame_len])
+                    del rx_buffer[:frame_len]
+                    self._process_usb_frame(message)
             except usb.core.USBTimeoutError:
                 pass  # Normal — no data within timeout window
 
@@ -330,16 +605,78 @@ class PC2Device:
                 logger.error("Error in sniffing thread: %s", e)
                 time.sleep(1)
 
+    def _process_usb_frame(self, message):
+        """Dispatch one fully-framed USB message (0x60 LEN ... 0x61)."""
+        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+        msg_type = message[2] if len(message) > 2 else None
+
+        if self.sniff_mode:
+            hex_str = " ".join(f"{b:02X}" for b in message)
+            logger.info("USB RX [type=0x%02X, len=%d]: %s",
+                        msg_type or 0, len(message), hex_str)
+
+        if len(message) >= 5 and msg_type in (0x03, 0x1D):
+            vol = message[3] & 0x7F
+            self.mixer_state['volume_confirmed'] = vol
+            self.mixer_state['volume'] = vol
+            logger.debug("Mixer feedback: volume=%d", vol)
+        elif msg_type == 0x02:
+            msg_data = self.process_beo4_keycode(timestamp, message)
+            if msg_data and self._ir_passes_filter(msg_data):
+                self.message_queue.add(msg_data)
+        elif msg_type == 0x00:
+            if self._ml_bus_enabled:
+                self._log_ml_telegram(message)
+            elif self.sniff_mode:
+                logger.info("ML RX ignored in role=%s", ML_ROLE)
+        elif msg_type is not None:
+            hex_str = " ".join(f"{b:02X}" for b in message[:32])
+            level = logging.DEBUG if msg_type in self._unknown_usb_seen else logging.INFO
+            self._unknown_usb_seen.add(msg_type)
+            logger.log(level, "Unknown USB message [type=0x%02X]: %s%s",
+                       msg_type, hex_str,
+                       "…" if len(message) > 32 else "")
+
     def _sender_loop_wrapper(self):
         """Wrapper to run the async sender loop in its own thread"""
         try:
             asyncio.set_event_loop(self.loop)
             self.loop.run_until_complete(self._init_session())
             self.loop.run_until_complete(self._start_mixer_http())
+            self.loop.create_task(self._load_and_apply_tone())
             self.loop.create_task(watchdog_loop())
+            self._role.start(self.loop)
+            if ML_CLOCK_SYNC_ENABLED and self._pc2_enabled:
+                self._clock_task = self.loop.create_task(self._clock_sync_loop())
+                logger.info(
+                    "ML clock sync started: every %.0fs from source 0x%02X (role=%s)",
+                    ML_CLOCK_SYNC_INTERVAL, ML_CLOCK_SOURCE_NODE, ML_ROLE,
+                )
+            elif ML_CLOCK_SYNC_ENABLED:
+                logger.warning("ML clock sync requested but PC2 is disabled (role=%s)", ML_ROLE)
             self.loop.run_until_complete(self._async_sender_loop())
         except Exception as e:
             logger.error("Sender loop failed: %s", e, exc_info=True)
+
+    def _set_session_mode(self, mode):
+        """Track which conceptual mode the PC2 mixer is configured for.
+
+        Provider role flips its mode tag to ``masterlink`` before sending
+        an ML source-assert burst (which raw-writes 0xE5 routing bytes to
+        the PC2), and back to ``audio`` after the burst settles so that any
+        later code path knows the local audio routing was disturbed.
+
+        Today this is bookkeeping-only.  We don't re-run set_routing()
+        here because the assertion burst writes raw 0xE5 bytes that bypass
+        mixer_state, so the cached state isn't reliable.  Restoring local
+        audio after a burst — when local listeners are present — needs
+        proper hardware testing before we layer it in.  Tracked in
+        docs/plan-masterlink-roles.md."""
+        if self._session_mode == mode:
+            return
+        prev = self._session_mode
+        self._session_mode = mode
+        logger.info("PC2 session mode: %s -> %s", prev or "none", mode)
 
     async def _init_session(self):
         """Initialize aiohttp session for router and LED pulse."""
@@ -411,6 +748,24 @@ class PC2Device:
         except Exception:
             pass  # Ignore errors - this is just visual feedback
 
+    def _ir_passes_filter(self, msg_data):
+        """Apply the masterlink.ir.{audio,video} toggles.
+
+        Beo4 telegrams carry a device-type byte (Audio / Video / Light /
+        Vmem / All).  We gate Audio and Video against the user's toggles;
+        anything else (Light, All, Vmem, unknown) passes through so we
+        don't accidentally swallow alloff or unrelated remote traffic."""
+        dt = msg_data.get('device_type', '')
+        if dt == 'Audio' and not ML_IR_AUDIO:
+            logger.info("IR filter: drop Audio key %s (audio IR disabled)",
+                        msg_data.get('key_name'))
+            return False
+        if dt == 'Video' and not ML_IR_VIDEO:
+            logger.info("IR filter: drop Video key %s (video IR disabled)",
+                        msg_data.get('key_name'))
+            return False
+        return True
+
     def process_beo4_keycode(self, timestamp, data):
         """Process and display a received Beo4 keycode USB message"""
         hex_data = " ".join([f"{x:02X}" for x in data])
@@ -446,6 +801,13 @@ class PC2Device:
             0x32: "left", 0x33: "return", 0x34: "right",
             0x35: "go", 0x36: "stop",
             0x37: "record", 0x38: "shift-stop",
+            # 0x53 is the Beo4 PLAY button (distinct from GO at 0x35), and
+            # it's also what the BeoLab 2000 panel emits on its own PLAY
+            # press.  Mapped to "go" so the router toggles play/pause —
+            # matches user expectation of press-once-pause / press-again-
+            # resume.  The router action "play" is "resume only" which
+            # doesn't toggle, so go is the better fit here.
+            0x53: "go",
             # Cursor (joystick in MODE 1)
             0xCA: "cursor_up", 0xCB: "cursor_down",
             0xCC: "cursor_left", 0xCD: "cursor_right",
@@ -608,7 +970,7 @@ class PC2Device:
         0x04: "MASTER_PRESENT",
         0x06: "DISPLAY_SOURCE",
         0x07: "START_VIDEO_DISTRIBUTION",
-        0x08: "REQUEST_DISTRIBUTED_SOURCE",
+        0x08: "AUDIO_BUS",
         0x0B: "EXTENDED_SOURCE_INFORMATION",
         0x0D: "BEO4_KEY",
         0x10: "STANDBY",
@@ -642,22 +1004,9 @@ class PC2Device:
     # --- Authoritative tables from MLGW02 spec ---
     # Source IDs that appear in STATUS_INFO (0x87) and GOTO_SOURCE (0x45)
     # payloads.  From MLGW02 §7.2 (Source status telegram payload).
-    _ML_SOURCES = {
-        0x0B: "TV",
-        0x15: "V_MEM",       # aka V_TAPE
-        0x16: "DVD_2",       # aka V_TAPE2
-        0x1F: "SAT",         # aka DTV
-        0x29: "DVD",
-        0x33: "DTV_2",       # aka V_AUX
-        0x3E: "V_AUX2",      # aka DOORCAM
-        0x47: "PC",
-        0x6F: "RADIO",
-        0x79: "A_MEM",
-        0x7A: "A_MEM2",
-        0x8D: "CD",
-        0x97: "A_AUX",
-        0xA1: "N_RADIO",
-    }
+    # Source-id maps live in lib/masterlink_master.py (ML_SOURCE_LABELS,
+    # ML_SOURCE_TO_ACTION).  Provider/link reverse-maps live in their own
+    # modules.  This file owns only the protocol-level decode tables below.
 
     # Source activity byte — byte 21 (0-indexed) of a STATUS_INFO payload.
     # From MLGW02 §7.5.
@@ -689,8 +1038,8 @@ class PC2Device:
     }
 
     def _log_ml_telegram(self, msg):
-        """Parse and log an incoming ML telegram (message[2] == 0x00).
-        Read-only for now; full handling lives in the router."""
+        """Parse and log an incoming ML telegram (message[2] == 0x00),
+        then dispatch the audio-master replies we're responsible for."""
         if len(msg) < 14:
             logger.warning("Short ML telegram: %s", " ".join(f"{b:02X}" for b in msg))
             return
@@ -709,9 +1058,19 @@ class PC2Device:
         tname = self._ML_TELEGRAM_TYPES.get(ttype, f"0x{ttype:02X}")
         pname = self._ML_PAYLOAD_TYPES.get(ptype, f"0x{ptype:02X}")
 
-        logger.info("ML %s->%s %s/%s v%d [%d]: %s",
+        logger.info("ML RX raw: %s",
+                    " ".join(f"{b:02X}" for b in msg))
+        logger.info("ML RX %s->%s %s/%s v%d [%d] dst_src=0x%02X src_src=0x%02X payload=%s",
                     src_name, dst_name, tname, pname, pver, psize,
+                    dest_src, src_src,
                     " ".join(f"{b:02X}" for b in payload))
+
+        try:
+            self._dispatch_ml(ttype, ptype, src_node, dest_node, src_src,
+                              payload, pver)
+        except Exception as e:
+            logger.warning("ML dispatch failed (t=0x%02X p=0x%02X): %s",
+                           ttype, ptype, e, exc_info=True)
 
     def send_ml_telegram(self, dest_node, src_node, telegram_type, payload_type,
                          payload_version, payload, dest_src=0x00, src_src=0x00):
@@ -736,13 +1095,85 @@ class PC2Device:
         checksum = sum(frame) & 0xFF
         frame.append(checksum)
         frame.append(0x00)                     # EOT
-        self.send_message([0xE0] + frame)
-        logger.info("ML TX -> node=0x%02X type=0x%02X pt=0x%02X len=%d",
-                    dest_node, telegram_type, payload_type, len(payload))
+        usb_frame = [0xE0] + frame
+        self.send_message(usb_frame)
+        dst_name = self._ML_NODES.get(dest_node, f"0x{dest_node:02X}")
+        tname = self._ML_TELEGRAM_TYPES.get(telegram_type, f"0x{telegram_type:02X}")
+        pname = self._ML_PAYLOAD_TYPES.get(payload_type, f"0x{payload_type:02X}")
+        logger.info("ML TX %s %s/%s v%d [%d] dst_src=0x%02X src_src=0x%02X payload=%s",
+                    dst_name, tname, pname, payload_version, len(payload),
+                    dest_src, src_src,
+                    " ".join(f"{b:02X}" for b in payload))
+        logger.info("ML TX raw: %s",
+                    " ".join(f"{b:02X}" for b in usb_frame))
+
+    def send_ml_clock(self, local_time=None):
+        """Broadcast the current local time without changing the active ML role."""
+        self.send_ml_telegram(
+            dest_node=0x80,            # ALL
+            src_node=ML_CLOCK_SOURCE_NODE,
+            telegram_type=0x14,        # STATUS
+            payload_type=0x40,         # CLOCK
+            payload_version=11,
+            payload=build_ml_clock_payload(local_time),
+        )
+
+    async def _clock_sync_loop(self):
+        """Send immediately after startup, then at the configured interval."""
+        while self.running:
+            delay = ML_CLOCK_SYNC_INTERVAL
+            try:
+                if self.connected and self._ml_tx_ready:
+                    self.send_ml_clock()
+                    logger.debug("ML clock sync tick")
+                else:
+                    # Startup initializes the PC2 just after the sender loop
+                    # begins. Retry promptly so the first clock is not delayed
+                    # by a full broadcast interval.
+                    delay = 1.0
+            except Exception as e:
+                logger.warning("ML clock sync failed: %s", e, exc_info=True)
+                delay = 5.0
+            await asyncio.sleep(delay)
+
+    # --- ML dispatch ---
+    # All role-specific handling lives in lib/masterlink_{master,provider,
+    # link}.py.  This dispatcher just gates on addressing and delegates.
+
+    def _dispatch_ml(self, ttype, ptype, src_node, dest_node, src_src,
+                     payload, pver):
+        """Filter inbound ML telegrams and hand the role module the ones
+        addressed to us.  Drops echoes of our own TX and traffic destined
+        for another node."""
+        if src_node == self.OUR_NODE_ID:
+            logger.debug("ML dispatch: DROP echo (src=us=0x%02X)", src_node)
+            return
+        addressed_to_us = dest_node in (self.OUR_NODE_ID, 0x80, 0x81, 0x83)
+        if not addressed_to_us:
+            logger.info("ML dispatch: DROP not-addressed-to-us "
+                        "(dest=0x%02X not in {0x%02X,0x80,0x81,0x83}, "
+                        "t=0x%02X p=0x%02X)",
+                        dest_node, self.OUR_NODE_ID, ttype, ptype)
+            return
+        logger.info("ML dispatch: ACCEPT from 0x%02X -> 0x%02X t=0x%02X p=0x%02X",
+                    src_node, dest_node, ttype, ptype)
+        self._role.handle_telegram(ttype, ptype, src_node, dest_node,
+                                   src_src, payload)
+
+    # --- Helpers exposed to role modules ---
+
+    def is_powerlink_device(self):
+        """True when audio physically passes through the PC2 mixer — the
+        only output type where ML distribute does anything audible."""
+        return cfg("volume", "type", default="") == "powerlink"
+
+    def node_label(self, node_id):
+        """Human-readable label for an ML node id, falling back to hex."""
+        return self._ML_NODES.get(node_id, f"0x{node_id:02X}")
 
     # --- Mixer control (PC2 commands) ---
-    # Protocol details derived from libpc2 (GPL-3.0) by Tore Sinding Bekkedal;
-    # no source code was copied. See https://github.com/toresbe/libpc2
+    # Protocol details derived from libpc2 (GPL-3.0) by Tore Sinding Bekkedal.
+    # See https://github.com/toresbe/libpc2
 
     def speaker_power(self, on):
         """Turn speakers on or off with proper mute sequencing.
@@ -750,20 +1181,21 @@ class PC2Device:
         libpc2: "I have observed the PC2 crashing very hard if this is fudged."
         Power on: 0xEA 0xFF then unmute.  Power off: mute then 0xEA 0x00.
         """
-        if on:
-            self.send_message([0xea, 0xFF])
-            time.sleep(0.05)
-            self.send_message([0xea, 0x81])  # unmute
-            self.mixer_state['speakers_on'] = True
-            self.mixer_state['muted'] = False
-            logger.info("Speakers powered ON")
-        else:
-            self.send_message([0xea, 0x80])  # mute first
-            time.sleep(0.05)
-            self.send_message([0xea, 0x00])
-            self.mixer_state['speakers_on'] = False
-            self.mixer_state['muted'] = True
-            logger.info("Speakers powered OFF")
+        with self._tx_lock:
+            if on:
+                self.send_message([0xea, 0xFF])
+                time.sleep(0.05)
+                self.send_message([0xea, 0x81])  # unmute
+                self.mixer_state['speakers_on'] = True
+                self.mixer_state['muted'] = False
+                logger.info("Speakers powered ON")
+            else:
+                self.send_message([0xea, 0x80])  # mute first
+                time.sleep(0.05)
+                self.send_message([0xea, 0x00])
+                self.mixer_state['speakers_on'] = False
+                self.mixer_state['muted'] = True
+                logger.info("Speakers powered OFF")
 
     def speaker_mute(self, muted):
         """Mute or unmute speakers."""
@@ -809,9 +1241,10 @@ class PC2Device:
         else:
             locally = 0x00
 
-        self.send_message([0xe7, muted_byte])
-        time.sleep(0.02)
-        self.send_message([0xe5, locally, dist_byte, 0x00, muted_byte])
+        with self._tx_lock:
+            self.send_message([0xe7, muted_byte])
+            time.sleep(0.02)
+            self.send_message([0xe5, locally, dist_byte, 0x00, muted_byte])
 
         self.mixer_state['local'] = local
         self.mixer_state['distribute'] = distribute
@@ -842,21 +1275,28 @@ class PC2Device:
             volume = VOL_DEFAULT
         volume = max(0, min(VOL_MAX, volume))
 
-        self.activate_source()
-        time.sleep(0.1)
-        self.set_routing(local=True)
-        time.sleep(0.1)
-        self.speaker_power(True)
-        time.sleep(0.05)
-        self.set_parameters(volume)
-        time.sleep(0.1)
+        with self._tx_lock:
+            self.activate_source()
+            time.sleep(0.1)
+            # Ask the role whether to also drive audio onto the ML bus.  Master
+            # role says yes when a link device has been seen; provider/link say
+            # no (their audio paths are handled separately).
+            wants = getattr(self._role, 'wants_distribute', None)
+            distribute = bool(wants and wants())
+            self.set_routing(local=True, distribute=distribute)
+            time.sleep(0.1)
+            self.speaker_power(True)
+            time.sleep(0.05)
+            self.set_parameters(volume)
+            time.sleep(0.1)
         logger.info("Audio ON at volume %d", volume)
 
     def audio_off(self):
         """Power off: route off → power off."""
-        self.set_routing(local=False, distribute=False, from_ml=False)
-        time.sleep(0.05)
-        self.speaker_power(False)
+        with self._tx_lock:
+            self.set_routing(local=False, distribute=False, from_ml=False)
+            time.sleep(0.05)
+            self.speaker_power(False)
         self.mixer_state['volume'] = 0
         logger.info("Audio OFF")
 
@@ -899,6 +1339,10 @@ class PC2Device:
         state = dict(self.mixer_state)
         state['volume_pct'] = state['volume']  # volume is already absolute
         state['connected'] = self.connected
+        state['ml_tx_ready'] = self._ml_tx_ready
+        state['masterlink_role'] = ML_ROLE
+        state['clock_sync_enabled'] = ML_CLOCK_SYNC_ENABLED
+        state['clock_sync_interval_seconds'] = ML_CLOCK_SYNC_INTERVAL
         return web.json_response(state)
 
     async def _handle_mixer_distribute(self, request):
@@ -918,12 +1362,11 @@ class PC2Device:
         """GET /mixer/tone               – read current tone state
         POST /mixer/tone  body: {bass?, treble?, balance?, loudness?}
 
-        Runtime tone is applied via an ALSA/PipeWire command template from
-        config (volume.tone.alsa_card + volume.tone.{bass,treble,...}_control)
-        so the change is heard even though the PC2's TDA7409 only accepts
-        0xE3 at power-on.  The PC2 is *also* nudged via 0xE3 on a best-effort
-        basis — if your PC2 firmware honours it mid-session, it takes effect;
-        if not, the ALSA path carries the change."""
+        Applied via a PipeWire filter-chain named ``beo_tone_sink``
+        (see install/configs/53-beosound5c-tone.conf).  The PC2's TDA7409
+        ignores 0xE3 mid-session over USB, so the DSP path is the only
+        one that takes effect.  We still push 0xE3 on a best-effort
+        basis for any hardware that honours it."""
         if request.method == 'GET':
             return web.json_response({
                 'bass': self.mixer_state['bass'],
@@ -936,15 +1379,17 @@ class PC2Device:
         applied = {}
         for key in ('bass', 'treble', 'balance'):
             if key in data:
-                val = int(data[key])
+                val = max(-10, min(10, int(data[key])))
                 self.mixer_state[key] = val
                 applied[key] = val
-                await self._apply_alsa_tone(key, val)
+                await self._apply_pw_tone(key, val)
         if 'loudness' in data:
             val = bool(data['loudness'])
             self.mixer_state['loudness'] = val
             applied['loudness'] = val
-            await self._apply_alsa_tone('loudness', val)
+            await self._apply_pw_tone('loudness', val)
+        if applied:
+            self._schedule_tone_save()
 
         # Best-effort: also push to PC2 via 0xE3 with the current volume.
         loop = asyncio.get_running_loop()
@@ -972,53 +1417,308 @@ class PC2Device:
         except Exception as e:
             logger.debug("0xE3 push failed (expected if PC2 ignores runtime): %s", e)
 
-    async def _apply_alsa_tone(self, kind, value):
-        """Apply bass/treble/balance/loudness via an amixer shell command.
+    # ── PipeWire filter-chain tone control ─────────────────────────────
+    #
+    # Bass / treble / loudness live as biquad shelf filters inside the
+    # ``beo_tone_sink`` virtual sink installed by
+    # ``install/configs/53-beosound5c-tone.conf``.  Balance is a pair of
+    # per-channel volumes on the same node.
+    #
+    # Runtime control is over ``pw-cli s <node-id> Props '{...}'``.  The
+    # node id changes across pipewire restarts, so we resolve it by name
+    # with a short cache.
 
-        Config (config.json):
-            volume.tone.alsa_card:    ALSA card index/name (default "0")
-            volume.tone.bass_control:    "Bass"     (name of amixer control)
-            volume.tone.treble_control:  "Treble"
-            volume.tone.balance_control: "Balance"
-            volume.tone.loudness_control:"Loudness"   (switch control)
+    PW_TONE_NODE = "beo_tone_sink"
+    # Fixed loudness curve when the switch is on.  Low shelf boost at
+    # 100 Hz (+6 dB) + high shelf at 10 kHz (+3 dB).  Independent of
+    # current volume — a simple "smile" tilt the user can toggle.
+    PW_LOUD_BASS_DB = 6.0
+    PW_LOUD_TREBLE_DB = 3.0
 
-        If the matching *_control key is absent, the call is a no-op — the
-        operator hasn't wired up that tone axis for this device.  Failures
-        are logged at warning level and never raised.
-        """
-        tone_cfg = cfg("volume", "tone", default={}) or {}
-        control = tone_cfg.get(f"{kind}_control")
-        if not control:
-            logger.debug("ALSA tone %s: no control configured, skipping", kind)
-            return
-        card = str(tone_cfg.get("alsa_card", "0"))
+    def _pw_env(self):
+        """Environment for pw-cli subprocesses — the masterlink service
+        runs as user ``kirsten`` but outside kirsten's login session, so
+        we need ``XDG_RUNTIME_DIR`` set to reach the pipewire socket."""
+        env = os.environ.copy()
+        env.setdefault('XDG_RUNTIME_DIR', f'/run/user/{os.getuid()}')
+        return env
 
-        if kind == 'loudness':
-            arg = "on" if value else "off"
-        else:
-            arg = str(int(value))
-
-        cmd = ["amixer", "-c", card, "sset", control, arg]
-        logger.info("ALSA tone %s=%s -> %s", kind, arg, " ".join(shlex.quote(c) for c in cmd))
+    async def _find_pw_node(self, name):
+        """Resolve a pipewire node id by ``node.name``.  Short cache —
+        cleared on failure so a restart is picked up on next change."""
+        cached = getattr(self, '_pw_node_cache', {}).get(name)
+        if cached is not None:
+            return cached
         try:
             proc = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.PIPE,
+                'pw-dump',
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+                env=self._pw_env(),
             )
-            _, stderr = await asyncio.wait_for(proc.communicate(), timeout=2.0)
-            if proc.returncode != 0:
-                logger.warning("amixer %s=%s failed (rc=%d): %s",
-                               control, arg, proc.returncode,
-                               stderr.decode(errors='replace').strip())
-        except asyncio.TimeoutError:
-            logger.warning("amixer timed out (%s=%s)", control, arg)
-            try: proc.kill()
-            except Exception: pass
-        except FileNotFoundError:
-            logger.warning("amixer not installed — ALSA tone controls unavailable")
+            out, _ = await asyncio.wait_for(proc.communicate(), timeout=2.0)
+            data = json.loads(out)
         except Exception as e:
-            logger.warning("ALSA tone %s=%s failed: %s", kind, arg, e)
+            logger.warning("pw-dump failed: %s", e)
+            return None
+        for obj in data:
+            info = obj.get('info') or {}
+            props = info.get('props') or {}
+            if props.get('node.name') == name:
+                node_id = obj.get('id')
+                self._pw_node_cache = {name: node_id}
+                return node_id
+        return None
+
+    async def _pw_set_props(self, spec):
+        """Run ``pw-cli s <id> Props '{<spec>}'`` against the tone node.
+        Re-resolves node id once on failure in case pipewire restarted."""
+        for attempt in (1, 2):
+            node_id = await self._find_pw_node(self.PW_TONE_NODE)
+            if node_id is None:
+                logger.warning("PipeWire filter-chain '%s' not found",
+                               self.PW_TONE_NODE)
+                return False
+            cmd = ['pw-cli', 's', str(node_id), 'Props', '{ ' + spec + ' }']
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    *cmd,
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.PIPE,
+                    env=self._pw_env(),
+                )
+                _, stderr = await asyncio.wait_for(
+                    proc.communicate(), timeout=2.0)
+                if proc.returncode == 0:
+                    return True
+                logger.warning("pw-cli rc=%d: %s | %s",
+                               proc.returncode, ' '.join(cmd),
+                               stderr.decode(errors='replace').strip())
+            except Exception as e:
+                logger.warning("pw-cli exception (attempt %d): %s", attempt, e)
+            # First attempt failed — clear the cached id and retry once.
+            self._pw_node_cache = {}
+        return False
+
+    async def _apply_pw_tone(self, kind, value):
+        """Map a tone axis to a PipeWire Props update.  The filter-chain
+        has separate FL/FR nodes (see install/configs/53-beosound5c-tone.conf)
+        so we drive both in one call.
+
+          bass/treble           (-10..+10 → same dB via shelf Gain)
+          balance               (-10..+10 → per-channel mixer gain,
+                                 quieter side scales 1 → 0)
+          loudness              (bool → fixed shelf pair on/off)
+        """
+        if kind in ('bass', 'treble'):
+            g = float(value)
+            return await self._pw_set_props(
+                f'params = [ "{kind}_FL:Gain" {g:.2f} '
+                f'"{kind}_FR:Gain" {g:.2f} ]')
+        if kind == 'loudness':
+            lb = self.PW_LOUD_BASS_DB if value else 0.0
+            lt = self.PW_LOUD_TREBLE_DB if value else 0.0
+            return await self._pw_set_props(
+                f'params = [ "loud_bass_FL:Gain" {lb:.2f} '
+                f'"loud_bass_FR:Gain" {lb:.2f} '
+                f'"loud_treble_FL:Gain" {lt:.2f} '
+                f'"loud_treble_FR:Gain" {lt:.2f} ]')
+        if kind == 'balance':
+            b = max(-10, min(10, int(value)))
+            if b <= 0:
+                fl, fr = 1.0, 1.0 + b / 10.0
+            else:
+                fl, fr = 1.0 - b / 10.0, 1.0
+            return await self._pw_set_props(
+                f'params = [ "bal_FL:Gain 1" {fl:.3f} '
+                f'"bal_FR:Gain 1" {fr:.3f} ]')
+        logger.warning("Unknown tone axis: %s", kind)
+        return False
+
+    # ── Tone persistence to config.json ───────────────────────────────
+    # Debounced — repeated slider drags only trigger one write after the
+    # user stops moving.  Atomic replace so a concurrent write from
+    # beo-input's /config handler can't corrupt the file.
+
+    _TONE_SAVE_DEBOUNCE = 2.0
+
+    def _schedule_tone_save(self):
+        existing = getattr(self, '_tone_save_task', None)
+        if existing and not existing.done():
+            existing.cancel()
+        if self.loop:
+            self._tone_save_task = asyncio.run_coroutine_threadsafe(
+                self._delayed_tone_save(), self.loop)
+
+    async def _delayed_tone_save(self):
+        try:
+            await asyncio.sleep(self._TONE_SAVE_DEBOUNCE)
+            await self._save_tone_to_config()
+        except asyncio.CancelledError:
+            pass
+
+    async def _save_tone_to_config(self):
+        from lib.config import _SEARCH_PATHS
+        path = next((p for p in _SEARCH_PATHS if os.path.exists(p)), None)
+        if not path:
+            logger.warning("No config.json found; tone not persisted")
+            return
+        snapshot = {
+            'bass': int(self.mixer_state['bass']),
+            'treble': int(self.mixer_state['treble']),
+            'balance': int(self.mixer_state['balance']),
+            'loudness': bool(self.mixer_state['loudness']),
+        }
+
+        def _do_save():
+            with open(path) as f:
+                data = json.load(f)
+            data.setdefault('volume', {})['tone'] = snapshot
+            tmp = path + '.tmp'
+            with open(tmp, 'w') as f:
+                json.dump(data, f, indent=2)
+            os.replace(tmp, path)
+
+        try:
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(None, _do_save)
+            logger.info("Persisted tone: %s", snapshot)
+        except PermissionError as e:
+            logger.warning("Tone persist permission denied (%s): %s",
+                           path, e)
+        except Exception as e:
+            logger.warning("Tone persist failed: %s", e)
+
+    async def _load_and_apply_tone(self):
+        """Read saved tone values from config and push them to the
+        filter-chain.  Called once at startup after the mixer HTTP API
+        is up."""
+        tone = cfg('volume', 'tone', default={}) or {}
+        for key in ('bass', 'treble', 'balance'):
+            val = int(tone.get(key, 0))
+            self.mixer_state[key] = max(-10, min(10, val))
+        self.mixer_state['loudness'] = bool(tone.get('loudness', False))
+        for key in ('bass', 'treble', 'balance', 'loudness'):
+            await self._apply_pw_tone(key, self.mixer_state[key])
+        logger.info("Loaded tone from config: bass=%d treble=%d bal=%d loud=%s",
+                    self.mixer_state['bass'], self.mixer_state['treble'],
+                    self.mixer_state['balance'], self.mixer_state['loudness'])
+
+    async def _handle_link_source(self, request):
+        """POST /link/source — link role only: ask the discovered master
+        to switch to a source.
+
+        Body: {"source": "n.music"} (router-style action name) or
+              {"source_byte": 0x7A} (raw ML source byte).
+
+        Returns 409 when role != "link", 503 when the master hasn't been
+        discovered yet, 400 on bad input.
+        """
+        if not isinstance(self._role, LinkRole):
+            return web.json_response(
+                {'ok': False, 'error': 'role is not "link"'}, status=409)
+        try:
+            data = await request.json()
+        except Exception as e:
+            return web.json_response(
+                {'ok': False, 'error': f'bad JSON: {e}'}, status=400)
+
+        source_byte = data.get('source_byte')
+        if source_byte is None:
+            name = (data.get('source') or '').strip().lower()
+            if not name:
+                return web.json_response(
+                    {'ok': False, 'error': 'missing "source" or "source_byte"'},
+                    status=400)
+            # Reverse the action→byte map.  Single source byte per action
+            # (the multi-mapping in _ML_SOURCE_TO_ACTION is byte→action;
+            # here we want action→byte and the duplicates collapse to the
+            # canonical byte: amem→0x79, dvd→0x29).
+            reverse = {
+                "tv": 0x0B, "vmem": 0x15, "dvd": 0x29, "dtv": 0x1F,
+                "v.aux": 0x33, "v.aux2": 0x3E, "pc": 0x47,
+                "radio": 0x6F, "amem": 0x79, "n.music": 0x7A,
+                "cd": 0x8D, "a.aux": 0x97, "n.radio": 0xA1,
+            }
+            source_byte = reverse.get(name)
+            if source_byte is None:
+                return web.json_response(
+                    {'ok': False, 'error': f'unknown source name {name!r}'},
+                    status=400)
+        try:
+            source_byte = int(source_byte) & 0xFF
+        except (TypeError, ValueError):
+            return web.json_response(
+                {'ok': False, 'error': '"source_byte" must be an int'},
+                status=400)
+
+        loop = asyncio.get_running_loop()
+        try:
+            await loop.run_in_executor(
+                None, self._role.request_source, source_byte)
+        except RuntimeError as e:
+            return web.json_response(
+                {'ok': False, 'error': str(e)}, status=503)
+        return web.json_response(
+            {'ok': True, 'source_byte': source_byte,
+             'master_node_id': self._role.master_node_id})
+
+    async def _handle_ml_standby(self, request):
+        """POST /ml/standby — broadcast the standard ML shutdown command.
+
+        Used for "all standby": long-press on the BS5c power button and
+        the Beo4 ALL-off key both route here via the router. This is a
+        deliberately narrow TX exception for ir_only mode; unrestricted
+        /ml/send remains disabled there. The COMMAND/RELEASE shape, source
+        and ALL destination follow libpc2's send_shutdown_all().
+        """
+        if not self._pc2_enabled:
+            return web.json_response(
+                {'ok': False, 'error': f'PC2 is disabled for role {ML_ROLE!r}'},
+                status=503,
+            )
+        if not self.connected or not self._ml_tx_ready:
+            return web.json_response(
+                {'ok': False, 'error': 'PC2 is not connected and initialized'},
+                status=503,
+            )
+        try:
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(
+                None, self.send_ml_telegram,
+                0x80,                 # ALL
+                0xC1,                 # AUDIO_MASTER (libpc2 shutdown source)
+                0x0A,                 # COMMAND
+                0x11,                 # RELEASE / shutdown
+                1,
+                [],
+            )
+            logger.info("ML all-standby RELEASE broadcast sent (role=%s)", ML_ROLE)
+            return web.json_response({'ok': True, 'role': ML_ROLE})
+        except Exception as e:
+            logger.error("ML all-standby TX failed: %s", e)
+            return web.json_response({'ok': False, 'error': str(e)}, status=500)
+
+    async def _handle_ml_clock(self, request):
+        """POST /ml/clock — send one clock telegram using the BS5c clock."""
+        if not self._pc2_enabled:
+            return web.json_response(
+                {'ok': False, 'error': f'PC2 is disabled for role {ML_ROLE!r}'},
+                status=503,
+            )
+        if not self.connected or not self._ml_tx_ready:
+            return web.json_response(
+                {'ok': False, 'error': 'PC2 is not connected and initialized'},
+                status=503,
+            )
+        try:
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(None, self.send_ml_clock)
+            logger.info("ML clock sync requested over HTTP (role=%s)", ML_ROLE)
+            return web.json_response({'ok': True, 'role': ML_ROLE})
+        except Exception as e:
+            logger.error("ML clock TX failed: %s", e)
+            return web.json_response({'ok': False, 'error': str(e)}, status=500)
 
     async def _handle_ml_send(self, request):
         """POST /ml/send — raw ML telegram TX for experimentation.
@@ -1034,6 +1734,11 @@ class PC2Device:
           "dest_src": 0x00, "src_src": 0x00
         }
         """
+        if not self._ml_bus_enabled:
+            return web.json_response(
+                {'ok': False, 'error': f'role {ML_ROLE!r} does not transmit ML telegrams'},
+                status=409,
+            )
         data = await request.json()
         try:
             loop = asyncio.get_running_loop()
@@ -1071,6 +1776,9 @@ class PC2Device:
         app.router.add_get('/mixer/tone', self._handle_mixer_tone)
         app.router.add_post('/mixer/tone', self._handle_mixer_tone)
         app.router.add_post('/ml/send', self._handle_ml_send)
+        app.router.add_post('/ml/standby', self._handle_ml_standby)
+        app.router.add_post('/ml/clock', self._handle_ml_clock)
+        app.router.add_post('/link/source', self._handle_link_source)
         runner = web.AppRunner(app)
         await runner.setup()
         site = web.TCPSite(runner, '0.0.0.0', MIXER_PORT)
@@ -1081,6 +1789,9 @@ class PC2Device:
     def stop_sniffing(self):
         """Stop the USB sniffer"""
         self.running = False
+
+        if self.loop and self._clock_task:
+            self.loop.call_soon_threadsafe(self._clock_task.cancel)
 
         # Clean up mixer HTTP server
         if self.loop and self._mixer_runner:
@@ -1126,16 +1837,46 @@ if __name__ == "__main__":
     try:
         pc2 = PC2Device()
         pc2.sniff_mode = ml_sniff
-        pc2.open()
+        # PC2 dongle is optional — devices without it (e.g. Sonos-only setups
+        # like Church) still need masterlink running for the mixer HTTP API
+        # (tone controls). ``role=ir_only`` still opens the PC2 in Beoport
+        # passive mode so local Beo4 IR keycodes surface on USB. It ignores
+        # inbound ML telegrams; only all-standby and optional clock sync may
+        # transmit. In true
+        # ``role=none`` mode we intentionally do not touch the PC2 at all:
+        # no open(), no init(), no address-filter, and no reconnect loop.
+        if pc2._pc2_enabled:
+            try:
+                pc2.open()
+                pc2_ready = True
+            except Exception as e:
+                logger.warning("PC2 open failed: %s — running tone API only; "
+                               "sniffer will retry in background", e)
+                pc2_ready = False
+        else:
+            logger.info("Skipping PC2 open/init/filter: PC2 disabled for role=%s",
+                        ML_ROLE)
+            pc2_ready = False
+
         pc2.start_sniffing()
 
-        logger.info("Starting device initialization")
-        pc2.init()
+        logger.info("Master Link config: role=%s%s ir_audio=%s ir_video=%s "
+                    "clock_sync=%s/%.0fs provider.nmusic=%r "
+                    "provider.nradio=%r link.sources=%s",
+                    ML_ROLE,
+                    f" (from {ML_ROLE_RAW!r})" if normalize_masterlink_role(ML_ROLE_RAW) != str(ML_ROLE_RAW).strip().lower() else "",
+                    ML_IR_AUDIO, ML_IR_VIDEO,
+                    ML_CLOCK_SYNC_ENABLED, ML_CLOCK_SYNC_INTERVAL,
+                    ML_PROVIDER_NMUSIC, ML_PROVIDER_NRADIO, ML_LINK_SOURCES)
 
-        logger.info("Setting address filter")
-        pc2.set_address_filter()
-        if ml_sniff:
-            logger.info("ML sniffer ON — every USB packet will be logged in full hex.")
+        if pc2_ready:
+            logger.info("Starting device initialization")
+            pc2.init()
+
+            logger.info("Setting address filter")
+            pc2.set_address_filter()
+            if ml_sniff:
+                logger.info("ML sniffer ON — every USB packet will be logged in full hex.")
 
         if audio_test:
             logger.info("Audio test mode. Commands: on [vol], off, vol <n>, vol+ [n], vol- [n], mute, unmute, status, quit")
@@ -1173,7 +1914,12 @@ if __name__ == "__main__":
                 else:
                     print(f"Unknown command: {cmd}")
         else:
-            logger.info("Device initialized. Sniffing USB messages... (Ctrl+C to exit)")
+            if pc2._ml_bus_enabled:
+                logger.info("Device initialized. Sniffing USB messages... (Ctrl+C to exit)")
+            elif pc2._pc2_enabled:
+                logger.info("Device initialized in IR-only passive mode. Decoding local IR only. (Ctrl+C to exit)")
+            else:
+                logger.info("Service initialized with PC2 disabled. HTTP/tone endpoints only. (Ctrl+C to exit)")
             while True:
                 time.sleep(1)
 

@@ -80,11 +80,35 @@ class MenuManager {
                         </div>
                     </div>`
             },
+            'menu/queue': {
+                title: 'QUEUE',
+                content: `
+                    <div id="queue-view" class="queue-view">
+                        <div class="queue-view-header">
+                            <div class="queue-view-title">Queue</div>
+                            <div class="queue-view-count">Loading</div>
+                        </div>
+                        <div class="queue-view-list"></div>
+                        <div class="queue-view-footer">
+                            <div class="queue-view-status">Loading queue...</div>
+                        </div>
+                    </div>`
+            },
         };
 
         this._menuLoaded = false;
         this._menuRetries = 0;
         this._lastSelectedPath = null;
+        this._lastClickedPath = null;
+        this._menuLayout = null;
+        this._renderedMenuNodes = new Map();
+        this._renderedOrderedNodes = [];
+        this._dirtySourceRoutes = new Set();
+        this._fetchMenuPromise = null;
+        this._sourceScriptPromises = new Map();
+        this._evictionGraceMs = c.timeouts?.menuEvictionGrace || 12000;
+        this._evictionTimer = null;
+        this._evictionRoute = null;
 
         // Callbacks wired by UIStore
         this.onNavigate = null;      // (path) => void
@@ -94,92 +118,131 @@ class MenuManager {
     // ── Router menu fetch ──
 
     async fetchMenu() {
-        try {
-            const resp = await fetch(`${window.AppConfig?.routerUrl || 'http://localhost:8770'}/router/menu`);
-            const data = await resp.json();
-            if (!data || !data.items) return;
+        if (this._fetchMenuPromise) return this._fetchMenuPromise;
 
-            // Load source view scripts on demand
-            for (const item of data.items) {
-                if (item.dynamic && item.preset && !window.SourcePresets?.[item.preset]) {
-                    await this.loadSourceScript(item.preset);
-                }
-            }
+        this._fetchMenuPromise = (async () => {
+            try {
+                const resp = await fetch(`${window.AppConfig?.routerUrl || 'http://localhost:8770'}/router/menu`);
+                const data = await resp.json();
+                if (!data || !data.items) return;
 
-            // Rebuild menu items from router response
-            const newItems = [];
-            for (const item of data.items) {
-                const path = `menu/${item.id}`;
-
-                // Webpage items: iframe view (preserved across navigations via rescue logic)
-                if (item.type === 'webpage' && item.url) {
-                    const containerId = `webpage-container-${item.id}`;
-                    this.views[path] = {
-                        title: item.title,
-                        content: `<div id="${containerId}" class="webpage-container" style="position:absolute;top:0;left:0;width:100%;height:100%;"></div>`,
-                        _webpage: { iframeId: `preload-webpage-${item.id}`, containerId, url: item.url }
-                    };
-                    newItems.push({ title: item.title, path });
-                }
-                // Dynamic sources: always register view from preset (even if menu item already exists)
-                else if (item.dynamic && item.preset) {
-                    if (!window.SourcePresets?.[item.preset]) {
+                // Load source view scripts on demand
+                for (const item of data.items) {
+                    if (item.dynamic && item.preset && !window.SourcePresets?.[item.preset]) {
                         await this.loadSourceScript(item.preset);
                     }
-                    const preset = window.SourcePresets?.[item.preset];
-                    if (preset) {
-                        newItems.push({ title: item.title, path: preset.item.path, dynamic: true });
-                        if (preset.view) {
-                            this.views[preset.item.path] = preset.view;
+                }
+
+                // Rebuild menu items from router response
+                const newItems = [];
+                for (const item of data.items) {
+                    const path = `menu/${item.id}`;
+
+                    // Webpage items: iframe view (preserved across navigations via rescue logic)
+                    if (item.type === 'webpage' && item.url) {
+                        const containerId = `webpage-container-${item.id}`;
+                        this.views[path] = {
+                            title: item.title,
+                            content: `<div id="${containerId}" class="webpage-container" style="position:absolute;top:0;left:0;width:100%;height:100%;"></div>`,
+                            _webpage: { iframeId: `preload-webpage-${item.id}`, containerId, url: item.url }
+                        };
+                        newItems.push({ title: item.title, path });
+                    }
+                    // Dynamic sources: always register view from preset (even if menu item already exists)
+                    else if (item.dynamic && item.preset) {
+                        if (!window.SourcePresets?.[item.preset]) {
+                            await this.loadSourceScript(item.preset);
+                        }
+                        const preset = window.SourcePresets?.[item.preset];
+                        if (preset) {
+                            newItems.push({ title: item.title, path: preset.item.path, dynamic: true });
+                            if (preset.view) {
+                                this.views[preset.item.path] = preset.view;
+                            }
+                        } else {
+                            newItems.push({ title: item.title, path, dynamic: true });
                         }
                     } else {
-                        newItems.push({ title: item.title, path, dynamic: true });
+                        const existing = this.menuItems.find(m => m.path === path);
+                        newItems.push(existing || { title: item.title, path });
                     }
-                } else {
-                    const existing = this.menuItems.find(m => m.path === path);
-                    newItems.push(existing || { title: item.title, path });
                 }
+                const activeSourceId = String(data.active_source || '').trim();
+                const usesQueueOverlay = Boolean(window.SourcePresets?.[activeSourceId]?.queueOverlay?.playing);
+                if (data.active_has_queue && !usesQueueOverlay && !newItems.some((item) => item.path === 'menu/queue')) {
+                    const playingIndex = newItems.findIndex((item) => item.path === 'menu/playing');
+                    const queueItem = { title: 'QUEUE', path: 'menu/queue' };
+                    if (playingIndex >= 0) {
+                        newItems.splice(playingIndex + 1, 0, queueItem);
+                    } else {
+                        newItems.unshift(queueItem);
+                    }
+                }
+
+                this.menuItems = newItems;
+
+                // Sync to laser position mapper
+                if (window.LaserPositionMapper?.updateMenuItems) {
+                    window.LaserPositionMapper.updateMenuItems(this.menuItems);
+                }
+                this._cleanupRemovedRoute();
+
+                this._menuLoaded = true;
+                this._menuRetries = 0;
+
+                // Notify UIStore so it can restore active source
+                if (this.onMenuLoaded) this.onMenuLoaded(data);
+
+                this.renderMenuItems();
+                console.log(`[MENU] Loaded ${newItems.length} items from router (active: ${data.active_source || 'none'})`);
+            } catch (e) {
+                this._menuLoaded = true;
+                const attempt = (this._menuRetries = (this._menuRetries || 0) + 1);
+                if (attempt <= 15) {
+                    const delay = Math.min(attempt * 2000, 10000);
+                    console.log(`[MENU] Router unavailable, retrying in ${delay / 1000}s (attempt ${attempt})`);
+                    setTimeout(() => this.fetchMenu(), delay);
+                } else {
+                    console.log('[MENU] Router unavailable after 15 attempts, using defaults');
+                }
+            } finally {
+                this._fetchMenuPromise = null;
             }
-            this.menuItems = newItems;
+        })();
 
-            // Sync to laser position mapper
-            if (window.LaserPositionMapper?.updateMenuItems) {
-                window.LaserPositionMapper.updateMenuItems(this.menuItems);
-            }
-
-            this._menuLoaded = true;
-            this._menuRetries = 0;
-
-            // Notify UIStore so it can restore active source
-            if (this.onMenuLoaded) this.onMenuLoaded(data);
-
-            this.renderMenuItems();
-            console.log(`[MENU] Loaded ${newItems.length} items from router (active: ${data.active_source || 'none'})`);
-        } catch (e) {
-            this._menuLoaded = true;
-            const attempt = (this._menuRetries = (this._menuRetries || 0) + 1);
-            if (attempt <= 15) {
-                const delay = Math.min(attempt * 2000, 10000);
-                console.log(`[MENU] Router unavailable, retrying in ${delay / 1000}s (attempt ${attempt})`);
-                setTimeout(() => this.fetchMenu(), delay);
-            } else {
-                console.log('[MENU] Router unavailable after 15 attempts, using defaults');
-            }
-        }
+        return this._fetchMenuPromise;
     }
 
     /**
      * Dynamically load a source's view script (web/sources/{preset}/view.js).
      */
     loadSourceScript(preset) {
-        return new Promise(resolve => {
+        if (window.SourcePresets?.[preset]) {
+            return Promise.resolve(window.SourcePresets[preset]);
+        }
+
+        const existingPromise = this._sourceScriptPromises.get(preset);
+        if (existingPromise) return existingPromise;
+
+        const promise = new Promise(resolve => {
             const existing = document.head.querySelector(`script[data-preset="${preset}"]`);
-            if (existing) existing.remove();
+            if (existing) {
+                if (existing.dataset.loaded === 'true' || existing.dataset.loaded === 'error') {
+                    resolve(window.SourcePresets?.[preset]);
+                    return;
+                }
+
+                const finish = () => resolve(window.SourcePresets?.[preset]);
+                existing.addEventListener('load', finish, { once: true });
+                existing.addEventListener('error', finish, { once: true });
+                return;
+            }
 
             const script = document.createElement('script');
             script.src = `sources/${preset}/view.js`;
             script.dataset.preset = preset;
             script.onload = () => {
+                script.dataset.loaded = 'true';
                 console.log(`[MENU] Loaded source script: ${preset}`);
                 const sp = window.SourcePresets?.[preset];
                 if (sp?.view?.preloadId && sp.view.iframeSrc) {
@@ -188,14 +251,24 @@ class MenuManager {
                         window.IframeMessenger?.registerIframe(sp.item.path, sp.view.preloadId);
                     }
                 }
-                resolve();
+                resolve(sp);
             };
             script.onerror = () => {
+                script.dataset.loaded = 'error';
                 console.warn(`[MENU] Source script not found: ${preset}`);
                 resolve();
             };
             document.head.appendChild(script);
         });
+
+        this._sourceScriptPromises.set(
+            preset,
+            promise.finally(() => {
+                this._sourceScriptPromises.delete(preset);
+            })
+        );
+
+        return this._sourceScriptPromises.get(preset);
     }
 
     // ── Iframe preloading ──
@@ -244,15 +317,58 @@ class MenuManager {
         console.log(`[PRELOAD] Loading source iframe: ${src}`);
     }
 
-    reloadAllSourceIframes() {
-        for (const sp of Object.values(window.SourcePresets || {})) {
-            if (sp.view?.preloadId) {
-                const iframe = document.getElementById(sp.view.preloadId);
-                if (iframe?.contentWindow) {
-                    iframe.contentWindow.postMessage({ type: 'reload-data' }, '*');
-                }
+    _getSourcePresetForRoute(route) {
+        for (const preset of Object.values(window.SourcePresets || {})) {
+            if (preset?.item?.path === route) {
+                return preset;
             }
         }
+        return null;
+    }
+
+    markSourceIframeDirty(route) {
+        const normalizedRoute = String(route || '').trim();
+        if (!normalizedRoute) return false;
+        const preset = this._getSourcePresetForRoute(normalizedRoute);
+        if (!preset?.view?.preloadId) return false;
+        this._dirtySourceRoutes.add(normalizedRoute);
+        return true;
+    }
+
+    reloadSourceIframe(route, options = {}) {
+        const normalizedRoute = String(route || '').trim();
+        if (!normalizedRoute) return false;
+        const preset = this._getSourcePresetForRoute(normalizedRoute);
+        const preloadId = preset?.view?.preloadId;
+        if (!preloadId) return false;
+
+        const iframe = document.getElementById(preloadId);
+        if (!iframe?.contentWindow) return false;
+
+        iframe.contentWindow.postMessage({ type: 'reload-data' }, '*');
+        if (options.clearDirty !== false) {
+            this._dirtySourceRoutes.delete(normalizedRoute);
+        }
+        return true;
+    }
+
+    reloadDirtySourceIframes(routes = null) {
+        const targetRoutes = Array.isArray(routes) ? routes : Array.from(this._dirtySourceRoutes);
+        let reloaded = 0;
+        targetRoutes.forEach((route) => {
+            if (this.reloadSourceIframe(route)) {
+                reloaded += 1;
+            }
+        });
+        return reloaded;
+    }
+
+    reloadAllSourceIframes() {
+        const allRoutes = Object.values(window.SourcePresets || {})
+            .map((preset) => String(preset?.item?.path || '').trim())
+            .filter(Boolean);
+        allRoutes.forEach((route) => this.markSourceIframeDirty(route));
+        return this.reloadDirtySourceIframes(allRoutes);
     }
 
     attachPreloadedIframe(preloadId) {
@@ -318,10 +434,64 @@ class MenuManager {
 
     // ── Rendering ──
 
+    _cleanupRemovedRoute() {
+        const route = this._currentRoute;
+        if (!route || this.menuItems.some((m) => m.path === route)) {
+            this._cancelPendingEviction();
+            return;
+        }
+
+        if (this._evictionTimer) {
+            if (this._evictionRoute === route) return;
+            this._cancelPendingEviction();
+        }
+
+        console.log(`[MENU] Current view ${route} missing after menu rebuild — evicting in ${this._evictionGraceMs / 1000}s unless it returns`);
+        this._evictionRoute = route;
+        this._evictionTimer = setTimeout(() => {
+            this._evictionTimer = null;
+            const pending = this._evictionRoute;
+            this._evictionRoute = null;
+            if (this._currentRoute !== pending) return;
+            if (this.menuItems.some((m) => m.path === pending)) return;
+
+            console.log(`[MENU] Current view ${pending} still missing after grace period — navigating away`);
+            if (this.onNavigate) {
+                this.onNavigate('menu/playing');
+                this._currentRoute = 'menu/playing';
+            }
+            delete this.views[pending];
+        }, this._evictionGraceMs);
+    }
+
+    _cancelPendingEviction() {
+        if (this._evictionTimer) {
+            clearTimeout(this._evictionTimer);
+            this._evictionTimer = null;
+        }
+        this._evictionRoute = null;
+    }
+
+    getAngleStep() {
+        const mapper = (typeof window !== 'undefined' && window.LaserPositionMapper) || null;
+        return mapper?.getMenuAngleStepFor
+            ? mapper.getMenuAngleStepFor(this.menuItems.length)
+            : this.angleStep;
+    }
+
     getStartItemAngle() {
+        const dynamicStart = Number(this._menuLayout?.startAngle);
+        if (Number.isFinite(dynamicStart)) {
+            return dynamicStart;
+        }
         const visibleCount = this.menuItems.length;
-        const totalSpan = this.angleStep * (visibleCount - 1);
+        const totalSpan = this.getAngleStep() * (visibleCount - 1);
         return 180 - totalSpan / 2;
+    }
+
+    setMenuLayout(layout = null) {
+        const startAngle = Number(layout?.startAngle);
+        this._menuLayout = Number.isFinite(startAngle) ? { startAngle } : null;
     }
 
     _ensureHoverDelegation(menuContainer) {
@@ -341,60 +511,96 @@ class MenuManager {
         });
     }
 
+    _createMenuItemElement(item) {
+        const itemElement = document.createElement('div');
+        itemElement.className = 'list-item';
+        itemElement.dataset.path = item.path;
+        itemElement.textContent = item.title;
+        return itemElement;
+    }
+
+    _applyMenuItemLayout(itemElement, item, index, visibleItems) {
+        itemElement.dataset.path = item.path;
+        if (itemElement.textContent !== item.title) {
+            itemElement.textContent = item.title;
+        }
+
+        const itemAngle = this.getStartItemAngle() + (visibleItems.length - 1 - index) * this.getAngleStep();
+        const position = arcs.getArcPoint(this.radius, 20, itemAngle);
+        itemElement.dataset.angle = String(itemAngle);
+
+        Object.assign(itemElement.style, {
+            position: 'absolute',
+            left: `${position.x - 100}px`,
+            top: `${position.y - 25}px`,
+            width: '100px',
+            height: '50px',
+            cursor: 'pointer'
+        });
+
+        if (item.path === this._lastSelectedPath) {
+            itemElement.classList.add('selectedItem');
+        } else {
+            itemElement.classList.remove('selectedItem');
+        }
+    }
+
     renderMenuItems() {
         const menuContainer = document.getElementById('menuItems');
         if (!menuContainer) return;
         this._ensureHoverDelegation(menuContainer);
-        menuContainer.innerHTML = '';
-
         const visibleItems = this.menuItems;
-        visibleItems.forEach((item, index) => {
-            const itemElement = document.createElement('div');
-            itemElement.className = 'list-item';
-            itemElement.dataset.path = item.path;
-            itemElement.textContent = item.title;
-
-            const itemAngle = this.getStartItemAngle() + (visibleItems.length - 1 - index) * this.angleStep;
-            const position = arcs.getArcPoint(this.radius, 20, itemAngle);
-            itemElement.dataset.angle = String(itemAngle);
-
-            Object.assign(itemElement.style, {
-                position: 'absolute',
-                left: `${position.x - 100}px`,
-                top: `${position.y - 25}px`,
-                width: '100px',
-                height: '50px',
-                cursor: 'pointer'
-            });
-
-            if (item.path === this._lastSelectedPath) {
-                itemElement.classList.add('selectedItem');
+        const visiblePaths = new Set(visibleItems.map((item) => item.path));
+        this._renderedMenuNodes.forEach((itemElement, path) => {
+            if (!visiblePaths.has(path)) {
+                itemElement.remove();
+                this._renderedMenuNodes.delete(path);
             }
-
-            menuContainer.appendChild(itemElement);
         });
+
+        const orderedNodes = [];
+        visibleItems.forEach((item, index) => {
+            let itemElement = this._renderedMenuNodes.get(item.path);
+            if (!itemElement) {
+                itemElement = this._createMenuItemElement(item);
+                this._renderedMenuNodes.set(item.path, itemElement);
+            }
+            this._applyMenuItemLayout(itemElement, item, index, visibleItems);
+            orderedNodes.push(itemElement);
+        });
+
+        orderedNodes.forEach((itemElement, index) => {
+            const currentNode = menuContainer.children[index];
+            if (currentNode !== itemElement) {
+                menuContainer.insertBefore(itemElement, currentNode || null);
+            }
+        });
+
+        this._renderedOrderedNodes = orderedNodes;
     }
 
     /**
      * Bold the menu item at selectedIndex; click when selectedPath changes.
      */
     applyMenuHighlight(selectedIndex, selectedPath) {
-        const menuContainer = document.getElementById('menuItems');
-        if (!menuContainer) return;
-
-        const menuElements = menuContainer.querySelectorAll('.list-item');
-        menuElements.forEach((el, i) => {
-            if (i === selectedIndex) {
-                el.classList.add('selectedItem');
-            } else {
-                el.classList.remove('selectedItem');
-            }
-        });
+        const previousPath = this._lastSelectedPath;
+        if (previousPath && previousPath !== selectedPath) {
+            this._renderedMenuNodes.get(previousPath)?.classList.remove('selectedItem');
+        }
+        if (selectedPath) {
+            this._renderedMenuNodes.get(selectedPath)?.classList.add('selectedItem');
+        }
 
         // Click exactly when the bolded item changes — one click per highlight change
-        const changed = selectedPath && selectedPath !== this._lastSelectedPath;
         this._lastSelectedPath = selectedPath;
-        return changed; // caller sends click command
+        return this._shouldClick(selectedPath);
+    }
+
+    _shouldClick(selectedPath) {
+        const changed = !!(selectedPath && this._lastClickedPath &&
+                           selectedPath !== this._lastClickedPath);
+        if (selectedPath) this._lastClickedPath = selectedPath;
+        return changed;
     }
 
     // ── Dynamic add/remove ──
@@ -416,6 +622,7 @@ class MenuManager {
         if (window.LaserPositionMapper?.updateMenuItems) {
             window.LaserPositionMapper.updateMenuItems(this.menuItems);
         }
+        this._cleanupRemovedRoute();
 
         console.log(`[MENU] Added "${item.title}" after ${afterPath} (now ${this.menuItems.length} items)`);
         this.renderMenuItemsAnimated();
@@ -440,6 +647,7 @@ class MenuManager {
         if (window.LaserPositionMapper?.updateMenuItems) {
             window.LaserPositionMapper.updateMenuItems(this.menuItems);
         }
+        this._cleanupRemovedRoute();
 
         console.log(`[MENU] Removed "${path}" (now ${this.menuItems.length} items)`);
         this.renderMenuItemsAnimated();
@@ -461,37 +669,11 @@ class MenuManager {
             oldPositions[el.dataset.path] = { left: rect.left, top: rect.top };
         });
 
-        // --- Rebuild DOM ---
-        menuContainer.innerHTML = '';
-        const visibleItems = this.menuItems;
-        visibleItems.forEach((item, index) => {
-            const itemElement = document.createElement('div');
-            itemElement.className = 'list-item';
-            itemElement.dataset.path = item.path;
-            itemElement.textContent = item.title;
-
-            const itemAngle = this.getStartItemAngle() + (visibleItems.length - 1 - index) * this.angleStep;
-            const position = arcs.getArcPoint(this.radius, 20, itemAngle);
-            itemElement.dataset.angle = String(itemAngle);
-
-            Object.assign(itemElement.style, {
-                position: 'absolute',
-                left: `${position.x - 100}px`,
-                top: `${position.y - 25}px`,
-                width: '100px',
-                height: '50px',
-                cursor: 'pointer'
-            });
-
-            if (item.path === this._lastSelectedPath) {
-                itemElement.classList.add('selectedItem');
-            }
-
-            menuContainer.appendChild(itemElement);
-        });
+        // --- Reuse DOM nodes and move them into their new positions ---
+        this.renderMenuItems();
 
         // --- LAST + INVERT + PLAY ---
-        menuContainer.querySelectorAll('.list-item[data-path]').forEach(el => {
+        this._renderedOrderedNodes.forEach((el) => {
             const path = el.dataset.path;
             const newRect = el.getBoundingClientRect();
 
@@ -514,4 +696,8 @@ class MenuManager {
     }
 }
 
-window.MenuManager = MenuManager;
+if (typeof module !== 'undefined' && module.exports) {
+    module.exports = { MenuManager };
+} else {
+    window.MenuManager = MenuManager;
+}

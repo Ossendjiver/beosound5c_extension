@@ -47,6 +47,7 @@ def _make_router():
 
     r.registry = MagicMock()
     r.set_volume = AsyncMock()
+    r.set_volume_state = AsyncMock()
     r.touch_activity = MagicMock()
     r._wake_screen = AsyncMock()
     r._screen_off = AsyncMock()
@@ -142,6 +143,16 @@ class TestVolume:
         }))
         handler.router.set_volume.assert_awaited_once_with(33)
 
+    def test_volume_up_state_only_skips_output_command(self, handler):
+        handler._volume_state_only = True
+        handler._volume_step = 3
+        handler.router.volume = 30
+        _run(handler.handle_event({
+            "event": "Volume Up", "mode": "MUSIC", "source": ""
+        }))
+        handler.router.set_volume.assert_not_called()
+        handler.router.set_volume_state.assert_awaited_once_with(33)
+
     def test_volume_down_uses_step(self, handler):
         handler._volume_step = 2
         handler.router.volume = 30
@@ -174,6 +185,17 @@ class TestVolume:
         handler.router.set_volume.assert_awaited_once_with(0)
         assert handler._pre_mute_vol == 42
 
+    def test_mute_state_only_updates_state_without_output_command(self, handler):
+        handler._volume_state_only = True
+        handler.router.volume = 42
+        _run(handler.handle_event({
+            "event": "Mute", "mode": "MUSIC", "source": ""
+        }))
+        handler.router.set_volume.assert_not_called()
+        handler.router.set_volume_state.assert_awaited_once_with(0)
+        assert handler._pre_mute_vol == 42
+        assert handler.router._pre_mute_vol == 42
+
     def test_unmute_restores_pre_mute(self, handler):
         """Second Mute press restores the saved volume."""
         handler._pre_mute_vol = 55
@@ -182,6 +204,17 @@ class TestVolume:
             "event": "Mute", "mode": "MUSIC", "source": ""
         }))
         handler.router.set_volume.assert_awaited_once_with(55)
+
+    def test_volume_up_from_zero_uses_step_in_state_only_mode(self, handler):
+        handler._volume_state_only = True
+        handler._pre_mute_vol = 55
+        handler.router.volume = 0
+        handler._volume_step = 3
+        _run(handler.handle_event({
+            "event": "Volume Up", "mode": "MUSIC", "source": ""
+        }))
+        handler.router.set_volume.assert_not_called()
+        handler.router.set_volume_state.assert_awaited_once_with(3)
 
 
 # ── Transport ─────────────────────────────────────────────────────────

@@ -24,6 +24,7 @@ from router import (
     handle_event,
     handle_output_off,
     handle_output_on,
+    handle_queue,
     handle_source,
     handle_view,
     handle_volume_report,
@@ -263,3 +264,24 @@ class TestHandleBroadcast:
         assert resp.status == 200
         call = fake_router_instance.media.broadcast.call_args
         assert call.args[0] == "unknown"
+
+
+# ── handle_queue ─────────────────────────────────────────────────────
+
+
+class _FakeQueryRequest:
+    def __init__(self, query: dict):
+        self.query = query
+
+
+class TestHandleQueue:
+    """Non-integer start/max_items must 400, not 500 via ValueError."""
+
+    def test_bad_start_returns_400(self, fake_router_instance):
+        resp = _run(handle_queue(_FakeQueryRequest({"start": "abc"})))
+        assert resp.status == 400
+        assert "start" in _body(resp)["error"]
+
+    def test_bad_max_items_returns_400(self, fake_router_instance):
+        resp = _run(handle_queue(_FakeQueryRequest({"max_items": "lots"})))
+        assert resp.status == 400

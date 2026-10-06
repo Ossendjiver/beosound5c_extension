@@ -3,6 +3,11 @@ Description=BeoSound5c Chromium UI kiosk
 After=network.target beo-http.service beo-router.service
 Wants=network.target beo-http.service beo-router.service
 Requires=beo-http.service
+# StartLimit* belongs in [Unit] — in [Service] systemd ignores it
+# ("Unknown key ... in section [Service]") and the default 5-in-10s
+# limit applies instead of the intended 5-in-120s.
+StartLimitIntervalSec=120
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -11,11 +16,22 @@ Group=__USER__
 WorkingDirectory=__HOME__/beosound5c/services
 ExecStart=__HOME__/beosound5c/services/ui.sh
 KillMode=mixed
-TimeoutStopSec=5
-Restart=on-failure
+# Chromium kiosk has no state to flush — the nightly cron-restart
+# only ever ended in SIGKILL after waiting out the full TimeoutStopSec.
+# Skip the wait: the inner trap below SIGKILLs the process group
+# immediately on SIGTERM.
+TimeoutStopSec=2
+# The ui.sh trap SIGKILLs its own process group (itself included), so the
+# main process always exits via SIGKILL on stop — that's the intended
+# clean shutdown, not a failure. Without this, every stop/restart marks
+# the unit failed and counts against StartLimitBurst.
+SuccessExitStatus=KILL
+# Restart=always, NOT on-failure: SuccessExitStatus=KILL also classifies a
+# kernel OOM SIGKILL as "success", so on-failure would leave a black screen
+# after an OOM kill. `systemctl stop` never triggers Restart= regardless of
+# mode, so intentional stops still stay stopped.
+Restart=always
 RestartSec=10
-StartLimitIntervalSec=120
-StartLimitBurst=5
 StandardOutput=journal
 StandardError=journal
 

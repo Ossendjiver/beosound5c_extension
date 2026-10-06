@@ -174,6 +174,22 @@ class TestValidation:
             assert not any("unknown volume.type" in r.message for r in caplog.records), \
                 f"Unexpected warning for volume type '{vtype}'"
 
+    def test_no_warning_for_valid_masterlink_roles(self, write_config, caplog):
+        for role in ("master", "provider", "link", "ir_only", "none",
+                     "audio_slave", "slave", "ir", "ir-only",
+                     "passive", "off", "disabled"):
+            with caplog.at_level(logging.WARNING):
+                caplog.clear()
+                write_config({
+                    "device": "X",
+                    "menu": {"1": "a"},
+                    "home_assistant": {"webhook_url": "http://x"},
+                    "masterlink": {"role": role},
+                })
+                load_config()
+            assert not any("unknown masterlink.role" in r.message for r in caplog.records), \
+                f"Unexpected warning for masterlink.role '{role}'"
+
     def test_errors_on_news_without_api_key(self, write_config, caplog):
         with caplog.at_level(logging.ERROR):
             write_config({"device": "Church", "menu": {"5": "news"}})

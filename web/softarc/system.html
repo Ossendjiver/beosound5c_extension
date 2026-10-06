@@ -79,6 +79,8 @@
             display: flex;
             align-items: center;
             justify-content: center;
+            flex-direction: column;
+            gap: 18px;
         }
 
         /* Info section */
@@ -564,6 +566,13 @@
 
         .up-to-date-callout.visible { display: flex; }
 
+        .update-check-failed-callout {
+            border-left-color: #aa8;
+            background: rgba(170, 170, 68, 0.04);
+            color: #aa8;
+            max-width: 260px;
+        }
+
         .up-to-date-check {
             font-size: 14px;
             line-height: 1;
@@ -616,10 +625,47 @@
             font-size: 13px;
             color: #888;
             line-height: 1.6;
-            white-space: pre-wrap;
             max-height: 150px;
             overflow-y: auto;
         }
+
+        /* Rendered release-notes markup (shared between inline preview
+           and full-screen release-notes view). */
+        .rn-h3 {
+            color: #bbb;
+            font-size: 12px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin: 14px 0 6px 0;
+        }
+        .rn-h3:first-child { margin-top: 0; }
+        .rn-item {
+            display: flex;
+            gap: 8px;
+            margin: 3px 0;
+            padding-left: 2px;
+        }
+        .rn-item::before {
+            content: "·";
+            color: #555;
+            flex: 0 0 auto;
+        }
+        .rn-bold { color: #e0e0e0; font-weight: 600; }
+        .rn-code {
+            font-family: 'Monaco', 'Consolas', monospace;
+            font-size: 0.9em;
+            color: #ccc;
+            background: #1a1a1a;
+            padding: 0 4px;
+            border-radius: 2px;
+        }
+        /* Full-screen view is lighter weight / airier than the preview. */
+        #release-notes-screen .rn-h3 {
+            color: #ddd;
+            font-size: 13px;
+            margin: 22px 0 10px 0;
+        }
+        #release-notes-screen .rn-item { margin: 6px 0; }
 
         .update-release-link {
             display: inline-block;
@@ -731,7 +777,6 @@
             font-size: 14px;
             color: #999;
             line-height: 1.75;
-            white-space: pre-wrap;
             scroll-behavior: smooth;
         }
 
@@ -757,6 +802,109 @@
             margin-right: 4px;
         }
 
+        /* Playback section */
+        .playback-section {
+            padding-right: 18px;
+        }
+
+        .playback-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 28px;
+            max-width: 720px;
+        }
+
+        .playback-group {
+            min-width: 0;
+        }
+
+        .playback-group-title {
+            font-size: 12px;
+            color: #777;
+            text-transform: uppercase;
+            letter-spacing: 1.8px;
+            margin-bottom: 12px;
+        }
+
+        .playback-option,
+        .playback-toggle {
+            min-height: 46px;
+            border: 1px solid #222;
+            background: #0d0d0d;
+            color: #ddd;
+            border-radius: 6px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 14px;
+            padding: 0 14px;
+            margin-bottom: 8px;
+            font-size: 14px;
+            cursor: pointer;
+        }
+
+        .playback-option.selected {
+            border-color: #446b9a;
+            color: #fff;
+        }
+
+        .playback-option.focused,
+        .playback-toggle.focused {
+            border-color: #8bc6ff;
+            background: #162232;
+        }
+
+        .playback-option-id {
+            color: #666;
+            font: 11px/1.2 Monaco, Consolas, monospace;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            max-width: 180px;
+        }
+
+        .playback-empty {
+            color: #666;
+            font-size: 13px;
+            padding: 12px 0;
+        }
+
+        .playback-switch {
+            position: relative;
+            width: 44px;
+            height: 24px;
+            border-radius: 999px;
+            background: #333;
+            flex-shrink: 0;
+        }
+
+        .playback-switch::after {
+            content: "";
+            position: absolute;
+            left: 3px;
+            top: 3px;
+            width: 18px;
+            height: 18px;
+            border-radius: 50%;
+            background: #ddd;
+            transition: transform 160ms ease;
+        }
+
+        .playback-toggle.active .playback-switch {
+            background: #4f7eac;
+        }
+
+        .playback-toggle.active .playback-switch::after {
+            transform: translateX(20px);
+        }
+
+        .playback-status {
+            margin-top: 18px;
+            color: #777;
+            font-size: 12px;
+            min-height: 18px;
+        }
+
         /* Scrollbar styling */
         .section-content::-webkit-scrollbar {
             width: 6px;
@@ -779,6 +927,102 @@
         .config-section * { cursor: auto; }
         .config-section input, .config-section select, .config-section button { cursor: pointer; }
         .config-section input[type=text], .config-section input[type=number], .config-section input[type=password] { cursor: text; }
+        .config-shell {
+            width: 100%;
+            max-width: 860px;
+            display: grid;
+            grid-template-columns: minmax(300px, 360px) minmax(320px, 1fr);
+            gap: 26px;
+            align-items: stretch;
+        }
+        .hlk-card {
+            border: 1px solid #1e1e1e;
+            background: #0b0b0b;
+            border-radius: 10px;
+            padding: 26px 28px;
+            min-height: 100%;
+        }
+        .hlk-card-title {
+            font-size: 11px;
+            color: #666;
+            text-transform: uppercase;
+            letter-spacing: 1.8px;
+            margin-bottom: 10px;
+        }
+        .hlk-card-status {
+            font-size: 14px;
+            color: #888;
+            min-height: 18px;
+            margin-bottom: 18px;
+        }
+        .hlk-live {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 10px 18px;
+            margin-bottom: 22px;
+        }
+        .hlk-live-item {
+            border-bottom: 1px solid #171717;
+            padding-bottom: 8px;
+        }
+        .hlk-live-label {
+            font-size: 10px;
+            color: #555;
+            text-transform: uppercase;
+            letter-spacing: 1.2px;
+            margin-bottom: 5px;
+        }
+        .hlk-live-value {
+            font-size: 18px;
+            color: #f2f2f2;
+            font-family: 'Monaco', 'Consolas', monospace;
+        }
+        .hlk-live-value.dim { color: #666; }
+        .hlk-live-value.ok { color: #7ad27a; }
+        .hlk-live-value.warn { color: #f2c25a; }
+        .hlk-fields {
+            display: grid;
+            gap: 10px;
+            margin-bottom: 16px;
+        }
+        .hlk-field {
+            border: 1px solid #1f1f1f;
+            background: #111;
+            border-radius: 8px;
+            padding: 14px 16px;
+            transition: border-color 120ms ease, background 120ms ease;
+        }
+        .hlk-field.selected {
+            border-color: #8bc6ff;
+            background: #132130;
+        }
+        .hlk-field-label {
+            font-size: 11px;
+            color: #777;
+            text-transform: uppercase;
+            letter-spacing: 1.2px;
+            margin-bottom: 7px;
+        }
+        .hlk-field-value {
+            font-size: 24px;
+            color: #fff;
+            font-family: 'Monaco', 'Consolas', monospace;
+        }
+        .hlk-field-hint {
+            margin-top: 6px;
+            font-size: 11px;
+            color: #555;
+        }
+        .hlk-meta {
+            font-size: 12px;
+            color: #666;
+            line-height: 1.6;
+        }
+        .hlk-note {
+            margin-top: 14px;
+            font-size: 12px;
+            color: #555;
+        }
     </style>
 </head>
 <body>
@@ -788,6 +1032,7 @@
             <div class="section-tab" data-section="services">Services</div>
             <div class="section-tab" data-section="remotes">Remotes</div>
             <div class="section-tab" data-section="people">People</div>
+            <div class="section-tab" data-section="playback">Playback</div>
             <div class="section-tab" data-section="config">Config</div>
         </nav>
 
@@ -805,6 +1050,10 @@
             <div id="up-to-date-callout" class="up-to-date-callout">
                 <span class="up-to-date-check">✓</span>
                 Up to date
+            </div>
+            <div id="update-check-failed-callout" class="up-to-date-callout update-check-failed-callout">
+                <span class="up-to-date-check">!</span>
+                Couldn't check for updates
             </div>
             <div id="update-notes" class="update-notes" style="display:none">
                 <div class="update-notes-label">What's new</div>
@@ -876,13 +1125,47 @@
             </div>
         </div>
 
+        <!-- Playback Section -->
+        <div class="section-content playback-section" id="playback">
+            <div class="playback-grid">
+                <div class="playback-group">
+                    <div class="playback-group-title">Audio Target</div>
+                    <div id="audio-targets"></div>
+                </div>
+                <div class="playback-group">
+                    <div class="playback-group-title">Video Target</div>
+                    <div id="video-targets"></div>
+                    <div class="playback-group-title" style="margin-top:22px;">Music Video</div>
+                    <div id="music-video-toggle"></div>
+                </div>
+            </div>
+            <div class="playback-status" id="playback-status"></div>
+            <div class="section-hint">
+                <span class="key">UP/DOWN</span> Select &nbsp;
+                <span class="key">GO</span> Apply / Toggle
+            </div>
+        </div>
+
         <!-- Config Section -->
         <div class="section-content config-section" id="config">
-            <div class="splash-card" style="text-align:center;">
-                <h2 style="color:#fff;font-size:22px;font-weight:300;letter-spacing:3px;margin-bottom:12px;">CONFIGURE</h2>
-                <p style="font-size:13px;color:#666;margin-bottom:20px;">Scan with your phone<br>to configure this device</p>
-                <div class="setup-qr" id="cfg-qr-container"></div>
-                <div class="setup-url" id="cfg-qr-url" style="margin-top:12px;font-size:12px;color:#555;word-break:break-all;max-width:280px;"></div>
+            <div class="config-shell">
+                <div class="splash-card" style="text-align:center;">
+                    <h2 style="color:#fff;font-size:22px;font-weight:300;letter-spacing:3px;margin-bottom:12px;">CONFIGURE</h2>
+                    <p style="font-size:13px;color:#666;margin-bottom:20px;">Scan with your phone<br>or tap below to configure this device</p>
+                    <div class="setup-qr" id="cfg-qr-container"></div>
+                    <div class="setup-url" id="cfg-qr-url" style="margin-top:12px;font-size:12px;color:#555;word-break:break-all;max-width:280px;"></div>
+                    <div style="margin-top:16px;">
+                        <a id="cfg-open-link" href="/config" target="_top" rel="noreferrer" style="display:inline-flex;align-items:center;justify-content:center;min-width:220px;min-height:46px;padding:0 20px;border-radius:999px;border:1px solid rgba(255,255,255,0.18);background:rgba(255,255,255,0.05);color:#f4f7fb;font-size:12px;font-weight:600;letter-spacing:1.3px;text-transform:uppercase;text-decoration:none;cursor:pointer;">Open Setup In This Browser</a>
+                    </div>
+                </div>
+                <div class="hlk-card" id="hlk-card">
+                    <div class="hlk-card-title">Local HLK</div>
+                    <div class="hlk-card-status">Loading sensor state...</div>
+                </div>
+            </div>
+            <div class="section-hint" id="config-section-hint">
+                <span class="key">GO</span> Next setting &nbsp;
+                <span class="key">WHEEL</span> Adjust wake distance / wake hold
             </div>
         </div>
 
@@ -929,6 +1212,10 @@
         const HISTORY_MAX = 30;  // ~2.5 min at 5s refresh
 
         // ── Subcard definitions ──
+        // Reboot card state: 'idle' → GO → 'armed' (6s window) → GO → 'rebooting'
+        let rebootState = 'idle';
+        let rebootDisarmTimer = null;
+
         const SUBCARDS = [
             {
                 id: 'system',
@@ -976,6 +1263,7 @@
                     html += row('Device', cfg.device || inp.hostname);
                     html += row('IP', inp.ip_address);
                     html += row('Version', inp.git_tag);
+                    if (inp.device_id) html += row('UUID', inp.device_id);
                     html += row('Uptime', inp.uptime);
 
                     // Sources configured
@@ -1148,6 +1436,7 @@
                     html += row('Tracks', lib.songs || 0);
                     html += row('Playlists', lib.playlists || 0);
                     html += row('Mixes', lib.mixes || 0);
+                    html += row('Podcasts', lib.podcasts || 0);
                     html += '</div>';
                     return html;
                 },
@@ -1295,6 +1584,27 @@
                     return html;
                 },
             },
+            {
+                id: 'reboot',
+                title: 'RESTART',
+                service: null,
+                fetch: async () => ({}),
+                render: () => {
+                    let html = '<div class="subcard-body">';
+                    html += row('Action', 'Reboot the system');
+                    html += row('Effect', 'Full restart of all services and display');
+                    html += row('Duration', '~1 minute');
+                    html += '</div>';
+                    if (rebootState === 'rebooting') {
+                        html += '<div style="margin-top:18px;text-align:center;font-size:14px;color:#4a4;">Rebooting&hellip;</div>';
+                    } else if (rebootState === 'armed') {
+                        html += '<div style="margin-top:18px;text-align:center;font-size:14px;color:#fa0;">Press GO again to reboot</div>';
+                    } else {
+                        html += '<div style="margin-top:18px;text-align:center;font-size:13px;color:#666;">Press GO to reboot</div>';
+                    }
+                    return html;
+                },
+            },
         ];
 
         // ── Helper functions ──
@@ -1426,7 +1736,7 @@
             { key: 'NEWS', label: 'News', fields: [
                 { fid: 'guardian_api_key', label: 'Guardian API key', path: ['news','guardian_api_key'], placeholder: 'From theguardian.com/developer' },
             ]},
-            { key: 'SCENES', label: 'Scenes' },
+            { key: 'SCENES', label: 'Home' },
             { key: 'SECURITY', label: 'Security Camera', isUrl: true, fields: [
                 { fid: 'url', label: 'Camera URL', path: ['_security_url'], placeholder: 'http://homeassistant.local:8123/cameras' },
             ]},
@@ -1444,7 +1754,7 @@
 
         class SystemPanel {
             constructor() {
-                this.sections = ['info', 'services', 'remotes', 'people', 'config'];
+                this.sections = ['info', 'services', 'remotes', 'people', 'playback', 'config'];
                 this.currentSection = 0;
                 this.inputWs = null;
                 this.serviceStatus = {};
@@ -1458,6 +1768,20 @@
                 this.subcardData = {};    // id -> last fetched data
                 this.subcardOnline = {};  // id -> bool
                 this.subcardRefreshTimer = null;
+
+                // Playback targets
+                this.playbackState = null;
+                this.playbackItems = [];
+                this.currentPlaybackItem = 0;
+
+                // Local HLK tuning
+                this.hlkState = null;
+                this.hlkFields = ['wake_distance_max_cm', 'wake_hold_s'];
+                this.currentHLKField = 0;
+                this.hlkRefreshTimer = null;
+                this.hlkSaveTimer = null;
+                this.hlkSaveInFlight = false;
+                this.hlkSaveQueued = false;
 
                 // Debouncing
                 this.lastButtonTime = 0;
@@ -1506,10 +1830,26 @@
                 this.fetchPeople();
                 this.fetchBTRemotes();
                 this.checkUpdate();
+                this.maybeOpenConfigTab();
 
                 this._intervals = [
                     setInterval(() => this.fetchPeople(), 30000),
                 ];
+            }
+
+            async maybeOpenConfigTab() {
+                try {
+                    const resp = await fetch('../json/config.json', { cache: 'no-store' });
+                    if (!resp.ok) return;
+                    const cfg = await resp.json();
+                    if (cfg.setup_complete === false) {
+                        const idx = this.sections.indexOf('config');
+                        if (idx >= 0) {
+                            this.currentSection = idx;
+                            this.updateSection();
+                        }
+                    }
+                } catch (e) { /* offline — leave on default tab */ }
             }
 
             // ── Subcards ──
@@ -1665,6 +2005,10 @@
                         if (selected && selected.dataset.action === 'pair') {
                             this.startBTPairing();
                         }
+                    } else if (section === 'playback') {
+                        this.activatePlaybackItem();
+                    } else if (section === 'config') {
+                        this.advanceHLKField();
                     }
                 }
             }
@@ -1688,6 +2032,11 @@
                     } else if (direction === 'clock') {
                         this.currentSubcard = (this.currentSubcard + 1) % SUBCARDS.length;
                     }
+                    // Leaving the card disarms a pending reboot confirm
+                    if (rebootState === 'armed') {
+                        rebootState = 'idle';
+                        clearTimeout(rebootDisarmTimer);
+                    }
                     this.startSubcardRefresh();
                 } else if (section === 'remotes') {
                     if (this.remoteItems.length > 0) {
@@ -1698,9 +2047,22 @@
                         }
                         this.updateRemoteSelection();
                     }
+                } else if (section === 'playback') {
+                    if (this.playbackItems.length > 0) {
+                        if (direction === 'counter') {
+                            this.currentPlaybackItem = Math.max(0, this.currentPlaybackItem - 1);
+                        } else if (direction === 'clock') {
+                            this.currentPlaybackItem = Math.min(this.playbackItems.length - 1, this.currentPlaybackItem + 1);
+                        }
+                        this.updatePlaybackSelection();
+                    }
                 } else if (section === 'config') {
-                    document.getElementById('config').scrollTop +=
-                        (direction === 'clock' ? 1 : -1) * speed * 8;
+                    if (this.hlkState?.config) {
+                        this.adjustHLKField(direction, speed);
+                    } else {
+                        document.getElementById('config').scrollTop +=
+                            (direction === 'clock' ? 1 : -1) * speed * 8;
+                    }
                 }
             }
 
@@ -1725,6 +2087,12 @@
                 // Fetch remotes when entering remotes section
                 if (section === 'remotes') {
                     this.fetchBTRemotes();
+                    // Clear any existing poller first — updateSection() runs on
+                    // every tab click, including re-clicks of the active tab,
+                    // and stacked intervals would leak until iframe teardown.
+                    if (this.remotesRefreshInterval) {
+                        clearInterval(this.remotesRefreshInterval);
+                    }
                     this.remotesRefreshInterval = setInterval(() => this.fetchBTRemotes(), 10000);
                 } else {
                     if (this.remotesRefreshInterval) {
@@ -1737,8 +2105,134 @@
                     this.fetchPeople();
                 }
 
+                if (section === 'playback') {
+                    this.fetchPlayback();
+                }
+
                 if (section === 'config') {
                     this.loadConfig();
+                    this.startHLKRefresh();
+                } else {
+                    this.stopHLKRefresh();
+                }
+            }
+
+            // ── Playback ──
+
+            async fetchPlayback() {
+                const statusEl = document.getElementById('playback-status');
+                if (statusEl) statusEl.textContent = 'Loading playback targets...';
+                try {
+                    const resp = await fetch('http://localhost:8770/router/playback', { cache: 'no-store' });
+                    if (!resp.ok) throw new Error('offline');
+                    this.playbackState = await resp.json();
+                    this.renderPlayback();
+                    if (statusEl) statusEl.textContent = '';
+                } catch (e) {
+                    this.playbackState = null;
+                    this.renderPlayback();
+                    if (statusEl) statusEl.textContent = 'Unable to load playback settings';
+                }
+            }
+
+            renderPlayback() {
+                const state = this.playbackState || {};
+                const audio = Array.isArray(state.audio_targets) ? state.audio_targets : [];
+                const video = Array.isArray(state.video_targets) ? state.video_targets : [];
+                const audioEl = document.getElementById('audio-targets');
+                const videoEl = document.getElementById('video-targets');
+                const toggleEl = document.getElementById('music-video-toggle');
+
+                const renderTargets = (targets, selectedId, group) => {
+                    if (!targets.length) return '<div class="playback-empty">No targets configured</div>';
+                    return targets.map((target) => {
+                        const id = String(target.id || '');
+                        const name = String(target.name || target.label || id || 'Target');
+                        const selected = id === selectedId ? ' selected' : '';
+                        return `
+                            <div class="playback-option${selected}" data-group="${group}" data-target-id="${id}">
+                                <span>${name}</span>
+                                <span class="playback-option-id">${id}</span>
+                            </div>
+                        `;
+                    }).join('');
+                };
+
+                if (audioEl) audioEl.innerHTML = renderTargets(audio, state.audio_target_id || '', 'audio');
+                if (videoEl) videoEl.innerHTML = renderTargets(video, state.video_target_id || '', 'video');
+                if (toggleEl) {
+                    const enabled = state.music_video_enabled !== false;
+                    toggleEl.innerHTML = `
+                        <div class="playback-toggle${enabled ? ' active' : ''}" data-group="music-video">
+                            <span>YouTube Videos ${enabled ? 'On' : 'Off'}</span>
+                            <span class="playback-switch"></span>
+                        </div>
+                    `;
+                }
+
+                document.querySelectorAll('.playback-option').forEach((item) => {
+                    item.addEventListener('click', () => {
+                        this.currentPlaybackItem = this.playbackItems.indexOf(item);
+                        this.activatePlaybackItem();
+                    });
+                });
+                document.querySelectorAll('.playback-toggle').forEach((item) => {
+                    item.addEventListener('click', () => {
+                        this.currentPlaybackItem = this.playbackItems.indexOf(item);
+                        this.activatePlaybackItem();
+                    });
+                });
+                this.playbackItems = Array.from(document.querySelectorAll('.playback-option, .playback-toggle'));
+                this.currentPlaybackItem = Math.max(0, Math.min(this.currentPlaybackItem, Math.max(0, this.playbackItems.length - 1)));
+                this.updatePlaybackSelection();
+            }
+
+            updatePlaybackSelection() {
+                this.playbackItems.forEach((item, index) => {
+                    item.classList.toggle('focused', index === this.currentPlaybackItem);
+                });
+            }
+
+            async activatePlaybackItem() {
+                const item = this.playbackItems[this.currentPlaybackItem];
+                if (!item) return;
+                const group = item.dataset.group;
+                const payload = {};
+                if (group === 'audio') {
+                    const targetId = item.dataset.targetId || '';
+                    try {
+                        const targetController = window.parent?.PlaybackTargets;
+                        if (targetController?.requestAudioTargetChange) {
+                            const statusEl = document.getElementById('playback-status');
+                            if (statusEl) statusEl.textContent = 'Checking the active queue...';
+                            await targetController.requestAudioTargetChange(targetId);
+                            await this.fetchPlayback();
+                            return;
+                        }
+                    } catch (e) { /* standalone system page falls back to router */ }
+                    payload.audio_target_id = targetId;
+                } else if (group === 'video') {
+                    payload.video_target_id = item.dataset.targetId || '';
+                } else if (group === 'music-video') {
+                    payload.music_video_enabled = !(this.playbackState?.music_video_enabled !== false);
+                } else {
+                    return;
+                }
+
+                const statusEl = document.getElementById('playback-status');
+                if (statusEl) statusEl.textContent = 'Updating playback settings...';
+                try {
+                    const resp = await fetch('http://localhost:8770/router/playback', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload),
+                    });
+                    if (!resp.ok) throw new Error('update failed');
+                    this.playbackState = await resp.json();
+                    this.renderPlayback();
+                    if (statusEl) statusEl.textContent = 'Playback settings updated';
+                } catch (e) {
+                    if (statusEl) statusEl.textContent = 'Unable to update playback settings';
                 }
             }
 
@@ -1756,8 +2250,10 @@
                         this.updateAvailable = true;
                         this.latestVersion = data.latest;
                         this.showUpdateInfo(data);
-                    } else if (data.current) {
+                    } else if (data.latest && data.current) {
                         this.showUpToDate();
+                    } else if (data.error) {
+                        this.showUpdateCheckFailed(data.error);
                     }
                 } catch (e) { /* offline or service not running */ }
             }
@@ -1767,7 +2263,9 @@
                 document.getElementById('update-callout').className = 'update-callout visible';
 
                 if (data.release_notes) {
-                    document.getElementById('update-notes-body').textContent = data.release_notes;
+                    this.releaseNotesMd = data.release_notes;
+                    document.getElementById('update-notes-body').innerHTML =
+                        this.renderReleaseNotes(data.release_notes);
                     document.getElementById('update-release-link').href = data.release_url || '#';
                     document.getElementById('update-notes').style.display = 'block';
                 }
@@ -1776,15 +2274,63 @@
                 document.getElementById('info-hint').style.display = '';
             }
 
+            // Render the narrow subset of Markdown our release notes actually
+            // use: ## version (stripped — already shown elsewhere), ### section,
+            // - bullet, **bold**, `code`.  Multi-line bullets wrap back into a
+            // single item.  Everything is escaped before transforms to keep
+            // arbitrary release-body text safe to innerHTML.
+            renderReleaseNotes(md) {
+                if (!md) return '';
+                const esc = s => s
+                    .replace(/&/g, '&amp;')
+                    .replace(/</g, '&lt;')
+                    .replace(/>/g, '&gt;');
+                const inline = s => s
+                    .replace(/`([^`]+)`/g, '<span class="rn-code">$1</span>')
+                    .replace(/\*\*([^*]+)\*\*/g, '<span class="rn-bold">$1</span>');
+
+                // Fold continuation lines (indented) into the preceding line.
+                const folded = [];
+                for (const raw of md.split('\n')) {
+                    if (/^\s+\S/.test(raw) && folded.length) {
+                        folded[folded.length - 1] += ' ' + raw.trim();
+                    } else {
+                        folded.push(raw);
+                    }
+                }
+
+                const out = [];
+                for (const raw of folded) {
+                    const line = raw.trim();
+                    if (!line) continue;
+                    if (line.startsWith('## ')) continue;
+                    if (line.startsWith('### ')) {
+                        out.push('<div class="rn-h3">' + esc(line.slice(4)) + '</div>');
+                    } else if (line.startsWith('- ')) {
+                        out.push('<div class="rn-item"><span>' + inline(esc(line.slice(2))) + '</span></div>');
+                    } else {
+                        out.push('<div>' + inline(esc(line)) + '</div>');
+                    }
+                }
+                return out.join('');
+            }
+
             showUpToDate() {
                 document.getElementById('up-to-date-callout').className = 'up-to-date-callout visible';
             }
 
+            showUpdateCheckFailed(msg) {
+                const el = document.getElementById('update-check-failed-callout');
+                el.className = 'up-to-date-callout update-check-failed-callout visible';
+                if (msg) el.title = msg;
+            }
+
             showReleaseNotes() {
                 document.getElementById('rn-version').textContent = this.latestVersion || '--';
-                document.getElementById('rn-body').textContent =
-                    document.getElementById('update-notes-body').textContent || 'No release notes available.';
-                document.getElementById('rn-body').scrollTop = 0;
+                const body = document.getElementById('rn-body');
+                const rendered = this.renderReleaseNotes(this.releaseNotesMd || '');
+                body.innerHTML = rendered || '<div>No release notes available.</div>';
+                body.scrollTop = 0;
                 document.getElementById('release-notes-screen').className = 'active';
                 this.relNotesVisible = true;
             }
@@ -1887,6 +2433,30 @@
 
             restartSubcardService() {
                 const card = SUBCARDS[this.currentSubcard];
+                if (card.id === 'reboot') {
+                    // Two-press confirm: arm on first GO, reboot on second.
+                    if (rebootState === 'rebooting') return;
+                    if (rebootState !== 'armed') {
+                        rebootState = 'armed';
+                        clearTimeout(rebootDisarmTimer);
+                        rebootDisarmTimer = setTimeout(() => {
+                            rebootState = 'idle';
+                            if (SUBCARDS[this.currentSubcard].id === 'reboot') this.renderCurrentSubcard();
+                        }, 6000);
+                        this.renderCurrentSubcard();
+                        return;
+                    }
+                    clearTimeout(rebootDisarmTimer);
+                    rebootState = 'rebooting';
+                    this.renderCurrentSubcard();
+                    if (this.inputWs && this.inputWs.readyState === WebSocket.OPEN) {
+                        this.inputWs.send(JSON.stringify({
+                            type: 'command', command: 'restart_service',
+                            params: { action: 'reboot' }
+                        }));
+                    }
+                    return;
+                }
                 if (!card.service) {
                     // SYSTEM card — restart all
                     if (this.inputWs && this.inputWs.readyState === WebSocket.OPEN) {
@@ -2047,36 +2617,199 @@
             // ── Config ──
 
             async loadConfig() {
-                if (this._cfgQrDone) return;
-                this._cfgQrDone = true;
-                const container = document.getElementById('cfg-qr-container');
-                const urlEl = document.getElementById('cfg-qr-url');
-                if (!container) return;
-                try {
-                    const resp = await fetch('http://localhost:8767/info');
-                    const data = await resp.json();
-                    const ip = data.ip_address || location.hostname;
-                    const hostname = data.hostname;
-                    const url = `http://${ip}/config`;
-                    const displayUrl = hostname
-                        ? `http://${hostname}.local/config`
-                        : url;
-                    if (typeof QRCode !== 'undefined') {
-                        new QRCode(container, {
-                            text: url,
-                            width: 180,
-                            height: 180,
-                            colorDark: '#000000',
-                            colorLight: '#ffffff',
-                            correctLevel: QRCode.CorrectLevel.M,
-                        });
-                    } else {
-                        container.innerHTML = `<img src="http://localhost:8767/qrcode" style="width:180px;height:180px;">`;
+                if (!this._cfgQrDone) {
+                    this._cfgQrDone = true;
+                    const container = document.getElementById('cfg-qr-container');
+                    const urlEl = document.getElementById('cfg-qr-url');
+                    if (container) {
+                        try {
+                            const resp = await fetch('http://localhost:8767/info');
+                            const data = await resp.json();
+                            const ip = data.ip_address || location.hostname;
+                            const hostname = data.hostname;
+                            const url = `http://${ip}/config`;
+                            const displayUrl = hostname
+                                ? `http://${hostname}.local/config`
+                                : url;
+                            if (typeof QRCode !== 'undefined') {
+                                new QRCode(container, {
+                                    text: url,
+                                    width: 180,
+                                    height: 180,
+                                    colorDark: '#000000',
+                                    colorLight: '#ffffff',
+                                    correctLevel: QRCode.CorrectLevel.M,
+                                });
+                            } else {
+                                container.innerHTML = `<img src="http://localhost:8767/qrcode" style="width:180px;height:180px;">`;
+                            }
+                            if (urlEl) urlEl.textContent = displayUrl;
+                        } catch (e) {
+                            if (container) container.innerHTML = `<img src="http://localhost:8767/qrcode" style="width:180px;height:180px;">`;
+                            if (urlEl) urlEl.textContent = 'Scan to configure';
+                        }
                     }
-                    if (urlEl) urlEl.textContent = displayUrl;
+                }
+                this.fetchHLKState();
+            }
+
+            startHLKRefresh() {
+                this.stopHLKRefresh();
+                this.fetchHLKState();
+                this.hlkRefreshTimer = setInterval(() => this.fetchHLKState(), 5000);
+            }
+
+            stopHLKRefresh() {
+                if (this.hlkRefreshTimer) {
+                    clearInterval(this.hlkRefreshTimer);
+                    this.hlkRefreshTimer = null;
+                }
+            }
+
+            async fetchHLKState() {
+                try {
+                    const resp = await fetch(API + '/hlk/state', { cache: 'no-store' });
+                    if (!resp.ok) throw new Error('offline');
+                    this.hlkState = await resp.json();
                 } catch (e) {
-                    if (container) container.innerHTML = `<img src="http://localhost:8767/qrcode" style="width:180px;height:180px;">`;
-                    if (urlEl) urlEl.textContent = 'Scan to configure';
+                    this.hlkState = null;
+                }
+                this.renderHLKCard();
+            }
+
+            renderHLKCard() {
+                const card = document.getElementById('hlk-card');
+                if (!card) return;
+                const state = this.hlkState || {};
+                const cfg = state.config || {};
+                const runtime = state.runtime || {};
+                const detection = Number.isFinite(Number(runtime.detection_distance_cm))
+                    ? `${Number(runtime.detection_distance_cm)} cm`
+                    : '—';
+                const wakeValue = Number.isFinite(Number(cfg.wake_distance_max_cm)) ? Number(cfg.wake_distance_max_cm) : 150;
+                const holdValue = Number.isFinite(Number(cfg.wake_hold_s)) ? Number(cfg.wake_hold_s) : 30;
+                const macro = runtime.macro_movement ? 'On' : 'Off';
+                const stable = runtime.presence_stable ? 'On' : 'Off';
+                const available = runtime.available === true;
+                const lastError = runtime.last_error;
+                const statusText = !this.hlkState
+                    ? 'Unable to reach HLK state'
+                    : cfg.enabled === false
+                        ? 'Sensor disabled in config'
+                        : available
+                            ? `Live on ${cfg.port || runtime.serial_port || '—'}`
+                            : (lastError ? `Offline: ${lastError}` : 'Waiting for reports...');
+                const statusColor = cfg.enabled === false ? '#666' : available ? '#7ad27a' : '#f2c25a';
+                const note = cfg.enabled === false
+                    ? 'Enable Local HLK in the setup page to use live sensor tuning here.'
+                    : 'Lounge pinout: GPIO14 TXD0 / GPIO15 RXD0 on header pins 8/10.';
+
+                card.innerHTML = `
+                    <div class="hlk-card-title">Local HLK</div>
+                    <div class="hlk-card-status" style="color:${statusColor}">${statusText}</div>
+                    <div class="hlk-live">
+                        <div class="hlk-live-item">
+                            <div class="hlk-live-label">Detection</div>
+                            <div class="hlk-live-value ${available ? '' : 'dim'}">${detection}</div>
+                        </div>
+                        <div class="hlk-live-item">
+                            <div class="hlk-live-label">Target</div>
+                            <div class="hlk-live-value ${available ? '' : 'dim'}">${runtime.target_state || '—'}</div>
+                        </div>
+                        <div class="hlk-live-item">
+                            <div class="hlk-live-label">Macro Wake</div>
+                            <div class="hlk-live-value ${runtime.macro_movement ? 'ok' : 'dim'}">${macro}</div>
+                        </div>
+                        <div class="hlk-live-item">
+                            <div class="hlk-live-label">Presence Stable</div>
+                            <div class="hlk-live-value ${runtime.presence_stable ? 'ok' : 'dim'}">${stable}</div>
+                        </div>
+                    </div>
+                    <div class="hlk-fields">
+                        <div class="hlk-field ${this.currentHLKField === 0 ? 'selected' : ''}" data-field-index="0">
+                            <div class="hlk-field-label">Wake Distance Max</div>
+                            <div class="hlk-field-value">${wakeValue} cm</div>
+                            <div class="hlk-field-hint">Immediate macro wake range</div>
+                        </div>
+                        <div class="hlk-field ${this.currentHLKField === 1 ? 'selected' : ''}" data-field-index="1">
+                            <div class="hlk-field-label">Wake Hold</div>
+                            <div class="hlk-field-value">${holdValue}s</div>
+                            <div class="hlk-field-hint">Short screen-on hold after wake clears</div>
+                        </div>
+                    </div>
+                    <div class="hlk-meta">UART ${cfg.port || '—'} at ${cfg.baudrate || '—'} baud</div>
+                    <div class="hlk-note">${note}</div>
+                `;
+                card.querySelectorAll('[data-field-index]').forEach((el) => {
+                    el.addEventListener('click', () => {
+                        this.currentHLKField = Number(el.dataset.fieldIndex) || 0;
+                        this.renderHLKCard();
+                    });
+                });
+            }
+
+            advanceHLKField() {
+                this.currentHLKField = (this.currentHLKField + 1) % this.hlkFields.length;
+                this.renderHLKCard();
+            }
+
+            adjustHLKField(direction, speed) {
+                const state = this.hlkState;
+                if (!state?.config) return;
+                const delta = (direction === 'clock' ? 1 : -1) * Math.max(1, speed || 1);
+                const field = this.hlkFields[this.currentHLKField] || this.hlkFields[0];
+                const cfg = state.config;
+                if (field === 'wake_distance_max_cm') {
+                    const current = Number.isFinite(Number(cfg.wake_distance_max_cm)) ? Number(cfg.wake_distance_max_cm) : 150;
+                    const next = Math.max(0, Math.min(600, current + delta));
+                    cfg.wake_distance_max_cm = next;
+                } else if (field === 'wake_hold_s') {
+                    const current = Number.isFinite(Number(cfg.wake_hold_s)) ? Number(cfg.wake_hold_s) : 30;
+                    const next = Math.max(0, Math.min(600, current + delta));
+                    cfg.wake_hold_s = next;
+                }
+                this.renderHLKCard();
+                this.queueHLKTuneSave();
+            }
+
+            queueHLKTuneSave() {
+                if (this.hlkSaveTimer) clearTimeout(this.hlkSaveTimer);
+                this.hlkSaveTimer = setTimeout(() => this.saveHLKTune(), 180);
+            }
+
+            async saveHLKTune() {
+                if (!this.hlkState?.config) return;
+                if (this.hlkSaveInFlight) {
+                    this.hlkSaveQueued = true;
+                    return;
+                }
+                this.hlkSaveInFlight = true;
+                this.hlkSaveQueued = false;
+                try {
+                    const payload = {
+                        wake_distance_max_cm: this.hlkState.config.wake_distance_max_cm,
+                        wake_hold_s: this.hlkState.config.wake_hold_s,
+                    };
+                    const resp = await fetch(API + '/hlk/tune', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload),
+                    });
+                    if (!resp.ok) throw new Error('save failed');
+                    this.hlkState = await resp.json();
+                    this.renderHLKCard();
+                } catch (e) {
+                    const card = document.getElementById('hlk-card');
+                    if (card) {
+                        const status = card.querySelector('.hlk-card-status');
+                        if (status) {
+                            status.textContent = 'Unable to save HLK tuning';
+                            status.style.color = '#a44';
+                        }
+                    }
+                } finally {
+                    this.hlkSaveInFlight = false;
+                    if (this.hlkSaveQueued) this.queueHLKTuneSave();
                 }
             }
 
@@ -2090,6 +2823,11 @@
                     this.remotesRefreshInterval = null;
                 }
                 this.stopSubcardRefresh();
+                this.stopHLKRefresh();
+                if (this.hlkSaveTimer) {
+                    clearTimeout(this.hlkSaveTimer);
+                    this.hlkSaveTimer = null;
+                }
                 if (this._messageHandler) {
                     window.removeEventListener('message', this._messageHandler);
                     this._messageHandler = null;

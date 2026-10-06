@@ -135,6 +135,13 @@ setup_audio_hat() {
     cp "$INSTALL_DIR/install/configs/51-beosound5c-volume.conf" /etc/wireplumber/wireplumber.conf.d/
     log_info "WirePlumber default volume set to 100%"
 
+    # PipeWire filter-chain: tone controls (bass/treble/balance/loudness)
+    # live as biquad shelves + per-channel gains on a virtual sink
+    # named beo_tone_sink.  masterlink.py drives them via pw-cli.
+    mkdir -p /etc/pipewire/filter-chain.conf.d
+    cp "$INSTALL_DIR/install/configs/53-beosound5c-tone.conf" /etc/pipewire/filter-chain.conf.d/
+    log_info "PipeWire tone filter-chain installed"
+
     # Enable user lingering so PipeWire survives SSH session logout.
     # Without this, systemd kills all user services (PipeWire, WirePlumber)
     # when the last login session ends, breaking audio for go-librespot.

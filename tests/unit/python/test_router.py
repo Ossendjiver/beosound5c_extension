@@ -198,6 +198,88 @@ class TestVolumeReportCooldown:
         asyncio.run(run())
 
 
+class TestVolumeStateSync:
+    def _attach_adapter(self, router, max_volume=100):
+        router._volume = MagicMock()
+        router._volume._max_volume = max_volume
+        router._volume.set_volume = AsyncMock()
+        router._volume.is_on_cached = MagicMock(return_value=True)
+        return router._volume
+
+    def test_set_volume_state_updates_ui_without_hardware_command(self):
+        router = make_router()
+        router.media.broadcast = AsyncMock()
+        adapter = self._attach_adapter(router)
+        router.volume = 30
+        router._last_local_volume_set = 12.0
+
+        async def run():
+            await router.set_volume_state(42)
+            assert router.volume == 42
+            adapter.set_volume.assert_not_awaited()
+            router.media.broadcast.assert_awaited_once()
+            assert router._last_local_volume_set == 12.0
+
+        asyncio.run(run())
+
+    def test_set_volume_state_dedups_same_value(self):
+        router = make_router()
+        router.media.broadcast = AsyncMock()
+        self._attach_adapter(router)
+        router.volume = 42
+
+        async def run():
+            await router.set_volume_state(42)
+            router.media.broadcast.assert_not_awaited()
+
+        asyncio.run(run())
+
+
+class TestRemoteButtonVolumeStateOnly:
+    def _make_remote_router(self):
+        router = make_router()
+        router._remote_volume_state_only = True
+        router._remote_volume_step = 1
+        router.volume = 30
+        router.set_volume = AsyncMock()
+        router.set_volume_state = AsyncMock()
+        router._volume = MagicMock()
+        router._volume.is_on_cached = MagicMock(return_value=True)
+        spawned = []
+
+        def _spawn(coro, *, name=None):
+            task = asyncio.create_task(coro, name=name)
+            spawned.append(task)
+            return task
+
+        router._spawn = MagicMock(side_effect=_spawn)
+        router._spawned = spawned
+        return router
+
+    def test_volup_updates_state_without_adapter_command(self):
+        router = self._make_remote_router()
+
+        async def run():
+            await router.route_event({"action": "volup", "device_type": "Audio"})
+            await asyncio.gather(*router._spawned)
+            router.set_volume.assert_not_awaited()
+            router.set_volume_state.assert_awaited_once_with(31)
+
+        asyncio.run(run())
+
+    def test_mute_updates_state_without_adapter_command(self):
+        router = self._make_remote_router()
+        router.volume = 42
+
+        async def run():
+            await router.route_event({"action": "mute", "device_type": "Audio"})
+            await asyncio.gather(*router._spawned)
+            router.set_volume.assert_not_awaited()
+            router.set_volume_state.assert_awaited_once_with(0)
+
+        asyncio.run(run())
+
+
 class TestVolumeScaling:
     """UI 0–100 ↔ hardware 0–max_volume scaling.
 
@@ -299,3 +381,46 @@ class TestSpawnIntegration:
             assert len(router._background_tasks) == 0
 
         asyncio.run(run())
+
+
+class TestForwardToSourcePayloads:
+    def test_source_switch_stop_does_not_inject_playback_targets(self):
+        router = make_router()
+        router.playback_state = {
+            "audio_target_id": "audio-target",
+            "video_target_id": "video-target",
+            "audio_targets": [],
+            "video_targets": [],
+            "music_video_enabled": True,
+        }
+
+        sent = {}
+
+        class _FakeResponse:
+            status = 200
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+        class _FakeSession:
+            def post(self, url, json=None, timeout=None, headers=None):
+                sent["url"] = url
+                sent["json"] = json
+                sent["headers"] = headers
+                return _FakeResponse()
+
+        router._session = _FakeSession()
+
+        source = MagicMock()
+        source.id = "mass"
+        source.command_url = "http://localhost:8783/command"
+
+        async def run():
+            await router._forward_to_source(source, {"action": "stop"})
+
+        asyncio.run(run())
+
+        assert sent["json"] == {"action": "stop"}

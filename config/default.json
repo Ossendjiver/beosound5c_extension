@@ -1,5 +1,5 @@
 {
-  "device": "Development",
+  "device": "BeoSound 5c",
   "menu": {
     "PLAYING": "playing",
     "JOIN": "join",
@@ -68,7 +68,15 @@
     "output_name": "Sonos"
   },
   "cd": {
-    "device": "/dev/sr0"
+    "device": "/dev/sr0",
+    "mass_service_url": "http://127.0.0.1:8783",
+    "stream_base_url": "",
+    "allow_local_fallback": false,
+    "rip_destination": "/media/local/music",
+    "automatic_rip": false,
+    "autoplay": true,
+    "auto_eject": true,
+    "quiet_rip_speed": 4
   },
   "join": {},
   "spotify": {
@@ -78,7 +86,16 @@
     "source": "radio"
   },
   "news": {
-    "guardian_api_key": "test"
+    "guardian_api_key": "",
+    "play_news_scripts": {
+      "play_news_link": "script.play_dynamic_morning_news",
+      "play_news_cuisine": "script.play_dynamic_morning_news_cuisine_ma",
+      "play_news_lounge": "script.play_dynamic_morning_news_lounge_ma"
+    },
+    "tts_targets": {
+      "cuisine": "media_player.cuisine",
+      "lounge": "media_player.lounge_mini_ma"
+    }
   },
   "library": {
     "weather_entity": "",
@@ -87,5 +104,96 @@
     "post_run_yoga_directory": "smb://LOUNGE/SSD/Exercise/",
     "post_run_yoga_script": "",
     "yoga_targets": {}
+  },
+  "setup_complete": false,
+  "screen": {
+    "immersive_delay_s": 180,
+    "presence_off_delay_s": 180,
+    "idle_off_delay_s": 180,
+    "wake_hold_s": 30
+  },
+  "hlk": {
+    "enabled": false,
+    "port": "/dev/serial0",
+    "baudrate": 256000,
+    "engineering_mode": true,
+    "reconnect_delay_s": 5,
+    "availability_timeout_s": 10,
+    "publish_heartbeat_s": 30,
+    "serial_timeout_s": 0.2,
+    "publish_raw_frames": true,
+    "mqtt_discovery": true,
+    "entity_prefix": "bs5c",
+    "sensor_name": "BS5c Screen HLK",
+    "wake_distance_min_cm": 25,
+    "wake_distance_max_cm": 150,
+    "wake_moving_energy_min": 18,
+    "presence_distance_min_cm": 25,
+    "presence_distance_max_cm": 450,
+    "presence_moving_energy_min": 18,
+    "presence_still_energy_min": 12,
+    "presence_delay_off_s": 20,
+    "manual_override_timeout_s": 300
+  },
+  "playback": {
+    "audio_target_id": "up50411c87e1c0",
+    "video_target_id": "",
+    "music_video_enabled": true,
+    "audio_targets": [
+      {
+        "id": "08a2eca2-247c-96fe-7998-7baddf01b2b1",
+        "name": "Cuisine"
+      },
+      {
+        "id": "64ad9554-d5e6-116c-8b0b-069c1f0b7885",
+        "name": "Bedroom Mini"
+      },
+      {
+        "id": "up50411c87e1c0",
+        "name": "Link"
+      }
+    ],
+    "video_targets": []
+  },
+  "mass": {
+    "playback_mode": "auto",
+    "voice_search": {
+      "enabled": false,
+      "microphone_device": "default",
+      "language": "en-AU",
+      "pipeline_id": "",
+      "timeout_s": 15
+    },
+    "transfer_targets": [
+      {
+        "id": "08a2eca2-247c-96fe-7998-7baddf01b2b1",
+        "name": "Cuisine"
+      },
+      {
+        "id": "64ad9554-d5e6-116c-8b0b-069c1f0b7885",
+        "name": "Bedroom Mini"
+      },
+      {
+        "id": "up50411c87e1c0",
+        "name": "Link"
+      }
+    ]
+  },
+  "kodi": {
+    "transfer_targets": []
+  },
+  "masterlink": {
+    "role": "master",
+    "ir": {
+      "audio": true,
+      "video": true
+    },
+    "provider": {
+      "nmusic_source": "",
+      "nradio_source": ""
+    },
+    "link": {
+      "sources": []
+    }
   }
 }

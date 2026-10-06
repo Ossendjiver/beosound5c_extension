@@ -58,6 +58,13 @@ _VALID_VOLUME_TYPES = {
     "c4amp", "hdmi", "spdif", "rca",
 }
 
+_VALID_MASTERLINK_ROLES = {
+    "master", "provider", "link", "ir_only", "none",
+    "audio_slave", "slave",
+    "ir", "ir-only", "passive",
+    "off", "disabled",
+}
+
 
 def _validate(config: dict, path: str) -> list[str]:
     """Validate ``config``.  Warnings are logged in place; fatal errors
@@ -85,6 +92,13 @@ def _validate(config: dict, path: str) -> list[str]:
     if vol_type not in _VALID_VOLUME_TYPES:
         logger.warning(
             "Config %s: unknown volume.type '%s'", path, vol_type,
+        )
+    masterlink = config.get("masterlink") or {}
+    ml_role = str(masterlink.get("role", "master") or "master").strip().lower()
+    if ml_role and ml_role not in _VALID_MASTERLINK_ROLES:
+        logger.warning(
+            "Config %s: unknown masterlink.role '%s' — falling back to 'master'",
+            path, ml_role,
         )
 
     # ── Fatal: duplicate source button mappings ──

@@ -35,6 +35,12 @@ let eventsProcessed = 0;
 // Pointer state
 let lastKnownPointerAngle = 180; // Default middle position
 
+function notifyUserInteraction(kind, detail = {}) {
+    document.dispatchEvent(new CustomEvent('bs5c:user-interaction', {
+        detail: { kind, ...detail }
+    }));
+}
+
 // ── Cursor Visibility ──
 
 function showCursor() {
@@ -140,6 +146,20 @@ function updateViaStore(angle, laserPosition) {
     const uiStore = window.uiStore;
     if (!uiStore) return;
 
+    const angleDistance = typeof uiStore._angleDistance === 'function'
+        ? uiStore._angleDistance(angle, uiStore.wheelPointerAngle)
+        : Math.abs(Number(angle || 0) - Number(uiStore.wheelPointerAngle || 0));
+    const pointerAngleDeadband = Number(uiStore._pointerAngleDeadband || 0);
+    if (pointerAngleDeadband > 0 && angleDistance < pointerAngleDeadband) {
+        if (laserPosition !== undefined) {
+            uiStore.laserPosition = laserPosition;
+            if (uiStore.setLaserPosition) {
+                uiStore.setLaserPosition(laserPosition);
+            }
+        }
+        return;
+    }
+
     uiStore.wheelPointerAngle = angle;
 
     if (laserPosition !== undefined) {
@@ -162,6 +182,10 @@ function updateViaStore(angle, laserPosition) {
 // ── Navigation Wheel ──
 
 function handleNavEvent(uiStore, data) {
+    notifyUserInteraction('nav', data || {});
+    if (window.ImmersiveMode?.consumeUserActivity?.('nav')) return;
+    if (window.PlaybackTargets?.handleNav?.(data)) return;
+
     const page = uiStore.currentRoute || 'unknown';
 
     if (routeNavToView(page, data, uiStore)) return;
@@ -169,6 +193,16 @@ function handleNavEvent(uiStore, data) {
     // Default: main menu wheel
     uiStore.topWheelPosition = data.direction === 'clock' ? 1 : -1;
     uiStore.handleWheelChange();
+}
+
+function resolvePlayingSourceId(uiStore) {
+    const activeSource = String(uiStore?.activeSource || '').trim();
+    if (activeSource) return activeSource;
+    const activePreset = uiStore?.activePlayingPreset;
+    if (!activePreset) return '';
+    const match = Object.entries(window.SourcePresets || {})
+        .find(([, preset]) => preset?.playing === activePreset);
+    return String(match?.[0] || '').trim();
 }
 
 function routeNavToView(page, data, uiStore) {
@@ -182,9 +216,22 @@ function routeNavToView(page, data, uiStore) {
     }
 
     // Playing page — active source owns nav
-    if (page === 'menu/playing' && uiStore.activeSource) {
-        const ctrl = window.SourcePresets?.[uiStore.activeSource]?.controller;
-        if (ctrl?.isActive && ctrl.handleNavEvent && ctrl.handleNavEvent(data)) return true;
+    const playingSourceId = page === 'menu/playing' ? resolvePlayingSourceId(uiStore) : '';
+    if (page === 'menu/playing' && playingSourceId) {
+        if (window.PlayingQueueOverlay?.handleNavEvent?.(data, playingSourceId)) {
+            return true;
+        }
+        const ctrl = window.SourcePresets?.[playingSourceId]?.controller;
+        const forceSourceNav = Boolean(ctrl?.wantsPlayingNav?.());
+        const useMainMenuWheel = uiStore?.view?.menuVisible !== false;
+        if (forceSourceNav || !useMainMenuWheel) {
+            if (ctrl?.isActive && ctrl.handleNavEvent && ctrl.handleNavEvent(data)) return true;
+        }
+    }
+
+    if (page === 'menu/queue') {
+        if (window.QueueView?.handleNavEvent) window.QueueView.handleNavEvent(data);
+        return true;
     }
 
     // Iframe page — iframe owns nav
@@ -223,7 +270,12 @@ function routeNavToView(page, data, uiStore) {
 // Both paths converge at the router, which owns the canonical volume state
 // and forwards to the volume adapter (BeoLab 5, Sonos, etc.).
 
-let currentVolume = 50;
+let currentVolume = 50;         // placeholder until synced from the router
+let volumeSynced = false;       // true once a real value arrived (fetch or broadcast)
+let volumeFetchInFlight = false;
+let volumeSyncRetryTimer = null;
+let volumeSyncRetries = 0;
+const VOLUME_SYNC_MAX_RETRIES = 5;
 let volumeOutputDevice = '';
 let volumeHideTimer = null;
 let volumeSendTimer = null;
@@ -239,10 +291,19 @@ function initVolumeArc() {
 }
 
 async function fetchVolumeFromRouter() {
+    if (volumeFetchInFlight) return;
+    volumeFetchInFlight = true;
+    if (volumeSyncRetryTimer) {
+        clearTimeout(volumeSyncRetryTimer);
+        volumeSyncRetryTimer = null;
+    }
     try {
-        const resp = await fetch(`${AppConfig.routerUrl}/router/status`);
+        const resp = await fetch(`${AppConfig.routerUrl}/router/status`,
+            { signal: AbortSignal.timeout(2000) });
         const data = await resp.json();
         currentVolume = data.volume || 0;
+        volumeSynced = true;
+        volumeSyncRetries = 0;
         volumeOutputDevice = data.output_device || '';
         const deviceEl = document.getElementById('volume-device');
         if (deviceEl) deviceEl.textContent = volumeOutputDevice;
@@ -250,6 +311,15 @@ async function fetchVolumeFromRouter() {
         console.log(`[VOLUME] Synced from router: ${currentVolume}% (${volumeOutputDevice})`);
     } catch (e) {
         console.warn('[VOLUME] Could not fetch router status:', e);
+        // Retry until synced — the router may still be starting up (cold
+        // boot race). Bounded: the media-WS onopen handler re-fetches on
+        // every (re)connect, so long-term recovery doesn't depend on this.
+        if (!volumeSynced && volumeSyncRetries < VOLUME_SYNC_MAX_RETRIES) {
+            volumeSyncRetries++;
+            volumeSyncRetryTimer = setTimeout(fetchVolumeFromRouter, 3000);
+        }
+    } finally {
+        volumeFetchInFlight = false;
     }
 }
 
@@ -262,6 +332,7 @@ function handleVolumeUpdate(data) {
     const newVol = data.volume;
     if (newVol == null || typeof newVol !== 'number') return;
     currentVolume = newVol;
+    volumeSynced = true;  // router broadcast is a real value
     updateVolumeArc(currentVolume);
 
     // Show the arc overlay briefly (same as physical wheel)
@@ -297,6 +368,19 @@ function updateVolumeArc(volume) {
 
 function handleVolumeEvent(uiStore, data) {
     if (!uiStore) return;
+    notifyUserInteraction('volume', data || {});
+
+    // No trustworthy baseline yet (router unreachable, or no router at all
+    // in dev/demo mode). Keep the wheel alive LOCALLY — adjust the
+    // placeholder value and show the arc overlay — but do NOT POST to the
+    // router: an absolute value derived from the stale placeholder would
+    // jump the real volume. Keep retrying the sync; once a real value
+    // arrives (fetch or volume_update broadcast) it overwrites the local
+    // placeholder and the wheel goes back to driving the router.
+    const synced = volumeSynced;
+    if (!synced) {
+        fetchVolumeFromRouter();
+    }
 
     const speed = data.speed || 10;
     const direction = data.direction === 'clock' ? 1 : -1;
@@ -323,8 +407,8 @@ function handleVolumeEvent(uiStore, data) {
         }, 1000);
     }
 
-    sendVolumeToRouter(currentVolume);
-    console.log(`[VOLUME] ${Math.round(currentVolume)}%`);
+    if (synced) sendVolumeToRouter(currentVolume);
+    console.log(`[VOLUME] ${Math.round(currentVolume)}%${synced ? '' : ' (local only — unsynced)'}`);
 }
 
 // ── Buttons ──
@@ -342,13 +426,16 @@ function getWebhookContext(page) {
 
 function handleButtonEvent(uiStore, data) {
     if (!data.button) return;
+    notifyUserInteraction('button', { button: data.button });
     const page = uiStore.currentRoute || 'unknown';
-    const button = data.button.toLowerCase();
+    const rawButton = data.button.toLowerCase();
+    const button = rawButton === 'go_hold' ? 'go_long' : rawButton;
     console.log(`[BUTTON] ${button} on ${page}`);
 
     // Global overlay intercept — camera overlay captures all buttons when active
     if (window.CameraOverlayManager?.isActive &&
         window.CameraOverlayManager.handleAction(button)) return;
+    if (window.PlaybackTargets?.handleButton?.(button)) return;
 
     // Route to current view — if handled, done
     if (routeButtonToView(page, button, uiStore)) return;
@@ -358,6 +445,10 @@ function handleButtonEvent(uiStore, data) {
 }
 
 function routeButtonToView(page, button, uiStore) {
+    if (uiStore?.tryHandleContextButton?.(button)) {
+        return true;
+    }
+
     const viewId = page.startsWith('menu/') ? page.slice(5) : null;
 
     // Source page — controller owns all buttons
@@ -371,8 +462,26 @@ function routeButtonToView(page, button, uiStore) {
 
     // Playing page — active source owns buttons
     if (page === 'menu/playing') {
+        const playingSourceId = resolvePlayingSourceId(uiStore);
+        if (window.PlayingQueueOverlay?.isOpen?.()
+                && window.PlayingQueueOverlay.handleButton?.(button, playingSourceId)) {
+            return true;
+        }
+        const activeCtrl = playingSourceId
+            ? window.SourcePresets?.[playingSourceId]?.controller
+            : null;
+        if (activeCtrl?.hasPlayingOverlay?.() && activeCtrl.handleButton?.(button)) {
+            return true;
+        }
+        if (uiStore.media?.shouldRoutePlayingButtonsToShowing?.()
+                && uiStore.media.handleShowingButton?.(button)) {
+            return true;
+        }
+        if (window.PlayingQueueOverlay?.handleButton?.(button, playingSourceId)) {
+            return true;
+        }
         if (uiStore.activeSource) {
-            const ctrl = window.SourcePresets?.[uiStore.activeSource]?.controller;
+            const ctrl = activeCtrl;
             if (ctrl?.isActive && ctrl.handleButton && ctrl.handleButton(button)) return true;
             // Source didn't handle it — map to playback actions via router
             const playbackAction = { go: 'go', left: 'left', right: 'right' }[button];
@@ -381,7 +490,6 @@ function routeButtonToView(page, button, uiStore) {
                 return true;
             }
         }
-        // Fallback: no active source — send transport commands directly to player
         const playerAction = { go: 'toggle', left: 'prev', right: 'next' }[button];
         if (playerAction) {
             sendToPlayer(playerAction);
@@ -392,6 +500,18 @@ function routeButtonToView(page, button, uiStore) {
             if (action) { window.EmulatorBridge.notifyPlaybackControl(action); return true; }
         }
         return false; // no handler — fall through to webhook
+    }
+
+    if (page === 'menu/showing') {
+        if (uiStore.media?.handleShowingButton?.(button)) {
+            return true;
+        }
+        return false;
+    }
+
+    if (page === 'menu/queue') {
+        if (window.QueueView?.handleButton) window.QueueView.handleButton(button);
+        return true;
     }
 
     // Iframe page — iframe owns all buttons
@@ -460,7 +580,7 @@ function sendWebhook(panelContext, button, id = '1') {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
-        timeout: 2000
+        signal: AbortSignal.timeout(2000)
     })
     .then(response => {
         const duration = Date.now() - startTime;

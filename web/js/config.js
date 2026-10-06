@@ -58,6 +58,11 @@ const AppConfig = {
         media: 'ws://localhost:8770/router/ws'
     },
 
+    // Screen / immersive policy
+    screen: {
+        immersiveDelaySeconds: 180
+    },
+
     // Camera overlay configuration
     cameras: [
         { id: 'door', title: 'Front door', entity: 'camera.doorbell_medium_resolution_channel' },
@@ -86,6 +91,12 @@ const AppConfig = {
         if (config.home_assistant) {
             if (config.home_assistant.url) AppConfig.homeAssistant.url = config.home_assistant.url;
         }
+        if (config.screen) {
+            const immersiveDelaySeconds = Number(config.screen.immersive_delay_s);
+            if (Number.isFinite(immersiveDelaySeconds) && immersiveDelaySeconds > 0) {
+                AppConfig.screen.immersiveDelaySeconds = immersiveDelaySeconds;
+            }
+        }
     }
 
     // Try deployed config first, then dev fallback
@@ -106,6 +117,36 @@ const AppConfig = {
     if (!loaded) {
         console.warn('[CONFIG] No config.json found, using defaults');
     }
+})();
+
+// A browser opened from another computer must contact the BS5C host, not the
+// viewer's own loopback interface. The on-device kiosk continues to use
+// localhost unchanged, while LAN access transparently follows page origin.
+(function normalizeLoopbackServiceHosts() {
+    const pageHost = window.location.hostname || 'localhost';
+    if (['localhost', '127.0.0.1', '::1', '[::1]'].includes(pageHost)) return;
+
+    const normalize = (value) => {
+        if (!value) return value;
+        try {
+            const parsed = new URL(value, window.location.href);
+            if (['localhost', '127.0.0.1', '::1', '[::1]'].includes(parsed.hostname)) {
+                parsed.hostname = pageHost;
+            }
+            return parsed.toString().replace(/\/$/, '');
+        } catch (_err) {
+            return value;
+        }
+    };
+
+    [
+        'webhookUrl', 'routerUrl', 'cdServiceUrl', 'spotifyServiceUrl',
+        'appleMusicServiceUrl', 'tidalServiceUrl', 'plexServiceUrl',
+        'usbServiceUrl', 'newsServiceUrl', 'radioServiceUrl',
+        'massServiceUrl', 'kodiServiceUrl', 'playerUrl'
+    ].forEach((key) => { AppConfig[key] = normalize(AppConfig[key]); });
+    AppConfig.websocket.input = normalize(AppConfig.websocket.input);
+    AppConfig.websocket.media = normalize(AppConfig.websocket.media);
 })();
 
 // Early emulator mode detection (before other scripts load)

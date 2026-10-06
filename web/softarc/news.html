@@ -5,7 +5,6 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>News - Beosound 5c</title>
 
-    <!-- Favicons -->
     <link rel="icon" type="image/x-icon" href="../assets/favicons/favicon.ico">
     <link rel="icon" type="image/png" sizes="16x16" href="../assets/favicons/favicon-16x16.png">
     <link rel="icon" type="image/png" sizes="32x32" href="../assets/favicons/favicon-32x32.png">
@@ -17,6 +16,41 @@
 
     <link rel="stylesheet" href="styles.css">
     <link rel="stylesheet" href="../assets/phosphor/phosphor.css">
+
+    <style>
+        .action-toast {
+            position: absolute;
+            top: 18px;
+            left: 50%;
+            transform: translateX(-50%) translateY(-10px);
+            min-width: 220px;
+            max-width: 460px;
+            padding: 10px 20px;
+            border-radius: 999px;
+            background: rgba(8, 12, 20, 0.72);
+            border: 1px solid rgba(148, 199, 255, 0.22);
+            box-shadow: 0 16px 34px rgba(0, 0, 0, 0.22);
+            backdrop-filter: blur(8px);
+            color: #f2f7ff;
+            font: 500 14px/1.25 Arial, sans-serif;
+            letter-spacing: 0.3px;
+            text-align: center;
+            opacity: 0;
+            transition: opacity 140ms ease, transform 140ms ease;
+            pointer-events: none;
+            z-index: 3800;
+        }
+
+        .action-toast.visible {
+            opacity: 1;
+            transform: translateX(-50%) translateY(0);
+        }
+
+        .action-toast.is-error {
+            border-color: rgba(255, 118, 118, 0.32);
+            color: #ffe4e4;
+        }
+    </style>
 </head>
 <body>
     <div id="app">
@@ -31,33 +65,475 @@
     <script src="../js/config.js"></script>
     <script src="../js/arc-utils.js"></script>
     <script src="../js/emulator-bridge.js"></script>
+    <script src="../js/playback-targets.js"></script>
     <script src="script-v2.js"></script>
     <script>
-        const NEWS_URL = (typeof AppConfig !== 'undefined' && AppConfig.newsServiceUrl)
-            ? AppConfig.newsServiceUrl
-            : 'http://localhost:8776';
+        const NEWS_URL = (typeof getServiceUrl === 'function')
+            ? getServiceUrl('newsServiceUrl', 8776)
+            : ((typeof AppConfig !== 'undefined' && AppConfig.newsServiceUrl) ? AppConfig.newsServiceUrl : 'http://localhost:8776');
+        const MASS_URL = (typeof getServiceUrl === 'function')
+            ? getServiceUrl('massServiceUrl', 8783)
+            : ((typeof AppConfig !== 'undefined' && AppConfig.massServiceUrl) ? AppConfig.massServiceUrl : 'http://localhost:8783');
+
+        const READ_TARGET_STORAGE_KEY = 'bs5c.news.read_target.v1';
+        const PLAY_NEWS_TARGET_STORAGE_KEY = 'bs5c.news.play_target.v1';
+        const READ_TARGETS = [
+            { id: 'off', label: 'Off', icon: 'speaker-slash', color: '#95a5a6' },
+            { id: 'cuisine', label: 'Cuisine', icon: 'fork-knife', color: '#6cb7ff' },
+            { id: 'lounge', label: 'Lounge', icon: 'armchair', color: '#9b8cff' },
+        ];
+        const PLAY_NEWS_TARGET_ICON = 'speaker-high';
+        const PLAY_NEWS_TARGET_COLOR = '#6cb7ff';
+        const PODCAST_TARGET_ICON = 'speaker-high';
+        const PODCAST_TARGET_COLOR = '#ff8c69';
+
+        let actionToastState = null;
+        let playNewsTargetCache = [];
+
+        function ensureToast() {
+            let overlay = document.getElementById('action-toast');
+            if (!overlay) {
+                overlay = document.createElement('div');
+                overlay.id = 'action-toast';
+                overlay.className = 'action-toast';
+                document.getElementById('app')?.appendChild(overlay);
+            }
+            return overlay;
+        }
+
+        function hideToast() {
+            const overlay = document.getElementById('action-toast');
+            if (overlay) overlay.classList.remove('visible', 'is-error');
+            if (actionToastState?.timer) clearTimeout(actionToastState.timer);
+            actionToastState = null;
+        }
+
+        function showToast(message, options = {}) {
+            const overlay = ensureToast();
+            if (actionToastState?.timer) clearTimeout(actionToastState.timer);
+            overlay.textContent = String(message || '').trim();
+            overlay.classList.toggle('is-error', options.error === true);
+            overlay.classList.add('visible');
+            actionToastState = {
+                timer: setTimeout(hideToast, options.error ? 3400 : 2400),
+            };
+        }
+
+        function delay(ms) {
+            return new Promise((resolve) => setTimeout(resolve, Math.max(0, Number(ms) || 0)));
+        }
+
+        function readTargetById(id) {
+            return READ_TARGETS.find((entry) => entry.id === id) || READ_TARGETS[0];
+        }
+
+        function loadReadTarget() {
+            try {
+                return readTargetById(localStorage.getItem(READ_TARGET_STORAGE_KEY) || 'off').id;
+            } catch (_error) {
+                return 'off';
+            }
+        }
+
+        function saveReadTarget(id) {
+            const target = readTargetById(id);
+            try {
+                localStorage.setItem(READ_TARGET_STORAGE_KEY, target.id);
+            } catch (_error) {}
+            return target.id;
+        }
+
+        function loadPlayNewsTargetId() {
+            try {
+                return String(localStorage.getItem(PLAY_NEWS_TARGET_STORAGE_KEY) || '').trim();
+            } catch (_error) {
+                return '';
+            }
+        }
+
+        function savePlayNewsTargetId(targetId) {
+            const normalized = String(targetId || '').trim();
+            try {
+                localStorage.setItem(PLAY_NEWS_TARGET_STORAGE_KEY, normalized);
+            } catch (_error) {}
+            return normalized;
+        }
+
+        function playNewsPlaybackTargets() {
+            return normalizePlaybackTargets(playNewsTargetCache);
+        }
+
+        function selectedPlayNewsTarget() {
+            const targets = playNewsPlaybackTargets();
+            const storedId = loadPlayNewsTargetId();
+            const stored = targets.find((target) => target.id === storedId);
+            if (stored) return stored;
+
+            const sharedId = String(
+                window.PlaybackTargets?.selectedTargetIdFor?.('mass') || ''
+            ).trim();
+            return targets.find((target) => target.id === sharedId) || targets[0] || null;
+        }
+
+        async function fetchMassPlaybackTargets() {
+            try {
+                const payload = await fetchJson(`${MASS_URL}/status`);
+                const targets = normalizePlaybackTargets(payload?.transfer_targets || []);
+                if (targets.length) playNewsTargetCache = targets;
+            } catch (_error) {}
+            return playNewsPlaybackTargets();
+        }
+
+        function buildPlayNewsItem() {
+            const activeTarget = selectedPlayNewsTarget();
+            const targets = playNewsPlaybackTargets();
+            return {
+                id: 'play_news',
+                name: `Play News: ${activeTarget?.name || 'Unavailable'}`,
+                icon: 'newspaper-clipping',
+                color: PLAY_NEWS_TARGET_COLOR,
+                actionable: Boolean(activeTarget),
+                newsAction: activeTarget ? 'play_news' : '',
+                children: targets.map((entry) => ({
+                    id: `play_news_target_${entry.id}`,
+                    name: entry.name,
+                    icon: PLAY_NEWS_TARGET_ICON,
+                    color: PLAY_NEWS_TARGET_COLOR,
+                    actionable: true,
+                    playNewsTargetId: entry.id,
+                })),
+            };
+        }
+
+        function buildReadModeItem() {
+            const activeTarget = readTargetById(loadReadTarget());
+            return {
+                id: 'read_mode',
+                name: `Read: ${activeTarget.label}`,
+                icon: activeTarget.id === 'off' ? 'speaker-slash' : 'speaker-high',
+                color: activeTarget.id === 'off' ? '#95a5a6' : '#8ed1ff',
+                children: READ_TARGETS.map((entry) => ({
+                    id: `read_target_${entry.id}`,
+                    name: entry.label,
+                    icon: entry.icon,
+                    color: entry.color,
+                    actionable: true,
+                    readTarget: entry.id,
+                })),
+            };
+        }
+
+        function normalizePlaybackTargets(targets) {
+            return (Array.isArray(targets) ? targets : [])
+                .map((target) => ({
+                    id: String(target?.id || target?.player_id || '').trim(),
+                    name: String(target?.name || target?.label || target?.id || '').trim(),
+                }))
+                .filter((target) => target.id)
+                .map((target) => ({ ...target, name: target.name || target.id }));
+        }
+
+        function podcastPlaybackTargets() {
+            return normalizePlaybackTargets(window.PlaybackTargets?.targetsFor?.('mass') || []);
+        }
+
+        function selectedPodcastTarget() {
+            const selected = window.PlaybackTargets?.selectedTargetFor?.('mass');
+            if (selected?.id) {
+                return {
+                    id: String(selected.id).trim(),
+                    name: String(selected.name || selected.label || selected.id || '').trim() || String(selected.id).trim(),
+                };
+            }
+            return podcastPlaybackTargets()[0] || null;
+        }
+
+        function buildPodcastTargetItem() {
+            const activeTarget = selectedPodcastTarget();
+            const targets = podcastPlaybackTargets();
+            return {
+                id: 'podcast_target',
+                name: `Podcasts: ${activeTarget?.name || 'Default'}`,
+                icon: PODCAST_TARGET_ICON,
+                color: PODCAST_TARGET_COLOR,
+                children: targets.map((entry) => ({
+                    id: `podcast_target_${entry.id}`,
+                    name: entry.name,
+                    icon: PODCAST_TARGET_ICON,
+                    color: PODCAST_TARGET_COLOR,
+                    actionable: true,
+                    podcastTargetId: entry.id,
+                })),
+            };
+        }
+
+        function resolveChildrenKey(item) {
+            if (Array.isArray(item?.children)) return 'children';
+            if (Array.isArray(item?.articles)) return 'articles';
+            if (Array.isArray(item?.tracks)) return 'tracks';
+            return null;
+        }
+
+        async function fetchJson(url) {
+            const response = await fetch(url, { cache: 'no-store' });
+            if (!response.ok) {
+                throw new Error(`Fetch failed: ${response.status}`);
+            }
+            return response.json();
+        }
+
+        async function fetchNewsSections() {
+            const payload = await fetchJson(`${NEWS_URL}/articles`);
+            return Array.isArray(payload) ? payload : [];
+        }
+
+        async function fetchPodcastsRoot() {
+            try {
+                const payload = await fetchJson(`${MASS_URL}/playlists`);
+                const roots = Array.isArray(payload) ? payload : (Array.isArray(payload?.data) ? payload.data : []);
+                const podcastsRoot = roots.find((entry) => String(entry?.id || '').trim() === 'podcasts');
+                if (!podcastsRoot || !Array.isArray(podcastsRoot.tracks) || !podcastsRoot.tracks.length) {
+                    return null;
+                }
+                return {
+                    ...JSON.parse(JSON.stringify(podcastsRoot)),
+                    id: 'news_podcasts',
+                    name: 'Podcasts',
+                    icon: 'microphone',
+                    color: '#ff6b6b',
+                };
+            } catch (_error) {
+                return null;
+            }
+        }
+
+        async function buildRootItems() {
+            const [sections, podcastsRoot] = await Promise.all([
+                fetchNewsSections(),
+                fetchPodcastsRoot(),
+                fetchMassPlaybackTargets(),
+            ]);
+
+            const rootItems = [
+                buildPlayNewsItem(),
+                buildReadModeItem(),
+                buildPodcastTargetItem(),
+            ];
+
+            if (podcastsRoot) rootItems.push(podcastsRoot);
+            rootItems.push(...sections);
+            return rootItems;
+        }
+
+        async function refreshRootItems(arcList) {
+            if (!arcList) return;
+            const previousId = arcList.items?.[Math.round(arcList.currentIndex)]?.id || null;
+            const rawData = await buildRootItems();
+            arcList.rootData = rawData;
+            if (arcList.depth !== 0) return;
+            arcList.items = arcList.mapItems(rawData, 0);
+            if (previousId) {
+                const nextIndex = arcList.items.findIndex((entry) => entry.id === previousId);
+                if (nextIndex >= 0) {
+                    arcList.currentIndex = nextIndex;
+                    arcList.targetIndex = nextIndex;
+                }
+            }
+            if (arcList.currentIndex >= arcList.items.length) {
+                arcList.currentIndex = Math.max(0, arcList.items.length - 1);
+                arcList.targetIndex = arcList.currentIndex;
+            }
+            arcList.container?.querySelectorAll('.arc-item:not(.breadcrumb)').forEach((node) => node.remove());
+            arcList.totalItemsDisplay.textContent = arcList.items.length;
+            arcList.updateCounter();
+            arcList.render();
+        }
+
+        async function postNewsAction(action, extraPayload = {}) {
+            const response = await fetch(`${NEWS_URL}/action`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    action,
+                    ...extraPayload,
+                }),
+            });
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok || payload?.status === 'error') {
+                throw new Error(payload?.message || `Action failed: ${response.status}`);
+            }
+            return payload;
+        }
+
+        async function postMassPlayback(item) {
+            const target = selectedPodcastTarget();
+            const targetPayload = window.PlaybackTargets?.payloadFor?.('mass') || {};
+            const response = await fetch(`${MASS_URL}/command`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    command: 'play_item',
+                    id: item.id || '',
+                    url: item.url || '',
+                    play_url: item.play_url || '',
+                    target_player_id: target?.id || targetPayload.target_player_id || targetPayload.audio_target_id || '',
+                    ...targetPayload,
+                }),
+            });
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok || payload?.status === 'error' || payload?.state === 'error') {
+                throw new Error(payload?.message || payload?.reason || `Playback failed: ${response.status}`);
+            }
+            return payload;
+        }
+
+        async function selectPodcastTarget(targetId) {
+            const normalized = String(targetId || '').trim();
+            if (!normalized || !window.PlaybackTargets?.setAudioTarget) return selectedPodcastTarget();
+            await window.PlaybackTargets.setAudioTarget(normalized);
+            return selectedPodcastTarget();
+        }
+
+        async function selectPlayNewsTarget(targetId) {
+            const normalized = String(targetId || '').trim();
+            const target = playNewsPlaybackTargets().find((entry) => entry.id === normalized) || null;
+            if (!target) return selectedPlayNewsTarget();
+            savePlayNewsTargetId(target.id);
+
+            const sharedTargets = normalizePlaybackTargets(
+                window.PlaybackTargets?.targetsFor?.('mass') || []
+            );
+            if (
+                sharedTargets.some((entry) => entry.id === target.id)
+                && window.PlaybackTargets?.setAudioTarget
+            ) {
+                await window.PlaybackTargets.setAudioTarget(target.id);
+            }
+            return target;
+        }
+
+        async function triggerSelectedPlayNews() {
+            const target = selectedPlayNewsTarget();
+            if (!target) throw new Error('No MASS players are available');
+            const payload = await postNewsAction('play_news', {
+                target_player_id: target.id,
+                target_name: target.name,
+            });
+            showToast(`Playing news on ${payload?.target_name || target.name}`);
+            return payload;
+        }
+
+        async function triggerArticleRead(item) {
+            const targetId = loadReadTarget();
+            if (!targetId || targetId === 'off') {
+                showToast('Select a Read target first', { error: true });
+                return false;
+            }
+            await postNewsAction('read_article', {
+                article_id: item?.id || '',
+                target: targetId,
+            });
+            showToast(`Reading on ${readTargetById(targetId).label}`);
+            return true;
+        }
 
         document.addEventListener('DOMContentLoaded', () => {
             const arcList = new ArcList({
-                rootLoader: async () => {
-                    const resp = await fetch(`${NEWS_URL}/articles`);
-                    if (!resp.ok) throw new Error(`Fetch failed: ${resp.status}`);
-                    return resp.json();
-                },
+                rootLoader: buildRootItems,
                 levels: [{
-                    // Level 0: Sections → articles
-                    childrenKey: 'articles',
-                    isContainer: (item) => item.articles?.length > 0,
+                    childrenKey: (item) => resolveChildrenKey(item),
+                    isContainer: (item) => {
+                        const key = resolveChildrenKey(item);
+                        return Boolean(key && Array.isArray(item?.[key]) && item[key].length);
+                    },
                 }],
-                storagePrefix: 'news_arclist',
+                storagePrefix: 'news_arclist_v2',
                 context: 'news',
                 webhookUrl: typeof AppConfig !== 'undefined' ? AppConfig.webhookUrl : null,
-                onGo: (item, depth) => {
-                    // Articles with pages are handled by ArcList V2 page view
-                    // No additional action needed
-                    console.log(`[NEWS] GO depth=${depth} item="${item.name}"`);
+                onGo: async (item) => {
+                    try {
+                        if (item?.playNewsTargetId) {
+                            const nextTarget = await selectPlayNewsTarget(item.playNewsTargetId);
+                            showToast(`Play News target: ${nextTarget?.name || 'unavailable'}`);
+                            if (arcList.depth > 0) {
+                                await arcList.goBack();
+                                await delay(360);
+                            }
+                            await refreshRootItems(arcList);
+                            return;
+                        }
+
+                        if (item?.newsAction === 'play_news') {
+                            await triggerSelectedPlayNews();
+                            return;
+                        }
+
+                        if (item?.newsAction) {
+                            await postNewsAction(item.newsAction);
+                            showToast(item.name || 'Play News');
+                            return;
+                        }
+
+                        if (item?.readTarget !== undefined) {
+                            const nextTargetId = saveReadTarget(item.readTarget);
+                            const target = readTargetById(nextTargetId);
+                            showToast(`Read target: ${target.label}`);
+                            if (arcList.depth > 0) {
+                                await arcList.goBack();
+                                await delay(360);
+                            }
+                            await refreshRootItems(arcList);
+                            return;
+                        }
+
+                        if (item?.podcastTargetId) {
+                            const nextTarget = await selectPodcastTarget(item.podcastTargetId);
+                            showToast(`Podcasts on ${nextTarget?.name || 'default target'}`);
+                            if (arcList.depth > 0) {
+                                await arcList.goBack();
+                                await delay(360);
+                            }
+                            await refreshRootItems(arcList);
+                            return;
+                        }
+
+                        if ((item?.url || item?.play_url) && !Array.isArray(item?.tracks)) {
+                            await postMassPlayback(item);
+                            const target = selectedPodcastTarget();
+                            showToast(`Playing ${item.name || 'podcast'}${target?.name ? ` on ${target.name}` : ''}`);
+                            return;
+                        }
+
+                        if (item?.page) {
+                            await triggerArticleRead(item);
+                        }
+                    } catch (error) {
+                        showToast(error?.message || 'Action failed', { error: true });
+                    }
                 },
             });
+
+            const baseHandleButton = arcList.handleButton.bind(arcList);
+            arcList.handleButton = (button) => {
+                const normalized = String(button || '').toLowerCase();
+                if (normalized === 'go' && arcList._inPageView) {
+                    const pageFrame = arcList.navStack?.[arcList.navStack.length - 1];
+                    if (pageFrame?.selectedItem?.page) {
+                        void triggerArticleRead(pageFrame.selectedItem);
+                        return;
+                    }
+                }
+                return baseHandleButton(button);
+            };
+            arcList.handleButtonFromParent = (button) => arcList.handleButton(button);
+
+            if (window.PlaybackTargets?.refresh) {
+                void window.PlaybackTargets.refresh().then(() => refreshRootItems(arcList)).catch(() => {});
+            }
+            document.addEventListener('bs5c:playback-targets', () => {
+                void refreshRootItems(arcList);
+            });
+
             window.arcListInstance = arcList;
         });
     </script>

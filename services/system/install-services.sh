@@ -1,5 +1,6 @@
 #!/bin/bash
 set -e
+# Keep this script LF-only. CRLF breaks direct execution on Linux.
 
 # BeoSound 5C Service Installation Script
 # This script installs, enables, and starts all BeoSound 5C services
@@ -36,8 +37,9 @@ echo ""
 #   tty           - xinit console access
 #   input         - HID input devices
 #   audio         - audio device access
+#   dialout       - UART / USB serial access for local HLK sensors
 echo "👥 Ensuring required group memberships for $INSTALL_USER..."
-for group in video render tty input audio; do
+for group in video render tty input audio dialout; do
     if getent group "$group" &>/dev/null; then
         if id -nG "$INSTALL_USER" | grep -qw "$group"; then
             echo "  ✅ Already in group: $group"
@@ -134,6 +136,25 @@ for svc in "${STALE_SERVICES[@]}"; do
     fi
 done
 
+echo "Cleaning up unsupported player services..."
+for unit in "$SERVICE_DIR"/beo-player-*.service; do
+    [ -e "$unit" ] || continue
+    svc="$(basename "$unit")"
+    keep=0
+    for known in "${SERVICES[@]}"; do
+        if [ "$known" = "$svc" ]; then
+            keep=1
+            break
+        fi
+    done
+    if [ "$keep" -eq 0 ]; then
+        echo "  Removing unsupported player service $svc"
+        systemctl stop "$svc" 2>/dev/null || true
+        systemctl disable "$svc" 2>/dev/null || true
+        rm -f "$unit"
+    fi
+done
+
 # Copy service files to systemd directory, replacing user/home placeholders
 echo "📋 Copying service files..."
 for service in "${SERVICES[@]}"; do
@@ -151,6 +172,7 @@ done
 echo "📋 Setting up health check and failure notification scripts..."
 chmod +x "$SCRIPT_DIR/notify-failure.sh"
 chmod +x "$SCRIPT_DIR/beo-health.sh"
+chmod +x "$SCRIPT_DIR/reconcile-services.sh"
 echo "  ✅ Scripts made executable"
 
 echo ""
@@ -199,94 +221,24 @@ menu_has() {
 # Enable and start services in dependency order
 echo "🚀 Enabling and starting services..."
 
-# Start base services first
+# Always-on infrastructure services (independent of player.type / menu).
 echo "  🌐 Starting HTTP server..."
 start_service beo-http.service
-
-# Determine configured player type from config.json
-PLAYER_TYPE=$(python3 -c "import json; print(json.load(open('$CONFIG_DIR/config.json')).get('player',{}).get('type','sonos'))" 2>/dev/null || echo "sonos")
-echo "  ℹ️  Configured player type: $PLAYER_TYPE"
-
-if [ "$PLAYER_TYPE" = "sonos" ]; then
-    echo "  📡 Starting Sonos player..."
-    start_service beo-player-sonos.service
-    echo "  📡 Disabling other players (not configured)..."
-    systemctl disable beo-player-bluesound.service 2>/dev/null || true
-    systemctl stop beo-player-bluesound.service 2>/dev/null || true
-    systemctl disable beo-player-local.service 2>/dev/null || true
-    systemctl stop beo-player-local.service 2>/dev/null || true
-    systemctl disable beo-player-mass.service 2>/dev/null || true
-    systemctl stop beo-player-mass.service 2>/dev/null || true
-elif [ "$PLAYER_TYPE" = "bluesound" ]; then
-    echo "  📡 Starting BlueSound player..."
-    start_service beo-player-bluesound.service
-    echo "  📡 Disabling other players (not configured)..."
-    systemctl disable beo-player-sonos.service 2>/dev/null || true
-    systemctl stop beo-player-sonos.service 2>/dev/null || true
-    systemctl disable beo-player-local.service 2>/dev/null || true
-    systemctl stop beo-player-local.service 2>/dev/null || true
-    systemctl disable beo-player-mass.service 2>/dev/null || true
-    systemctl stop beo-player-mass.service 2>/dev/null || true
-elif [ "$PLAYER_TYPE" = "local" ]; then
-    echo "  📡 Starting Local player..."
-    start_service beo-player-local.service
-    echo "  📡 Disabling network players (not configured)..."
-    systemctl disable beo-player-sonos.service 2>/dev/null || true
-    systemctl stop beo-player-sonos.service 2>/dev/null || true
-    systemctl disable beo-player-bluesound.service 2>/dev/null || true
-    systemctl stop beo-player-bluesound.service 2>/dev/null || true
-    systemctl disable beo-player-mass.service 2>/dev/null || true
-    systemctl stop beo-player-mass.service 2>/dev/null || true
-elif [ "$PLAYER_TYPE" = "mass" ]; then
-    echo "  📡 Starting Music Assistant player..."
-    start_service beo-player-mass.service
-    echo "  📡 Disabling other players (not configured)..."
-    systemctl disable beo-player-sonos.service 2>/dev/null || true
-    systemctl stop beo-player-sonos.service 2>/dev/null || true
-    systemctl disable beo-player-bluesound.service 2>/dev/null || true
-    systemctl stop beo-player-bluesound.service 2>/dev/null || true
-    systemctl disable beo-player-local.service 2>/dev/null || true
-    systemctl stop beo-player-local.service 2>/dev/null || true
-elif [ "$PLAYER_TYPE" = "none" ]; then
-    echo "  ℹ️  No network player configured — skipping player services"
-    disable_service beo-player-sonos.service
-    disable_service beo-player-bluesound.service
-    disable_service beo-player-local.service
-    disable_service beo-player-mass.service
-else
-    echo "  ⚠️  Unknown player type '$PLAYER_TYPE', starting known network players..."
-    start_service beo-player-sonos.service || true
-    start_service beo-player-bluesound.service || true
-    disable_service beo-player-local.service
-    disable_service beo-player-mass.service
-fi
-
+echo "  📡 Starting local HLK sensor..."
+start_service beo-hlk.service
 echo "  🎮 Starting input server..."
 start_service beo-input.service
-
 echo "  🔀 Starting Event Router..."
 start_service beo-router.service
-
 echo "  🔗 Starting MasterLink sniffer..."
 start_service beo-masterlink.service
-
 echo "  📱 Starting Bluetooth service..."
 start_service beo-bluetooth.service
 
-# Start source services based on menu configuration
-echo ""
-echo "  📋 Checking menu config for optional sources..."
-
-for entry in "${OPTIONAL_SOURCES[@]}"; do
-    IFS='|' read -r menu_key service emoji label <<< "$entry"
-    if menu_has "$menu_key"; then
-        echo "  $emoji Starting $label..."
-        start_service "$service"
-    else
-        echo "  ⏭️  $menu_key not in menu — skipping $service"
-        disable_service "$service"
-    fi
-done
+# Player + optional sources reconciled by reconcile-services.sh — single
+# source of truth for "which services should be running, given config.json".
+echo "  🔄 Reconciling player + source services from config..."
+"$SCRIPT_DIR/reconcile-services.sh"
 
 # Start the context-aware library service after MASS/source services are ready.
 echo "  🧠 Starting context-aware library service..."
@@ -308,8 +260,13 @@ sudo systemctl reset-failed
 echo "📊 Service Status Check:"
 echo "======================="
 for service in "${SERVICES[@]}"; do
-    status=$(systemctl is-active "$service" 2>/dev/null)
-    enabled=$(systemctl is-enabled "$service" 2>/dev/null)
+    # `|| true`: is-active/is-enabled exit non-zero for inactive/disabled
+    # units (normal for optional players/sources), and under `set -e` a
+    # failing command substitution in an assignment kills the whole script —
+    # which aborted the installer mid status-report, before the verification,
+    # summary and reboot prompt ever ran.
+    status=$(systemctl is-active "$service" 2>/dev/null || true)
+    enabled=$(systemctl is-enabled "$service" 2>/dev/null || true)
     
     if [ "$status" = "active" ]; then
         status_icon="✅"

@@ -20,6 +20,7 @@
     var CANVAS_SHOW_MS = 10000;        // min canvas dwell (extends to loop duration)
     var VIDEO_SHOW_MS = 25000;         // fixed music video dwell (videos don't loop)
     var FADE_MS = 800;
+    var MUSIC_VIDEO_PREF_KEY = 'bs5c.youtubeVideosEnabled';
 
     // ── State ──
     var active = false;
@@ -41,6 +42,10 @@
 
     function isPaused() {
         var s = window.uiStore && window.uiStore.mediaInfo && window.uiStore.mediaInfo.state;
+        if (typeof window.isPausedPlaybackState === 'function') {
+            return window.isPausedPlaybackState(s);
+        }
+        s = String(s || '').trim().toLowerCase();
         return s === 'paused' || s === 'idle' || s === 'stopped';
     }
 
@@ -50,10 +55,41 @@
         return live === currentTrackId;
     }
 
+    function musicVideoEnabled() {
+        try {
+            return localStorage.getItem(MUSIC_VIDEO_PREF_KEY) !== 'false';
+        } catch (error) {
+            return true;
+        }
+    }
+
+    function writeMusicVideoEnabled(enabled) {
+        try {
+            localStorage.setItem(MUSIC_VIDEO_PREF_KEY, enabled ? 'true' : 'false');
+        } catch (error) {}
+    }
+
+    function setMusicVideoEnabled(enabled) {
+        var normalized = enabled !== false;
+        var previous = musicVideoEnabled();
+        writeMusicVideoEnabled(normalized);
+        if (previous !== normalized) {
+            applyMusicVideoPreference();
+            document.dispatchEvent(new CustomEvent('bs5c:music-video-preference', {
+                detail: { enabled: normalized }
+            }));
+        }
+        return normalized;
+    }
+
+    function effectiveMusicVideoUrl() {
+        return musicVideoEnabled() ? musicVideoUrl : '';
+    }
+
     // The best available URL and its mode, given current state
-    function preferredUrl()  { return musicVideoUrl || canvasUrl; }
-    function preferredMode() { return musicVideoUrl ? 'video' : 'canvas'; }
-    function artworkShowMs() { return musicVideoUrl ? ARTWORK_WITH_VIDEO_MS : ARTWORK_SHOW_MS; }
+    function preferredUrl()  { return effectiveMusicVideoUrl() || canvasUrl; }
+    function preferredMode() { return effectiveMusicVideoUrl() ? 'video' : 'canvas'; }
+    function artworkShowMs() { return effectiveMusicVideoUrl() ? ARTWORK_WITH_VIDEO_MS : ARTWORK_SHOW_MS; }
 
     // ── DOM setup ──
 
@@ -82,8 +118,11 @@
         });
         video.addEventListener('timeupdate', updateProgress);
         video.addEventListener('error', function() {
+            // Stop the retry cycle outright — leaving videoReady=false
+            // with cycling on re-arms a 2s retry forever while nothing
+            // re-attempts the load.
             videoReady = false;
-            if (active) hide();
+            stopCycle();
         });
 
         document.body.appendChild(container);
@@ -180,6 +219,10 @@
         clearTimeout(cycleTimer);
         cycleTimer = null;
         if (active) hide();
+        // Pause unconditionally — with autoplay+loop, a canvas stopped
+        // during the artwork-dwell phase (before it was ever shown) keeps
+        // decoding hidden video indefinitely otherwise.
+        if (video && !video.paused) video.pause();
     }
 
     // Wait for artwork to finish, then attempt to show video.
@@ -273,7 +316,7 @@
     function loadVideo(url) {
         if (!url) return;
         ensureDOM();
-        var mode = (url === musicVideoUrl && musicVideoUrl) ? 'video' : 'canvas';
+        var mode = (url === effectiveMusicVideoUrl() && effectiveMusicVideoUrl()) ? 'video' : 'canvas';
         if (url === currentUrl && mode === currentMode) return;  // already loaded
         currentUrl = url;
         currentMode = mode;
@@ -285,8 +328,17 @@
         // Reset fit while dimensions are unknown; applyVideoFit() finalises on loadedmetadata
         video.style.objectPosition = 'center center';
         video.style.transform = '';
-        video.src = url;
-        video.load();
+        if (typeof Hls !== 'undefined' && Hls.isSupported() && url.indexOf('.m3u8') !== -1) {
+            if (video._hls) { video._hls.destroy(); }
+            var hls = new Hls({ enableWorker: false });
+            video._hls = hls;
+            hls.loadSource(url);
+            hls.attachMedia(video);
+        } else {
+            if (video._hls) { video._hls.destroy(); video._hls = null; }
+            video.src = url;
+            video.load();
+        }
     }
 
     function loadPreferred() {
@@ -303,9 +355,41 @@
         videoReady = false;
         stopCycle();
         if (video) {
+            // Tear down any HLS instance too — its loaders/buffers/
+            // listeners otherwise linger until the next loadVideo() on a
+            // shell that runs for weeks.
+            if (video._hls) {
+                try { video._hls.destroy(); } catch (e) { /* already dead */ }
+                video._hls = null;
+            }
             video.removeAttribute('src');
             video.load();
         }
+    }
+
+    function clearLoadedVideo() {
+        currentUrl = '';
+        currentMode = null;
+        currentTrackId = '';
+        videoReady = false;
+        stopCycle();
+        if (video) {
+            video.removeAttribute('src');
+            video.load();
+        }
+    }
+
+    function applyMusicVideoPreference() {
+        var nextUrl = preferredUrl();
+        if (!nextUrl) {
+            clearLoadedVideo();
+            return;
+        }
+        if (currentMode === 'video' || nextUrl !== currentUrl) {
+            stopCycle();
+            loadVideo(nextUrl);
+        }
+        tryStartCycle();
     }
 
     // ── Progress bar ──
@@ -372,13 +456,28 @@
                 if (changed) {
                     var p = preferredUrl();
                     if (!p) {
-                        stopCycle();
+                        // Both URLs cleared (e.g. switched to radio). Fully
+                        // reset so the cycle can't restart with stale state
+                        // and flash a black video panel between artworks.
+                        clearVideo();
                     } else if (p !== currentUrl) {
                         // Better video available — load it; cycle picks it up
                         loadVideo(p);
                         tryStartCycle();
                     }
                 }
+            }
+        });
+
+        document.addEventListener('bs5c:music-video-preference', function() {
+            applyMusicVideoPreference();
+        });
+
+        document.addEventListener('bs5c:immersive-visibility', function(e) {
+            if (e.detail.visible) {
+                setTimeout(function() { tryStartCycle(); }, 200);
+            } else {
+                stopCycle();
             }
         });
 
@@ -394,6 +493,12 @@
 
         // Menu open → pause cycle; menu close → resume
         document.addEventListener('bs5c:menu-visibility', function(e) {
+            if (window.ImmersiveMode && window.ImmersiveMode.active) {
+                if (!e.detail.visible) {
+                    setTimeout(function() { tryStartCycle(); }, 200);
+                }
+                return;
+            }
             if (e.detail.visible) {
                 stopCycle();
             } else {
@@ -403,10 +508,10 @@
 
         // View change — stop when leaving now playing
         document.addEventListener('bs5c:view-change', function(e) {
-            if (e.detail.to !== 'menu/playing') {
+            if (e.detail.to !== 'menu/playing' && !(window.ImmersiveMode && window.ImmersiveMode.active)) {
                 stopCycle();
             }
-            if (e.detail.to === 'menu/playing') {
+            if (e.detail.to === 'menu/playing' || (window.ImmersiveMode && window.ImmersiveMode.active)) {
                 var info = uiStore.mediaInfo;
                 if (info) {
                     if (info.canvas_url)       canvasUrl = info.canvas_url;
@@ -430,9 +535,15 @@
         show: show, hide: hide,
         get active()         { return active; },
         get cycling()        { return cycling; },
-        get hasCanvas()      { return !!(canvasUrl || musicVideoUrl) && videoReady; },
-        get hasMusicVideo()  { return !!musicVideoUrl && videoReady; },
+        get hasCanvas()      { return !!preferredUrl() && videoReady; },
+        get hasMusicVideo()  { return !!effectiveMusicVideoUrl() && videoReady; },
         get currentMode()    { return currentMode; },
+    };
+
+    window.MusicVideoPreference = {
+        get enabled() { return musicVideoEnabled(); },
+        setEnabled: setMusicVideoEnabled,
+        toggle: function() { return setMusicVideoEnabled(!musicVideoEnabled()); }
     };
 
     if (document.readyState === 'loading') {

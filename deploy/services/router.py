@@ -49,6 +49,13 @@ from lib.endpoints import (
 from lib.loop_monitor import LoopMonitor
 from lib.lydbro import LydbroHandler
 from lib.media_state import MediaState
+from lib.metadata_enrichment import (
+    MetadataEnricher,
+    preserve_same_item_fields,
+    same_item,
+    valid_artwork,
+)
+from lib.playback_targets import default_playback_state
 from lib.spotify_canvas import extract_spotify_track_id
 from lib.source_registry import (
     Source, SourceRegistry, DEFAULT_SOURCE_HANDLES, DEFAULT_SOURCE_PORTS,
@@ -66,7 +73,7 @@ ROUTER_PORT = 8770
 INPUT_WEBHOOK_URL = INPUT_WEBHOOK
 
 # Static menu IDs — these are built-in views (not dynamic sources)
-STATIC_VIEWS = {"showing", "system", "scenes", "playing"}
+STATIC_VIEWS = {"showing", "system", "scenes", "playing", "queue"}
 
 
 # ---------------------------------------------------------------------------
@@ -89,7 +96,7 @@ class EventRouter:
         self._volume = None
         self._accept_player_volume = False
         self._menu_order: list[dict] = []
-        self._local_button_views: set[str] = {"menu/system"}
+        self._local_button_views: set[str] = {"menu/system", "menu/queue"}
         self._default_source_id: str | None = cfg("remote", "default_source", default=None)
         self._source_buttons: dict[str, str] = {}
         self._handle_audio: bool = True
@@ -102,8 +109,11 @@ class EventRouter:
         self._music_video_generation: int = 0
         self._music_video_client = None
         self._music_video_pending_key: str = ""  # "artist||title" currently being looked up
+        self._metadata_enricher = None
+        self._metadata_generation: int = 0
         self._player_type: str = ""
         self._last_local_volume_set: float = 0.0
+        self.playback_state: dict = default_playback_state()
 
     # ── Background task tracking ──
 
@@ -179,6 +189,7 @@ class EventRouter:
         self._session = aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(total=2.0),
         )
+        self._metadata_enricher = MetadataEnricher(self._session)
         self._lydbro.setup()
         await self.transport.start()
         self._parse_menu()
@@ -364,6 +375,8 @@ class EventRouter:
             "items": items,
             "active_source": self.registry.active_id,
             "active_player": active.player if active else None,
+            "active_has_queue": bool(active and active.manages_queue),
+            "playback": self.playback_state,
         }
 
     # ── Event routing ──
@@ -540,6 +553,17 @@ class EventRouter:
     async def _forward_to_source(self, source: Source, payload: dict):
         if not source.command_url or not self._session:
             return
+        if isinstance(payload, dict):
+            payload = {
+                **payload,
+                "playback": self.playback_state,
+                "audio_target_id": self.playback_state.get("audio_target_id", ""),
+                "video_target_id": self.playback_state.get("video_target_id", ""),
+            }
+            if source.id == "mass":
+                payload.setdefault("target_player_id", self.playback_state.get("audio_target_id", ""))
+            elif source.id == "kodi":
+                payload.setdefault("target_player_id", self.playback_state.get("video_target_id", ""))
         try:
             async with self._session.post(
                 source.command_url,
@@ -662,7 +686,7 @@ class EventRouter:
 
     async def _set_backlight(self, on: bool):
         try:
-            cmd = "screen_on" if on else "screen_off"
+            cmd = "display_on" if on else "display_off"
             async with self._session.post(
                 INPUT_WEBHOOK_URL,
                 json={"command": cmd},
@@ -770,6 +794,53 @@ class EventRouter:
 
     # ── Media POST handler ──
 
+    def _metadata_source_endpoints(self) -> list[dict]:
+        endpoints = []
+        for source in self.registry.all_available():
+            command_url = str(source.command_url or "").strip()
+            if not command_url:
+                continue
+            base_url = command_url.rsplit("/command", 1)[0].rstrip("/")
+            if base_url:
+                endpoints.append({"id": source.id, "base_url": base_url})
+        return endpoints
+
+    async def _inject_metadata_fallback(
+        self, payload: dict, generation: int, *, hinted_uri: str, source_id: str,
+    ) -> None:
+        if not self._metadata_enricher:
+            return
+        try:
+            enriched = await self._metadata_enricher.enrich(
+                payload,
+                hinted_uri=hinted_uri,
+                source_id=source_id,
+                sources=self._metadata_source_endpoints(),
+            )
+        except Exception as exc:
+            logger.debug("Metadata fallback failed: %s", exc)
+            return
+        if generation != self._metadata_generation:
+            return
+        current = self.media.state
+        if not current or not same_item(current, payload, allow_title_only=True):
+            return
+        if valid_artwork(current.get("artwork")):
+            return
+        merged = dict(current)
+        changed = False
+        for field in (
+            "title", "artist", "album", "artwork", "artwork_candidates",
+            "metadata_sources",
+        ):
+            value = enriched.get(field)
+            if value and value != merged.get(field):
+                merged[field] = value
+                changed = True
+        if changed:
+            self.media.state = merged
+            await self.media.push_media(merged, "metadata_fallback")
+
     async def _handle_media_post(self, request: web.Request) -> web.Response:
         try:
             payload = await request.json()
@@ -810,6 +881,9 @@ class EventRouter:
                 break
         # Canvas injection for player-originated Spotify tracks
         source_id = payload.get("_validated_source_id")
+        if source_id:
+            payload["source_id"] = source_id
+        payload = preserve_same_item_fields(payload, self.media.state)
         if payload.get("canvas_url"):
             logger.info("Media has canvas_url: %s", payload["canvas_url"][:60])
         elif not source_id and self._should_fetch_canvas(payload):
@@ -825,7 +899,7 @@ class EventRouter:
         # (radio metadata is station/programme names, not artist+title)
         mv_artist = payload.get("artist", "").strip()
         mv_title = payload.get("title", "").strip()
-        mv_source = payload.get("_source_id", "")
+        mv_source = source_id or ""
         # Allow lookup on track_change/external_control regardless of state —
         # Sonos briefly reports "stopped" during track transitions even when
         # a new track is about to play. Also trigger on resync (router restart)
@@ -867,7 +941,17 @@ class EventRouter:
         payload.pop("_validated_source_id", None)
         payload.pop("_validated_reason", None)
 
+        self._metadata_generation += 1
+        metadata_generation = self._metadata_generation
         await self.media.accept_and_push(payload, reason)
+        if not valid_artwork(payload.get("artwork")):
+            self._spawn(
+                self._inject_metadata_fallback(
+                    dict(payload), metadata_generation,
+                    hinted_uri=hinted_uri, source_id=source_id or "",
+                ),
+                name="metadata_fallback",
+            )
         return web.json_response({"status": "ok"})
 
     # ── WS handler ──
@@ -1039,11 +1123,13 @@ async def handle_status(request: web.Request) -> web.Response:
         "active_source": router_instance.registry.active_id,
         "active_source_name": active.name if active else None,
         "active_player": active.player if active else None,
+        "active_has_queue": bool(active and active.manages_queue),
         "active_view": router_instance.active_view,
         "volume": router_instance.volume,
         "output_device": router_instance.output_device,
         "transport_mode": router_instance.transport.mode,
         "latest_action_ts": router_instance._latest_action_ts,
+        "playback": router_instance.playback_state,
         "sources": {
             s.id: {"state": s.state, "name": s.name, "player": s.player}
             for s in router_instance.registry.all_available()
@@ -1052,6 +1138,25 @@ async def handle_status(request: web.Request) -> web.Response:
     if router_instance.media.state:
         result["media"] = router_instance.media.state
     return web.json_response(result)
+
+
+async def handle_playback(request: web.Request) -> web.Response:
+    if request.method == "POST":
+        try:
+            data = await request.json()
+        except Exception:
+            data = {}
+        state = router_instance.playback_state
+        audio_target = str(data.get("audio_target_id") or data.get("audio_target") or "").strip()
+        video_target = str(data.get("video_target_id") or data.get("video_target") or "").strip()
+        if audio_target and any(t.get("id") == audio_target for t in state.get("audio_targets", [])):
+            state["audio_target_id"] = audio_target
+        if video_target and any(t.get("id") == video_target for t in state.get("video_targets", [])):
+            state["video_target_id"] = video_target
+        if "music_video_enabled" in data:
+            state["music_video_enabled"] = bool(data.get("music_video_enabled"))
+        await router_instance.media.broadcast("playback_targets", state)
+    return web.json_response(router_instance.playback_state)
 
 
 async def handle_queue(request: web.Request) -> web.Response:
@@ -1082,7 +1187,7 @@ async def handle_queue(request: web.Request) -> web.Response:
             ) as resp:
                 if resp.status == 200:
                     data = await resp.json()
-                    if data.get("tracks"):
+                    if isinstance(data.get("tracks"), list):
                         return data
         except Exception as e:
             logger.debug("Queue fetch from %s failed: %s", url, e)
@@ -1111,21 +1216,61 @@ async def handle_queue(request: web.Request) -> web.Response:
     return web.json_response(result)
 
 
+async def _forward_queue_command(command: str, data: dict) -> web.Response:
+    source = router_instance.registry.active_source
+    if not source or not source.command_url:
+        return web.json_response({"status": "error", "reason": "no_active_source"}, status=409)
+    if not source.manages_queue and source.player != "local":
+        return web.json_response({"status": "error", "reason": "active_source_has_no_queue"}, status=409)
+    payload = {"command": command, **data}
+    payload.update({
+        "playback": router_instance.playback_state,
+        "audio_target_id": router_instance.playback_state.get("audio_target_id", ""),
+        "video_target_id": router_instance.playback_state.get("video_target_id", ""),
+    })
+    if source.id == "mass":
+        payload.setdefault("target_player_id", router_instance.playback_state.get("audio_target_id", ""))
+    elif source.id == "kodi":
+        payload.setdefault("target_player_id", router_instance.playback_state.get("video_target_id", ""))
+    try:
+        async with router_instance._session.post(
+            source.command_url,
+            json=payload,
+            timeout=aiohttp.ClientTimeout(total=10),
+        ) as resp:
+            body = await resp.json()
+            return web.json_response(body, status=resp.status)
+    except Exception as e:
+        logger.warning("Queue command %s failed: %s", command, e)
+        return web.json_response({"status": "error", "reason": "queue_command_failed"}, status=500)
+
+
 async def handle_queue_play(request: web.Request) -> web.Response:
     try:
         data = await request.json()
     except Exception:
         return web.json_response({"error": "invalid json"}, status=400)
 
-    position = data.get("position", 0)
+    position = data.get("position", data.get("index", 0))
     source = router_instance.registry.active_source
 
     if source and (source.manages_queue or source.player == "local"):
         if source.command_url:
+            payload = {
+                "command": "play_index",
+                "index": position,
+                "playback": router_instance.playback_state,
+                "audio_target_id": router_instance.playback_state.get("audio_target_id", ""),
+                "video_target_id": router_instance.playback_state.get("video_target_id", ""),
+            }
+            if source.id == "mass":
+                payload.setdefault("target_player_id", router_instance.playback_state.get("audio_target_id", ""))
+            elif source.id == "kodi":
+                payload.setdefault("target_player_id", router_instance.playback_state.get("video_target_id", ""))
             try:
                 async with router_instance._session.post(
                     source.command_url,
-                    json={"command": "play_index", "index": position},
+                    json=payload,
                     timeout=aiohttp.ClientTimeout(total=10),
                 ) as resp:
                     if resp.status == 200:
@@ -1145,6 +1290,22 @@ async def handle_queue_play(request: web.Request) -> web.Response:
         except Exception as e:
             logger.warning("Player play_from_queue failed: %s", e)
             return web.json_response({"status": "error"}, status=500)
+
+
+async def handle_queue_remove(request: web.Request) -> web.Response:
+    try:
+        data = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid json"}, status=400)
+    return await _forward_queue_command("queue_remove", data)
+
+
+async def handle_queue_play_next(request: web.Request) -> web.Response:
+    try:
+        data = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid json"}, status=400)
+    return await _forward_queue_command("queue_play_next", data)
 
 
 async def handle_broadcast(request: web.Request) -> web.Response:
@@ -1197,6 +1358,8 @@ def create_app() -> web.Application:
     app.router.add_post("/router/volume", handle_volume_set)
     app.router.add_post("/router/volume/report", handle_volume_report)
     app.router.add_post("/router/playback_override", handle_playback_override)
+    app.router.add_get("/router/playback", handle_playback)
+    app.router.add_post("/router/playback", handle_playback)
     app.router.add_post("/router/output/off", handle_output_off)
     app.router.add_post("/router/output/on", handle_output_on)
     app.router.add_post("/router/resync", handle_resync)
@@ -1207,6 +1370,8 @@ def create_app() -> web.Application:
     app.router.add_post("/router/broadcast", handle_broadcast)
     app.router.add_get("/router/queue", handle_queue)
     app.router.add_post("/router/queue/play", handle_queue_play)
+    app.router.add_post("/router/queue/remove", handle_queue_remove)
+    app.router.add_post("/router/queue/play-next", handle_queue_play_next)
     app.on_startup.append(on_startup)
     app.on_cleanup.append(on_cleanup)
     return app

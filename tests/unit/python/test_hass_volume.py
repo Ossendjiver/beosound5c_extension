@@ -64,7 +64,7 @@ async def test_inactive_youtube_preserves_room_routing(adapter, state, volume, s
         f"http://ha.test:8123/api/services/media_player/{service}",
         headers=adapter._headers(), json={"entity_id": ROOM},
     )
-    adapter._send_mlgw_steps.assert_awaited_once_with(ROOM, 1, volume - 30)
+    adapter._send_mlgw_steps.assert_awaited_once_with(ROOM, 2, volume - 30)
 
 
 @pytest.mark.asyncio
@@ -95,5 +95,5 @@ async def test_existing_mlgw_delivery_is_preserved(adapter):
     adapter._session.get.side_effect = [Response("off"), Response("playing")]
     adapter._send_mlgw_steps.return_value = True
     await adapter._apply_volume(33)
-    adapter._send_mlgw_steps.assert_awaited_once_with(ROOM, 1, 3)
+    adapter._send_mlgw_steps.assert_awaited_once_with(ROOM, 2, 3)
     adapter._session.post.assert_not_called()

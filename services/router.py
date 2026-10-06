@@ -16,6 +16,8 @@ and provides a source registry for dynamic sources.
 Port: 8770
 """
 
+from __future__ import annotations
+
 import asyncio
 import logging
 import os
@@ -36,6 +38,7 @@ from lib.correlation import (
 from lib.background_tasks import BackgroundTaskSet
 from lib.endpoints import (
     INPUT_WEBHOOK,
+    MIXER_ML_STANDBY,
     PLAYER_ANNOUNCE,
     PLAYER_JOIN,
     PLAYER_MEDIA,
@@ -49,6 +52,13 @@ from lib.endpoints import (
 from lib.loop_monitor import LoopMonitor
 from lib.lydbro import LydbroHandler
 from lib.media_state import MediaState
+from lib.metadata_enrichment import (
+    MetadataEnricher,
+    preserve_same_item_fields,
+    same_item,
+    valid_artwork,
+)
+from lib.playback_targets import default_playback_state
 from lib.spotify_canvas import extract_spotify_track_id
 from lib.source_registry import (
     Source, SourceRegistry, DEFAULT_SOURCE_HANDLES, DEFAULT_SOURCE_PORTS,
@@ -66,7 +76,7 @@ ROUTER_PORT = 8770
 INPUT_WEBHOOK_URL = INPUT_WEBHOOK
 
 # Static menu IDs — these are built-in views (not dynamic sources)
-STATIC_VIEWS = {"showing", "system", "scenes", "playing"}
+STATIC_VIEWS = {"showing", "system", "scenes", "playing", "queue"}
 
 
 # ---------------------------------------------------------------------------
@@ -84,12 +94,27 @@ class EventRouter:
         self.output_device = cfg("volume", "output_name", default="BeoLab 5")
         self._volume_step = int(cfg("volume", "step", default=3))
         self._balance_step = 1
+        self._remote_volume_state_only = bool(
+            cfg(
+                "remote", "volume_state_only",
+                default=cfg("lydbro", "volume_state_only", default=False),
+            )
+        )
+        remote_volume_step = cfg("remote", "volume_step", default=None)
+        if remote_volume_step is not None:
+            self._remote_volume_step = int(remote_volume_step)
+        elif self._remote_volume_state_only:
+            self._remote_volume_step = 1
+        else:
+            self._remote_volume_step = int(
+                cfg("lydbro", "volume_step", default=self._volume_step)
+            )
         self._pre_mute_vol: float = 30.0
         self._session: aiohttp.ClientSession | None = None
         self._volume = None
         self._accept_player_volume = False
         self._menu_order: list[dict] = []
-        self._local_button_views: set[str] = {"menu/system"}
+        self._local_button_views: set[str] = {"menu/system", "menu/queue"}
         self._default_source_id: str | None = cfg("remote", "default_source", default=None)
         self._source_buttons: dict[str, str] = {}
         self._handle_audio: bool = True
@@ -102,8 +127,11 @@ class EventRouter:
         self._music_video_generation: int = 0
         self._music_video_client = None
         self._music_video_pending_key: str = ""  # "artist||title" currently being looked up
+        self._metadata_enricher: MetadataEnricher | None = None
+        self._metadata_generation: int = 0
         self._player_type: str = ""
         self._last_local_volume_set: float = 0.0
+        self.playback_state: dict = default_playback_state()
 
     # ── Background task tracking ──
 
@@ -179,6 +207,7 @@ class EventRouter:
         self._session = aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(total=2.0),
         )
+        self._metadata_enricher = MetadataEnricher(self._session)
         self._lydbro.setup()
         await self.transport.start()
         self._parse_menu()
@@ -325,6 +354,9 @@ class EventRouter:
                         self.media.state = data
                         logger.info("Recovered media state: %s — %s",
                                      data.get("artist", ""), data.get("title", ""))
+                        # Clients that connected before recovery finished got
+                        # an empty client_connect replay — push to them too.
+                        await self.media.push_media(data, "resync")
                         title = data.get("title", "")
                         artist = data.get("artist", "")
                         if title and data.get("state") == "playing" and self._player_type == "local":
@@ -364,6 +396,8 @@ class EventRouter:
             "items": items,
             "active_source": self.registry.active_id,
             "active_player": active.player if active else None,
+            "active_has_queue": bool(active and active.manages_queue),
+            "playback": self.playback_state,
         }
 
     # ── Event routing ──
@@ -381,6 +415,27 @@ class EventRouter:
         # can immediately stop video panels without waiting for the full
         # track_change round-trip (covers all origins: button, BeoRemote, MQTT).
         _SKIP_ACTIONS = frozenset({"next", "prev", "left", "right"})
+
+        # 0b. Color-button balance shortcuts.
+        # GREEN  → R+4    YELLOW → L-4    HOME → centre (0)
+        # Runs before any source / HA routing so it always wins on devices
+        # where the volume adapter actually exposes balance. Safe no-op on
+        # adapters whose set_tone returns None (Sonos / BlueSound).
+        # Skipped when the active source explicitly claims the action
+        # (e.g. radio with a user-bound GREEN/YELLOW favourite) so the
+        # source's binding takes precedence over the global shortcut.
+        _BAL_BUTTONS = {"green": 4, "yellow": -4, "home": 0}
+        source_claims = (
+            is_local and active and active.state in ("playing", "paused")
+            and action in active.handles
+        )
+        if is_local and action in _BAL_BUTTONS and not source_claims and self._volume \
+                and hasattr(self._volume, "set_tone"):
+            bal = _BAL_BUTTONS[action]
+            logger.info("-> balance: %s → %+d", action, bal)
+            result = await self._volume.set_tone(balance=bal)
+            if result is not None:
+                return  # adapter handled it; skip HA / source routing
 
         # 1. Active source handles this action
         if is_local and active and active.state in ("playing", "paused") and action in active.handles:
@@ -410,22 +465,49 @@ class EventRouter:
                     await self._forward_to_source(src, payload)
                 return
 
-        # 1b2. Default source
+        # 1b2. PLAY/GO with no active source — resume the most-recent
+        # source instead of jumping to the configured default.  Triggered
+        # by Beo4 GO and by the masterlink master role's PLAY-burst
+        # detection.  Falls through to the default-source path (1b3) if
+        # no last-active is known or it's no longer available.
+        if (is_local and not active and action in ("go", "play")
+                and self.registry.last_active_id):
+            last = self.registry.get(self.registry.last_active_id)
+            if last and last.state != "gone" and last.command_url \
+                    and action in last.handles:
+                action_ts = time.monotonic()
+                self._latest_action_ts = action_ts
+                logger.info("-> %s: %s (last source)", last.id, action)
+                await self._forward_to_source(
+                    last, {**payload, "action": "activate",
+                           "action_ts": action_ts})
+                return
+
+        # 1b3. Default source
         if is_local and not active and self._default_source_id:
             default = self.registry.get(self._default_source_id)
             if default and default.state != "gone" and default.command_url and action in default.handles:
                 action_ts = time.monotonic()
                 self._latest_action_ts = action_ts
-                logger.info("-> %s: %s (default source)", default.id, action)
-                await self._forward_to_source(
-                    default, {**payload, "action_ts": action_ts})
+                # PLAY/GO from idle: convert to ``activate`` so the source
+                # actually starts playback.  Forwarding ``go`` would map
+                # to ``toggle`` on the player — a no-op when nothing is
+                # loaded.  Mirrors the last-source fallback (1b2).
+                forward_payload = {**payload, "action_ts": action_ts}
+                if action in ("go", "play"):
+                    forward_payload["action"] = "activate"
+                logger.info("-> %s: %s (default source)", default.id,
+                            forward_payload["action"])
+                await self._forward_to_source(default, forward_payload)
                 return
 
-        # 1c. Transport actions direct to player
+        # 1c. Transport actions direct to player.
+        # "play" maps to resume (never toggle); "pause" stays pause; "go"
+        # is the one true toggle. Mirrors the per-source action_maps.
         _TRANSPORT_ACTIONS = {
             "go": "toggle", "left": "prev", "right": "next",
             "up": "next", "down": "prev",
-            "play": "toggle", "pause": "pause", "next": "next", "prev": "prev",
+            "play": "resume", "pause": "pause", "next": "next", "prev": "prev",
         }
         if is_local and not active and action in _TRANSPORT_ACTIONS:
             player_action = _TRANSPORT_ACTIONS[action]
@@ -463,31 +545,49 @@ class EventRouter:
 
         # 4. Volume
         if action in ("volup", "voldown") and is_local:
+            volume_setter = self.set_volume_state if self._remote_volume_state_only else self.set_volume
+            volume_task_name = "set_volume_state" if self._remote_volume_state_only else "set_volume"
             if action == "volup" and self.volume == 0 and self._pre_mute_vol > 0:
                 logger.info("-> unmute via volup: restoring %.0f%%", self._pre_mute_vol)
-                if self._volume and self._volume.is_on_cached() is False:
+                if (not self._remote_volume_state_only
+                        and self._volume and self._volume.is_on_cached() is False):
                     self._spawn(self._volume.power_on(), name="vol_power_on")
-                self._spawn(self.set_volume(self._pre_mute_vol), name="unmute")
+                self._spawn(volume_setter(self._pre_mute_vol), name="unmute")
             else:
-                delta = self._volume_step if action == "volup" else -self._volume_step
+                delta = self._remote_volume_step if action == "volup" else -self._remote_volume_step
                 new_vol = max(0, min(100, self.volume + delta))
-                logger.info("-> volume: %.0f%% -> %.0f%% (%s)", self.volume, new_vol, action)
-                if action == "volup" and self._volume and self._volume.is_on_cached() is False:
+                logger.info(
+                    "-> %s: %.0f%% -> %.0f%% (%s)",
+                    "volume state" if self._remote_volume_state_only else "volume",
+                    self.volume,
+                    new_vol,
+                    action,
+                )
+                if (not self._remote_volume_state_only
+                        and action == "volup"
+                        and self._volume
+                        and self._volume.is_on_cached() is False):
                     self._spawn(self._volume.power_on(), name="vol_power_on")
-                self._spawn(self.set_volume(new_vol), name="set_volume")
+                self._spawn(volume_setter(new_vol), name=volume_task_name)
             return
 
         # 4a. Mute toggle — zero volume saves pre-mute level, restore on second press
         if action in ("mute", "p.mute") and is_local:
+            volume_setter = self.set_volume_state if self._remote_volume_state_only else self.set_volume
             if self.volume > 0:
                 self._pre_mute_vol = self.volume
-                logger.info("-> mute: saving %.0f%%, setting volume to 0", self._pre_mute_vol)
-                self._spawn(self.set_volume(0), name="mute")
+                logger.info(
+                    "-> mute%s: saving %.0f%%, setting volume to 0",
+                    " state" if self._remote_volume_state_only else "",
+                    self._pre_mute_vol,
+                )
+                self._spawn(volume_setter(0), name="mute")
             else:
                 logger.info("-> unmute: restoring volume to %.0f%%", self._pre_mute_vol)
-                if self._volume and self._volume.is_on_cached() is False:
+                if (not self._remote_volume_state_only
+                        and self._volume and self._volume.is_on_cached() is False):
                     self._spawn(self._volume.power_on(), name="unmute_power_on")
-                self._spawn(self.set_volume(self._pre_mute_vol), name="unmute")
+                self._spawn(volume_setter(self._pre_mute_vol), name="unmute")
             return
 
         # 4b. Balance
@@ -502,15 +602,35 @@ class EventRouter:
 
         # 4c. Off / standby — intentional fallthrough to HA (§6) so HA also
         # receives the off event (e.g. to trigger a scene or power-off routine).
-        if action == "off" and is_local:
-            logger.info("-> standby (off)")
+        # "alloff" (Beo4 ALL-off key, or a long-press on the BS5c power
+        # button) additionally broadcasts STANDBY on the ML bus so link
+        # speakers in other rooms power down with us.
+        # device_type "All" is what Beo4 ALL-off and the power long-press
+        # carry — is_local only covers Audio/Video, so accept All here.
+        if action in ("off", "alloff") and (is_local or device_type == "All"):
+            logger.info("-> standby (%s)", action)
             self._spawn(self._player_stop(), name="off_stop")
+            # Also stop the active source directly.  The player-service
+            # stop above only covers playback going through the player on
+            # :8766 — on player.type "none" devices that service doesn't
+            # exist, and a source playing through its own local pipeline
+            # (in-process mpv in USB/CD) isn't covered either.  Both stop
+            # paths are idempotent, so belt and braces is safe.
+            if active and "stop" in active.handles:
+                self._spawn(
+                    self._forward_to_source(active, {**payload, "action": "stop"}),
+                    name="off_source_stop")
             if self._volume:
                 self._spawn(self._volume.power_off(), name="off_power")
             self._spawn(self._screen_off(), name="off_screen")
+            if action == "alloff":
+                self._spawn(self._ml_all_standby(), name="alloff_ml")
 
         # 4d. BLUE → JOIN — returns only if JOIN is configured locally; otherwise
         # intentional fallthrough to HA so HA can handle the BLUE button.
+        # The active-source claim check at step 1 has already absorbed BLUE
+        # presses when the source binds it (e.g. radio favourite); reaching
+        # here means no source claimed it.
         if action == "blue" and is_local:
             join_cfg = cfg("join")
             default_player = join_cfg.get("default_player") if join_cfg else None
@@ -540,6 +660,17 @@ class EventRouter:
     async def _forward_to_source(self, source: Source, payload: dict):
         if not source.command_url or not self._session:
             return
+        if isinstance(payload, dict) and payload.get("action") != "stop":
+            payload = {
+                **payload,
+                "playback": self.playback_state,
+                "audio_target_id": self.playback_state.get("audio_target_id", ""),
+                "video_target_id": self.playback_state.get("video_target_id", ""),
+            }
+            if source.id == "mass":
+                payload.setdefault("target_player_id", self.playback_state.get("audio_target_id", ""))
+            elif source.id == "kodi":
+                payload.setdefault("target_player_id", self.playback_state.get("video_target_id", ""))
         try:
             async with self._session.post(
                 source.command_url,
@@ -593,6 +724,15 @@ class EventRouter:
         if self.volume > old_vol and self._volume.is_on_cached() is False:
             await self._volume.power_on()
         await self._volume.set_volume(self._ui_to_hw(self.volume))
+
+    async def set_volume_state(self, volume: float, broadcast: bool = True):
+        ui_volume = max(0, min(100, volume))
+        if round(ui_volume) == round(self.volume):
+            return
+        self.volume = ui_volume
+        logger.info("Volume state synced: %.0f%%", self.volume)
+        if broadcast:
+            await self._broadcast_volume()
 
     async def report_volume(self, volume: float):
         if not self._accept_player_volume:
@@ -662,7 +802,7 @@ class EventRouter:
 
     async def _set_backlight(self, on: bool):
         try:
-            cmd = "screen_on" if on else "screen_off"
+            cmd = "display_on" if on else "display_off"
             async with self._session.post(
                 INPUT_WEBHOOK_URL,
                 json={"command": cmd},
@@ -675,10 +815,27 @@ class EventRouter:
 
     async def _wake_screen(self):
         await self._set_backlight(True)
-        await self.media.broadcast("navigate", {"page": "now_playing"})
 
     async def _screen_off(self):
         await self._set_backlight(False)
+
+    async def _ml_all_standby(self):
+        """Broadcast STANDBY on the ML bus via beo-masterlink.
+
+        Best-effort: devices without a PC2 card don't run beo-masterlink,
+        so an unreachable endpoint just means there's no ML bus to tell.
+        """
+        try:
+            async with self._session.post(
+                MIXER_ML_STANDBY,
+                timeout=aiohttp.ClientTimeout(total=2),
+            ) as resp:
+                if resp.status == 200:
+                    logger.info("ML all-standby broadcast requested")
+                else:
+                    logger.warning("ML all-standby returned HTTP %d", resp.status)
+        except Exception as e:
+            logger.debug("ML all-standby skipped (no masterlink?): %s", e)
 
     # ── Canvas injection ──
 
@@ -742,14 +899,21 @@ class EventRouter:
 
     async def _inject_music_video(self, payload: dict, generation: int,
                                    artist: str, title: str):
+        def _clear_pending():
+            # Only clear our own key — a newer track's lookup may already
+            # have overwritten it, and blanking that would let
+            # _handle_media_post spawn a duplicate concurrent lookup.
+            if self._music_video_pending_key == f"{artist}||{title}":
+                self._music_video_pending_key = ""
+
         try:
             url = await self._music_video_client.lookup(artist, title, self._session)
         except Exception as e:
             logger.warning("Music video lookup error for %s – %s: %s", artist, title, e)
-            self._music_video_pending_key = ""
+            _clear_pending()
             return
         if not url:
-            self._music_video_pending_key = ""
+            _clear_pending()
             return
         if self._music_video_generation != generation:
             logger.info("Music video injection stale (gen %d != %d), dropping",
@@ -764,11 +928,79 @@ class EventRouter:
             logger.info("Music video arrived for different track, dropping")
             return
         current["music_video_url"] = url
-        self._music_video_pending_key = ""
+        _clear_pending()
         logger.info("Music video injected for %s – %s", artist, title)
         await self.media.push_media(current, "music_video_inject")
 
     # ── Media POST handler ──
+
+    def _metadata_source_endpoints(self) -> list[dict]:
+        """Return registered provider bases without leaking command routes."""
+        endpoints = []
+        for source in self.registry.all_available():
+            command_url = str(source.command_url or "").strip()
+            if not command_url:
+                continue
+            base_url = command_url.rsplit("/command", 1)[0].rstrip("/")
+            if base_url:
+                endpoints.append({"id": source.id, "base_url": base_url})
+        return endpoints
+
+    async def _inject_metadata_fallback(
+        self,
+        payload: dict,
+        generation: int,
+        *,
+        hinted_uri: str,
+        source_id: str,
+    ) -> None:
+        """Fill missing metadata after the authoritative update is visible.
+
+        Network lookups run off the media POST path.  The generation and item
+        checks prevent a slow response for track A from repainting track B.
+        """
+        if not self._metadata_enricher:
+            return
+        try:
+            enriched = await self._metadata_enricher.enrich(
+                payload,
+                hinted_uri=hinted_uri,
+                source_id=source_id,
+                sources=self._metadata_source_endpoints(),
+            )
+        except Exception as exc:
+            logger.debug("Metadata fallback failed: %s", exc)
+            return
+        if generation != self._metadata_generation:
+            logger.debug("Metadata fallback stale (gen %d != %d)",
+                         generation, self._metadata_generation)
+            return
+        current = self.media.state
+        if not current or not same_item(current, payload, allow_title_only=True):
+            return
+        # A later authoritative update may already have supplied artwork while
+        # the lookup was running.  That always wins over fallback data.
+        if valid_artwork(current.get("artwork")):
+            return
+        changed = False
+        merged = dict(current)
+        for field in (
+            "title", "artist", "album", "artwork", "artwork_candidates",
+            "metadata_sources",
+        ):
+            value = enriched.get(field)
+            if value and value != merged.get(field):
+                merged[field] = value
+                changed = True
+        if not changed:
+            return
+        self.media.state = merged
+        logger.info(
+            "Metadata fallback applied title=%r sources=%s",
+            merged.get("title", ""),
+            ",".join(merged.get("metadata_sources") or []),
+        )
+        await self.media.push_media(merged, "metadata_fallback")
 
     async def _handle_media_post(self, request: web.Request) -> web.Response:
         try:
@@ -810,10 +1042,28 @@ class EventRouter:
                 break
         # Canvas injection for player-originated Spotify tracks
         source_id = payload.get("_validated_source_id")
+        if source_id:
+            payload["source_id"] = source_id
+
+        # Source services intentionally send a complete payload shape, which
+        # means a temporary empty artwork field used to erase valid art.  Keep
+        # good fields only when the item identity has not changed.
+        payload = preserve_same_item_fields(payload, self.media.state)
+        # Radio metadata is station/programme names, not artist+title — drop
+        # any video URLs so a video carried over from a previous source
+        # (Spotify canvas, music video) doesn't keep playing under radio.
+        if source_id == "radio":
+            payload["canvas_url"] = ""
+            payload["music_video_url"] = ""
+        # Bump on EVERY accepted update, not only when spawning a fetch —
+        # otherwise an in-flight canvas lookup for the previous track passes
+        # the staleness guard and injects the old canvas onto the new
+        # track's state (e.g. after switching to a source that carries its
+        # own canvas_url or posts a non-playing state).
+        self._canvas_generation += 1
         if payload.get("canvas_url"):
             logger.info("Media has canvas_url: %s", payload["canvas_url"][:60])
         elif not source_id and self._should_fetch_canvas(payload):
-            self._canvas_generation += 1
             # Snapshot payload — it's mutated below (pop _validated_*) and
             # passed to media.accept_and_push, which may further mutate it.
             self._spawn(
@@ -822,10 +1072,12 @@ class EventRouter:
                 name="canvas_inject")
 
         # Music video injection — works for all sources except radio
-        # (radio metadata is station/programme names, not artist+title)
+        # (radio metadata is station/programme names, not artist+title).
+        # Use the validated id captured above; ``_source_id`` itself was
+        # popped by validate_update and is no longer on the payload.
         mv_artist = payload.get("artist", "").strip()
         mv_title = payload.get("title", "").strip()
-        mv_source = payload.get("_source_id", "")
+        mv_source = source_id or ""
         # Allow lookup on track_change/external_control regardless of state —
         # Sonos briefly reports "stopped" during track transitions even when
         # a new track is about to play. Also trigger on resync (router restart)
@@ -867,7 +1119,19 @@ class EventRouter:
         payload.pop("_validated_source_id", None)
         payload.pop("_validated_reason", None)
 
+        self._metadata_generation += 1
+        metadata_generation = self._metadata_generation
         await self.media.accept_and_push(payload, reason)
+        if not valid_artwork(payload.get("artwork")):
+            self._spawn(
+                self._inject_metadata_fallback(
+                    dict(payload),
+                    metadata_generation,
+                    hinted_uri=hinted_uri,
+                    source_id=source_id or "",
+                ),
+                name="metadata_fallback",
+            )
         return web.json_response({"status": "ok"})
 
     # ── WS handler ──
@@ -961,6 +1225,53 @@ async def handle_volume_report(request: web.Request) -> web.Response:
     return web.json_response({"status": "ok", "volume": router_instance.volume})
 
 
+async def handle_tone(request: web.Request) -> web.Response:
+    """GET  /router/tone — current tone state from the volume adapter,
+                           or {"supported": false} if the adapter can't
+                           do tone (e.g. Sonos / Bluesound / BeoLab 5).
+       POST /router/tone  body: any subset of
+            {"bass": int -10..10, "treble": int, "balance": int,
+             "loudness": bool}
+    """
+    adapter = router_instance._volume
+    if adapter is None or not hasattr(adapter, "set_tone"):
+        return web.json_response({"supported": False})
+
+    if request.method == "GET":
+        state = await adapter.get_tone()
+        if state is None:
+            return web.json_response({"supported": False})
+        return web.json_response({"supported": True, **state})
+
+    try:
+        data = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid json"}, status=400)
+
+    body: dict = {}
+    for key in ("bass", "treble", "balance"):
+        if key in data:
+            try:
+                v = int(data[key])
+            except (TypeError, ValueError):
+                return web.json_response(
+                    {"error": f"'{key}' must be an integer"}, status=400)
+            if v < -10 or v > 10:
+                return web.json_response(
+                    {"error": f"'{key}' must be between -10 and 10"},
+                    status=400)
+            body[key] = v
+    if "loudness" in data:
+        body["loudness"] = bool(data["loudness"])
+    if not body:
+        return web.json_response({"error": "no tone fields"}, status=400)
+
+    result = await adapter.set_tone(**body)
+    if result is None:
+        return web.json_response({"supported": False, "applied": body})
+    return web.json_response({"supported": True, "applied": body, **result})
+
+
 async def handle_output_off(request: web.Request) -> web.Response:
     if router_instance._volume:
         await router_instance._volume.power_off()
@@ -1039,11 +1350,13 @@ async def handle_status(request: web.Request) -> web.Response:
         "active_source": router_instance.registry.active_id,
         "active_source_name": active.name if active else None,
         "active_player": active.player if active else None,
+        "active_has_queue": bool(active and active.manages_queue),
         "active_view": router_instance.active_view,
         "volume": router_instance.volume,
         "output_device": router_instance.output_device,
         "transport_mode": router_instance.transport.mode,
         "latest_action_ts": router_instance._latest_action_ts,
+        "playback": router_instance.playback_state,
         "sources": {
             s.id: {"state": s.state, "name": s.name, "player": s.player}
             for s in router_instance.registry.all_available()
@@ -1054,9 +1367,110 @@ async def handle_status(request: web.Request) -> web.Response:
     return web.json_response(result)
 
 
+def _merge_audio_targets(state: dict, targets) -> None:
+    if not isinstance(targets, list):
+        return
+    merged = []
+    seen = set()
+    for target in [*(state.get("audio_targets") or []), *targets]:
+        if not isinstance(target, dict):
+            continue
+        target_id = str(target.get("id") or target.get("player_id") or "").strip()
+        if not target_id or target_id in seen:
+            continue
+        merged.append({
+            "id": target_id,
+            "name": str(target.get("name") or target.get("label") or target_id).strip(),
+        })
+        seen.add(target_id)
+    if merged:
+        state["audio_targets"] = merged
+
+
+async def _refresh_mass_playback_state() -> None:
+    """Merge live MASS players and its active queue into router-owned state."""
+    source = router_instance.registry.get("mass")
+    command_url = str(getattr(source, "command_url", "") or "").strip()
+    session = getattr(router_instance, "_session", None)
+    if not command_url or session is None:
+        return
+    status_url = f"{command_url.rsplit('/command', 1)[0]}/status"
+    try:
+        async with session.get(status_url, timeout=aiohttp.ClientTimeout(total=3)) as resp:
+            if resp.status != 200:
+                return
+            payload = await resp.json()
+    except Exception as exc:
+        logger.debug("Unable to refresh MASS playback targets: %s", exc)
+        return
+    if not isinstance(payload, dict):
+        return
+    state = router_instance.playback_state
+    _merge_audio_targets(state, payload.get("transfer_targets"))
+    queue = payload.get("queue") if isinstance(payload.get("queue"), dict) else {}
+    queue_id = str(queue.get("queue_id") or "").strip()
+    try:
+        queue_items = int(queue.get("items") or 0)
+    except (TypeError, ValueError):
+        queue_items = 0
+    if queue_items > 0 and any(t.get("id") == queue_id for t in state.get("audio_targets", [])):
+        state["audio_target_id"] = queue_id
+
+
+async def _notify_mass_playback_target(target_player_id: str) -> None:
+    source = router_instance.registry.get("mass")
+    command_url = str(getattr(source, "command_url", "") or "").strip()
+    session = getattr(router_instance, "_session", None)
+    if not command_url or session is None or not target_player_id:
+        return
+    try:
+        async with session.post(
+            command_url,
+            json={
+                "command": "set_playback_target",
+                "audio_target_id": target_player_id,
+                "target_player_id": target_player_id,
+            },
+            timeout=aiohttp.ClientTimeout(total=3),
+        ) as resp:
+            await resp.read()
+    except Exception as exc:
+        logger.debug("Unable to update MASS playback target: %s", exc)
+
+
+async def handle_playback(request: web.Request) -> web.Response:
+    data = {}
+    if request.method == "POST":
+        try:
+            data = await request.json()
+        except Exception:
+            data = {}
+    if not data.get("queue_sync"):
+        await _refresh_mass_playback_state()
+    if request.method == "POST":
+        state = router_instance.playback_state
+        _merge_audio_targets(state, data.get("audio_targets"))
+        audio_target = str(data.get("audio_target_id") or data.get("audio_target") or "").strip()
+        video_target = str(data.get("video_target_id") or data.get("video_target") or "").strip()
+        if audio_target and any(t.get("id") == audio_target for t in state.get("audio_targets", [])):
+            state["audio_target_id"] = audio_target
+        if video_target and any(t.get("id") == video_target for t in state.get("video_targets", [])):
+            state["video_target_id"] = video_target
+        if "music_video_enabled" in data:
+            state["music_video_enabled"] = bool(data.get("music_video_enabled"))
+        if audio_target and not data.get("queue_sync"):
+            await _notify_mass_playback_target(audio_target)
+        await router_instance.media.broadcast("playback_targets", state)
+    return web.json_response(router_instance.playback_state)
+
+
 async def handle_queue(request: web.Request) -> web.Response:
-    start = int(request.query.get("start", "0"))
-    max_items = int(request.query.get("max_items", "50"))
+    try:
+        start = int(request.query.get("start", "0"))
+        max_items = int(request.query.get("max_items", "50"))
+    except ValueError:
+        return web.json_response(
+            {"error": "start and max_items must be integers"}, status=400)
 
     source = router_instance.registry.active_source
     source_queue_url = None
@@ -1082,7 +1496,7 @@ async def handle_queue(request: web.Request) -> web.Response:
             ) as resp:
                 if resp.status == 200:
                     data = await resp.json()
-                    if data.get("tracks"):
+                    if isinstance(data.get("tracks"), list):
                         return data
         except Exception as e:
             logger.debug("Queue fetch from %s failed: %s", url, e)
@@ -1111,21 +1525,61 @@ async def handle_queue(request: web.Request) -> web.Response:
     return web.json_response(result)
 
 
+async def _forward_queue_command(command: str, data: dict) -> web.Response:
+    source = router_instance.registry.active_source
+    if not source or not source.command_url:
+        return web.json_response({"status": "error", "reason": "no_active_source"}, status=409)
+    if not source.manages_queue and source.player != "local":
+        return web.json_response({"status": "error", "reason": "active_source_has_no_queue"}, status=409)
+    payload = {"command": command, **data}
+    payload.update({
+        "playback": router_instance.playback_state,
+        "audio_target_id": router_instance.playback_state.get("audio_target_id", ""),
+        "video_target_id": router_instance.playback_state.get("video_target_id", ""),
+    })
+    if source.id == "mass":
+        payload.setdefault("target_player_id", router_instance.playback_state.get("audio_target_id", ""))
+    elif source.id == "kodi":
+        payload.setdefault("target_player_id", router_instance.playback_state.get("video_target_id", ""))
+    try:
+        async with router_instance._session.post(
+            source.command_url,
+            json=payload,
+            timeout=aiohttp.ClientTimeout(total=10),
+        ) as resp:
+            body = await resp.json()
+            return web.json_response(body, status=resp.status)
+    except Exception as e:
+        logger.warning("Queue command %s failed: %s", command, e)
+        return web.json_response({"status": "error", "reason": "queue_command_failed"}, status=500)
+
+
 async def handle_queue_play(request: web.Request) -> web.Response:
     try:
         data = await request.json()
     except Exception:
         return web.json_response({"error": "invalid json"}, status=400)
 
-    position = data.get("position", 0)
+    position = data.get("position", data.get("index", 0))
     source = router_instance.registry.active_source
 
     if source and (source.manages_queue or source.player == "local"):
         if source.command_url:
+            payload = {
+                "command": "play_index",
+                "index": position,
+                "playback": router_instance.playback_state,
+                "audio_target_id": router_instance.playback_state.get("audio_target_id", ""),
+                "video_target_id": router_instance.playback_state.get("video_target_id", ""),
+            }
+            if source.id == "mass":
+                payload.setdefault("target_player_id", router_instance.playback_state.get("audio_target_id", ""))
+            elif source.id == "kodi":
+                payload.setdefault("target_player_id", router_instance.playback_state.get("video_target_id", ""))
             try:
                 async with router_instance._session.post(
                     source.command_url,
-                    json={"command": "play_index", "index": position},
+                    json=payload,
                     timeout=aiohttp.ClientTimeout(total=10),
                 ) as resp:
                     if resp.status == 200:
@@ -1147,6 +1601,22 @@ async def handle_queue_play(request: web.Request) -> web.Response:
             return web.json_response({"status": "error"}, status=500)
 
 
+async def handle_queue_remove(request: web.Request) -> web.Response:
+    try:
+        data = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid json"}, status=400)
+    return await _forward_queue_command("queue_remove", data)
+
+
+async def handle_queue_play_next(request: web.Request) -> web.Response:
+    try:
+        data = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid json"}, status=400)
+    return await _forward_queue_command("queue_play_next", data)
+
+
 async def handle_broadcast(request: web.Request) -> web.Response:
     try:
         payload = await request.json()
@@ -1155,6 +1625,19 @@ async def handle_broadcast(request: web.Request) -> web.Response:
     event_type = payload.get("type", "unknown")
     data = payload.get("data", {})
     await router_instance.media.broadcast(event_type, data)
+    return web.json_response({"status": "ok"})
+
+
+async def handle_touch(request: web.Request) -> web.Response:
+    """POST /router/touch — reset the auto-standby idle clock.
+
+    Called by beo-input on `wake` (and similar commands that come from
+    HA bypassing the router) so the router's auto-standby loop knows
+    the device is in active use. Without this, `_standby_dispatched`
+    stays True forever after the first dispatch, because HA's
+    wake/screen_on commands never hit `route_event` or `/router/volume`.
+    """
+    router_instance.touch_activity()
     return web.json_response({"status": "ok"})
 
 
@@ -1196,7 +1679,11 @@ def create_app() -> web.Application:
     app.router.add_post("/router/view", handle_view)
     app.router.add_post("/router/volume", handle_volume_set)
     app.router.add_post("/router/volume/report", handle_volume_report)
+    app.router.add_get("/router/tone", handle_tone)
+    app.router.add_post("/router/tone", handle_tone)
     app.router.add_post("/router/playback_override", handle_playback_override)
+    app.router.add_get("/router/playback", handle_playback)
+    app.router.add_post("/router/playback", handle_playback)
     app.router.add_post("/router/output/off", handle_output_off)
     app.router.add_post("/router/output/on", handle_output_on)
     app.router.add_post("/router/resync", handle_resync)
@@ -1205,8 +1692,11 @@ def create_app() -> web.Application:
     app.router.add_post("/router/media", router_instance._handle_media_post)
     app.router.add_get("/router/media", router_instance._handle_media_get)
     app.router.add_post("/router/broadcast", handle_broadcast)
+    app.router.add_post("/router/touch", handle_touch)
     app.router.add_get("/router/queue", handle_queue)
     app.router.add_post("/router/queue/play", handle_queue_play)
+    app.router.add_post("/router/queue/remove", handle_queue_remove)
+    app.router.add_post("/router/queue/play-next", handle_queue_play_next)
     app.on_startup.append(on_startup)
     app.on_cleanup.append(on_cleanup)
     return app

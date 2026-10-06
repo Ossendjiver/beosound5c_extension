@@ -38,7 +38,7 @@ jobs:
           TAG: ${{ steps.version.outputs.version }}
         run: |
           set -euo pipefail
-          NOTES="Context-aware local library and recommendation service; Home Assistant weather/Garmin context; non-waking BS5c prompts; post-run yoga routing and UI integration."
+          NOTES="Combines v0.8.5 context-aware library features with device-local HLK presence, Master Link roles, YouTube search/podcast integration, playback targets, queue UI and calibrated volume routing."
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release edit "$TAG" --title "BeoSound 5c $TAG" --notes "$NOTES"
           else

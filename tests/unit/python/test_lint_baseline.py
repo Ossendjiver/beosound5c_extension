@@ -41,7 +41,8 @@ def _rel(p: Path) -> str:
 # update *up* only with a code review comment explaining why.
 
 CREATE_TASK_BASELINE: dict[str, int] = {
-    "input.py": 3,  # +1 for startup beacon (send_beacon task)
+    "input.py": 5,  # Includes two snapshot tasks awaited together by display policy.
+    "hlk.py": 1,  # Owned sensor loop; cancelled and awaited at shutdown.
     "bluetooth.py": 5,
     "router.py": 1,
     "beo6/service.py": 1,
@@ -52,7 +53,7 @@ CREATE_TASK_BASELINE: dict[str, int] = {
     "lib/transport.py": 1,
     "lib/librespot.py": 1,
     "lib/source_base.py": 1,
-    "sources/news.py": 1,
+    "sources/news.py": 0,
     "sources/cd.py": 3,
     "sources/apple_music/service.py": 5,
     "sources/radio/service.py": 1,
@@ -103,7 +104,7 @@ SYS_PATH_INSERT_BASELINE: dict[str, int] = {
 # players/local.py:203 is a direct pkill on startup that *should* be fixed
 # but isn't blocking anything in practice.
 BLOCKING_IN_ASYNC_BASELINE: dict[str, int] = {
-    "input.py": 2,       # systemctl list-units + hostname in _run_update / info handler
+    "input.py": 1,       # hostname in info handler
     "players/local.py": 1,
 }
 

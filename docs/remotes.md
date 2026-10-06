@@ -19,6 +19,7 @@ Add a `"source"` field to any source in `config.json` (or use the IR trigger fie
 ```json
 {
   "spotify": { "client_id": "...", "source": "radio" },
+  "mass":    { "source": "n.music" },
   "usb":     { "source": "amem" },
   "cd":      { "source": "cd" },
   "plex":    { "source": "tv" }
@@ -46,6 +47,38 @@ In B&O systems, each source is classified as Audio or Video. A device that handl
 **Audio + video master** (BS5c controls everything):
 ```json
 { "spotify": { "source": "radio" }, "plex": { "source": "tv" } }
+```
+
+## Lydbro One
+
+If you use a Lydbro One bridge and the remote already changes the room's
+volume directly (for example via an MLGW / BS3 path), you can keep the BS5c
+volume arc in sync without sending duplicate output commands:
+
+```json
+{
+  "lydbro": {
+    "topic": "beoremote/livingroom",
+    "volume_state_only": true
+  }
+}
+```
+
+With `volume_state_only: true`, remote volume and mute button events update
+the BS5c UI state only and skip the configured output command. This applies to
+Lydbro MQTT volume events and the normal remote-button `volup`/`voldown`/mute
+path, so the front wheel still drives the BS5c volume adapter normally while a
+BS3/MLGW path can handle the real room volume.
+
+When `volume_state_only` is enabled, remote button presses default to `1%`
+steps. If you want a different remote-only step size, add:
+
+```json
+{
+  "remote": {
+    "volume_step": 1
+  }
+}
 ```
 
 ## Beo6

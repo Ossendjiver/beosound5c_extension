@@ -13,6 +13,8 @@ Requires ALSA config:  dtoverlay=vc4-kms-v3d in /boot/firmware/config.txt
 ALSA card name on RPi 5: "vc4hdmi1"
 """
 
+from __future__ import annotations
+
 import os
 
 from .local import LocalVolume

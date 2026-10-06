@@ -1,0 +1,589 @@
+[
+    {
+        "id": "lounge",
+        "name": "Lounge",
+        "icon": "armchair",
+        "color": "#e05618",
+        "scenes": [
+            {
+                "id": "lounge_lights",
+                "name": "Lounge Lights",
+                "icon": "lightbulb",
+                "color": "#ffff00",
+                "scenes": [
+                    {
+                        "id": "lounge_brightness",
+                        "name": "Brightness",
+                        "icon": "sun-dim",
+                        "color": "#ffd600",
+                        "scenes": null
+                    },
+                    {
+                        "id": "lounge_100",
+                        "name": "100% Brightness",
+                        "icon": "sun",
+                        "color": "#ffea00",
+                        "scenes": null
+                    },
+                    {
+                        "id": "lounge_toggle",
+                        "name": "Toggle Lounge",
+                        "icon": "circle-half",
+                        "color": "#ffc400",
+                        "scenes": null
+                    }
+                ]
+            },
+            {
+                "id": "bs3",
+                "name": "BS3",
+                "icon": "speaker-hifi",
+                "color": "#d2660f",
+                "scenes": [
+                    {
+                        "id": "bs3_link",
+                        "name": "BS3 Link",
+                        "icon": "link",
+                        "color": "#f57c00",
+                        "scenes": null
+                    },
+                    {
+                        "id": "bs3_window_stereo",
+                        "name": "Window Stereo",
+                        "icon": "speaker-high",
+                        "color": "#ef6c00",
+                        "scenes": null
+                    },
+                    {
+                        "id": "bs3_window_4ch",
+                        "name": "Window 4ch",
+                        "icon": "squares-four",
+                        "color": "#e65100",
+                        "scenes": null
+                    },
+                    {
+                        "id": "bl9_stereo",
+                        "name": "Red Speakers Stereo",
+                        "icon": "speakers",
+                        "color": "#d84315",
+                        "scenes": null
+                    },
+                    {
+                        "id": "bs3_1ch",
+                        "name": "Single Channel",
+                        "icon": "speaker-none",
+                        "color": "#bf360c",
+                        "scenes": null
+                    },
+                    {
+                        "id": "bs3_7.1",
+                        "name": "Surround Sound",
+                        "icon": "waves",
+                        "color": "#ff7043",
+                        "scenes": null
+                    },
+                    {
+                        "id": "bs3_4ch",
+                        "name": "4 Channel Stereo",
+                        "icon": "intersect",
+                        "color": "#ff5722",
+                        "scenes": null
+                    },
+                    {
+                        "id": "bs3_off",
+                        "name": "Off",
+                        "icon": "power",
+                        "color": "#8d6e63",
+                        "scenes": null
+                    }
+                ]
+            },
+            {
+                "id": "the_frame",
+                "name": "The Frame",
+                "icon": "television-simple",
+                "color": "#ff6347",
+                "scenes": [
+                    {
+                        "id": "art_mode",
+                        "name": "Art Mode",
+                        "icon": "palette",
+                        "color": "#ff4500",
+                        "scenes": null
+                    },
+                    {
+                        "id": "Kodi",
+                        "name": "Kodi",
+                        "icon": "film-strip",
+                        "color": "#d84315",
+                        "scenes": null
+                    },
+                    {
+                        "id": "youtube",
+                        "name": "Youtube",
+                        "icon": "youtube-logo",
+                        "color": "#c62828",
+                        "scenes": null
+                    },
+                    {
+                        "id": "samsung_tv",
+                        "name": "Samsung TV",
+                        "icon": "monitor-play",
+                        "color": "#b71c1c",
+                        "scenes": null
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "id": "dining",
+        "name": "Dining",
+        "icon": "fork-knife",
+        "color": "#1c7ed6",
+        "scenes": [
+            {
+                "id": "dining_lights",
+                "name": "Dining Lights",
+                "icon": "lamp-pendant",
+                "color": "#ffff00",
+                "scenes": [
+                    {
+                        "id": "dining_brightness",
+                        "name": "Brightness",
+                        "icon": "sun-dim",
+                        "color": "#ffd600",
+                        "scenes": null
+                    },
+                    {
+                        "id": "dining_100",
+                        "name": "100% Brightness",
+                        "icon": "sun",
+                        "color": "#ffea00",
+                        "scenes": null
+                    },
+                    {
+                        "id": "dining_toggle",
+                        "name": "Toggle Dining",
+                        "icon": "circle-half",
+                        "color": "#ffc400",
+                        "scenes": null
+                    }
+                ]
+            },
+            {
+                "id": "bv10_32",
+                "name": "BV10 Dining",
+                "icon": "television",
+                "color": "#d2660f",
+                "scenes": [
+                    {
+                        "id": "bv10_32_a.aux",
+                        "name": "A.AUX",
+                        "icon": "plug",
+                        "color": "#f57c00",
+                        "scenes": null
+                    },
+                    {
+                        "id": "bv10_32_kodi",
+                        "name": "Kodi",
+                        "icon": "video-camera",
+                        "color": "#ef6c00",
+                        "scenes": null
+                    },
+                    {
+                        "id": "bl4000_power",
+                        "name": "Beolab 4000 Power",
+                        "icon": "battery-charging",
+                        "color": "#e65100",
+                        "scenes": null
+                    },
+                    {
+                        "id": "bv10_32_off",
+                        "name": "Off",
+                        "icon": "power",
+                        "color": "#8d6e63",
+                        "scenes": null
+                    }
+                ]
+            },
+            {
+                "id": "wxa_50_on",
+                "name": "Yamaha WXA-50",
+                "icon": "radio",
+                "color": "#3f51b5",
+                "scenes": [
+                    {
+                        "id": "wxa_50_spotify",
+                        "name": "Spotify",
+                        "icon": "spotify-logo",
+                        "color": "#1db954",
+                        "scenes": null
+                    },
+                    {
+                        "id": "wxa_50_tidal",
+                        "name": "Tidal",
+                        "icon": "music-notes",
+                        "color": "#5c6bc0",
+                        "scenes": null
+                    },
+                    {
+                        "id": "wxa_50_vol_up",
+                        "name": "Volume Up",
+                        "icon": "speaker-high",
+                        "color": "#3949ab",
+                        "scenes": null
+                    },
+                    {
+                        "id": "wxa_50_vol_dwn",
+                        "name": "Volume Down",
+                        "icon": "speaker-low",
+                        "color": "#283593",
+                        "scenes": null
+                    },
+                    {
+                        "id": "wxa_50_off",
+                        "name": "Off",
+                        "icon": "power",
+                        "color": "#1a237e",
+                        "scenes": null
+                    }
+                ]
+            },
+            {
+                "id": "blue_lamp",
+                "name": "Blue Lamp",
+                "icon": "lamp",
+                "color": "#092dbe",
+                "scenes": [
+                    {
+                        "id": "blue_lamp_brightness",
+                        "name": "Brightness",
+                        "icon": "sun-dim",
+                        "color": "#1e88e5",
+                        "scenes": null
+                    },
+                    {
+                        "id": "blue_lamp_100",
+                        "name": "100% Brightness",
+                        "icon": "sun-horizon",
+                        "color": "#1565c0",
+                        "scenes": null
+                    },
+                    {
+                        "id": "blue_lamp_toggle",
+                        "name": "Toggle Blue",
+                        "icon": "toggle-left",
+                        "color": "#0d47a1",
+                        "scenes": null
+                    }
+                ]
+            },
+            {
+                "id": "mushroom",
+                "name": "Mushroom",
+                "icon": "lightbulb-filament",
+                "color": "#f9daae",
+                "scenes": [
+                    {
+                        "id": "mushroom_brightness",
+                        "name": "Brightness",
+                        "icon": "aperture",
+                        "color": "#ffe082",
+                        "scenes": null
+                    },
+                    {
+                        "id": "mushroom_100",
+                        "name": "100% Brightness",
+                        "icon": "sparkle",
+                        "color": "#ffca28",
+                        "scenes": null
+                    },
+                    {
+                        "id": "mushroom_toggle",
+                        "name": "Toggle Mushroom",
+                        "icon": "magic-wand",
+                        "color": "#ffb300",
+                        "scenes": null
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "id": "kitchen",
+        "name": "Kitchen",
+        "icon": "cooking-pot",
+        "color": "#2b8a3e",
+        "scenes": [
+            {
+                "id": "kitchen_lamp",
+                "name": "Kitchen Lamp",
+                "icon": "lightbulb",
+                "color": "#c0ca33",
+                "scenes": [
+                    {
+                        "id": "kitchen_lamp_brightness",
+                        "name": "Brightness",
+                        "icon": "sun-dim",
+                        "color": "#afb42b",
+                        "scenes": null
+                    },
+                    {
+                        "id": "kitchen_lamp_100",
+                        "name": "100% Brightness",
+                        "icon": "sun",
+                        "color": "#9e9d24",
+                        "scenes": null
+                    },
+                    {
+                        "id": "kitchen_lamp_toggle",
+                        "name": "Toggle Kitchen",
+                        "icon": "switch",
+                        "color": "#827717",
+                        "scenes": null
+                    }
+                ]
+            },
+            {
+                "id": "google_nest",
+                "name": "Cuisine",
+                "icon": "speaker-simple",
+                "color": "#4a90e2",
+                "scenes": [
+                    {
+                        "id": "google_nest_stop",
+                        "name": "Stop",
+                        "icon": "stop-circle",
+                        "color": "#42a5f5",
+                        "scenes": null
+                    },
+                    {
+                        "id": "google_nest_vol_up",
+                        "name": "Volume Up",
+                        "icon": "speaker-high",
+                        "color": "#1e88e5",
+                        "scenes": null
+                    },
+                    {
+                        "id": "google_nest_vol_dwn",
+                        "name": "Volume Down",
+                        "icon": "speaker-low",
+                        "color": "#1565c0",
+                        "scenes": null
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "id": "bedroom",
+        "name": "Bedroom",
+        "icon": "bed",
+        "color": "#862e9c",
+        "scenes": [
+            {
+                "id": "bv10_42",
+                "name": "BV10 Bedroom",
+                "icon": "monitor",
+                "color": "#d2660f",
+                "scenes": [
+                    {
+                        "id": "bv10_40_kodi",
+                        "name": "Kodi",
+                        "icon": "film-strip",
+                        "color": "#f57c00",
+                        "scenes": null
+                    },
+                    {
+                        "id": "bv10_40_dvd",
+                        "name": "DVD",
+                        "icon": "disc",
+                        "color": "#ef6c00",
+                        "scenes": null
+                    },
+                    {
+                        "id": "bv10_40_a.aux",
+                        "name": "A.AUX",
+                        "icon": "plug",
+                        "color": "#e65100",
+                        "scenes": null
+                    },
+                    {
+                        "id": "bv10_40_2ch",
+                        "name": "2 Channel",
+                        "icon": "speaker-none",
+                        "color": "#d84315",
+                        "scenes": null
+                    },
+                    {
+                        "id": "bv10_40_4ch",
+                        "name": "4 Channel",
+                        "icon": "squares-four",
+                        "color": "#bf360c",
+                        "scenes": null
+                    },
+                    {
+                        "id": "bv10_40_5ch",
+                        "name": "5 Channel",
+                        "icon": "speaker-hifi",
+                        "color": "#a1887f",
+                        "scenes": null
+                    },
+                    {
+                        "id": "bv10_40_off",
+                        "name": "Off",
+                        "icon": "power",
+                        "color": "#8d6e63",
+                        "scenes": null
+                    }
+                ]
+            },
+            {
+                "id": "bedroom_lights",
+                "name": "Bedroom Lights",
+                "icon": "lightbulb",
+                "color": "#fbc02d",
+                "scenes": [
+                    {
+                        "id": "bedside_lamp",
+                        "name": "Bedside Lamp",
+                        "icon": "lamp",
+                        "color": "#f9a825",
+                        "scenes": null
+                    },
+                    {
+                        "id": "bed_batten",
+                        "name": "Bed Batten",
+                        "icon": "ruler",
+                        "color": "#f57f17",
+                        "scenes": null
+                    },
+                    {
+                        "id": "mirror_led",
+                        "name": "Mirror LED",
+                        "icon": "sparkle",
+                        "color": "#e65100",
+                        "scenes": null
+                    }
+                ]
+            },
+            {
+                "id": "ensuite",
+                "name": "Ensuite",
+                "icon": "bathtub",
+                "color": "#0b7285",
+                "scenes": [
+                    {
+                        "id": "ensuite_light",
+                        "name": "Ensuite Light",
+                        "icon": "drop",
+                        "color": "#26c6da",
+                        "scenes": [
+                            {
+                                "id": "ensuite_brightness",
+                                "name": "Brightness",
+                                "icon": "sun-dim",
+                                "color": "#00acc1",
+                                "scenes": null
+                            },
+                            {
+                                "id": "ensuite_100",
+                                "name": "100% Brightness",
+                                "icon": "sun",
+                                "color": "#4dd0e1",
+                                "scenes": null
+                            },
+                            {
+                                "id": "ensuite_toggle",
+                                "name": "Toggle",
+                                "icon": "circle-half",
+                                "color": "#00838f",
+                                "scenes": null
+                            }
+                        ]
+                    },
+                    {
+                        "id": "bl3500",
+                        "name": "Beolab 3500",
+                        "icon": "speaker",
+                        "color": "#d2660f",
+                        "scenes": [
+                            {
+                                "id": "bl3500_a.aux",
+                                "name": "A.AUX",
+                                "icon": "plug",
+                                "color": "#f57c00",
+                                "scenes": null
+                            },
+                            {
+                                "id": "bl3500_link",
+                                "name": "Link",
+                                "icon": "link",
+                                "color": "#ef6c00",
+                                "scenes": null
+                            },
+                            {
+                                "id": "bl3500_radio",
+                                "name": "Radio",
+                                "icon": "radio",
+                                "color": "#e65100",
+                                "scenes": null
+                            },
+                            {
+                                "id": "bl3500_power",
+                                "name": "Power",
+                                "icon": "power",
+                                "color": "#00695c",
+                                "scenes": null
+                            }
+                        ]
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "id": "all_lights_on",
+        "name": "All Lights On",
+        "icon": "lightbulb-filament",
+        "color": "#e6ca19",
+        "scenes": [
+            {
+                "id": "all_lights_on_brightness",
+                "name": "Brightness",
+                "icon": "sun-dim",
+                "color": "#f9a825",
+                "scenes": null
+            },
+            {
+                "id": "all_lights_on_100",
+                "name": "100% Brightness",
+                "icon": "sun",
+                "color": "#f57f17",
+                "scenes": null
+            },
+            {
+                "id": "all_lights_on_toggle",
+                "name": "Toggle All",
+                "icon": "circle-half",
+                "color": "#fbc02d",
+                "scenes": null
+            }
+        ]
+    },
+    {
+        "id": "all_off",
+        "name": "All Lights Off",
+        "icon": "power",
+        "color": "#495057",
+        "scenes": null
+    },
+    {
+        "id": "beo_all_off",
+        "name": "All Beo Off",
+        "icon": "speaker-slash",
+        "color": "#d2660f",
+        "scenes": null
+    }
+]

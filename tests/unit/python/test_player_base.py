@@ -188,19 +188,27 @@ class TestUpdateActionTs:
 
 
 class TestStaleRejection:
-    def test_play_rejected_when_action_ts_older(self):
+    def test_play_rejected_when_action_ts_just_older(self):
+        # Within the 3s window: dedupe rapid double-tap from same source.
+        p = _FakePlayer()
+        p._latest_action_ts = 500.0
+        resp = _run(p._handle_play(_fake_request(
+            {"action_ts": 499.0, "uri": "spotify:track:xyz"}
+        )))
+        text = resp.text
+        assert "dropped" in text
+        assert "stale" in text
+        assert p.play_calls == []
+
+    def test_play_accepted_when_older_than_3s(self):
+        # Beyond the 3s window: cross-source hand-off, must not be dropped.
         p = _FakePlayer()
         p._latest_action_ts = 500.0
         resp = _run(p._handle_play(_fake_request(
             {"action_ts": 100.0, "uri": "spotify:track:xyz"}
         )))
-        body = _run(resp.json()) if hasattr(resp, "json") else resp.text
-        # Response body is JSON encoded in the aiohttp Response object.
-        text = resp.text
-        assert "dropped" in text
-        assert "stale" in text
-        # And play() was NOT called
-        assert p.play_calls == []
+        assert "ok" in resp.text
+        assert p.play_calls[0]["uri"] == "spotify:track:xyz"
 
     def test_play_accepted_when_fresh(self):
         p = _FakePlayer()
@@ -289,3 +297,40 @@ class TestCommandTiming:
 
         # At minimum two stamps recorded; the last one is the post-play stamp.
         assert p._last_internal_command >= 2.0
+
+
+# ── /player/queue query param validation ─────────────────────────────
+
+
+def _fake_query_request(query: dict):
+    """Minimal stand-in for an aiohttp Request that carries query params."""
+    class _R:
+        pass
+    r = _R()
+    r.query = query
+    return r
+
+
+class TestQueueParamValidation:
+    """Non-integer start/max_items must 400, not 500 via ValueError."""
+
+    def test_bad_start_returns_400(self):
+        p = _FakePlayer()
+        resp = _run(p._handle_queue(_fake_query_request({"start": "abc"})))
+        assert resp.status == 400
+
+    def test_bad_max_items_returns_400(self):
+        p = _FakePlayer()
+        resp = _run(p._handle_queue(_fake_query_request({"max_items": "lots"})))
+        assert resp.status == 400
+
+    def test_valid_params_return_200(self):
+        p = _FakePlayer()
+        resp = _run(p._handle_queue(_fake_query_request(
+            {"start": "5", "max_items": "10"})))
+        assert resp.status == 200
+
+    def test_defaults_when_params_missing(self):
+        p = _FakePlayer()
+        resp = _run(p._handle_queue(_fake_query_request({})))
+        assert resp.status == 200

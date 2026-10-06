@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """Correlation ID support for cross-service request tracing.
 
 Generates a short unique ID at each entry point (HTTP request, HID event)

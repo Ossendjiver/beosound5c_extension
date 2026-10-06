@@ -153,15 +153,19 @@ function processWebSocketEvent(message) {
             handleVolumeUpdate(data);
             break;
 
+        case 'playback_targets':
+            window.PlaybackTargets?.applyState?.(data);
+            break;
+
+        case 'context_suggestion':
+            showContextSuggestion(data);
+            break;
+
         case 'skip_hint':
             // Router detected a track-skip action (next/prev from any source:
             // physical button, BeoRemote, MQTT, Sonos app). Stop video panels
             // immediately rather than waiting for the track_change round-trip.
             document.dispatchEvent(new CustomEvent('bs5c:skip'));
-            break;
-
-        case 'context_suggestion':
-            showContextSuggestion(data);
             break;
 
         default:
@@ -176,7 +180,6 @@ function processWebSocketEvent(message) {
             }
     }
 }
-
 
 // ── Context-aware library suggestions ──
 let _activeContextSuggestion = null;
@@ -299,12 +302,23 @@ function handleExternalNavigation(uiStore, data) {
         'spotify': 'menu/spotify',
         'scenes': 'menu/scenes',
         'system': 'menu/system',
+        'queue': 'menu/queue',
         'showing': 'menu/showing',
-        'home': 'menu/home'
+        'home': 'menu/scenes'
     };
 
     // Explicit mapping first, then auto-prefix bare names with "menu/"
     const route = pageRoutes[page] || (page.startsWith('menu/') ? page : `menu/${page}`);
+
+    // External wake to the playing view (HA fires this when something
+    // starts playing on the active source). The media_update that
+    // triggered HA's automation usually races with this navigate, so
+    // isPlaying() may still be false when view-change fires. Arm
+    // immersive entry so the navigate lands directly in the immersive
+    // overlay instead of flashing the menu for ~1s.
+    if (route === 'menu/playing' && window.ImmersiveMode?.armEagerEntry) {
+        window.ImmersiveMode.armEagerEntry();
+    }
 
     if (uiStore.navigateToView) {
         uiStore.navigateToView(route);
@@ -385,15 +399,21 @@ function handleSourceChange(uiStore, data) {
     uiStore.activeSource = sourceId;
     uiStore.activeSourcePlayer = player;
     uiStore.setActivePlayingPreset(sourceId);
+    const usesQueueOverlay = Boolean(window.SourcePresets?.[sourceId]?.queueOverlay?.playing);
 
-    // Remote-triggered source start: arm immersive mode so the
-    // subsequent navigate to menu/playing drops straight into the
-    // immersive view instead of flashing the menu for a beat. Only
-    // when we transition from no-source (or a different source) to a
-    // real source — clearing or re-registering the same source
-    // shouldn't force-enter immersive.
-    if (sourceId && sourceId !== prevSource && window.ImmersiveMode?.armEagerEntry) {
-        window.ImmersiveMode.armEagerEntry();
+    if (data.manages_queue && !usesQueueOverlay) {
+        uiStore.addMenuItem(
+            { title: 'QUEUE', path: 'menu/queue' },
+            'menu/playing',
+            uiStore.views?.['menu/queue']
+        );
+    } else {
+        if (uiStore.menuItems?.some((item) => item.path === 'menu/queue')) {
+            uiStore.removeMenuItem('menu/queue');
+        }
+        if (uiStore.currentRoute === 'menu/queue') {
+            uiStore.navigateToView('menu/playing');
+        }
     }
 
     // Clear canvas when switching away from Spotify
@@ -561,11 +581,25 @@ function initMediaWebSocket() {
         return;
     }
 
+    // Close any existing socket first — two live sockets would dispatch
+    // every event twice. Detach it from the global before closing so its
+    // handlers (identity-guarded below) become no-ops.
+    const existingWs = window.mediaWebSocket;
+    if (existingWs && existingWs.readyState !== WebSocket.CLOSED) {
+        window.mediaWebSocket = null;
+        try { existingWs.close(); } catch (e) { /* already closing */ }
+    }
+
     try {
         const mediaWs = new WebSocket(AppConfig.websocket.media);
         window.mediaWebSocket = mediaWs;
 
+        // All handlers no-op if this socket has been superseded (a racing
+        // ensureMediaWsConnected/initMediaWebSocket replaced the global) —
+        // otherwise a stale socket's onclose would null the healthy socket's
+        // global and schedule a duplicate reconnect loop.
         mediaWs.onerror = () => {
+            if (window.mediaWebSocket !== mediaWs) return;
             // Auto-activate demo mode on media server failure if autoDetect enabled
             if (window.AppConfig?.demo?.autoDetect && window.EmulatorModeManager && !window.EmulatorModeManager.isActive) {
                 window.EmulatorModeManager.activate('media server unavailable');
@@ -573,6 +607,7 @@ function initMediaWebSocket() {
         };
 
         mediaWs.onopen = () => {
+            if (window.mediaWebSocket !== mediaWs) return;
             _mediaBackoffMs = window.WsBackoff.WS_RECONNECT_BASE_MS;
             console.log('[MEDIA] Router media WS connected');
             if (window.uiStore && window.uiStore.logWebsocketMessage) {
@@ -585,9 +620,16 @@ function initMediaWebSocket() {
                 window.uiStore.menu?.fetchMenu();
             }
             refreshContextSuggestion();
+            // Re-sync volume too — it may have changed while the WS was
+            // down, and the initial page-load fetch can race a cold router
+            // boot (see fetchVolumeFromRouter in hardware-input.js).
+            if (typeof fetchVolumeFromRouter === 'function') {
+                fetchVolumeFromRouter();
+            }
         };
 
         mediaWs.onclose = () => {
+            if (window.mediaWebSocket !== mediaWs) return; // superseded — no reconnect
             window.mediaWebSocket = null;
             if (_mediaReconnectCount > 0) {
                 console.log('[MEDIA] Router media WS disconnected - will reconnect');
@@ -598,6 +640,7 @@ function initMediaWebSocket() {
         };
 
         mediaWs.onmessage = (event) => {
+            if (window.mediaWebSocket !== mediaWs) return; // stale socket must not dispatch
             try {
                 const msg = JSON.parse(event.data);
                 // Router WS: handles all state events (media, source, navigate, menu, etc.)

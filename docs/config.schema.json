@@ -62,7 +62,8 @@
       "type": "object",
       "description": "External player service configuration. The player handles audio playback, monitoring, and artwork.",
       "required": [
-        "type"
+        "type",
+        "ip"
       ],
       "properties": {
         "type": {
@@ -78,6 +79,7 @@
         },
         "ip": {
           "type": "string",
+          "format": "ipv4",
           "description": "Host or IP address of the player device for networked players (Sonos speaker, BluOS player, or Music Assistant host)."
         }
       },
@@ -238,18 +240,82 @@
         "guardian_api_key": {
           "type": "string",
           "description": "API key from https://open-platform.theguardian.com/access/. The news service will refuse to start without this."
+        },
+        "play_news_scripts": {
+          "type": "object",
+          "description": "Home Assistant scripts used by the Play News shortcuts in the NEWS menu.",
+          "properties": {
+            "play_news_link": {
+              "type": "string",
+              "description": "Script entity to run for the default Play News action."
+            },
+            "play_news_cuisine": {
+              "type": "string",
+              "description": "Script entity to run for Play News Cuisine."
+            },
+            "play_news_lounge": {
+              "type": "string",
+              "description": "Script entity to run for Play News Lounge."
+            }
+          },
+          "additionalProperties": false
+        },
+        "tts_targets": {
+          "type": "object",
+          "description": "Home Assistant media_player entities used when reading selected news articles aloud.",
+          "properties": {
+            "cuisine": {
+              "type": "string",
+              "description": "Entity ID for the Cuisine read-aloud target."
+            },
+            "lounge": {
+              "type": "string",
+              "description": "Entity ID for the Lounge read-aloud target."
+            }
+          },
+          "additionalProperties": false
+        },
+        "tts_public_base_url": {
+          "type": "string",
+          "description": "Optional externally reachable base URL for the news service, used when Home Assistant needs a stable URL to fetch generated article narration clips."
         }
       },
       "additionalProperties": false
     },
     "radio": {
       "type": "object",
-      "description": "Radio source configuration.",
+      "description": "Internet radio source settings.",
       "properties": {
         "source": {
           "type": "string",
-          "description": "Radio provider identifier or source preset.",
+          "description": "BeoLink IR source mapping (radio, n.radio, etc.).",
           "default": "radio"
+        },
+        "station_buttons": {
+          "type": "object",
+          "description": "Map remote/keypad buttons to favourite radio stations. Keys are button names ('1'-'9', '0', 'red', 'green', 'yellow', 'blue'); values are station UUIDs from the favourites list. Pressing a bound button while the radio source is selected jumps directly to that station; bound color buttons take precedence over the global balance shortcut (GREEN/YELLOW) and BLUE\u2192JOIN handler.",
+          "propertyNames": {
+            "enum": [
+              "0",
+              "1",
+              "2",
+              "3",
+              "4",
+              "5",
+              "6",
+              "7",
+              "8",
+              "9",
+              "red",
+              "green",
+              "yellow",
+              "blue"
+            ]
+          },
+          "additionalProperties": {
+            "type": "string",
+            "description": "Station UUID, or empty string to leave the slot unbound."
+          }
         }
       },
       "additionalProperties": false
@@ -263,7 +329,21 @@
     "mass": {
       "type": "object",
       "description": "Music Assistant source settings. Connection credentials and target queue/player pins live in /etc/beosound5c/secrets.env.",
-      "properties": {},
+      "properties": {
+        "playback_mode": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "remote",
+            "local"
+          ],
+          "description": "Choose how MASS starts playback. 'remote' keeps today's MA queue/player handoff. 'local' resolves directly playable library/radio streams and sends them to the BS5c local player. 'auto' prefers local playback on wired/local outputs (PowerLink, HDMI, SPDIF, RCA, etc.) and remote playback on network outputs such as Sonos, BlueSound, or hass."
+        },
+        "source": {
+          "type": "string",
+          "description": "Optional IR/B&O source button mapping for Music Assistant, for example n.music."
+        }
+      },
       "additionalProperties": false
     },
     "kodi": {
@@ -345,6 +425,240 @@
           "additionalProperties": {
             "type": "string"
           }
+        }
+      },
+      "additionalProperties": false
+    },
+    "screen": {
+      "type": "object",
+      "description": "Display blanking + immersive policy. The frontend uses immersive_delay_s; beo-input uses local BS5 activity plus the local HLK wake and stable-presence signals.",
+      "properties": {
+        "immersive_delay_s": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Seconds of user inactivity before the immersive now-playing overlay appears while media is actively playing.",
+          "default": 180
+        },
+        "presence_off_delay_s": {
+          "type": "number",
+          "minimum": 0,
+          "description": "How long the local HLK stable-presence signal must stay off before the display blanks during playback.",
+          "default": 180
+        },
+        "idle_off_delay_s": {
+          "type": "number",
+          "minimum": 0,
+          "description": "How long the display stays on after the last local BS5 hardware interaction when nothing is actively playing.",
+          "default": 180
+        },
+        "wake_hold_s": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Seconds that the local HLK wake signal keeps the display awake after it stops detecting motion.",
+          "default": 30
+        },
+        "local_input_wake_s": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Legacy alias for wake_hold_s. Retained for backward compatibility with older config files.",
+          "default": 30
+        }
+      },
+      "additionalProperties": false
+    },
+    "hlk": {
+      "type": "object",
+      "description": "Local HLK / LD2410 UART sensor settings. beo-hlk derives two signals from this sensor: immediate wake (macro movement) and longer-lived stable presence.",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Enable the local HLK sensor service and include its signals in display policy.",
+          "default": false
+        },
+        "port": {
+          "type": "string",
+          "description": "UART device path for the local HLK sensor. The default matches the lounge wiring profile: /dev/serial0 on GPIO14 TXD0 / GPIO15 RXD0 with dtoverlay=miniuart-bt.",
+          "default": "/dev/serial0"
+        },
+        "baudrate": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "UART baudrate. LD2410-class sensors use 256000.",
+          "default": 256000
+        },
+        "engineering_mode": {
+          "type": "boolean",
+          "description": "Keep the sensor in engineering mode so distance and energy fields remain available.",
+          "default": true
+        },
+        "reconnect_delay_s": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "default": 5
+        },
+        "availability_timeout_s": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "default": 10
+        },
+        "publish_heartbeat_s": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "default": 30
+        },
+        "serial_timeout_s": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "default": 0.2
+        },
+        "publish_raw_frames": {
+          "type": "boolean",
+          "description": "Publish raw UART report/command frames to MQTT for diagnostics.",
+          "default": true
+        },
+        "mqtt_discovery": {
+          "type": "boolean",
+          "description": "Publish MQTT discovery entities for the local HLK sensor into Home Assistant.",
+          "default": true
+        },
+        "entity_prefix": {
+          "type": "string",
+          "description": "Prefix used when publishing MQTT discovery entities such as binary_sensor.<prefix>_macro.",
+          "default": "bs5c"
+        },
+        "sensor_name": {
+          "type": "string",
+          "description": "Friendly device name exposed via MQTT discovery.",
+          "default": "BS5c Screen HLK"
+        },
+        "wake_distance_min_cm": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 25
+        },
+        "wake_distance_max_cm": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Maximum moving-target distance for the immediate wake/macro signal.",
+          "default": 150
+        },
+        "wake_moving_energy_min": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 18
+        },
+        "presence_distance_min_cm": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 25
+        },
+        "presence_distance_max_cm": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Maximum distance for stable-presence evaluation. Matches the room HLK template logic by default.",
+          "default": 450
+        },
+        "presence_moving_energy_min": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 18
+        },
+        "presence_still_energy_min": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 12
+        },
+        "presence_delay_off_s": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Delay-off for the stable presence signal, matching the existing lounge/dining HLK template behavior.",
+          "default": 20
+        },
+        "manual_override_timeout_s": {
+          "type": "number",
+          "minimum": 0,
+          "description": "How long a manual display-off action suppresses automatic wake from the local HLK sensor.",
+          "default": 300
+        }
+      },
+      "additionalProperties": false
+    },
+    "masterlink": {
+      "type": "object",
+      "description": "B&O Master Link bus role + IR filter. Read by services/masterlink.py at startup.",
+      "properties": {
+        "role": {
+          "type": "string",
+          "enum": [
+            "master",
+            "provider",
+            "link",
+            "ir_only",
+            "none",
+            "audio_slave",
+            "slave",
+            "ir",
+            "ir-only",
+            "passive",
+            "off",
+            "disabled"
+          ],
+          "default": "master",
+          "description": "Which side of the ML bus the BS5c plays. 'master' = audio master (default; standalone collapses into this). 'provider' = N.MUSIC/N.RADIO source-center for an external master like a BS9000 (N.MUSIC verified against BC2; N.RADIO unverified). 'link' = link room receiving sources from a remote master. 'ir_only' opens the PC2 in passive Beoport mode so local IR keypresses still reach the router, but the BS5c ignores ML telegrams and never transmits on the bus. 'none' disables PC2 + ML handling entirely. 'audio_slave'/'slave' alias 'link'; 'ir'/'ir-only'/'passive' alias 'ir_only'; 'off'/'disabled' alias 'none'."
+        },
+        "ir": {
+          "type": "object",
+          "description": "Filter for incoming Beo4 IR keycodes (categorised by the device-type byte in the telegram). Light/All/unknown always pass through.",
+          "properties": {
+            "audio": {
+              "type": "boolean",
+              "default": true,
+              "description": "Forward Audio-typed Beo4 keys (Radio, CD, A.Mem, \u2026)."
+            },
+            "video": {
+              "type": "boolean",
+              "default": true,
+              "description": "Forward Video-typed Beo4 keys (TV, DVD, V.Aux, \u2026)."
+            }
+          },
+          "additionalProperties": false
+        },
+        "provider": {
+          "type": "object",
+          "description": "Provider role config: which enabled source feeds N.MUSIC vs N.RADIO when an external master requests them.",
+          "properties": {
+            "nmusic_source": {
+              "type": "string",
+              "description": "Menu key (e.g. 'SPOTIFY') to expose as N.MUSIC. Empty = don't claim N.MUSIC."
+            },
+            "nradio_source": {
+              "type": "string",
+              "description": "Menu key (e.g. 'RADIO') to expose as N.RADIO. Empty = don't claim N.RADIO."
+            }
+          },
+          "additionalProperties": false
+        },
+        "link": {
+          "type": "object",
+          "description": "Link role config.",
+          "properties": {
+            "sources": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": [
+                  "radio",
+                  "cd",
+                  "amem",
+                  "a.aux",
+                  "n.radio",
+                  "n.music"
+                ]
+              },
+              "description": "Beo4 source keys to surface in the LINK view (TBD) when the BS5c is a link room."
+            }
+          },
+          "additionalProperties": false
         }
       },
       "additionalProperties": false

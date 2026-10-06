@@ -14,6 +14,8 @@ Setup:
 ALSA card name with hifiberry-digi overlay: "sndrpihifiberry"
 """
 
+from __future__ import annotations
+
 import os
 
 from .local import LocalVolume

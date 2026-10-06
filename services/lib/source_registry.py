@@ -7,6 +7,8 @@ Source states: gone → available → playing/paused → available → gone
 Only one source can be active (playing/paused) at a time.
 """
 
+from __future__ import annotations
+
 import asyncio
 import json
 import logging
@@ -26,7 +28,7 @@ DEFAULT_SOURCE_HANDLES = {
             "up", "down"},
     "news": {"go", "left", "right", "up", "down"},
     "radio": {"play", "pause", "next", "prev", "stop", "go", "left", "right",
-              "up", "down", "red", "blue"} | _DIGITS,
+              "up", "down"} | _DIGITS,
 }
 
 # Known source ports — used on startup to probe running sources
@@ -119,6 +121,15 @@ class SourceRegistry:
         self._sources: dict[str, Source] = {}
         self._active_id: str | None = None
         self._persisted_active_id: str | None = self._load_persisted_active()
+        # Sticky "last source that was active in this process".  Unlike
+        # _active_id, never clears on deactivate — used by the router's
+        # GO fallback so PLAY-on-an-idle-system resumes the last thing
+        # the user was listening to instead of jumping to the configured
+        # default.  Seeded at startup from the persisted active-source
+        # file (so a clean restart while something was playing keeps the
+        # resume target); a clean restart while idle leaves it None and
+        # the router falls through to the default-source path.
+        self._last_active_id: str | None = self._persisted_active_id
         self._resync_in_progress: bool = False
 
     # ── Persistence ──
@@ -158,6 +169,12 @@ class SourceRegistry:
     @property
     def active_id(self) -> str | None:
         return self._active_id
+
+    @property
+    def last_active_id(self) -> str | None:
+        """Most-recently-active source id, including the persisted value
+        from before this process started.  Stays set after deactivate."""
+        return self._last_active_id
 
     def get(self, id: str) -> Source | None:
         return self._sources.get(id)
@@ -199,7 +216,10 @@ class SourceRegistry:
                 setattr(source, key, fields[key])
         if "manages_queue" in fields:
             source.manages_queue = fields["manages_queue"]
-        if "handles" in fields and not source.handles:
+        if "handles" in fields:
+            # Always honour the source's freshly-registered handles —
+            # they reflect the current action_map (e.g. radio's
+            # config-driven color-button bindings).
             source.handles = set(fields["handles"])
 
         old_state = source.state
@@ -240,11 +260,26 @@ class SourceRegistry:
                 if action_ts and action_ts < router._latest_action_ts:
                     logger.info("Rejected stale register from %s (ts=%.3f < latest=%.3f)",
                                 id, action_ts, router._latest_action_ts)
+                    # Rejected activation must not leave the "playing"
+                    # commit above in place — a never-activated source
+                    # stuck in "playing" ghosts /router/status, misdirects
+                    # stop routing and blocks paused-adoption. Revert to
+                    # the previous state ("available" for a fresh
+                    # registration: the source did just register and is
+                    # reachable, it's just not active).
+                    source._state = "available" if old_state == "gone" else old_state
                     return {"actions": actions, "old_state": old_state, "new_state": state}
 
                 if self._resync_in_progress and self._active_id:
                     logger.info("Resync: %s wants active but %s is current — skipping",
                                 id, self._active_id)
+                    # Deliberately NO state revert here (unlike the
+                    # stale-rejection path above): the source really is
+                    # playing, it just isn't being activated *yet*.
+                    # restore_persisted_active() runs after the resync
+                    # completes and requires the persisted source to
+                    # still be in "playing"/"paused" to promote it back
+                    # to active — reverting here would break that.
                     return {"actions": actions, "old_state": old_state, "new_state": state}
 
                 # Atomic source switch: await old source stop before activating new
@@ -259,10 +294,12 @@ class SourceRegistry:
                         logger.warning("Timeout stopping old source %s — proceeding",
                                        old_source.id)
                 self._active_id = id
+                self._last_active_id = id
                 self._persist_active()
                 await router.media.broadcast("source_change", {
                     "active_source": id, "source_name": source.name,
                     "player": source.player,
+                    "manages_queue": source.manages_queue,
                 })
                 # Player-backed sources own their metadata — the player service
                 # will push the correct track within milliseconds, so a
@@ -284,10 +321,12 @@ class SourceRegistry:
                 current = self._sources.get(self._active_id) if self._active_id else None
                 if not current or current.state not in ("playing", "paused"):
                     self._active_id = id
+                    self._last_active_id = id
                     self._persist_active()
                     await router.media.broadcast("source_change", {
                         "active_source": id, "source_name": source.name,
                         "player": source.player,
+                        "manages_queue": source.manages_queue,
                     })
                     actions.append("source_change")
 
@@ -375,11 +414,13 @@ class SourceRegistry:
         if self._active_id == persisted_id:
             return True
         self._active_id = persisted_id
+        self._last_active_id = persisted_id
         self._persist_active()
         await router.media.broadcast("source_change", {
             "active_source": persisted_id,
             "source_name": persisted.name,
             "player": persisted.player,
+            "manages_queue": persisted.manages_queue,
         })
         logger.info("Startup resync: restored active source: %s", persisted_id)
         return True

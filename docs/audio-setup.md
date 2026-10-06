@@ -50,16 +50,31 @@ Sources check the player's capabilities at startup to determine how to play cont
 
 Music Assistant can also be the configured `player.type`. In that mode BS5c monitors a target MASS player directly, exposes transport controls through the MASS websocket API, and can use the `hass` volume adapter for Home Assistant-driven zone volume.
 
+The MASS source now also has its own `mass.playback_mode` switch:
+- `remote`: keep the existing Music Assistant queue/player handoff
+- `local`: resolve directly playable MASS items and send them to the BS5c local player
+- `auto`: prefer local playback on wired/local outputs such as PowerLink, HDMI, SPDIF, and RCA; otherwise stay remote
+
+For `local` or local-leaning `auto` mode, `player.type` must still be `"local"` because only one player backend can own the shared player port at a time.
+
 **Config:**
 ```json
 "player": { "type": "mass", "ip": "musicassistant.local" },
-"volume": { "type": "hass", "output_name": "Music Assistant" }
+"volume": { "type": "hass", "output_name": "Music Assistant", "mlgw_step_multiplier": 2.0 },
+"mass": { "playback_mode": "remote" }
+```
+
+```json
+"player": { "type": "local" },
+"volume": { "type": "powerlink", "max": 70 },
+"mass": { "playback_mode": "local" }
 ```
 
 **Secrets / env:**
 - `MASS_TOKEN` is required
 - `MASS_WS_URL` overrides the websocket endpoint if needed
 - `MASS_QUEUE_ID` and `MASS_PLAYER_ID` are optional pins when auto-discovery is not deterministic
+- `volume.mlgw_step_multiplier` is optional when the `hass` adapter is bridged to MLGW. Default is `2.0` so each BS5c volume gesture sends a stronger MLGW step burst than the HA fallback path.
 
 ### Sonos
 
@@ -134,6 +149,12 @@ A custom option for controlling a pair of BeoLab 5 speakers via their sync port.
 "volume": { "type": "beolab5", "host": "beolab5-controller.local", "max": 70 }
 ```
 
+### Chassis 3.5mm line-out (via S/PDIF HAT)
+
+The original BeoSound 5 chassis has a 3.5mm line-out jack on the rear. Audio reaches it via the S/PDIF HAT — install the HAT and wire up its S/PDIF coax output as described in the [S/PDIF](#optical--toslink-spdif) section above, and the 3.5mm jack becomes active in parallel.
+
+**Important:** the 3.5mm output is **line level regardless of the BS5c volume setting**. The BS5c's volume wheel does not attenuate it. Volume must be handled downstream (by your amplifier, active speakers, or pre-amp).
+
 ## How Playback Works
 
 There are two playback paths depending on the source:
@@ -154,7 +175,7 @@ Sources provide content to the BS5c. Each source registers with the router and a
 | Apple Music | Sends Apple Music share URLs to player via `player_play(uri=...)`. Sonos uses patched ShareLink. Sonos only. | Player manages queue |
 | TIDAL | Sonos: sends TIDAL share URLs via `player_play(uri=...)` (ShareLink). BlueSound: resolves direct stream URLs via tidalapi `track.get_url()`, sends via `player_play(url=...)`. | Sonos: player manages queue. BlueSound: source manages queue (next/prev play new stream URLs) |
 | Plex | Builds direct stream URLs from Plex server. Sends to player via `player_play(url=...)`. Works with Sonos and BlueSound. | Source manages queue (next/prev build new URLs) |
-| MASS | Browses Music Assistant library data and sends play commands directly to the configured MASS queue/player. | Source manages queue and now-playing handoff |
+| MASS | Browses Music Assistant library data. In `remote` mode it sends play commands directly to the configured MASS queue/player. In `local` mode it resolves directly playable items and hands their stream URLs to the BS5c local player. | Source manages queue and now-playing handoff |
 | Kodi | Browses Kodi / LibreELEC video and live-TV libraries via JSON-RPC and opens items directly in Kodi. | Kodi manages queue / playlist playback |
 | CD | Local mpv playback from USB CD/DVD drive. Metadata from MusicBrainz. No player service needed. | Source manages tracks (mpv chapters) |
 | USB | Auto-detects: streams track URLs to player if `url_stream` available, otherwise local mpv. Supports BeoMaster 5 library databases and plain USB drives. Works with both players or standalone. | Source manages queue |
@@ -186,6 +207,7 @@ The `volume` section in `config.json`:
   "host": "192.168.1.100",  // Target IP/hostname (sonos, bluesound, beolab5, c4amp)
   "max": 70,                // Maximum volume percentage
   "step": 3,                // Volume step per wheel click
+  "mlgw_step_multiplier": 2.0, // Optional: scales MLGW-only step bursts when volume.type is "hass"
   "output_name": "Sonos"    // Name shown in the UI
 }
 ```
@@ -208,6 +230,34 @@ The `volume` section in `config.json`:
 **Notes:**
 - Spotify apps in "Development" mode allow up to 25 users. Add your Spotify account email under **User Management** in the developer dashboard.
 - A self-signed SSL certificate is generated during install (required for Spotify OAuth). Your phone must accept the certificate warning when scanning the QR code.
+- **Use a separate Client ID per device.** Spotify caches the granted scope set per `(user, client_id)` pair. If you share one Client ID across multiple BS5c devices, the first device's grant locks in the scope set for all of them — later devices may end up with a narrower grant than they request. One developer app per device avoids this entirely.
+
+### Troubleshooting: only Liked Songs appears (or very few playlists)
+
+Symptom: the Spotify view shows only "Liked Songs" or 1–2 playlists despite having many in your account. The fetch summary in `journalctl -u beo-source-spotify` will show `playlists_from_api=0` or `1`.
+
+Cause: the OAuth grant on Spotify's side is missing `playlist-read-private` and/or `playlist-read-collaborative`. This usually means the grant was issued before BS5c started requesting those scopes. Spotify silently re-issues the *previously granted* scope set on subsequent auth attempts — re-authenticating without revoking first does **not** add the new scopes.
+
+Fix:
+1. Revoke the existing grant at [spotify.com/account/apps](https://www.spotify.com/account/apps) — find your BS5c app and click "Remove Access".
+2. Re-authenticate via the BS5c `/setup` page (or scan the QR on the SPOTIFY view).
+3. The consent screen will now reappear with the full current scope list. Accept it.
+4. Verify with `sudo journalctl -u beo-source-spotify --since '5 min ago' | grep -E 'OAuth: Spotify granted|Summary:'` — `playlists_from_api` should now match your actual playlist count.
+
+### Troubleshooting: playlists fetch but tracks fail with HTTP 403
+
+Spotify's Web API migration (Feb–Mar 2026) removed the old `/playlists/{id}/tracks` endpoint for apps in Development Mode. BS5c v0.8.8+ uses the replacement `/playlists/{id}/items` endpoint, which fixes track fetching for all playlists **you own or collaborate on**.
+
+One restriction remains and is Spotify policy, not a BS5c bug: Development Mode apps cannot read tracks from playlists *owned by other users* (followed playlists, a partner's playlists, editorial lists). Those show up in the fetch log as `NOTE: N playlist(s) owned by other users returned 403`. Your options:
+
+- Duplicate the playlist into your own account (in the Spotify app: playlist → ⋯ → *Add to other playlist* → *New playlist*), or
+- Apply for **Extended Quota Mode** at [developer.spotify.com/dashboard](https://developer.spotify.com/dashboard), which lifts the restriction.
+
+Run `sudo python3 ~/beosound5c/tools/spotify-diag.py` on the device to see exactly which category each failing playlist falls into.
+
+### Spotify re-authentication every 6 months
+
+Since June 2026, Spotify expires refresh tokens **6 months after the original authorization** — token refreshes do not extend this window ([announcement](https://developer.spotify.com/blog/2026-06-18-refresh-token-expiration)). When the token expires, BS5c discards it and the SYSTEM page / logs will ask you to re-authenticate via the `/setup` page. Re-auth takes seconds (Spotify remembers the granted permissions) and the device warns in the journal starting ~1 month before expiry. Devices configured with a `token_master` follow the master automatically — only the master device needs the re-auth.
 
 ### Spotify Canvas (Optional)
 

@@ -28,7 +28,7 @@
         }
 
         .fast-letter-overlay {
-            position: absolute;
+            position: fixed;
             top: 50%;
             left: 50%;
             width: 116px;
@@ -82,6 +82,348 @@
             opacity: 1;
             transform: translateX(-50%) translateY(0);
         }
+
+        .touch-nav-rail {
+            position: fixed;
+            right: 16px;
+            bottom: 16px;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            z-index: 3900;
+        }
+
+        .touch-nav-wheel,
+        .touch-nav-actions {
+            display: grid;
+            gap: 8px;
+        }
+
+        .touch-nav-actions {
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+
+        .touch-nav-btn {
+            min-width: 74px;
+            min-height: 44px;
+            border: 1px solid rgba(255, 255, 255, 0.16);
+            border-radius: 16px;
+            background: rgba(10, 10, 10, 0.84);
+            box-shadow: 0 16px 36px rgba(0, 0, 0, 0.34);
+            backdrop-filter: blur(14px);
+            color: #f8fbff;
+            font: 600 11px/1 Arial, sans-serif;
+            letter-spacing: 1.1px;
+            text-transform: uppercase;
+            cursor: pointer;
+            touch-action: manipulation;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        .touch-nav-btn:active {
+            background: rgba(80, 140, 255, 0.28);
+            border-color: rgba(148, 199, 255, 0.42);
+        }
+
+        .touch-nav-btn:disabled {
+            opacity: 0.42;
+            cursor: default;
+        }
+
+        .touch-nav-btn:disabled:active {
+            background: rgba(10, 10, 10, 0.84);
+            border-color: rgba(255, 255, 255, 0.16);
+        }
+
+        .touch-nav-btn--nav {
+            min-height: 40px;
+        }
+
+        .options-view {
+            position: absolute;
+            inset: 0;
+            display: flex;
+            align-items: flex-start;
+            justify-content: center;
+            padding-top: 8vh;
+            z-index: 6;
+        }
+
+        .options-panel {
+            width: min(500px, calc(100vw - 500px));
+            max-height: 72vh;
+            padding: 16px 18px 14px;
+            border-radius: 24px;
+            background: rgba(10, 10, 10, 0.84);
+            border: 1px solid rgba(255, 255, 255, 0.14);
+            box-shadow: 0 22px 48px rgba(0, 0, 0, 0.42);
+            backdrop-filter: blur(16px);
+            color: #f4f4f4;
+            overflow: hidden;
+        }
+
+        .options-header {
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            gap: 18px;
+            margin-bottom: 10px;
+        }
+
+        .options-kicker {
+            color: rgba(255, 255, 255, 0.58);
+            font: 600 11px/1.2 Arial, sans-serif;
+            letter-spacing: 1.8px;
+            text-transform: uppercase;
+            margin-bottom: 6px;
+        }
+
+        .options-title {
+            color: #fff;
+            font: 300 22px/1.12 Arial, sans-serif;
+            letter-spacing: 0.4px;
+            margin: 0;
+        }
+
+        .options-subtitle {
+            color: rgba(255, 255, 255, 0.56);
+            font: 400 11px/1.35 Arial, sans-serif;
+            margin-top: 4px;
+            max-width: 280px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .options-hint {
+            flex: 0 0 auto;
+            color: rgba(255, 255, 255, 0.42);
+            font: 500 11px/1.25 Arial, sans-serif;
+            letter-spacing: 1.2px;
+            text-align: right;
+            text-transform: uppercase;
+        }
+
+        .options-list {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            max-height: 54vh;
+            overflow-y: auto;
+            padding-right: 2px;
+            scrollbar-width: none;
+        }
+
+        .options-list::-webkit-scrollbar {
+            display: none;
+        }
+
+        .options-view.search-composer {
+            padding-top: 4vh;
+        }
+
+        .search-composer .options-panel {
+            width: min(620px, calc(100vw - 390px));
+            max-height: 84vh;
+        }
+
+        .search-composer .options-subtitle {
+            max-width: 430px;
+            min-height: 27px;
+            color: #ffffff;
+            font-size: 18px;
+            line-height: 1.35;
+            white-space: normal;
+            overflow-wrap: anywhere;
+        }
+
+        .search-composer .options-list {
+            display: grid;
+            grid-template-columns: repeat(10, minmax(0, 1fr));
+            gap: 6px;
+            max-height: 60vh;
+        }
+
+        .search-key {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 40px;
+            padding: 6px 4px;
+            border-radius: 10px;
+            background: rgba(255, 255, 255, 0.06);
+            color: rgba(255, 255, 255, 0.82);
+            font: 600 15px/1 Arial, sans-serif;
+            text-align: center;
+        }
+
+        .search-key.is-selected {
+            background: rgba(100, 166, 255, 0.28);
+            box-shadow: inset 0 0 0 2px rgba(173, 211, 255, 0.82), 0 8px 20px rgba(0, 0, 0, 0.24);
+            color: #ffffff;
+        }
+
+        .search-key.search-key--action {
+            grid-column: span 2;
+            gap: 5px;
+            font-size: 11px;
+            letter-spacing: 0.35px;
+            text-transform: uppercase;
+        }
+
+        .search-key.search-key--row-start {
+            grid-column-start: 1;
+        }
+
+        .options-entry {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            min-height: 36px;
+            padding: 8px 10px;
+            border-radius: 12px;
+            color: rgba(245, 245, 245, 0.92);
+            transition: background 120ms ease, box-shadow 120ms ease, color 120ms ease;
+        }
+
+        .options-entry.is-selected {
+            background: rgba(255, 255, 255, 0.14);
+            color: #ffffff;
+            box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.28);
+        }
+
+        .options-entry-icon {
+            width: 24px;
+            color: rgba(255, 255, 255, 0.68);
+            font-size: 18px;
+            text-align: center;
+            flex: 0 0 auto;
+        }
+
+        .options-entry-copy {
+            flex: 1 1 auto;
+            min-width: 0;
+        }
+
+        .options-entry-title {
+            color: inherit;
+            font: 500 14px/1.2 Arial, sans-serif;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .options-entry-subtitle {
+            display: none;
+        }
+
+        .options-entry-arrow {
+            color: rgba(255, 255, 255, 0.5);
+            font-size: 16px;
+            flex: 0 0 auto;
+        }
+
+        .page-view {
+            position: absolute;
+            inset: 0;
+            display: flex;
+            align-items: flex-start;
+            opacity: 0;
+            transition: opacity 300ms ease;
+            z-index: 5;
+        }
+
+        .page-view-scroll {
+            margin-left: 350px;
+            margin-right: 180px;
+            max-height: 80vh;
+            overflow-y: auto;
+            padding: 40px 0 52px;
+            scrollbar-width: none;
+        }
+
+        .page-view-scroll::-webkit-scrollbar {
+            display: none;
+        }
+
+        .page-view-title {
+            font-size: 1.5rem;
+            font-weight: 300;
+            letter-spacing: 1px;
+            color: #fff;
+            margin-bottom: 1.5rem;
+            line-height: 1.3;
+        }
+
+        .page-view-body {
+            font-size: 0.95rem;
+            line-height: 1.7;
+            color: rgba(255, 255, 255, 0.82);
+        }
+
+        .page-view.page-view-mass {
+            padding-top: 6vh;
+        }
+
+        .page-view.page-view-mass .page-view-scroll {
+            width: min(470px, calc(100vw - 560px));
+        }
+
+        .page-view.page-view-mass .page-view-body img {
+            width: 100%;
+            display: block;
+            margin-bottom: 1.25rem;
+            border-radius: 0.85rem;
+            box-shadow: 0 22px 44px rgba(0, 0, 0, 0.35);
+        }
+
+        .mass-detail-subtitle {
+            margin-bottom: 1.1rem;
+            color: #ffffff;
+            font-size: 1rem;
+            line-height: 1.45;
+        }
+
+        .mass-detail-section-label {
+            margin: 1.3rem 0 0.65rem;
+            color: rgba(160, 205, 255, 0.92);
+            font-size: 0.78rem;
+            letter-spacing: 1.6px;
+            text-transform: uppercase;
+        }
+
+        .mass-detail-empty {
+            color: rgba(255, 255, 255, 0.7);
+        }
+
+        .mass-detail-facts {
+            display: grid;
+            gap: 0.5rem;
+            margin: 0 0 1.2rem;
+        }
+
+        .mass-detail-fact {
+            display: grid;
+            grid-template-columns: 92px 1fr;
+            gap: 0.7rem;
+            align-items: start;
+        }
+
+        .mass-detail-fact-label {
+            color: rgba(160, 205, 255, 0.9);
+            text-transform: uppercase;
+            letter-spacing: 1.2px;
+            font-size: 0.74rem;
+        }
+
+        .mass-detail-fact-value {
+            color: rgba(255, 255, 255, 0.9);
+            line-height: 1.45;
+        }
+
+        .page-view.page-view-mass .page-view-body p {
+            margin-bottom: 0.95rem;
+        }
     </style>
 </head>
 <body>
@@ -100,6 +442,9 @@
 
     <script src="../js/config.js"></script>
     <script src="../js/arc-utils.js"></script>
+    <script src="../js/fast-letter-index.js"></script>
+    <script src="../js/search-composer.js"></script>
+    <script src="../js/youtube-search-options.js"></script>
     <script src="../js/emulator-bridge.js"></script>
     <script src="../assets/qrcode.min.js"></script>
     <script src="script.js"></script>
@@ -169,8 +514,13 @@
         const SERVICE_BOOT_TIMEOUT_MS = 900;
         const ACTION_TOAST_MIN_MS = 2000;
         const ACTION_TOAST_MAX_MS = 4000;
-        const FAST_LETTER_MIN_SPEED = 3;
-        const FAST_LETTER_ARTICLES = new Set(['A', 'AN', 'THE']);
+        const FAST_LETTER_ENTER_SPEED = 4;
+        const FAST_LETTER_EXIT_SPEED = 2;
+        const FAST_LETTER_ENTRY_WINDOW_MS = 120;
+        const FAST_LETTER_SETTLE_WINDOW_MS = 400;
+        const FAST_LETTER_REVERSAL_WINDOW_MS = 180;
+        const FAST_LETTER_MIN_ITEMS = 40;
+        const FAST_LETTER_SECTION_IDS = new Set(['artists', 'albums', 'titles']);
 
         async function fetchJson(url, options = {}) {
             const timeoutMs = Number(options.timeoutMs || 0);
@@ -229,10 +579,11 @@
             const preserveTiming = Boolean(options.preserveTiming && actionToastState);
             if (!preserveTiming) {
                 clearActionToastTimers();
+                const maxMs = Math.max(ACTION_TOAST_MIN_MS, Number(options.maxMs || ACTION_TOAST_MAX_MS));
                 actionToastState = {
                     shownAt: Date.now(),
                     hideTimer: null,
-                    maxTimer: setTimeout(hideActionToast, ACTION_TOAST_MAX_MS),
+                    maxTimer: setTimeout(hideActionToast, maxMs),
                 };
             }
             overlay.textContent = message;
@@ -245,6 +596,95 @@
             const waitMs = Math.max(0, ACTION_TOAST_MIN_MS - elapsed);
             if (actionToastState.hideTimer) clearTimeout(actionToastState.hideTimer);
             actionToastState.hideTimer = setTimeout(hideActionToast, waitMs);
+        };
+
+        const TOUCH_NAV_STEP_SPEED = 20;
+        const touchUiEnabled = (() => {
+            try {
+                return /(?:\?|&)touch=1(?:&|$)/.test(window.location.search)
+                    || window.matchMedia?.('(pointer: coarse)')?.matches
+                    || window.matchMedia?.('(hover: none)')?.matches
+                    || Number(window.navigator?.maxTouchPoints || 0) > 0;
+            } catch (_error) {
+                return false;
+            }
+        })();
+        let touchNavArcList = null;
+
+        const bindTouchRailPress = (element, handler) => {
+            if (!element || typeof handler !== 'function') return;
+            let lastPointerPressAt = 0;
+            const run = (event) => {
+                if (element.disabled || Date.now() - lastPointerPressAt < 120) {
+                    event.preventDefault();
+                    return;
+                }
+                event.preventDefault();
+                lastPointerPressAt = Date.now();
+                handler();
+            };
+            if (window.PointerEvent) {
+                element.addEventListener('pointerup', run);
+            }
+            element.addEventListener('touchend', run, { passive: false });
+            element.addEventListener('click', (event) => {
+                if (element.disabled || Date.now() - lastPointerPressAt < 450) {
+                    event.preventDefault();
+                    return;
+                }
+                event.preventDefault();
+                handler();
+            });
+        };
+
+        const updateTouchNavRailState = () => {
+            const rail = document.getElementById('touch-nav-rail');
+            if (!rail) return;
+            const isReady = Boolean(touchNavArcList);
+            rail.querySelectorAll('[data-touch-action]').forEach((button) => {
+                button.disabled = !isReady;
+            });
+        };
+
+        const ensureTouchNavRail = () => {
+            if (!touchUiEnabled || document.getElementById('touch-nav-rail')) return;
+
+            const rail = document.createElement('div');
+            rail.id = 'touch-nav-rail';
+            rail.className = 'touch-nav-rail';
+            rail.innerHTML = `
+                <div class="touch-nav-wheel">
+                    <button type="button" class="touch-nav-btn touch-nav-btn--nav" data-touch-action="up">Up</button>
+                    <button type="button" class="touch-nav-btn touch-nav-btn--nav" data-touch-action="down">Down</button>
+                </div>
+                <div class="touch-nav-actions">
+                    <button type="button" class="touch-nav-btn" data-touch-action="open">Open</button>
+                    <button type="button" class="touch-nav-btn" data-touch-action="play">Play</button>
+                    <button type="button" class="touch-nav-btn" data-touch-action="back">Back</button>
+                    <button type="button" class="touch-nav-btn" data-touch-action="more">More</button>
+                </div>
+            `;
+            document.body.appendChild(rail);
+
+            const actionMap = {
+                up: () => touchNavArcList?.handleNavFromParent?.({ direction: 'counter', speed: TOUCH_NAV_STEP_SPEED, discrete: true }),
+                down: () => touchNavArcList?.handleNavFromParent?.({ direction: 'clock', speed: TOUCH_NAV_STEP_SPEED, discrete: true }),
+                open: () => touchNavArcList?.handleButtonFromParent?.('left'),
+                play: () => touchNavArcList?.handleButtonFromParent?.('go'),
+                back: () => touchNavArcList?.handleButtonFromParent?.('right'),
+                more: () => touchNavArcList?.handleButtonFromParent?.('go_hold'),
+            };
+
+            rail.querySelectorAll('[data-touch-action]').forEach((button) => {
+                const actionId = String(button.dataset.touchAction || '').trim();
+                bindTouchRailPress(button, () => actionMap[actionId]?.());
+            });
+            updateTouchNavRailState();
+        };
+
+        const attachTouchNavArcList = (arcList) => {
+            touchNavArcList = arcList || null;
+            updateTouchNavRailState();
         };
 
         async function loadStaticLibrary() {
@@ -280,6 +720,7 @@
         // Boot sequence
         // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         document.addEventListener('DOMContentLoaded', async () => {
+            ensureTouchNavRail();
             const MASS_URL = getServiceUrl('massServiceUrl', 8783);
             const cachedLibrary = await loadStaticLibrary();
 
@@ -457,13 +898,28 @@
             const serviceBaseUrl = massUrl || getServiceUrl('massServiceUrl', 8783);
             const sourceCommandUrl = serviceBaseUrl + '/command';
             const queueUrl = serviceBaseUrl + '/queue';
+            const itemInfoUrl = serviceBaseUrl + '/item_info';
+            const searchUrl = serviceBaseUrl + '/search';
+            const voiceSearchUrl = serviceBaseUrl + '/voice_search';
             const FALLBACK_CARD_IMAGE = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNjQiIGhlaWdodD0iNjQiIHZpZXdCb3g9IjAgMCA2NCA2NCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPHJlY3Qgd2lkdGg9IjY0IiBoZWlnaHQ9IjY0IiBmaWxsPSIjMzMzMzMzIi8+Cjx0ZXh0IHg9IjMyIiB5PSI0MCIgZm9udC1mYW1pbHk9IkFyaWFsLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjI0IiBmaWxsPSIjZmZmZmZmIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIj7imqo8L3RleHQ+Cjwvc3ZnPgo=';
             const ROOT_ICON_STYLE = {
+                search:     { icon: 'magnifying-glass', color: '#f03e3e' },
                 artists:   { icon: 'users-three', color: '#e05618' },
                 albums:    { icon: 'vinyl-record', color: '#1c7ed6' },
-                songs:     { icon: 'music-notes-simple', color: '#2b8a3e' },
+                titles:    { icon: 'music-notes-simple', color: '#2b8a3e' },
                 playlists: { icon: 'list-bullets', color: '#862e9c' },
+                playlist_mixes: { icon: 'shuffle', color: '#b14ae0' },
+                podcasts:  { icon: 'microphone', color: '#ff6b6b' },
                 mixes:     { icon: 'radio', color: '#e6ca19' },
+            };
+            const SOURCE_ROOT_IDS = new Set(['queue', 'artists', 'albums', 'songs', 'playlists', 'playlist_mixes', 'podcasts', 'mixes']);
+            const ROOT_SECTION_IDS = new Set(['queue', 'search', 'artists', 'albums', 'titles', 'playlists', 'playlist_mixes', 'podcasts', 'mixes']);
+            const CROSS_SECTION_TARGET_IDS = new Set(['artists', 'albums', 'titles']);
+            const SEARCH_ROOT = {
+                id: 'search',
+                name: 'Search',
+                search_root: true,
+                tracks: [{ id: 'search_composer', name: 'Search' }],
             };
             const cleanTitle = (value) => String(value || '').split('\n')[0].trim();
             const normalizeServiceImageUrl = (value) => {
@@ -471,6 +927,12 @@
                 if (!raw) return '';
                 return raw.startsWith('/art/') ? `${serviceBaseUrl}${raw}` : raw;
             };
+            const escapeHtml = (value) => String(value || '')
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
             const trackMetaByKey = new Map();
             let queueRootNode = null;
 
@@ -503,7 +965,7 @@
                 const nodeArtist = String(node.artist || context.artist || '').trim();
                 const nodeArtwork = normalizeServiceImageUrl(node.image || context.artwork || '');
                 const containsLeaves = !!children?.some((child) => !Array.isArray(child?.tracks) || child.tracks.length === 0);
-                const isRootCategory = ['queue', 'artists', 'albums', 'songs', 'playlists', 'mixes'].includes(String(node.id || ''));
+                const isRootCategory = SOURCE_ROOT_IDS.has(String(node.id || ''));
 
                 rememberTrackMeta(node, {
                     artist: nodeArtist,
@@ -620,6 +1082,19 @@
                 return baseItems;
             };
 
+            const buildDisplayRootSource = (items) => {
+                const displayItems = [];
+                (Array.isArray(items) ? items : []).forEach((item) => {
+                    const sourceId = String(item?.id || '').trim();
+                    if (sourceId === 'songs') {
+                        displayItems.push(Object.assign({}, item, { id: 'titles', name: 'Titles' }));
+                        return;
+                    }
+                    displayItems.push(item);
+                });
+                return displayItems;
+            };
+
             const applyRootPresentation = (item) => {
                 const visual = ROOT_ICON_STYLE[String(item?.id || '')];
                 if (!visual) return item;
@@ -629,14 +1104,9 @@
                 });
             };
 
-            // â”€â”€ Create ArcList with preloaded data via blob URL â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-            // We convert the preloaded data to a blob URL so ArcList's normal
-            // fetch path is used, but resolution is instant (no network round-trip).
-            const blob    = new Blob([JSON.stringify(preloadedData)], { type: 'application/json' });
-            const blobUrl = URL.createObjectURL(blob);
-
             const massConfig = {
-                dataSource:      blobUrl,
+                inlineData:      Array.isArray(preloadedData) ? preloadedData : [],
+                dataSource:      STATIC_CACHE_URL,
                 dataType:        'parent_child',
                 viewMode:        'hierarchical',
                 parentKey:       'tracks',
@@ -649,14 +1119,36 @@
             };
 
             const arcList = new ArcList(massConfig);
+            attachTouchNavArcList(arcList);
 
             // â”€â”€ Stash original methods before override â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
             const folderStack = [];
+            const optionWheelRamp = window.FastLetterIndex?.createMenuStepRamp?.();
+            const fastLetterMode = window.FastLetterIndex?.createLetterMode?.({
+                enterSpeed: FAST_LETTER_ENTER_SPEED,
+                enterInclusive: true,
+                exitSpeed: FAST_LETTER_EXIT_SPEED,
+                entryWindowMs: FAST_LETTER_ENTRY_WINDOW_MS,
+                settleWindowMs: FAST_LETTER_SETTLE_WINDOW_MS,
+                reversalFastWindowMs: FAST_LETTER_REVERSAL_WINDOW_MS,
+                slowSpeed: 5,
+                slowIntervalMs: 800,
+                fastIntervalMs: 200,
+                fullSpeed: 11,
+            });
+            let optionWheelStateRef = null;
             const originalHandleButtonFromParent = arcList.handleButtonFromParent?.bind(arcList);
             const originalHandleNavFromParent    = arcList.handleNavFromParent?.bind(arcList);
             const originalHandleKeyPress         = arcList.handleKeyPress?.bind(arcList);
+            const originalCheckForSelectionClick = arcList.checkForSelectionClick?.bind(arcList);
             const originalRender                 = arcList.render?.bind(arcList);
             const originalCreateImageElement     = arcList.createImageElement?.bind(arcList);
+            const originalSaveState              = arcList.saveState?.bind(arcList);
+            const originalDestroy                = arcList.destroy?.bind(arcList);
+            const MASS_BROWSE_STATE_KEY          = `${massConfig.storagePrefix}_browse_state_v1`;
+            const MASS_SECTION_CONTEXT_KEY       = `${massConfig.storagePrefix}_section_context_v1`;
+            let lastBrowseContextStamp           = 0;
+            let lastSectionBrowseContext         = null;
 
             arcList.createImageElement = function (item) {
                 if (item?.icon) {
@@ -699,9 +1191,381 @@
                 return Math.max(0, Math.min(items.length - 1, Math.round(index || 0)));
             };
 
+            const itemKey = (item) => String(
+                item?.id
+                || item?.url
+                || item?.play_url
+                || cleanTitle(item?.name)
+                || ''
+            ).trim();
+
+            const normalizeLookup = (value) => cleanTitle(String(value || ''))
+                .toLowerCase()
+                .replace(/[^a-z0-9]+/g, ' ')
+                .trim();
+
+            const normalizeSectionContext = (context = {}) => {
+                const sourceContext = (context && typeof context === 'object') ? context : {};
+                const rawRootId = String(sourceContext.root_id || '').trim();
+                const normalizedRootId = rawRootId === 'songs' ? 'titles' : rawRootId;
+                const normalized = {
+                    source: String(sourceContext.source || 'mass').trim() || 'mass',
+                    ts: Number(sourceContext.ts || Date.now()) || Date.now(),
+                    root_id: normalizedRootId,
+                    artist: cleanTitle(sourceContext.artist || ''),
+                    album: cleanTitle(sourceContext.album || ''),
+                    title: cleanTitle(sourceContext.title || ''),
+                    selection_key: String(sourceContext.selection_key || '').trim(),
+                    selection_name: cleanTitle(sourceContext.selection_name || ''),
+                };
+                return (normalized.artist || normalized.album || normalized.title || normalized.selection_name)
+                    ? normalized
+                    : null;
+            };
+
+            const loadSectionBrowseContext = () => {
+                try {
+                    const raw = localStorage.getItem(MASS_SECTION_CONTEXT_KEY);
+                    return raw ? normalizeSectionContext(JSON.parse(raw)) : null;
+                } catch (error) {
+                    return null;
+                }
+            };
+
+            let carriedSectionBrowseContext = null;
+
+            const storeSectionBrowseContext = (context) => {
+                const normalized = normalizeSectionContext(context);
+                if (!normalized) return null;
+                lastSectionBrowseContext = normalized;
+                try {
+                    localStorage.setItem(MASS_SECTION_CONTEXT_KEY, JSON.stringify(normalized));
+                } catch (error) {}
+                return normalized;
+            };
+
+            const getCurrentRootSectionId = () => {
+                if (folderStack.length) {
+                    return String(folderStack[0]?.item?.id || '').trim();
+                }
+                const currentId = String(getCurrentItem()?.id || '').trim();
+                return ROOT_SECTION_IDS.has(currentId) ? currentId : '';
+            };
+
+            const deriveSectionArtist = (item, rootId = '') => {
+                const metadata = getItemMeta(item);
+                const candidates = [];
+                if (rootId === 'artists') {
+                    candidates.push(cleanTitle(item?.name || ''));
+                }
+                candidates.push(
+                    String(item?.artist || '').trim(),
+                    String(metadata.artist || '').trim(),
+                    String(folderStack[folderStack.length - 1]?.item?.artist || '').trim(),
+                );
+                return candidates
+                    .map((value) => cleanTitle(value))
+                    .find(Boolean) || '';
+            };
+
+            const buildSectionBrowseContext = (item = getCurrentItem()) => {
+                const rootId = getCurrentRootSectionId();
+                if (!item || !rootId || !folderStack.length) return null;
+                const metadata = getItemMeta(item);
+                return normalizeSectionContext({
+                    source: 'mass',
+                    ts: Date.now(),
+                    root_id: rootId,
+                    artist: deriveSectionArtist(item, rootId),
+                    album: String(item?.album || metadata.album || '').trim(),
+                    title: cleanTitle(item?.name || item?.title || ''),
+                    selection_key: itemKey(item),
+                    selection_name: cleanTitle(item?.name || ''),
+                });
+            };
+
+            const buildSectionSelectionAnchor = (rootId = getCurrentRootSectionId(), item = getCurrentItem()) => {
+                const normalizedRootId = String(rootId || '').trim();
+                if (!normalizedRootId || !item) return null;
+                const selectionKey = itemKey(item);
+                const selectionName = cleanTitle(item?.name || item?.title || '');
+                if (!selectionKey && !selectionName) return null;
+                return {
+                    root_id: normalizedRootId,
+                    selection_key: selectionKey,
+                    selection_name: selectionName,
+                };
+            };
+
+            const currentSelectionMatchesAnchor = (anchor) => {
+                if (!anchor) return false;
+                const currentRootId = getCurrentRootSectionId();
+                const currentItem = getCurrentItem();
+                const anchorRootId = String(anchor.root_id || '').trim();
+                if (!anchorRootId || !currentItem || currentRootId !== anchorRootId) return false;
+
+                const anchorKey = String(anchor.selection_key || '').trim();
+                if (anchorKey) {
+                    return itemKey(currentItem) === anchorKey;
+                }
+
+                const anchorName = normalizeLookup(anchor.selection_name || '');
+                return !!anchorName && normalizeLookup(currentItem?.name || currentItem?.title) === anchorName;
+            };
+
+            const clearCarriedSectionBrowseContext = () => {
+                carriedSectionBrowseContext = null;
+            };
+
+            const setCarriedSectionBrowseContext = (context, rootId, item) => {
+                const normalizedContext = normalizeSectionContext(context);
+                const anchor = buildSectionSelectionAnchor(rootId, item);
+                if (!normalizedContext || !anchor) {
+                    clearCarriedSectionBrowseContext();
+                    return null;
+                }
+                carriedSectionBrowseContext = Object.assign({ context: normalizedContext }, anchor);
+                return carriedSectionBrowseContext;
+            };
+
+            const resolveEffectiveSectionBrowseContext = () => {
+                if (carriedSectionBrowseContext) {
+                    if (currentSelectionMatchesAnchor(carriedSectionBrowseContext)) {
+                        return normalizeSectionContext(carriedSectionBrowseContext.context);
+                    }
+                    clearCarriedSectionBrowseContext();
+                }
+                return buildSectionBrowseContext(getCurrentItem()) || lastSectionBrowseContext;
+            };
+
+            const rememberCurrentSectionBrowseContext = (item = getCurrentItem()) => {
+                const context = buildSectionBrowseContext(item);
+                if (!context) return null;
+                return storeSectionBrowseContext(context);
+            };
+
+            const saveBrowseState = () => {
+                try {
+                    rememberCurrentSectionBrowseContext();
+                    if (carriedSectionBrowseContext && !currentSelectionMatchesAnchor(carriedSectionBrowseContext)) {
+                        clearCarriedSectionBrowseContext();
+                    }
+                    const current = getCurrentItem();
+                    const payload = {
+                        trail: folderStack.map((entry) => itemKey(entry.item)).filter(Boolean),
+                        selection_key: itemKey(current),
+                        selection_name: cleanTitle(current?.name),
+                        selection_index: clampIndex(arcList.items, arcList.currentIndex),
+                        saved_at: Date.now(),
+                    };
+                    localStorage.setItem(MASS_BROWSE_STATE_KEY, JSON.stringify(payload));
+                } catch (error) {}
+            };
+
+            const loadBrowseState = () => {
+                try {
+                    const raw = localStorage.getItem(MASS_BROWSE_STATE_KEY);
+                    return raw ? JSON.parse(raw) : null;
+                } catch (error) {
+                    return null;
+                }
+            };
+
+            const findItemIndex = (items, predicate) => {
+                if (!Array.isArray(items) || !items.length) return -1;
+                return items.findIndex((entry) => {
+                    try {
+                        return predicate(entry);
+                    } catch (error) {
+                        return false;
+                    }
+                });
+            };
+
+            const resolveSectionSelectionIndex = (rootId, childItems, context) => {
+                if (!Array.isArray(childItems) || !childItems.length) return -1;
+                const normalizedContext = normalizeSectionContext(context);
+                if (!normalizedContext) return -1;
+
+                const artistKey = normalizeLookup(normalizedContext.artist);
+                const albumKey = normalizeLookup(normalizedContext.album);
+                const titleKey = normalizeLookup(normalizedContext.title);
+                const contextRootId = String(normalizedContext.root_id || '').trim();
+                const sectionId = String(rootId || '').trim();
+                const matchArtistIndex = (preferName = false) => {
+                    if (!artistKey) return -1;
+                    return findItemIndex(childItems, (entry) => {
+                        const entryArtist = preferName
+                            ? normalizeLookup(entry?.name || entry?.artist || getItemMeta(entry).artist)
+                            : normalizeLookup(entry?.artist || getItemMeta(entry).artist || entry?.name);
+                        return !!entryArtist && entryArtist === artistKey;
+                    });
+                };
+                const matchAlbumIndex = () => {
+                    if (!albumKey) return -1;
+                    return findItemIndex(childItems, (entry) => {
+                        const entryAlbum = normalizeLookup(entry?.album || entry?.name || getItemMeta(entry).album);
+                        if (!entryAlbum || entryAlbum !== albumKey) return false;
+                        const entryArtist = normalizeLookup(entry?.artist || getItemMeta(entry).artist);
+                        return !artistKey || !entryArtist || entryArtist === artistKey;
+                    });
+                };
+
+                if (sectionId === 'artists') {
+                    return matchArtistIndex(true);
+                }
+
+                if (sectionId === 'albums') {
+                    if (albumKey && (contextRootId === 'titles' || contextRootId === 'albums')) {
+                        const byAlbum = matchAlbumIndex();
+                        if (byAlbum >= 0) return byAlbum;
+                    }
+                    if (artistKey) {
+                        const byArtist = matchArtistIndex();
+                        if (byArtist >= 0) return byArtist;
+                    }
+                    if (albumKey) {
+                        return matchAlbumIndex();
+                    }
+                    return -1;
+                }
+
+                if (sectionId === 'titles') {
+                    if (albumKey && (contextRootId === 'albums' || contextRootId === 'titles')) {
+                        const byAlbum = findItemIndex(childItems, (entry) => {
+                            const entryAlbum = normalizeLookup(entry?.album || getItemMeta(entry).album);
+                            if (!entryAlbum || entryAlbum !== albumKey) return false;
+                            const entryArtist = normalizeLookup(entry?.artist || getItemMeta(entry).artist);
+                            return !artistKey || !entryArtist || entryArtist === artistKey;
+                        });
+                        if (byAlbum >= 0) return byAlbum;
+                    }
+                    if (artistKey) {
+                        const byArtist = matchArtistIndex();
+                        if (byArtist >= 0) return byArtist;
+                    }
+                    if (titleKey) {
+                        return findItemIndex(childItems, (entry) =>
+                            normalizeLookup(entry?.name || entry?.title) === titleKey);
+                    }
+                    return -1;
+                }
+
+                return -1;
+            };
+
+            const restoreBrowseState = (state) => {
+                if (!state || typeof state !== 'object') return false;
+
+                let currentItems = rootItems();
+                folderStack.length = 0;
+
+                for (const trailKey of Array.isArray(state.trail) ? state.trail : []) {
+                    const folderIndex = currentItems.findIndex((entry) => itemKey(entry) === String(trailKey || '').trim());
+                    const folder = folderIndex >= 0 ? currentItems[folderIndex] : null;
+                    if (!folder || !Array.isArray(folder.tracks) || !folder.tracks.length) {
+                        break;
+                    }
+                    folderStack.push({
+                        item: folder,
+                        items: currentItems.slice(),
+                        currentIndex: folderIndex,
+                        targetIndex: folderIndex,
+                    });
+                    currentItems = mapChildrenForParent(folder);
+                }
+
+                arcList.items = currentItems;
+
+                let selectionIndex = -1;
+                const selectionKey = String(state.selection_key || '').trim();
+                if (selectionKey) {
+                    selectionIndex = currentItems.findIndex((entry) => itemKey(entry) === selectionKey);
+                }
+                if (selectionIndex < 0) {
+                    const selectionName = normalizeLookup(state.selection_name || '');
+                    if (selectionName) {
+                        selectionIndex = currentItems.findIndex((entry) => normalizeLookup(entry?.name) === selectionName);
+                    }
+                }
+                arcList.currentIndex = clampIndex(currentItems, selectionIndex >= 0 ? selectionIndex : state.selection_index);
+                arcList.targetIndex = arcList.currentIndex;
+                return true;
+            };
+
+            const focusMappedFolder = (rootId, predicate) => {
+                const roots = rootItems();
+                const rootIndex = roots.findIndex((entry) => String(entry?.id || '').trim() === String(rootId || '').trim());
+                if (rootIndex < 0) return false;
+
+                const rootFolder = roots[rootIndex];
+                const childItems = mapChildrenForParent(rootFolder);
+                let selectionIndex = findItemIndex(childItems, predicate);
+                if (selectionIndex < 0) return false;
+
+                folderStack.length = 0;
+                folderStack.push({
+                    item: rootFolder,
+                    items: roots.slice(),
+                    currentIndex: rootIndex,
+                    targetIndex: rootIndex,
+                });
+                arcList.items = childItems;
+                arcList.currentIndex = clampIndex(childItems, selectionIndex);
+                arcList.targetIndex = arcList.currentIndex;
+                refreshList();
+                saveBrowseState();
+                return true;
+            };
+
+            const applyBrowseContext = (context) => {
+                if (!context || typeof context !== 'object') return false;
+                const contextStamp = Number(context.ts || 0);
+                if (contextStamp && contextStamp <= lastBrowseContextStamp) return false;
+
+                const artistKey = normalizeLookup(context.artist);
+                const albumKey = normalizeLookup(context.album);
+                const titleKey = normalizeLookup(context.title);
+
+                const strategies = [];
+                if (artistKey) {
+                    strategies.push({
+                        rootId: 'artists',
+                        match: (entry) => normalizeLookup(entry?.artist || entry?.name) === artistKey,
+                    });
+                }
+                if (albumKey) {
+                    strategies.push({
+                        rootId: 'albums',
+                        match: (entry) => {
+                            if (normalizeLookup(entry?.album || entry?.name) !== albumKey) return false;
+                            const entryArtist = normalizeLookup(entry?.artist || getItemMeta(entry).artist);
+                            return !artistKey || !entryArtist || entryArtist === artistKey;
+                        },
+                    });
+                }
+                if (titleKey) {
+                    strategies.push({
+                        rootId: 'titles',
+                        match: (entry) => {
+                            if (normalizeLookup(entry?.name || entry?.title) !== titleKey) return false;
+                            const entryArtist = normalizeLookup(entry?.artist || getItemMeta(entry).artist);
+                            return !artistKey || !entryArtist || entryArtist === artistKey;
+                        },
+                    });
+                }
+
+                const applied = strategies.some((strategy) => focusMappedFolder(strategy.rootId, strategy.match));
+                if (applied) {
+                    lastBrowseContextStamp = contextStamp || Date.now();
+                    storeSectionBrowseContext(context);
+                }
+                return applied;
+            };
 
             const rootItems = () => {
-                const src = withQueueRoot(arcList.parentData || preloadedData || []);
+                const libraryItems = buildDisplayRootSource(withQueueRoot(arcList.parentData || preloadedData || []));
+                const src = [SEARCH_ROOT].concat(libraryItems);
                 return src.map((item, idx, arr) => applyRootPresentation(childNameMapper(item, idx, arr)));
             };
 
@@ -717,7 +1581,346 @@
                 });
             };
 
-            const buildNowPlayingPayload = (item) => {
+            let voiceSearchRunning = false;
+            let textSearchRunning = false;
+            let searchComposerQuery = '';
+            let youtubeSearchDefaults = {};
+            let youtubeSearchOptions = window.YouTubeSearchOptions?.load(window.localStorage) || {};
+            let youtubeOptionsReady = false;
+            const loadYouTubeSearchOptions = async () => {
+                if (youtubeOptionsReady) return;
+                const controller = new AbortController();
+                const timeout = setTimeout(() => controller.abort(), 3000);
+                try {
+                    const response = await fetch(`${serviceBaseUrl}/search_options`, { cache: 'no-store', signal: controller.signal });
+                    if (response.ok) youtubeSearchDefaults = await response.json();
+                } catch (_) {} finally { clearTimeout(timeout); }
+                youtubeSearchOptions = window.YouTubeSearchOptions?.load(window.localStorage, youtubeSearchDefaults) || {};
+                youtubeOptionsReady = true;
+            };
+
+            const voiceErrorMessage = (reason, fallback) => {
+                const messages = {
+                    disabled: 'Voice search is disabled',
+                    microphone_not_detected: 'Connect a USB microphone',
+                    arecord_missing: 'Microphone capture is not installed',
+                    home_assistant_url_missing: 'Home Assistant voice is not configured',
+                    home_assistant_token_missing: 'Home Assistant voice is not authorized',
+                    assist_auth_failed: 'Home Assistant voice authorization failed',
+                    no_speech: 'I did not catch that',
+                    voice_timeout: 'Listening timed out',
+                    mass_unavailable: 'Music Assistant is not connected',
+                };
+                return messages[String(reason || '')] || fallback || 'Voice search failed';
+            };
+
+            const openSearchResults = (payload) => {
+                const groups = Array.isArray(payload?.groups) ? payload.groups : [];
+                if (!groups.length) return false;
+                const roots = rootItems();
+                const searchIndex = roots.findIndex((entry) => String(entry?.id || '') === 'search');
+                if (searchIndex < 0) return false;
+
+                const query = cleanTitle(payload?.query || payload?.transcript || 'Search');
+                searchComposerQuery = query;
+                const resultRoot = Object.assign({}, roots[searchIndex], {
+                    name: `Search: ${query}`,
+                    tracks: groups.map((group) => Object.assign({}, group, { search_group: true })),
+                    search_results_root: true,
+                });
+                delete resultRoot.search_root;
+                optionsState = null;
+                clearPageView();
+
+                folderStack.length = 0;
+                folderStack.push({
+                    item: resultRoot,
+                    items: roots.slice(),
+                    currentIndex: searchIndex,
+                    targetIndex: searchIndex,
+                });
+                arcList.items = mapChildrenForParent(resultRoot);
+                arcList.currentIndex = 0;
+                arcList.targetIndex = 0;
+                refreshList();
+                return true;
+            };
+
+            const startTextSearch = async (query = searchComposerQuery) => {
+                const normalizedQuery = String(query || '').trim();
+                if (!normalizedQuery) {
+                    showActionToast('Enter a search term', { preserveTiming: true });
+                    settleActionToast();
+                    return true;
+                }
+                if (textSearchRunning) return true;
+                textSearchRunning = true;
+                showActionToast(`Searching for “${normalizedQuery}”…`, { maxMs: 30000 });
+                try {
+                    const response = await fetch(
+                        `${searchUrl}?q=${encodeURIComponent(normalizedQuery)}&limit=8${window.YouTubeSearchOptions?.query(youtubeSearchOptions) || ''}`,
+                        { cache: 'no-store' },
+                    );
+                    let payload = null;
+                    try {
+                        payload = await response.json();
+                    } catch (_error) {}
+
+                    if (!response.ok || payload?.state === 'error') {
+                        showActionToast(
+                            voiceErrorMessage(payload?.reason, payload?.message || 'Search failed'),
+                            { preserveTiming: true },
+                        );
+                        settleActionToast();
+                        return true;
+                    }
+                    if (payload?.state === 'empty' || !openSearchResults(payload)) {
+                        showActionToast(`No results for “${normalizedQuery}”`, { preserveTiming: true });
+                        settleActionToast();
+                        return true;
+                    }
+
+                    showActionToast(`Results for “${normalizedQuery}”${payload?.warnings?.length ? ' · ' + payload.warnings.join(' · ') : ''}`, { preserveTiming: true });
+                    settleActionToast();
+                    return true;
+                } catch (error) {
+                    console.warn('[MASS] Text search failed:', error);
+                    showActionToast('Search service is unavailable', { preserveTiming: true });
+                    settleActionToast();
+                    return true;
+                } finally {
+                    textSearchRunning = false;
+                }
+            };
+
+            const openSearchComposer = async (query = searchComposerQuery, selectedIndex = 0) => {
+                await loadYouTubeSearchOptions();
+                if (!window.SearchComposer) {
+                    showActionToast('Search keyboard is unavailable', { preserveTiming: true });
+                    settleActionToast();
+                    return false;
+                }
+                searchComposerQuery = String(query || '').slice(0, window.SearchComposer.MAX_QUERY_LENGTH);
+                const roots = rootItems();
+                const searchRoot = roots.find((entry) => String(entry?.id || '') === 'search') || SEARCH_ROOT;
+                const entries = [...(window.YouTubeSearchOptions?.keys(youtubeSearchOptions) || []), ...window.SearchComposer.buildKeySpecs()].map((spec, index) => Object.assign({}, spec, {
+                    onSelect: async () => {
+                        if (spec.action === 'youtube_music' || spec.action === 'youtube_videos') {
+                            youtubeSearchOptions = window.YouTubeSearchOptions.toggle(youtubeSearchOptions, spec.action);
+                            window.YouTubeSearchOptions.save(window.localStorage, youtubeSearchOptions);
+                            return openSearchComposer(searchComposerQuery, index);
+                        }
+                        if (spec.action === 'voice') return startVoiceSearch();
+                        if (spec.action === 'submit') return startTextSearch(searchComposerQuery);
+                        searchComposerQuery = window.SearchComposer.applyAction(
+                            searchComposerQuery,
+                            spec.action,
+                            spec.value,
+                        );
+                        return openSearchComposer(searchComposerQuery, index);
+                    },
+                }));
+                optionsState = {
+                    kind: 'search_composer',
+                    item: searchRoot,
+                    title: 'Search',
+                    subtitle: searchComposerQuery ? `Query: ${searchComposerQuery}` : 'Query: _',
+                    entries,
+                    currentIndex: Math.max(0, Math.min(entries.length - 1, Number(selectedIndex || 0))),
+                    parent: null,
+                    onClose: () => returnToRootState('search'),
+                };
+                renderOptionsPage();
+                return true;
+            };
+
+            const startVoiceSearch = async () => {
+                if (voiceSearchRunning) return true;
+                voiceSearchRunning = true;
+                showActionToast('Listening…', { maxMs: 30000 });
+                try {
+                    const response = await fetch(voiceSearchUrl, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(youtubeSearchOptions),
+                    });
+                    let payload = null;
+                    try {
+                        payload = await response.json();
+                    } catch (_error) {}
+
+                    if (!response.ok || payload?.state === 'error') {
+                        showActionToast(
+                            voiceErrorMessage(payload?.reason, payload?.message),
+                            { preserveTiming: true },
+                        );
+                        settleActionToast();
+                        return true;
+                    }
+                    if (payload?.state === 'empty' || !openSearchResults(payload)) {
+                        const query = cleanTitle(payload?.query || payload?.transcript || 'that');
+                        showActionToast(`No results for “${query}”`, { preserveTiming: true });
+                        settleActionToast();
+                        return true;
+                    }
+
+                    showActionToast(`Results for “${cleanTitle(payload.query)}”`, { preserveTiming: true });
+                    settleActionToast();
+                    return true;
+                } catch (error) {
+                    console.warn('[MASS] Voice search failed:', error);
+                    showActionToast('Voice search service is unavailable', { preserveTiming: true });
+                    settleActionToast();
+                    return true;
+                } finally {
+                    voiceSearchRunning = false;
+                }
+            };
+
+            const CONTEXT_ROUTE = 'menu/mass';
+            const contextMenuItems = () => rootItems()
+                .filter((entry) => {
+                    const entryId = String(entry?.id || '').trim();
+                    return entryId && entryId !== 'queue' && ROOT_SECTION_IDS.has(entryId);
+                })
+                .map((entry) => ({
+                    id: String(entry.id || '').trim(),
+                    title: cleanTitle(entry.name || entry.id || ''),
+                }));
+
+            const resolveDefaultContextSectionId = () => {
+                const entries = contextMenuItems();
+                const availableIds = new Set(entries.map((entry) => entry.id));
+                const rememberedId = String(lastSectionBrowseContext?.root_id || '').trim();
+                if (rememberedId && availableIds.has(rememberedId)) {
+                    return rememberedId;
+                }
+                const preferredOrder = ['artists', 'albums', 'titles', 'playlists', 'playlist_mixes', 'podcasts', 'mixes'];
+                return preferredOrder.find((id) => availableIds.has(id)) || entries[0]?.id || '';
+            };
+
+            const resolveActiveContextSectionId = () =>
+                String(folderStack[0]?.item?.id || '').trim();
+
+            const resolveCurrentContextSectionId = () => {
+                const lockedSectionId = resolveActiveContextSectionId();
+                if (lockedSectionId && lockedSectionId !== 'queue') {
+                    return lockedSectionId;
+                }
+                const currentId = String(getCurrentItem()?.id || '').trim();
+                if (currentId && currentId !== 'queue' && ROOT_SECTION_IDS.has(currentId)) {
+                    return currentId;
+                }
+                return resolveDefaultContextSectionId();
+            };
+
+            let lastPublishedContextMenuSignature = '';
+            const publishContextMenu = () => {
+                const payload = {
+                    type: 'bs5c-context-menu',
+                    route: CONTEXT_ROUTE,
+                    items: contextMenuItems(),
+                    selectedId: resolveCurrentContextSectionId(),
+                    activeId: resolveActiveContextSectionId(),
+                };
+                if (!window.parent || window.parent === window) return;
+                const signature = JSON.stringify(payload);
+                if (signature === lastPublishedContextMenuSignature) return;
+                lastPublishedContextMenuSignature = signature;
+                window.parent.postMessage(payload, '*');
+            };
+
+            const openContextSection = (sectionId, options = {}) => {
+                const normalizedId = String(sectionId || '').trim();
+                if (!normalizedId) return false;
+                const activeSectionId = String(folderStack[0]?.item?.id || '').trim();
+                if (normalizedId === 'search') {
+                    if (activeSectionId === 'search' || optionsState?.kind === 'search_composer') {
+                        publishContextMenu();
+                        return true;
+                    }
+                    returnToRootState('search', { saveState: false });
+                    openSearchComposer();
+                    return true;
+                }
+
+                const sourceContext = resolveEffectiveSectionBrowseContext();
+                if (activeSectionId && activeSectionId !== normalizedId) {
+                    rememberCurrentSectionBrowseContext();
+                }
+
+                if (activeSectionId === normalizedId) {
+                    publishContextMenu();
+                    return true;
+                }
+
+                const roots = rootItems();
+                const rootIndex = roots.findIndex((entry) => String(entry?.id || '').trim() === normalizedId);
+                if (rootIndex < 0) return false;
+
+                const rootFolder = roots[rootIndex];
+                const childItems = mapChildrenForParent(rootFolder);
+                let nextIndex = 0;
+                if (CROSS_SECTION_TARGET_IDS.has(normalizedId)) {
+                    const contextualIndex = resolveSectionSelectionIndex(normalizedId, childItems, sourceContext);
+                    if (contextualIndex >= 0) {
+                        nextIndex = contextualIndex;
+                    }
+                }
+
+                folderStack.length = 0;
+                folderStack.push({
+                    item: rootFolder,
+                    items: roots.slice(),
+                    currentIndex: rootIndex,
+                    targetIndex: rootIndex,
+                });
+                arcList.items = childItems;
+                arcList.currentIndex = clampIndex(childItems, nextIndex);
+                arcList.targetIndex = arcList.currentIndex;
+                refreshList();
+                if (options.saveState !== false) {
+                    saveBrowseState();
+                }
+                if (CROSS_SECTION_TARGET_IDS.has(normalizedId)) {
+                    const landedItem = arcList.items[clampIndex(arcList.items, arcList.currentIndex)] || null;
+                    setCarriedSectionBrowseContext(sourceContext, normalizedId, landedItem);
+                } else {
+                    clearCarriedSectionBrowseContext();
+                }
+                publishContextMenu();
+                return true;
+            };
+
+            const returnToRootState = (preferredSectionId = '', options = {}) => {
+                const roots = rootItems();
+                const normalizedId = String(preferredSectionId || '').trim();
+                const nextIndex = roots.findIndex((entry) => String(entry?.id || '').trim() === normalizedId);
+
+                folderStack.length = 0;
+                arcList.items = roots;
+                arcList.currentIndex = clampIndex(roots, nextIndex >= 0 ? nextIndex : 0);
+                arcList.targetIndex = arcList.currentIndex;
+                refreshList();
+                if (options.saveState !== false) {
+                    saveBrowseState();
+                }
+                publishContextMenu();
+                return true;
+            };
+
+            const postContextExit = (preferredSectionId = '') => {
+                returnToRootState(preferredSectionId, { saveState: false });
+                if (window.parent && window.parent !== window) {
+                    window.parent.postMessage({
+                        type: 'bs5c-context-exit',
+                        route: CONTEXT_ROUTE,
+                    }, '*');
+                }
+                return true;
+            };
+
+            const buildNowPlayingPayload = (item, pageData = null) => {
                 const ancestors = folderStack
                     .map(entry => entry.item?.name || '')
                     .filter(Boolean);
@@ -731,22 +1934,24 @@
                 const derivedAlbum = metadata.album
                     || item?.album
                     || (!isFolder ? immediateParent || '' : '');
-                const artwork = metadata.artwork || normalizeServiceImageUrl(item?.image || '');
+                const artwork = normalizeServiceImageUrl(pageData?.image || '')
+                    || metadata.artwork
+                    || normalizeServiceImageUrl(item?.image || '');
 
                 return {
-                    title: cleanTitle(item?.name),
-                    artist: derivedArtist,
-                    album: derivedAlbum,
+                    title: cleanTitle(pageData?.title || item?.name),
+                    artist: String(pageData?.artist || '').trim() || derivedArtist,
+                    album: String(pageData?.album || '').trim() || derivedAlbum,
                     artwork,
                     state: 'playing',
                 };
             };
 
-            const pushNowPlayingPayload = (item) => {
+            const pushNowPlayingPayload = (item, pageData = null) => {
                 try {
                     const parentStore = window.parent?.uiStore;
                     if (!item) return;
-                    const payload = buildNowPlayingPayload(item);
+                    const payload = buildNowPlayingPayload(item, pageData);
                     try {
                         window.sessionStorage?.setItem('bs5c_mass_now_playing', JSON.stringify(payload));
                     } catch (storageError) {}
@@ -763,16 +1968,513 @@
                 }
             };
 
-            const getFastLetter = (value) => {
-                const base = cleanTitle(String(value || '')).replace(/^[^A-Za-z0-9]+/, '').trim();
-                if (!base) return '';
-                const tokens = base.split(/\s+/).filter(Boolean);
-                const token = tokens.length > 1 && FAST_LETTER_ARTICLES.has(tokens[0].toUpperCase())
-                    ? tokens[1]
-                    : tokens[0];
-                const match = token.match(/[A-Za-z0-9]/);
-                return match ? match[0].toUpperCase() : '';
+            const renderDetailParagraphs = (value) => {
+                const blocks = String(value || '')
+                    .split(/\n{2,}/)
+                    .map((entry) => entry.trim())
+                    .filter(Boolean);
+                if (!blocks.length) return '';
+                return blocks
+                    .map((entry) => `<p>${escapeHtml(entry).replace(/\n/g, '<br>')}</p>`)
+                    .join('');
             };
+
+            const buildDetailFactsMarkup = (facts) => {
+                const rows = Array.isArray(facts) ? facts.filter((entry) =>
+                    entry && String(entry.label || '').trim() && String(entry.value || '').trim()) : [];
+                if (!rows.length) return '';
+                const body = rows.map((entry) => `
+                    <div class="mass-detail-fact">
+                        <div class="mass-detail-fact-label">${escapeHtml(entry.label)}</div>
+                        <div class="mass-detail-fact-value">${escapeHtml(entry.value)}</div>
+                    </div>
+                `).join('');
+                return `<div class="mass-detail-facts">${body}</div>`;
+            };
+
+            const buildFallbackDetailPage = (item) => {
+                const metadata = getItemMeta(item);
+                const title = cleanTitle(item?.name) || 'Info';
+                const image = normalizeServiceImageUrl(item?.image || metadata.artwork || '');
+                const artist = String(item?.artist || metadata.artist || '').trim();
+                const album = String(item?.album || metadata.album || '').trim();
+                const facts = [];
+                if (artist) facts.push({ label: 'Artist', value: artist });
+                if (album) facts.push({ label: 'Album', value: album });
+                return {
+                    title,
+                    subtitle: [artist, album].filter(Boolean).join(' • '),
+                    image,
+                    facts,
+                    description_label: '',
+                    description: 'Live item details are unavailable right now, but playback is still available from this selection.',
+                    play_uri: String(item?.url || item?.play_url || '').trim(),
+                    artist,
+                    album,
+                };
+            };
+
+            let detailState = null;
+            let detailRequestId = 0;
+            let optionsState = null;
+
+            const getDetailSpec = (item) => {
+                if (item?.youtube_video) return null;
+                const isLeaf = item && (!Array.isArray(item.tracks) || item.tracks.length === 0);
+                const uri = String(item?.url || item?.play_url || '').trim();
+                if (!isLeaf || !uri) return null;
+                return {
+                    uri,
+                    loadingLabel: 'item',
+                    emptyLabel: 'item',
+                };
+            };
+
+            const clearPageView = () => {
+                arcList.container?.querySelectorAll('.page-view, .options-view').forEach((node) => node.remove());
+            };
+
+            const setDetailCounter = () => {
+                if (arcList.currentItemDisplay) arcList.currentItemDisplay.textContent = '';
+                if (arcList.totalItemsDisplay) arcList.totalItemsDisplay.textContent = '';
+            };
+
+            const renderDetailPage = () => {
+                if (!detailState || !arcList.container) return;
+                clearPageView();
+                arcList.container.querySelectorAll('.arc-item:not(.mass-breadcrumb)').forEach((node) => node.remove());
+                renderBreadcrumbs();
+
+                const page = document.createElement('div');
+                page.className = 'page-view page-view-mass';
+                page.style.opacity = '1';
+
+                const scroll = document.createElement('div');
+                scroll.className = 'page-view-scroll';
+
+                const title = document.createElement('h2');
+                title.className = 'page-view-title';
+                title.textContent = detailState.page?.title || cleanTitle(detailState.item?.name) || 'Info';
+
+                const body = document.createElement('div');
+                body.className = 'page-view-body';
+
+                if (detailState.loading) {
+                    body.innerHTML = `<p>Loading ${detailState.spec?.loadingLabel || 'item'} information from MASS...</p>`;
+                } else {
+                    const image = normalizeServiceImageUrl(detailState.page?.image || '');
+                    const subtitle = String(detailState.page?.subtitle || '').trim();
+                    const factsMarkup = buildDetailFactsMarkup(detailState.page?.facts);
+                    const description = String(detailState.page?.description || '').trim();
+                    const descriptionLabel = String(detailState.page?.description_label || '').trim();
+                    const content = [];
+                    if (image) {
+                        content.push(`<img src="${escapeHtml(image)}" alt="${escapeHtml(detailState.page?.title || detailState.item?.name || 'Artwork')}">`);
+                    }
+                    if (subtitle) {
+                        content.push(`<p class="mass-detail-subtitle">${escapeHtml(subtitle)}</p>`);
+                    }
+                    if (factsMarkup) {
+                        content.push(factsMarkup);
+                    }
+                    if (description) {
+                        if (descriptionLabel) {
+                            content.push(`<div class="mass-detail-section-label">${escapeHtml(descriptionLabel)}</div>`);
+                        }
+                        content.push(renderDetailParagraphs(description));
+                    } else {
+                        content.push('<p class="mass-detail-empty">No extra information is available for this item yet.</p>');
+                    }
+                    body.innerHTML = content.join('');
+                }
+
+                scroll.appendChild(title);
+                scroll.appendChild(body);
+                page.appendChild(scroll);
+                arcList.container.appendChild(page);
+                detailState.scrollEl = scroll;
+                detailState.pageEl = page;
+                setDetailCounter();
+            };
+
+            const closeDetailPage = () => {
+                if (!detailState) return false;
+                detailRequestId += 1;
+                detailState = null;
+                clearPageView();
+                refreshList();
+                return true;
+            };
+
+            const openDetailPage = async (item) => {
+                const spec = getDetailSpec(item);
+                if (!spec) return false;
+                const safeItem = childNameMapper(item || {}, 0, [item || {}]);
+                if (detailState?.item?.id === safeItem.id && !detailState.loading) return true;
+
+                detailRequestId += 1;
+                const requestId = detailRequestId;
+                detailState = {
+                    item: safeItem,
+                    spec,
+                    loading: true,
+                    page: buildFallbackDetailPage(safeItem),
+                    scrollEl: null,
+                    pageEl: null,
+                };
+                renderDetailPage();
+
+                try {
+                    const response = await fetch(`${itemInfoUrl}?uri=${encodeURIComponent(spec.uri)}`, { cache: 'no-store' });
+                    let payload = null;
+                    try {
+                        payload = await response.json();
+                    } catch (error) {}
+                    if (requestId !== detailRequestId || !detailState) return true;
+
+                    if (!response.ok || !payload || payload.state === 'error') {
+                        throw new Error(payload?.error || `item_info_${response.status}`);
+                    }
+
+                    detailState.loading = false;
+                    detailState.page = Object.assign({}, buildFallbackDetailPage(safeItem), {
+                        title: cleanTitle(payload.title || safeItem.name || 'Info'),
+                        subtitle: String(payload.subtitle || '').trim(),
+                        image: normalizeServiceImageUrl(payload.image || ''),
+                        facts: Array.isArray(payload.facts) ? payload.facts : [],
+                        description_label: String(payload.description_label || '').trim(),
+                        description: String(payload.description || '').trim(),
+                        play_uri: String(payload.play_uri || spec.uri || '').trim(),
+                        artist: String(payload.artist || '').trim(),
+                        album: String(payload.album || '').trim(),
+                    });
+                } catch (error) {
+                    if (requestId !== detailRequestId || !detailState) return false;
+                    detailState.loading = false;
+                    detailState.page = buildFallbackDetailPage(safeItem);
+                    console.warn('[MASS] Detail request failed:', spec.uri, error);
+                }
+
+                renderDetailPage();
+                return true;
+            };
+
+            const massUriLooksLikeRadio = (value) => /radio:\/\/|\/radio\/|radios\//i.test(String(value || '').trim());
+
+            const dismissOptionsMenu = (refresh = true) => {
+                if (!optionsState) return false;
+                const onClose = typeof optionsState.onClose === 'function' ? optionsState.onClose : null;
+                optionsState = null;
+                clearPageView();
+                if (onClose) {
+                    onClose();
+                    return true;
+                }
+                if (refresh) refreshList();
+                return true;
+            };
+
+            const closeOptionsMenu = () => {
+                if (!optionsState) return false;
+                if (optionsState.parent) {
+                    optionsState = optionsState.parent;
+                    renderOptionsPage();
+                    return true;
+                }
+                return dismissOptionsMenu(true);
+            };
+
+            const setOptionsSelection = (index) => {
+                if (!optionsState || !Array.isArray(optionsState.entries) || !optionsState.entries.length) return;
+                const maxIndex = optionsState.entries.length - 1;
+                const nextIndex = Math.max(0, Math.min(maxIndex, Math.round(index || 0)));
+                if (nextIndex === optionsState.currentIndex) return;
+                optionsState.currentIndex = nextIndex;
+                renderOptionsPage();
+            };
+
+            const moveOptionsSelection = (delta) => {
+                if (!optionsState || !Array.isArray(optionsState.entries) || !optionsState.entries.length) return;
+                setOptionsSelection((optionsState.currentIndex || 0) + delta);
+            };
+
+            const focusArtistFromItem = (item) => {
+                const artistKey = normalizeLookup(deriveSectionArtist(item, getCurrentRootSectionId()) || getItemMeta(item).artist || item?.artist);
+                if (!artistKey) return false;
+                return focusMappedFolder('artists', (entry) => {
+                    const entryArtist = normalizeLookup(entry?.artist || entry?.name || getItemMeta(entry).artist);
+                    return !!entryArtist && entryArtist === artistKey;
+                });
+            };
+
+            const focusAlbumFromItem = (item) => {
+                const metadata = getItemMeta(item);
+                const artistKey = normalizeLookup(deriveSectionArtist(item, getCurrentRootSectionId()) || metadata.artist || item?.artist);
+                const albumKey = normalizeLookup(item?.album || metadata.album || item?.name);
+                return focusMappedFolder('albums', (entry) => {
+                    const entryArtist = normalizeLookup(entry?.artist || getItemMeta(entry).artist);
+                    const entryAlbum = normalizeLookup(entry?.album || entry?.name || getItemMeta(entry).album);
+                    if (albumKey && entryAlbum === albumKey) {
+                        return !artistKey || !entryArtist || entryArtist === artistKey;
+                    }
+                    if (artistKey) {
+                        return !!entryArtist && entryArtist === artistKey;
+                    }
+                    return false;
+                });
+            };
+
+            const resolvePlaylistTargets = () => {
+                const playlistRoot = rootItems().find((entry) => String(entry?.id || '').trim() === 'playlists');
+                if (!playlistRoot) return [];
+                return mapChildrenForParent(playlistRoot).filter((entry) =>
+                    String(entry?.url || entry?.play_url || '').trim());
+            };
+
+            const openOptionsSubmenu = (item, title, subtitle, entries) => {
+                const safeEntries = Array.isArray(entries) ? entries.filter(Boolean) : [];
+                if (!safeEntries.length) {
+                    showActionToast('No options available', { preserveTiming: true });
+                    settleActionToast();
+                    return false;
+                }
+                optionsState = {
+                    item,
+                    title,
+                    subtitle,
+                    entries: safeEntries,
+                    currentIndex: 0,
+                    parent: optionsState,
+                };
+                renderOptionsPage();
+                return true;
+            };
+
+            const buildMassOptionsEntries = (item) => {
+                const safeItem = childNameMapper(item || {}, 0, [item || {}]);
+                const podcastAction = safeItem.channel_url ? {
+                    id: 'save_channel_podcast', icon: 'broadcast', title: 'Save channel as podcast',
+                    onSelect: async () => { dismissOptionsMenu(false); await arcList.sendGoWebhook('save_channel_podcast', safeItem); },
+                } : null;
+                if (safeItem.youtube_video) return [{
+                    id: 'play_now', icon: 'youtube-logo', title: 'Play on Samsung Frame',
+                    onSelect: async () => { dismissOptionsMenu(false); await arcList.sendGoWebhook('play_now', safeItem); },
+                }, podcastAction].filter(Boolean);
+                const metadata = getItemMeta(safeItem);
+                const uri = String(safeItem?.url || safeItem?.play_url || '').trim();
+                const artist = cleanTitle(deriveSectionArtist(safeItem, getCurrentRootSectionId()) || metadata.artist || safeItem?.artist || '');
+                const album = cleanTitle(safeItem?.album || metadata.album || '');
+                const playlistTargets = resolvePlaylistTargets();
+                const isRadioItem = massUriLooksLikeRadio(uri);
+                const isLeaf = !Array.isArray(safeItem?.tracks) || safeItem.tracks.length === 0;
+                const canInspect = !safeItem.youtube_video && !!getDetailSpec(safeItem);
+                const entries = [
+                    podcastAction,
+                    {
+                        id: 'play_now',
+                        icon: 'play-circle',
+                        title: 'Play Now',
+                        onSelect: async () => {
+                            dismissOptionsMenu(false);
+                            await arcList.sendGoWebhook('play_now', safeItem);
+                            refreshList();
+                        },
+                    },
+                    !isRadioItem ? {
+                        id: 'play_radio',
+                        icon: 'broadcast',
+                        title: 'Start Radio',
+                        onSelect: async () => {
+                            dismissOptionsMenu(false);
+                            await arcList.sendGoWebhook('play_radio', safeItem);
+                            refreshList();
+                        },
+                    } : null,
+                    {
+                        id: 'play_next',
+                        icon: 'queue',
+                        title: 'Play Next',
+                        onSelect: async () => {
+                            dismissOptionsMenu(false);
+                            await arcList.sendGoWebhook('play_next', safeItem);
+                            refreshList();
+                        },
+                    },
+                    {
+                        id: 'queue_item',
+                        icon: 'list-plus',
+                        title: 'Add to Queue',
+                        onSelect: async () => {
+                            dismissOptionsMenu(false);
+                            await arcList.sendGoWebhook('queue_item', safeItem);
+                            refreshList();
+                        },
+                    },
+                    canInspect ? {
+                        id: 'info',
+                        icon: 'info',
+                        title: 'Show Information',
+                        onSelect: async () => {
+                            dismissOptionsMenu(false);
+                            await openDetailPage(safeItem);
+                        },
+                    } : null,
+                    artist ? {
+                        id: 'goto_artist',
+                        icon: 'user-circle',
+                        title: `Go to Artist`,
+                        onSelect: () => {
+                            dismissOptionsMenu(false);
+                            if (!focusArtistFromItem(safeItem)) {
+                                refreshList();
+                                showActionToast('Artist not available', { preserveTiming: true });
+                                settleActionToast();
+                                return;
+                            }
+                            refreshList();
+                        },
+                    } : null,
+                    (album || artist) ? {
+                        id: 'goto_album',
+                        icon: 'vinyl-record',
+                        title: 'Go to Album',
+                        onSelect: () => {
+                            dismissOptionsMenu(false);
+                            if (!focusAlbumFromItem(safeItem)) {
+                                refreshList();
+                                showActionToast('Album not available', { preserveTiming: true });
+                                settleActionToast();
+                                return;
+                            }
+                            refreshList();
+                        },
+                    } : null,
+                    {
+                        id: 'favorite_add',
+                        icon: 'heart',
+                        title: 'Add to Favorites',
+                        onSelect: async () => {
+                            dismissOptionsMenu(false);
+                            await arcList.sendGoWebhook('favorite_add', safeItem);
+                            refreshList();
+                        },
+                    },
+                    playlistTargets.length ? {
+                        id: 'playlist_add',
+                        icon: 'plus-circle',
+                        title: 'Add to Playlist...',
+                        submenu: true,
+                        onSelect: () => openOptionsSubmenu(
+                            safeItem,
+                            'Add to Playlist',
+                            cleanTitle(safeItem?.name || 'Music Assistant'),
+                            playlistTargets.map((playlist) => ({
+                                id: `playlist_${playlist.id || playlist.url || playlist.name}`,
+                                icon: 'music-notes-plus',
+                                title: cleanTitle(playlist.name || 'Playlist'),
+                                onSelect: async () => {
+                                    dismissOptionsMenu(false);
+                                    await arcList.sendGoWebhook('playlist_add', safeItem, {
+                                        target_playlist_uri: String(playlist.url || playlist.play_url || '').trim(),
+                                    });
+                                    refreshList();
+                                },
+                            })),
+                        ),
+                    } : null,
+                ];
+
+                return entries.filter(Boolean);
+            };
+
+            const showOptionsForItem = (item = detailState?.item || getCurrentItem()) => {
+                const safeItem = childNameMapper(item || {}, 0, [item || {}]);
+                const entries = buildMassOptionsEntries(safeItem);
+                if (!entries.length) return false;
+                optionsState = {
+                    item: safeItem,
+                    title: 'Item Options',
+                    subtitle: cleanTitle(safeItem?.name || 'Music Assistant'),
+                    entries,
+                    currentIndex: 0,
+                    parent: null,
+                };
+                renderOptionsPage();
+                return true;
+            };
+
+            const activateSelectedOption = async () => {
+                const entry = optionsState?.entries?.[optionsState?.currentIndex || 0];
+                if (!entry || typeof entry.onSelect !== 'function') return false;
+                await entry.onSelect();
+                return true;
+            };
+
+            const renderOptionsPage = () => {
+                if (!optionsState || !arcList.container) return;
+                clearPageView();
+                arcList.container.querySelectorAll('.arc-item:not(.mass-breadcrumb)').forEach((node) => node.remove());
+                renderBreadcrumbs();
+
+                const page = document.createElement('div');
+                const isSearchComposer = optionsState.kind === 'search_composer';
+                page.className = `options-view${isSearchComposer ? ' search-composer' : ''}`;
+
+                const panel = document.createElement('div');
+                panel.className = 'options-panel';
+
+                const header = document.createElement('div');
+                header.className = 'options-header';
+                header.innerHTML = `
+                    <div>
+                        <div class="options-kicker">${escapeHtml(isSearchComposer ? 'Wheel keyboard' : (optionsState.parent ? 'Submenu' : 'Hold GO'))}</div>
+                        <h2 class="options-title">${escapeHtml(optionsState.title || 'Options')}</h2>
+                        <div class="options-subtitle">${escapeHtml(optionsState.subtitle || '')}</div>
+                    </div>
+                    <div class="options-hint">${isSearchComposer ? 'WHEEL Choose<br>GO Enter<br>RIGHT Back' : 'GO Select<br>RIGHT Back'}</div>
+                `;
+
+                const list = document.createElement('div');
+                list.className = 'options-list';
+                optionsState.entries.forEach((entry, index) => {
+                    const row = document.createElement('div');
+                    if (isSearchComposer) {
+                        row.className = [
+                            'search-key',
+                            index === optionsState.currentIndex ? 'is-selected' : '',
+                            entry.actionKey ? 'search-key--action' : '',
+                            entry.rowStart ? 'search-key--row-start' : '',
+                        ].filter(Boolean).join(' ');
+                        row.innerHTML = entry.actionKey
+                            ? `<i class="ph ph-${escapeHtml(entry.icon || 'dots-three')}"></i><span>${escapeHtml(entry.title || '')}</span>`
+                            : `<span>${escapeHtml(entry.title || '')}</span>`;
+                        list.appendChild(row);
+                        return;
+                    }
+                    row.className = `options-entry${index === optionsState.currentIndex ? ' is-selected' : ''}`;
+                    row.innerHTML = `
+                        <div class="options-entry-icon"><i class="ph ph-${escapeHtml(entry.icon || 'dots-three')}"></i></div>
+                        <div class="options-entry-copy">
+                            <div class="options-entry-title">${escapeHtml(entry.title || 'Option')}</div>
+                        </div>
+                        <div class="options-entry-arrow">${entry.submenu ? '&#8250;' : ''}</div>
+                    `;
+                    list.appendChild(row);
+                });
+
+                panel.appendChild(header);
+                panel.appendChild(list);
+                page.appendChild(panel);
+                arcList.container.appendChild(page);
+                requestAnimationFrame(() => {
+                    list.querySelector('.options-entry.is-selected')?.scrollIntoView({
+                        block: 'nearest',
+                    });
+                });
+                setDetailCounter();
+            };
+
+            const getFastLetter = (value) => window.FastLetterIndex?.getLetter(value) || '';
 
             const createBreadcrumbImage = (item) => {
                 if (typeof arcList.createImageElement === 'function') {
@@ -789,11 +2491,14 @@
             const renderBreadcrumbs = () => {
                 if (!arcList.container) return;
                 arcList.container.querySelectorAll('.mass-breadcrumb').forEach(n => n.remove());
-                if (!folderStack.length) return;
+                const crumbEntries = folderStack.slice(1).map((entry) => ({ item: entry.item }));
+                if (detailState?.item) crumbEntries.push({ item: detailState.item });
+                else if (optionsState?.item) crumbEntries.push({ item: optionsState.item });
+                if (!crumbEntries.length) return;
 
-                const visibleAncestors = folderStack.slice(-3);
-                visibleAncestors.forEach((entry, idx) => {
-                    const depthFromCurrent  = visibleAncestors.length - 1 - idx;
+                const visibleAncestors = crumbEntries.slice(-3);
+                visibleAncestors.forEach((entry, idx, visible) => {
+                    const depthFromCurrent  = visible.length - 1 - idx;
                     const isImmediateParent = depthFromCurrent === 0;
                     const scale = isImmediateParent
                         ? 0.82
@@ -801,7 +2506,7 @@
                     const x = -250 - depthFromCurrent * 120;
                     const y = isImmediateParent
                         ? 0
-                        : (idx - (visibleAncestors.length - 1) / 2) * 56;
+                        : (idx - (visible.length - 1) / 2) * 56;
 
                     const crumb = document.createElement('div');
                     crumb.className = `arc-item mass-breadcrumb${isImmediateParent ? ' breadcrumb selected' : ''}`;
@@ -863,10 +2568,26 @@
                     arcList.currentIndex = clampIndex(arcList.items, nextIndex);
                     arcList.targetIndex = arcList.currentIndex;
                     refreshList();
+                } else if (folderStack.length === 1) {
+                    const currentSectionId = String(folderStack[0]?.item?.id || '').trim();
+                    if (currentSectionId) {
+                        openContextSection(currentSectionId, { saveState: false });
+                    }
                 }
             };
 
             const refreshList = () => {
+                if (optionsState) {
+                    renderOptionsPage();
+                    saveBrowseState();
+                    return;
+                }
+                if (detailState) {
+                    renderDetailPage();
+                    saveBrowseState();
+                    return;
+                }
+                clearPageView();
                 arcList.viewMode      = 'single';
                 arcList.selectedParent = null;
                 arcList.currentIndex  = clampIndex(arcList.items, arcList.currentIndex);
@@ -876,11 +2597,13 @@
                 if (typeof arcList.updateCounter === 'function') arcList.updateCounter();
                 if (typeof originalRender === 'function') originalRender();
                 renderBreadcrumbs();
+                saveBrowseState();
+                publishContextMenu();
             };
 
             let fastLetterTimer = null;
-            const showFastLetter = () => {
-                const current = getCurrentItem();
+            const showFastLetter = (itemOverride = null) => {
+                const current = itemOverride || getCurrentItem();
                 const letter = getFastLetter(current?.name);
                 if (!letter) return;
                 let overlay = document.getElementById('fast-letter-overlay');
@@ -888,19 +2611,70 @@
                     overlay = document.createElement('div');
                     overlay.id = 'fast-letter-overlay';
                     overlay.className = 'fast-letter-overlay';
-                    document.getElementById('app')?.appendChild(overlay);
+                    document.body.appendChild(overlay);
                 }
                 overlay.textContent = letter;
                 overlay.classList.add('visible');
                 if (fastLetterTimer) clearTimeout(fastLetterTimer);
-                fastLetterTimer = setTimeout(() => overlay.classList.remove('visible'), 280);
+                fastLetterTimer = setTimeout(() => overlay.classList.remove('visible'), 440);
+            };
+
+            const tryFastLetterJump = (data) => {
+                if (!window.FastLetterIndex || !fastLetterMode || !Array.isArray(arcList.items)) return false;
+                if (data?.discrete) {
+                    fastLetterMode.reset();
+                    return false;
+                }
+                const sectionId = String(folderStack[0]?.item?.id || '').trim();
+                if (folderStack.length !== 1
+                        || !FAST_LETTER_SECTION_IDS.has(sectionId)
+                        || arcList.items.length < FAST_LETTER_MIN_ITEMS) {
+                    fastLetterMode.reset();
+                    return false;
+                }
+
+                const direction = String(data?.direction || '');
+                const fromIndex = direction === 'counter'
+                    ? Math.min(arcList.currentIndex, arcList.targetIndex)
+                    : Math.max(arcList.currentIndex, arcList.targetIndex);
+                const currentItem = arcList.items[Math.round(fromIndex)] || getCurrentItem();
+                const mode = fastLetterMode.push(data, Date.now(), getFastLetter(currentItem?.name));
+                if (!mode.active) return false;
+                showFastLetter(currentItem);
+                if (!mode.steps) {
+                    return Boolean(mode.consume);
+                }
+
+                const nextIndex = window.FastLetterIndex.findJumpIndex(
+                    arcList.items,
+                    fromIndex,
+                    direction,
+                    mode.steps,
+                    (item) => item?.name,
+                );
+                if (nextIndex < 0 || nextIndex === Math.round(fromIndex)) {
+                    return false;
+                }
+
+                arcList.targetIndex = nextIndex;
+                arcList.lastScrollTime = Date.now();
+                if (typeof arcList.setupSnapTimer === 'function') arcList.setupSnapTimer();
+                if (!arcList.animationFrame) arcList.currentIndex = nextIndex;
+                showFastLetter(arcList.items[nextIndex]);
+                return true;
             };
 
             // â”€â”€ Folder navigation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-            const enterFolder = () => {
-                const current = getCurrentItem();
+            const enterFolder = (itemOverride = null) => {
+                const current = itemOverride || getCurrentItem();
+                if (current?.search_root) {
+                    openSearchComposer();
+                    return true;
+                }
                 if (!current || !Array.isArray(current.tracks) || current.tracks.length === 0)
                     return false;
+                const enteringFromRoot = folderStack.length === 0;
+                const rootId = String(current.id || '').trim();
 
                 folderStack.push({
                     item:         current,
@@ -910,14 +2684,32 @@
                 });
 
                 arcList.items        = mapChildrenForParent(current);
-                arcList.currentIndex = 0;
-                arcList.targetIndex  = 0;
+                let nextIndex = 0;
+                if (enteringFromRoot && CROSS_SECTION_TARGET_IDS.has(rootId)) {
+                    const contextualIndex = resolveSectionSelectionIndex(rootId, arcList.items, lastSectionBrowseContext);
+                    if (contextualIndex >= 0) {
+                        nextIndex = contextualIndex;
+                    }
+                }
+                arcList.currentIndex = clampIndex(arcList.items, nextIndex);
+                arcList.targetIndex  = arcList.currentIndex;
                 refreshList();
                 console.log('[MASS] Entered folder:', current.name);
                 return true;
             };
 
             const exitFolder = () => {
+                if (!folderStack.length) return false;
+                if (folderStack.length === 1 && folderStack[0]?.item?.search_results_root) {
+                    openSearchComposer();
+                    return true;
+                }
+                rememberCurrentSectionBrowseContext();
+                if (folderStack.length === 1) {
+                    const activeSectionId = String(folderStack[0]?.item?.id || '').trim();
+                    console.log('[MASS] Closing context view back to main menu');
+                    return postContextExit(activeSectionId);
+                }
                 const previous = folderStack.pop();
                 if (!previous) return false;
 
@@ -933,80 +2725,140 @@
             // â”€â”€ Override ArcList methods â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
             arcList.render = function () {
+                if (optionsState) {
+                    renderOptionsPage();
+                    return;
+                }
+                if (detailState) {
+                    renderDetailPage();
+                    return;
+                }
+                clearPageView();
                 if (typeof originalRender === 'function') originalRender();
                 renderBreadcrumbs();
+                publishContextMenu();
+            };
+
+            arcList.saveState = function () {
+                if (typeof originalSaveState === 'function') {
+                    originalSaveState();
+                }
+                saveBrowseState();
+            };
+
+            arcList.checkForSelectionClick = function () {
+                if (typeof originalCheckForSelectionClick === 'function') {
+                    originalCheckForSelectionClick();
+                }
+                if (!detailState && !optionsState) {
+                    rememberCurrentSectionBrowseContext();
+                }
+            };
+
+            arcList.destroy = function () {
+                saveBrowseState();
+                if (typeof originalDestroy === 'function') {
+                    originalDestroy();
+                }
             };
 
             // GO = PLAY (leaf via `url`, folder via `play_url`)
             // LEFT = navigate INTO folder
             // RIGHT = navigate OUT of folder
-            arcList.sendGoWebhook = async function (command = 'play_item') {
-                const current = getCurrentItem();
+            const activeMassTargetPayload = () => {
+                try {
+                    const targets = window.PlaybackTargets || window.parent?.PlaybackTargets;
+                    return targets?.payloadFor?.('mass') || {};
+                } catch (e) {
+                    return {};
+                }
+            };
+
+            arcList.sendGoWebhook = async function (command = 'play_item', itemOverride = null, extraPayload = {}) {
+                const current = itemOverride || detailState?.item || optionsState?.item || getCurrentItem();
                 if (!current) return;
+                if (detailState?.loading) return;
+                if (current.search_root) return openSearchComposer();
+                if (current.search_group) return enterFolder(current);
+                if (current.youtube_video && !['play_item', 'play_now', 'save_channel_podcast'].includes(command)) return;
 
-                // Resolve playback URI: leaf has `url`, folder has `play_url`
-                const playUri = current.url || current.play_url;
 
-                if (!playUri) {
+                const playUri = String(
+                    extraPayload.url
+                    || extraPayload.play_url
+                    || detailState?.page?.play_uri
+                    || current.url
+                    || current.play_url
+                    || ''
+                ).trim();
+
+                if (!playUri && !['favorite_add', 'playlist_add'].includes(command)) {
                     console.warn('[MASS] No playback URI for item:', current.name);
                     return;
                 }
 
                 if (typeof arcList.snapToNearest === 'function') arcList.snapToNearest();
 
-                const pendingMessage = command === 'play_now' ? 'Starting playback' : 'Adding to queue…';
-                const errorMessage = command === 'play_now' ? 'Error starting playback' : 'Error adding to queue';
-                showActionToast(pendingMessage);
+                const commandMessages = {
+                    play_item:    { pending: 'Adding to queue…', error: 'Error adding to queue', queued: 'Added to queue', playing: 'Starting playback' },
+                    play_now:     { pending: 'Starting playback', error: 'Error starting playback', queued: 'Queued for immediate playback', playing: 'Starting playback' },
+                    play_next:    { pending: 'Queueing next…', error: 'Error queueing next', queued: 'Queued to play next', playing: 'Queued to play next' },
+                    queue_item:   { pending: 'Adding to queue…', error: 'Error adding to queue', queued: 'Added to queue', playing: 'Added to queue' },
+                    play_radio:   { pending: 'Starting radio…', error: 'Error starting radio', queued: 'Starting radio', playing: 'Starting radio' },
+                    favorite_add: { pending: 'Adding to favorites…', error: 'Error adding to favorites', favorited: 'Added to favorites' },
+                    save_channel_podcast: { pending: 'Subscribing to channel…', error: 'Could not save podcast — check MA admin permissions', podcast_saved: 'Channel saved in MA Podcasts', podcast_exists: 'Channel already subscribed' },
+                    playlist_add: { pending: 'Adding to playlist…', error: 'Error adding to playlist', playlist_added: 'Added to playlist' },
+                };
+                const copy = commandMessages[command] || commandMessages.play_item;
+                const payload = Object.assign({
+                    command,
+                    id: current.id || '',
+                    url: current.url || '',
+                    play_url: current.play_url || '',
+                    youtube_video: !!current.youtube_video,
+                    channel_url: current.channel_url || '', 
+                }, current.youtube_video ? {} : activeMassTargetPayload(), extraPayload || {});
+
+                showActionToast(copy.pending);
 
                 try {
                     const response = await fetch(sourceCommandUrl, {
                         method:  'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body:    JSON.stringify({
-                            command,
-                            id: current.id || '',
-                            url: current.url || '',
-                            play_url: current.play_url || '',
-                        }),
+                        body:    JSON.stringify(payload),
                     });
                     let result = null;
                     try {
                         result = await response.json();
                     } catch (e) {}
                     if (!response.ok) {
-                        showActionToast(errorMessage, { preserveTiming: true });
+                        showActionToast(copy.error, { preserveTiming: true });
                         settleActionToast();
-                        console.warn('[MASS] Play command failed:', response.status);
-                    } else if (result?.state === 'error') {
-                        showActionToast(errorMessage, { preserveTiming: true });
-                        settleActionToast();
-                        console.warn('[MASS] Service rejected play:', result);
-                    } else if (command === 'play_now') {
-                        showActionToast('Starting playback', { preserveTiming: true });
-                        pushNowPlayingPayload(current);
-                        await refreshQueueRoot(false);
-                        settleActionToast();
-                        if (result?.state === 'queued') {
-                            console.log('[MASS] Queued for immediate playback:', current.name, '→', playUri, result);
-                        } else {
-                            console.log('[MASS] Starting now:', current.name, '→', playUri, result);
-                        }
-                    } else if (result?.state === 'queued') {
-                        showActionToast('Added to queue', { preserveTiming: true });
-                        await refreshQueueRoot(false);
-                        settleActionToast();
-                        console.log('[MASS] Queued:', current.name, '→', playUri, result);
-                    } else {
-                        showActionToast('Starting playback', { preserveTiming: true });
-                        await refreshQueueRoot(false);
-                        settleActionToast();
-                        pushNowPlayingPayload(current);
-                        console.log('[MASS] Playing:', current.name, '→', playUri, command);
+                        console.warn('[MASS] Command failed:', response.status);
+                        return;
                     }
-                } catch (err) {
-                    showActionToast(errorMessage, { preserveTiming: true });
+                    if (result?.state === 'error') {
+                        showActionToast(copy.error, { preserveTiming: true });
+                        settleActionToast();
+                        console.warn('[MASS] Service rejected command:', result);
+                        return;
+                    }
+
+                    const state = String(result?.state || '').trim().toLowerCase();
+                    const successMessage = state === 'video_sent' ? 'Sent to Samsung Frame' : (copy[state] || copy.playing || copy.queued || copy.pending);
+                    showActionToast(successMessage, { preserveTiming: true });
+                    if (state === 'playing' || command === 'play_now' || command === 'play_radio') {
+                        pushNowPlayingPayload(current, detailState?.page || null);
+                    }
+                    if (state === 'queued' || state === 'playing' || state === 'playlist_added') {
+                        await refreshQueueRoot(false);
+                    }
                     settleActionToast();
-                    console.warn('[MASS] Play command error:', err);
+                    console.log('[MASS] Command complete:', command, current.name, '→', playUri, result);
+                } catch (err) {
+                    showActionToast(copy.error, { preserveTiming: true });
+                    settleActionToast();
+                    console.warn('[MASS] Command error:', err);
                 }
             };
 
@@ -1017,15 +2869,42 @@
 
             arcList.handleButtonFromParent = function (button) {
                 const normalized = String(button || '').toLowerCase();
-                // LEFT = enter folder (drill down)
-                if (normalized === 'left')  { clearPendingGoPress(); if (enterFolder()) return; }
-                // RIGHT = exit folder (go back)
-                if (normalized === 'right') { clearPendingGoPress(); if (exitFolder())  return; }
+                if (optionsState) {
+                    if (normalized === 'left') {
+                        const entry = optionsState.entries?.[optionsState.currentIndex || 0];
+                        if (entry?.submenu && typeof entry.onSelect === 'function') {
+                            return entry.onSelect();
+                        }
+                    }
+                    if (normalized === 'right') { if (closeOptionsMenu()) return; }
+                    if (normalized === 'go') { return activateSelectedOption(); }
+                    if (normalized === 'go_long' || normalized === 'go_hold') return;
+                    return;
+                }
+                if (detailState) {
+                    if (normalized === 'right') { if (closeDetailPage()) return; }
+                    if (normalized === 'go_long' || normalized === 'go_hold') {
+                        clearPendingGoPress();
+                        return showOptionsForItem(detailState.item);
+                    }
+                    if (normalized === 'go') { return schedulePlayCommand(); }
+                    return;
+                }
+                if (normalized === 'left')  {
+                    clearPendingGoPress();
+                    const current = getCurrentItem();
+                    if (current && getDetailSpec(current)) { openDetailPage(current); return; }
+                    if (enterFolder()) return;
+                }
+                if (normalized === 'right') {
+                    clearPendingGoPress();
+                    if (exitFolder()) return;
+                    return;
+                }
                 if (normalized === 'go_long' || normalized === 'go_hold') {
                     clearPendingGoPress();
-                    return arcList.sendGoWebhook('play_now');
+                    return showOptionsForItem();
                 }
-                // GO = start playback when idle, otherwise add to queue.
                 if (normalized === 'go')    { return schedulePlayCommand(); }
                 clearPendingGoPress();
                 if (originalHandleButtonFromParent) originalHandleButtonFromParent(button);
@@ -1033,39 +2912,151 @@
 
             arcList.handleKeyPress = function (e) {
                 clearPendingGoPress();
-                if (e.key === 'ArrowLeft')  { if (enterFolder()) return; }
-                if (e.key === 'ArrowRight') { if (exitFolder())  return; }
+                if (optionsState) {
+                    if (e.key === 'ArrowUp') { moveOptionsSelection(-1); return; }
+                    if (e.key === 'ArrowDown') { moveOptionsSelection(1); return; }
+                    if (e.key === 'ArrowLeft') {
+                        const entry = optionsState.entries?.[optionsState.currentIndex || 0];
+                        if (entry?.submenu && typeof entry.onSelect === 'function') {
+                            return entry.onSelect();
+                        }
+                        return;
+                    }
+                    if (e.key === 'ArrowRight' || e.key === 'Escape' || e.key === 'Backspace') { if (closeOptionsMenu()) return; }
+                    if (e.key === 'Enter') { return activateSelectedOption(); }
+                    return;
+                }
+                if (detailState) {
+                    if (e.key === 'ArrowUp')    { if (detailState.scrollEl) detailState.scrollEl.scrollTop -= 42; return; }
+                    if (e.key === 'ArrowDown')  { if (detailState.scrollEl) detailState.scrollEl.scrollTop += 42; return; }
+                    if (e.key === 'ArrowRight') { if (closeDetailPage()) return; }
+                    if (e.key === 'Enter')      { return arcList.sendGoWebhook('play_item'); }
+                    return;
+                }
+                if (e.key === 'ArrowLeft')  {
+                    const current = getCurrentItem();
+                    if (current && getDetailSpec(current)) { openDetailPage(current); return; }
+                    if (enterFolder()) return;
+                }
+                if (e.key === 'ArrowRight') {
+                    if (exitFolder()) return;
+                    return;
+                }
                 if (e.key === 'Enter')      { return arcList.sendGoWebhook('play_item'); }
                 if (originalHandleKeyPress) originalHandleKeyPress(e);
             };
 
             arcList.handleNavFromParent = function (data) {
+                if (optionsState) {
+                    fastLetterMode?.reset();
+                    if (optionWheelStateRef !== optionsState) {
+                        optionWheelRamp?.reset();
+                        optionWheelStateRef = optionsState;
+                    }
+                    const direction = data?.direction;
+                    const steps = data?.discrete ? 1 : (optionWheelRamp?.push(data) ?? 1);
+                    if (steps > 0 && direction === 'clock') moveOptionsSelection(steps);
+                    else if (steps > 0 && direction === 'counter') moveOptionsSelection(-steps);
+                    return;
+                }
+                if (optionWheelStateRef) {
+                    optionWheelRamp?.reset();
+                    optionWheelStateRef = null;
+                }
+                if (detailState?.scrollEl) {
+                    fastLetterMode?.reset();
+                    const direction = data?.direction;
+                    const speed = Math.max(1, Number(data?.speed || 1));
+                    const delta = speed * 8;
+                    if (direction === 'clock') {
+                        detailState.scrollEl.scrollTop += delta;
+                    } else if (direction === 'counter') {
+                        detailState.scrollEl.scrollTop -= delta;
+                    }
+                    return;
+                }
+                if (tryFastLetterJump(data)) return;
                 if (originalHandleNavFromParent) {
                     originalHandleNavFromParent(data);
                 }
-                if (Number(data?.speed || 1) >= FAST_LETTER_MIN_SPEED) {
-                    showFastLetter();
-                }
+            };
+
+            arcList.handleBrowseContextFromParent = function (context) {
+                return applyBrowseContext(context);
             };
 
             const initNavigation = () => {
                 arcList.parentData    = Array.isArray(preloadedData) ? preloadedData : [];
-                arcList.items         = rootItems();
-                arcList.currentIndex  = 0;
-                arcList.targetIndex   = 0;
-                refreshList();
+                lastSectionBrowseContext = loadSectionBrowseContext();
+                const restoredBrowseState = restoreBrowseState(loadBrowseState());
+                if (restoredBrowseState) {
+                    refreshList();
+                } else {
+                    returnToRootState(resolveDefaultContextSectionId(), { saveState: false });
+                }
                 requestAnimationFrame(() => refreshList());
                 setTimeout(() => refreshList(), 120);
                 setTimeout(() => refreshList(), 420);
                 arcList._massFolderStack = folderStack;
                 window.arcListInstance = arcList;
-                console.log('[MASS] Navigation layer initialized from preloaded cache');
+                console.log(
+                    '[MASS] Navigation layer initialized from preloaded cache',
+                    restoredBrowseState ? '(restored browse state)' : '(default position)'
+                );
             };
             setTimeout(initNavigation, 0);
             void refreshQueueRoot(true);
             setInterval(() => {
                 void refreshQueueRoot(true);
             }, 5000);
+
+            window.addEventListener('message', (event) => {
+                if (event.data?.type === 'context-select') {
+                    const sectionId = String(event.data?.id || '').trim();
+                    if (!sectionId) return;
+                    openContextSection(sectionId);
+                    return;
+                }
+                if (event.data?.type === 'queue-focus') {
+                    const kind = String(event.data?.kind || '').trim().toLowerCase();
+                    const payload = event.data?.item || {};
+                    const focusItem = childNameMapper({
+                        id: `queue-focus-${kind || 'item'}`,
+                        name: payload.title || payload.name || 'Queue Item',
+                        artist: payload.artist || '',
+                        album: payload.album || '',
+                        url: payload.uri || payload.url || payload.play_url || '',
+                        play_url: payload.uri || payload.play_url || payload.url || '',
+                        image: payload.artwork || '',
+                    }, 0, []);
+                    if (kind === 'artist') {
+                        if (!focusArtistFromItem(focusItem)) {
+                            showActionToast('Artist not available', { preserveTiming: true });
+                            settleActionToast();
+                        } else {
+                            refreshList();
+                        }
+                        return;
+                    }
+                    if (kind === 'album') {
+                        if (!focusAlbumFromItem(focusItem)) {
+                            showActionToast('Album not available', { preserveTiming: true });
+                            settleActionToast();
+                        } else {
+                            refreshList();
+                        }
+                        return;
+                    }
+                    if (kind === 'genre') {
+                        showActionToast('Genre navigation is not available yet', { preserveTiming: true });
+                        settleActionToast();
+                        return;
+                    }
+                }
+                if (event.data?.type === 'context-reset') {
+                    returnToRootState(resolveCurrentContextSectionId(), { saveState: false });
+                }
+            });
         }
     </script>
 </body>

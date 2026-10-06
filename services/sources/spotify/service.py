@@ -25,7 +25,7 @@ from aiohttp import web
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 # Sibling imports (this directory)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from spotify_auth import SpotifyAuth, RemoteSpotifyAuth
+from spotify_auth import SpotifyAuth, RemoteSpotifyAuth, missing_scopes
 from spotify_tokens import load_tokens, save_tokens, delete_tokens
 from pkce import (
     generate_code_verifier,
@@ -36,7 +36,13 @@ from pkce import (
 
 from lib.config import cfg
 from lib.source_base import SourceBase
-from lib.digit_playlists import DigitPlaylistMixin
+from lib.digit_playlists import (
+    DigitPlaylistMixin,
+    DIGIT_SLOTS,
+    build_digit_mapping,
+    load_digit_pins,
+    spotify_favourites_path,
+)
 from lib.spotify_canvas import SpotifyCanvasClient, normalize_spotify_track_uri
 
 logging.basicConfig(level=logging.INFO, format='[%(levelname)s] %(message)s')
@@ -52,6 +58,13 @@ POLL_INTERVAL = 3  # seconds between now-playing polls
 PLAYLIST_REFRESH_COOLDOWN = 5 * 60  # don't re-sync if last sync was <5 min ago
 NIGHTLY_REFRESH_HOUR = 2  # refresh playlists at 2am
 FETCH_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'fetch.py')
+
+# Persistence for the last-played playlist/track so we can resume on a fresh
+# source activation after a service or device restart.
+LAST_PLAYED_PATH_PROD = os.path.join(
+    os.getenv('BS5C_CONFIG_DIR', '/etc/beosound5c'), 'spotify_last_played.json')
+LAST_PLAYED_PATH_DEV = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), 'spotify_last_played.json')
 
 # OAuth setup
 SPOTIFY_SCOPES = ('playlist-read-private playlist-read-collaborative '
@@ -86,8 +99,8 @@ class SpotifyService(DigitPlaylistMixin, SourceBase):
         os.getenv('BS5C_BASE_PATH', PROJECT_ROOT),
         'web', 'json', 'digit_playlists.json')
     action_map = {
-        "play": "toggle",
-        "pause": "toggle",
+        "play": "play",
+        "pause": "pause",
         "go": "toggle",
         "next": "next",
         "prev": "prev",
@@ -96,6 +109,8 @@ class SpotifyService(DigitPlaylistMixin, SourceBase):
         "up": "next",
         "down": "prev",
         "stop": "stop",
+        # Beo4 RANDOM key (0xC1) toggles shuffle while Spotify is active
+        "random": "shuffle",
         "0": "digit", "1": "digit", "2": "digit",
         "3": "digit", "4": "digit", "5": "digit",
         "6": "digit", "7": "digit", "8": "digit",
@@ -128,13 +143,21 @@ class SpotifyService(DigitPlaylistMixin, SourceBase):
         self._last_refresh_duration = None  # seconds the last refresh took
         self._display_name = None  # Spotify display name from /v1/me
         self._canvas = SpotifyCanvasClient()  # reads SPOTIFY_SP_DC from env
+        self._shuffle_on = False  # our view of the player's shuffle state
+        self._favourite_pins = {}  # digit slot -> {id, name} from the Config UI
 
     async def on_start(self):
+        # Digit pins from the Config UI — independent of Spotify creds.
+        self._favourite_pins = load_digit_pins(self._favourites_path())
+        if self._favourite_pins:
+            log.info("Loaded %d favourite digit pins", len(self._favourite_pins))
+
         # Load credentials (may fail — setup flow will handle it)
         has_creds = self.auth.load(config_client_id=cfg("spotify", "client_id", default=""))
 
         if has_creds:
             self._load_playlists()
+            self._load_last_played()
             self._detect_player()
 
             # Fetch display name from Spotify profile
@@ -203,6 +226,44 @@ class SpotifyService(DigitPlaylistMixin, SourceBase):
             self.playlists = []
         self._reload_digit_playlists()
 
+    # ── Last-played persistence ──
+    # Keeps {playlist_id, track_uri} on disk so `activate_playback` can
+    # resume where the user left off after a service/device restart.
+
+    def _last_played_path(self) -> str:
+        if os.path.exists(os.path.dirname(LAST_PLAYED_PATH_PROD)):
+            return LAST_PLAYED_PATH_PROD
+        return LAST_PLAYED_PATH_DEV
+
+    def _load_last_played(self):
+        path = self._last_played_path()
+        try:
+            with open(path) as f:
+                data = json.load(f)
+            self._last_playlist_id = data.get("playlist_id") or None
+            self._last_track_uri = data.get("track_uri") or None
+            log.info("Loaded last played: playlist=%s track=%s",
+                     self._last_playlist_id, self._last_track_uri)
+        except FileNotFoundError:
+            pass
+        except Exception as e:
+            log.warning("Failed to load last played: %s", e)
+
+    def _save_last_played(self):
+        if not self._last_playlist_id and not self._last_track_uri:
+            return
+        path = self._last_played_path()
+        try:
+            tmp = path + ".tmp"
+            with open(tmp, "w") as f:
+                json.dump({
+                    "playlist_id": self._last_playlist_id,
+                    "track_uri": self._last_track_uri,
+                }, f, indent=2)
+            os.replace(tmp, path)
+        except Exception as e:
+            log.warning("Failed to save last played: %s", e)
+
     async def _warmup_canvas(self):
         """Pre-warm canvas client (TOTP secrets + web token) so first track is fast."""
         try:
@@ -235,6 +296,11 @@ class SpotifyService(DigitPlaylistMixin, SourceBase):
 
     def add_routes(self, app):
         app.router.add_get('/playlists', self._handle_playlists)
+        app.router.add_get('/favourites', self._handle_favourites_list)
+        app.router.add_post('/favourites', self._handle_favourites_save)
+        # CORS preflight — the Config UI is served from port 80 and POSTs
+        # JSON here, so browsers send an OPTIONS check first.
+        app.router.add_options('/favourites', self._handle_cors)
         app.router.add_get('/token', self._handle_token)
         app.router.add_get('/canvas', self._handle_canvas)
         app.router.add_get('/setup-status', self._handle_setup_status)
@@ -283,11 +349,14 @@ class SpotifyService(DigitPlaylistMixin, SourceBase):
             'playlist_count': len(self.playlists),
             'has_credentials': self.auth.is_configured,
             'needs_reauth': self.auth.revoked,
+            'reauth_recommended': self.auth.reauth_recommended,
+            'auth_age_days': self.auth.auth_age_days,
             'display_name': self._display_name,
             'last_refresh': self._last_refresh_wall.isoformat() if self._last_refresh_wall else None,
             'last_refresh_duration': self._last_refresh_duration,
             'digit_playlists': self._get_digit_names(),
             'fetching': self._fetching_playlists,
+            'shuffle': self._shuffle_on,
         }
 
     async def handle_resync(self) -> dict:
@@ -322,6 +391,7 @@ class SpotifyService(DigitPlaylistMixin, SourceBase):
             self._last_track_uri = player_uri
             if not self._last_playlist_id and self.playlists:
                 self._last_playlist_id = self.playlists[0]['id']
+            self._save_last_played()
             await self.player_resume()
             self.state = "playing"
             self._start_polling()
@@ -373,6 +443,7 @@ class SpotifyService(DigitPlaylistMixin, SourceBase):
                             self._last_track_uri = None
                         self._track_advanced_at = time.monotonic()
                         self._track_gen += 1
+                        self._save_last_played()
                         return
                 break
 
@@ -492,6 +563,18 @@ class SpotifyService(DigitPlaylistMixin, SourceBase):
             uri = data.get('uri', '')
             await self._play_track(uri, action_ts=action_ts)
 
+        elif cmd == 'shuffle':
+            target = not self._shuffle_on
+            if await self.player_set_shuffle(target):
+                self._shuffle_on = target
+                log.info("Shuffle toggled %s", "on" if target else "off")
+            else:
+                log.warning("Player does not support shuffle (or not active)")
+
+        elif cmd == 'play_track_radio':
+            uri = data.get('uri') or data.get('track_uri') or ''
+            await self._play_track_radio(uri, action_ts=action_ts)
+
         elif cmd == 'play_index':
             index = data.get('index', 0)
             if self._last_playlist_id:
@@ -583,6 +666,7 @@ class SpotifyService(DigitPlaylistMixin, SourceBase):
         self._last_playlist_id = playlist_id
         self._last_track_uri = track_uri
         self._track_gen += 1
+        self._save_last_played()
         await self.register("playing", auto_power=True)
         # Pre-broadcast metadata for instant PLAYING view (source is now active)
         # Canvas is fetched in background to avoid blocking the UI transition
@@ -619,6 +703,26 @@ class SpotifyService(DigitPlaylistMixin, SourceBase):
         ok = await self.player_play(uri=url, action_ts=action_ts)
         if not ok:
             log.error("Player service failed to start track")
+
+    async def _play_track_radio(self, track_uri, action_ts=None):
+        """Start track radio seeded by *track_uri*.
+
+        Sonos uses an SMAPI station container URI; the local player passes
+        ``spotify:station:track:<id>`` to go-librespot. Both paths go via
+        player_play_track_radio — the player decides per its capabilities.
+        """
+        if not track_uri or "spotify:track:" not in track_uri:
+            log.warning("play_track_radio: invalid track_uri %r", track_uri)
+            return
+        log.info("Play track radio seeded by %s", track_uri)
+        self.state = "playing"
+        self._last_track_uri = track_uri
+        self._track_gen += 1
+        await self.register("playing", auto_power=True)
+        self._start_polling()
+        ok = await self.player_play_track_radio(track_uri, action_ts=action_ts)
+        if not ok:
+            log.error("Player service failed to start track radio")
 
     async def get_queue(self, start=0, max_items=50) -> dict:
         """Return tracks from the last played Spotify playlist.
@@ -711,7 +815,15 @@ class SpotifyService(DigitPlaylistMixin, SourceBase):
         to independently refresh the PKCE token (which would race and revoke it).
         """
         if self.auth.revoked:
+            # Callers (e.g. _handle_playlists) may have optimistically set
+            # the fetching flag before spawning us — clear it or the UI
+            # reports "loading" forever.
+            self._fetching_playlists = False
             return  # don't bother — token is dead
+        if getattr(self, '_refresh_running', False):
+            log.info("Playlist refresh already running — skipping duplicate")
+            return
+        self._refresh_running = True
         self._fetching_playlists = True
         t0 = time.monotonic()
         try:
@@ -752,11 +864,18 @@ class SpotifyService(DigitPlaylistMixin, SourceBase):
                 log.error("fetch.py failed (rc=%d): %s",
                           proc.returncode, err_msg)
         except asyncio.TimeoutError:
-            log.error("Playlist refresh timed out")
+            # wait_for cancels the communicate() await but does NOT kill the
+            # child — an orphan with a full stdout pipe blocks forever and
+            # its late JSON write races the next refresh.  Reap it.
+            log.error("Playlist refresh timed out — killing fetch subprocess")
+            if proc.returncode is None:
+                proc.kill()
+                await proc.wait()
         except Exception as e:
             log.error("Playlist refresh failed: %s", e)
         finally:
             self._fetching_playlists = False
+            self._refresh_running = False
 
     async def _delayed_refresh(self, delay):
         """Refresh playlists after a delay. Used on startup and after OAuth."""
@@ -875,6 +994,7 @@ class SpotifyService(DigitPlaylistMixin, SourceBase):
                             # Genuine auto-advance at end of song
                             self._last_track_uri = uri
                             self._track_gen += 1
+                            self._save_last_played()
                             await self._broadcast_current_track()
                 if self.state != "playing":
                     self.state = "playing"
@@ -951,6 +1071,96 @@ class SpotifyService(DigitPlaylistMixin, SourceBase):
 
         return web.json_response(
             self.playlists,
+            headers=self._cors_headers())
+
+    # ── Favourites (explicit digit pins from the Config UI) ──
+    # Same persistence conventions as radio's radio_favourites.json:
+    # /etc/beosound5c in prod, a file next to the service in dev,
+    # atomic tmp+replace writes.
+
+    def _favourites_path(self) -> str:
+        return spotify_favourites_path(os.path.dirname(os.path.abspath(__file__)))
+
+    def _save_favourite_pins(self):
+        path = self._favourites_path()
+        try:
+            tmp = path + ".tmp"
+            with open(tmp, "w") as f:
+                json.dump(self._favourite_pins, f, indent=2)
+            os.replace(tmp, path)
+            log.info("Saved %d favourite pins to %s",
+                     len(self._favourite_pins), path)
+        except Exception as e:
+            log.warning("Failed to save favourite pins: %s", e)
+
+    def _rebuild_digit_mapping(self) -> bool:
+        """Regenerate web/json/digit_playlists.json from the in-memory
+        playlist cache + current pins — no refetch needed.  Returns False
+        when there is no playlist cache to build from (the pins file is
+        still saved; the next fetch.py run will honour it)."""
+        if not self.playlists:
+            self._load_playlists()
+        if not self.playlists:
+            log.warning("No playlist cache — digit mapping unchanged "
+                        "until the next playlist refresh")
+            return False
+        try:
+            mapping = build_digit_mapping(self.playlists,
+                                          pins=self._favourite_pins)
+            tmp = self.DIGIT_PLAYLISTS_FILE + '.tmp'
+            with open(tmp, 'w') as f:
+                json.dump(mapping, f, indent=2)
+            os.replace(tmp, self.DIGIT_PLAYLISTS_FILE)
+        except Exception as e:
+            log.warning("Failed to rebuild digit mapping: %s", e)
+            return False
+        self._reload_digit_playlists()
+        log.info("Rebuilt digit mapping (%d slots, %d explicit pins)",
+                 len(mapping), len(self._favourite_pins))
+        return True
+
+    async def _handle_favourites_list(self, request):
+        """Return the current digit pins for the Config UI."""
+        return web.json_response(
+            {'favourites': dict(self._favourite_pins)},
+            headers=self._cors_headers())
+
+    async def _handle_favourites_save(self, request):
+        """Replace the digit pins.  Body: {"favourites": {slot: {id, name}}}.
+
+        Empty/null slot entries mean "unpinned" (automatic mapping).  On
+        success the digit_playlists.json mapping is regenerated from the
+        cached playlists so the change takes effect immediately.
+        """
+        try:
+            data = await request.json()
+        except Exception:
+            return web.json_response({'error': 'invalid json'}, status=400,
+                                     headers=self._cors_headers())
+        raw = data.get('favourites')
+        if not isinstance(raw, dict):
+            return web.json_response({'error': 'favourites object required'},
+                                     status=400, headers=self._cors_headers())
+        pins = {}
+        for slot, entry in raw.items():
+            if not (isinstance(slot, str) and len(slot) == 1
+                    and slot in DIGIT_SLOTS):
+                return web.json_response(
+                    {'error': f'invalid slot {slot!r}'},
+                    status=400, headers=self._cors_headers())
+            if not entry:
+                continue  # unpinned slot
+            if not (isinstance(entry, dict) and entry.get('id')):
+                return web.json_response(
+                    {'error': f'slot {slot}: id required'},
+                    status=400, headers=self._cors_headers())
+            pins[slot] = {'id': str(entry['id']),
+                          'name': str(entry.get('name', ''))}
+        self._favourite_pins = pins
+        self._save_favourite_pins()
+        rebuilt = self._rebuild_digit_mapping()
+        return web.json_response(
+            {'ok': True, 'pinned': len(pins), 'rebuilt': rebuilt},
             headers=self._cors_headers())
 
     # -- OAuth Setup routes --
@@ -1109,9 +1319,27 @@ label{{display:block;margin-top:12px;color:#666;font-size:13px;text-transform:up
             if not rt:
                 return web.Response(text='No refresh token received', status=500)
 
-            # Save tokens — try file first, fall back to in-memory only
+            granted_scope = token_data.get('scope')
+            if granted_scope:
+                log.info("OAuth: Spotify granted scopes: %s", granted_scope)
+                missing = missing_scopes(granted_scope, SPOTIFY_SCOPES)
+                if missing:
+                    log.warning("OAuth: user did not grant %s — some "
+                                "features will be unavailable. Fix: revoke "
+                                "at https://www.spotify.com/account/apps, "
+                                "then re-auth via /setup",
+                                missing)
+
+            # Save tokens — try file first, fall back to in-memory only.
+            # authorized_at anchors Spotify's 6-month refresh-token expiry
+            # window, which runs from this original grant (not from
+            # subsequent rotations).
+            authorized_at = time.time()
             try:
-                await loop.run_in_executor(None, save_tokens, client_id, rt)
+                await loop.run_in_executor(
+                    None, lambda: save_tokens(
+                        client_id, rt, scope=granted_scope,
+                        authorized_at=authorized_at))
                 log.info("OAuth: tokens saved to disk")
             except Exception as e:
                 log.warning("OAuth: could not save tokens to disk (%s) — using in-memory", e)
@@ -1120,7 +1348,9 @@ label{{display:block;margin-top:12px;color:#666;font-size:13px;text-transform:up
             self.auth.set_credentials(
                 client_id, rt,
                 access_token=token_data.get('access_token'),
-                expires_in=token_data.get('expires_in', 3600))
+                expires_in=token_data.get('expires_in', 3600),
+                scope=granted_scope,
+                authorized_at=authorized_at)
             self._detect_player()
 
             # Register as available now that we have credentials

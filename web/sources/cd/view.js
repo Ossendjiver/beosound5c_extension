@@ -25,8 +25,10 @@ window.CDView = (() => {
     let lastClickedItemId = null; // For click sound on selection change
 
     // Submenu state
-    let viewMode = 'main';       // 'main' | 'settings' | 'artwork'
+    let viewMode = 'main';       // 'main' | 'settings' | 'artwork' | 'rip'
     let savedMainIndex = 0;      // Scroll position when entering submenu
+    let ripPromptSelection = false;
+    let ripPromptKey = '';
 
     // Softarc constants (shared via ArcMath)
     const _ac = ArcMath.getConstants();
@@ -87,8 +89,13 @@ window.CDView = (() => {
             buildArcItems();
             scrollToPlayingTrack();
             renderArc();
+            updateRipPrompt();
             startAnimation();
         }
+        // WebSocket source updates are transient. A kiosk/browser that starts
+        // after identification completed must hydrate the page from the CD
+        // service instead of remaining on "Reading disc" indefinitely.
+        refreshStatus();
         console.log('[CD] View initialized');
     }
 
@@ -104,6 +111,7 @@ window.CDView = (() => {
     function buildArcItems() {
         if (viewMode === 'settings') { arcItems = buildSettingsItems(); return; }
         if (viewMode === 'artwork') { arcItems = buildArtworkItems(); return; }
+        if (viewMode === 'rip') { arcItems = buildRipItems(); return; }
 
         if (!metadata?.tracks?.length) {
             arcItems = [];
@@ -130,13 +138,12 @@ window.CDView = (() => {
             });
         }
 
-        // Import Disc (only if external USB drive detected)
-        if (metadata.has_external_drive) {
-            arcItems.push({
-                id: 'import', label: 'Import Disc',
-                type: 'action', badgeIcon: '\u2B73'
-            });
-        }
+        // Managed ripping is available even without a USB drive; the MASS
+        // filesystem library is the default destination.
+        arcItems.push({
+            id: 'rip', label: 'Rip CD',
+            type: 'submenu', badgeIcon: '\u2B73'
+        });
 
         // Eject
         arcItems.push({
@@ -146,8 +153,8 @@ window.CDView = (() => {
     }
 
     function buildSettingsItems() {
-        return [
-            { id: 'back', label: '\u2190 Back', type: 'back', badgeIcon: '\u2190' },
+        const items = [
+            { id: 'back', label: 'Back', type: 'back', badgeIcon: 'B' },
             {
                 id: 'repeat', type: 'toggle',
                 label: `Repeat: ${metadata?.repeat ? 'On' : 'Off'}`,
@@ -161,13 +168,53 @@ window.CDView = (() => {
                 toggleOn: !!metadata?.shuffle,
                 badgeIcon: '\uD83D\uDD00',
                 command: 'toggle_shuffle'
+            },
+            {
+                id: 'autoplay', type: 'toggle',
+                label: `CD autoplay: ${metadata?.autoplay ? 'On' : 'Off'}`,
+                sublabel: 'Play automatically when a disc is inserted',
+                toggleOn: !!metadata?.autoplay,
+                badgeIcon: '\u25B6',
+                command: 'toggle_autoplay'
             }
         ];
+        return items;
+    }
+
+    async function refreshStatus() {
+        try {
+            const response = await fetch(`${CD_SERVICE_URL}/status`, {
+                cache: 'no-store'
+            });
+            if (!response.ok) return;
+            const status = await response.json();
+            if (!menuActive || !document.getElementById('cd-view')) return;
+            if (!status?.metadata) {
+                if (status?.disc_inserted) updateMetadata({ clear: true });
+                return;
+            }
+            const playback = status.playback || {};
+            const rip = status.rip || {};
+            updateMetadata({
+                ...status.metadata,
+                state: playback.state || 'stopped',
+                current_track: Number(playback.current_track || 0),
+                shuffle: !!playback.shuffle,
+                repeat: !!playback.repeat,
+                autoplay: rip.settings?.autoplay !== false,
+                has_external_drive: status.has_external_drive || null,
+                playback_target_id: status.playback_target_id || '',
+                playback_backend: status.playback_backend || 'unavailable',
+                rip,
+            });
+        } catch (error) {
+            console.warn('[CD] Unable to refresh status:', error);
+        }
     }
 
     function buildArtworkItems() {
         const items = [
-            { id: 'back', label: '\u2190 Back', type: 'back', badgeIcon: '\u2190' }
+            { id: 'back', label: 'Back', type: 'back', badgeIcon: 'B' }
         ];
         for (const alt of (metadata?.alternatives || [])) {
             items.push({
@@ -180,6 +227,57 @@ window.CDView = (() => {
             });
         }
         return items;
+    }
+
+    function buildRipItems() {
+        const rip = metadata?.rip || {};
+        const settings = rip.settings || {};
+        const percent = Math.max(0, Math.min(100, Math.round(rip.percent || 0)));
+        const destinations = rip.destinations || [];
+        const destination = destinations.find(item => item.path === settings.destination);
+        const active = !!rip.active;
+        const hasPartialRip = !active
+            && rip.status !== 'completed'
+            && (!!rip.resumable || Number(rip.completed_tracks || 0) > 0);
+        return [
+            { id: 'back', label: 'Back', type: 'back', badgeIcon: 'B' },
+            {
+                id: 'rip-status', type: 'info',
+                label: rip.error || rip.message || 'Ready to rip',
+                sublabel: active
+                    ? `Track ${rip.track || 0} of ${rip.total_tracks || metadata?.track_count || 0} \u00B7 ${rip.current_speed_message || rip.drive_speed_message || ''}`
+                    : (rip.album_path || ''),
+                badgeIcon: active || rip.status === 'completed' ? `${percent}%` : '\u266B'
+            },
+            {
+                id: 'rip-action', type: 'rip-action',
+                label: active ? 'Cancel rip' : (hasPartialRip ? 'Resume rip' : 'Rip this CD'),
+                sublabel: active
+                    ? 'Completed files are kept'
+                    : (hasPartialRip ? 'Reuses completed tracks and continues' : 'Starts a manual FLAC rip'),
+                badgeIcon: active ? '\u2715' : '\u2B73'
+            },
+            {
+                id: 'automatic-rip', type: 'rip-automatic',
+                label: `Automatic rip: ${settings.automatic ? 'On' : 'Off'}`,
+                sublabel: 'Only starts when no matching album is found',
+                toggleOn: !!settings.automatic,
+                badgeIcon: '\u21BB'
+            },
+            {
+                id: 'auto-eject', type: 'rip-autoeject',
+                label: `Auto-eject: ${settings.autoeject !== false ? 'On' : 'Off'}`,
+                sublabel: 'Eject the disc after a successful rip',
+                toggleOn: settings.autoeject !== false,
+                badgeIcon: '\u23CF'
+            },
+            {
+                id: 'rip-destination', type: 'rip-destination',
+                label: `Save to: ${destination?.label || 'Custom location'}`,
+                sublabel: settings.destination || rip.default_destination || '',
+                badgeIcon: '\u25A3'
+            }
+        ];
     }
 
     function enterSubmenu(mode) {
@@ -244,6 +342,13 @@ window.CDView = (() => {
 
             // Update selected state
             const nameEl = element.querySelector('.cd-arc-item-name');
+            if (nameEl) nameEl.textContent = item.label;
+            const subEl = element.querySelector('.cd-arc-item-sublabel');
+            if (subEl) subEl.textContent = item.sublabel || '';
+            const badgeEl = element.querySelector('.cd-arc-item-badge');
+            if (badgeEl && !item.badgeImage) {
+                badgeEl.textContent = item.badgeIcon || item.trackNum || '';
+            }
             if (item.isSelected && !element.classList.contains('cd-arc-item-selected')) {
                 element.classList.add('cd-arc-item-selected');
                 if (nameEl) nameEl.classList.add('selected');
@@ -257,7 +362,7 @@ window.CDView = (() => {
             element.classList.toggle('cd-arc-item-playing', isPlaying);
 
             // Update toggle state (for settings submenu live updates)
-            if (item.type === 'toggle') {
+            if (Object.prototype.hasOwnProperty.call(item, 'toggleOn')) {
                 element.classList.toggle('cd-arc-item-toggle-on', !!item.toggleOn);
                 if (nameEl) nameEl.textContent = item.label;
             }
@@ -272,6 +377,12 @@ window.CDView = (() => {
     function renderArc() {
         const container = document.getElementById('cd-arc-container');
         if (!container || !arcItems.length) return;
+
+        container.classList.toggle('cd-rip-grid', viewMode === 'rip');
+        if (viewMode === 'rip') {
+            renderRipGrid(container);
+            return;
+        }
 
         // Try in-place update first (matches softarc optimization)
         if (updateExistingElements(container)) {
@@ -293,7 +404,7 @@ window.CDView = (() => {
             if (isPlaying) el.classList.add('cd-arc-item-playing');
             if (item.type === 'action' && item.id === 'eject') el.classList.add('cd-arc-item-eject');
             if (item.type === 'back') el.classList.add('cd-arc-item-back');
-            if (item.type === 'toggle' && item.toggleOn) el.classList.add('cd-arc-item-toggle-on');
+            if (item.toggleOn) el.classList.add('cd-arc-item-toggle-on');
             el.style.transform = `translate(${item.x}px, ${item.y}px) scale(${item.scale})`;
 
             // Text wrapper (name + optional duration/sublabel)
@@ -338,6 +449,53 @@ window.CDView = (() => {
 
             container.appendChild(el);
         }
+    }
+
+    /** Rip controls use a compact tile layout so every setting stays visible. */
+    function renderRipGrid(container) {
+        container.innerHTML = '';
+        const percent = Math.max(0, Math.min(100, Math.round(metadata?.rip?.percent || 0)));
+        arcItems.forEach((item, index) => {
+            const tile = document.createElement('button');
+            tile.type = 'button';
+            tile.className = `cd-rip-tile cd-rip-tile-${item.id}`;
+            tile.dataset.itemId = item.id;
+            if (index === Math.round(arcTargetIndex)) tile.classList.add('is-selected');
+            if (item.toggleOn) tile.classList.add('is-on');
+            if (item.type === 'info') tile.classList.add('is-info');
+
+            const icon = document.createElement('span');
+            icon.className = 'cd-rip-tile-icon';
+            icon.textContent = item.badgeIcon || '';
+            tile.appendChild(icon);
+
+            const label = document.createElement('span');
+            label.className = 'cd-rip-tile-label';
+            label.textContent = item.label;
+            tile.appendChild(label);
+
+            if (item.sublabel) {
+                const sublabel = document.createElement('span');
+                sublabel.className = 'cd-rip-tile-sublabel';
+                sublabel.textContent = item.sublabel;
+                tile.appendChild(sublabel);
+            }
+            if (item.id === 'rip-status') {
+                const progress = document.createElement('span');
+                progress.className = 'cd-rip-tile-progress';
+                const fill = document.createElement('span');
+                fill.style.width = `${percent}%`;
+                progress.appendChild(fill);
+                tile.appendChild(progress);
+            }
+            tile.addEventListener('click', () => {
+                arcTargetIndex = index;
+                arcCurrentIndex = index;
+                renderRipGrid(container);
+                activateItem(item);
+            });
+            container.appendChild(tile);
+        });
     }
 
     /** Send click sound when selection changes (exact softarc checkForSelectionClick). */
@@ -440,12 +598,29 @@ window.CDView = (() => {
     // ── Metadata ──
 
     function updateMetadata(data) {
+        if (data?.clear) {
+            metadata = null;
+            pendingMorphData = null;
+            morphing = false;
+            arcItems = [];
+            arcTargetIndex = 0;
+            arcCurrentIndex = 0;
+            viewMode = 'main';
+            ripPromptKey = '';
+            const loadingEl = document.getElementById('cd-loading');
+            const arcContainer = document.getElementById('cd-arc-container');
+            if (loadingEl) loadingEl.classList.remove('cd-hidden');
+            if (arcContainer) {
+                arcContainer.replaceChildren();
+                arcContainer.classList.add('cd-hidden');
+            }
+            updateRipPrompt();
+            return;
+        }
         const prevArtwork = metadata?.artwork;
         const prevTrack = metadata?.current_track;
         metadata = data;
-
-        // Always update the PLAYING page back face (track list for flip)
-        updatePlayingBackFace(data);
+        updateRipPrompt();
 
         if (!menuActive) return;
 
@@ -719,13 +894,22 @@ window.CDView = (() => {
     function handleNavEvent(data) {
         const route = window.uiStore?.currentRoute;
 
-        // On PLAYING page: progressive flip
+        // The global PLAYING page owns navigation and its integrated queue.
         if (route === 'menu/playing') {
-            return handlePlayingNav(data);
+            return false;
         }
 
         // On CD menu: scroll the arc browser
         if (menuActive && arcItems.length) {
+            if (viewMode === 'rip') {
+                const delta = data.direction === 'clock' ? 1 : -1;
+                arcTargetIndex = Math.max(
+                    0, Math.min(arcItems.length - 1, Math.round(arcTargetIndex) + delta));
+                arcCurrentIndex = arcTargetIndex;
+                checkForSelectionClick();
+                renderArc();
+                return true;
+            }
             scrollArc(data.direction, data.speed || 10);
             return true;
         }
@@ -734,6 +918,12 @@ window.CDView = (() => {
 
     function handleButton(button) {
         const route = window.uiStore?.currentRoute;
+
+        if (metadata?.rip?.prompt) {
+            if (button === 'left') { selectRipPrompt(false); return true; }
+            if (button === 'right') { selectRipPrompt(true); return true; }
+            if (button === 'go') { respondToRipPrompt(ripPromptSelection); return true; }
+        }
 
         // On PLAYING page: media control
         if (route === 'menu/playing') {
@@ -750,12 +940,36 @@ window.CDView = (() => {
             snapToNearest();
             const item = arcItems[arcTargetIndex];
             if (!item) return true;
-            switch (item.type) {
+            activateItem(item);
+            return true;
+        }
+
+        if (button === 'left') {
+            snapToNearest();
+            const item = arcItems[arcTargetIndex];
+            if (viewMode === 'main' && item?.type === 'submenu') {
+                enterSubmenu(item.id);
+                return true;
+            }
+            if (viewMode === 'main') { sendCommand('prev'); return true; }
+            return true;
+        }
+        if (button === 'right') {
+            if (viewMode !== 'main') { exitSubmenu(); return true; }
+            sendCommand('next'); return true;
+        }
+
+        return false;
+    }
+
+    function activateItem(item) {
+        if (!item) return;
+        switch (item.type) {
                 case 'track':
                     sendCommand('play_track', { track: item.trackNum });
                     break;
                 case 'submenu':
-                    enterSubmenu(item.id === 'settings' ? 'settings' : 'artwork');
+                    enterSubmenu(item.id);
                     break;
                 case 'back':
                     exitSubmenu();
@@ -766,31 +980,135 @@ window.CDView = (() => {
                 case 'release':
                     sendCommand('use_release', { release_id: item.releaseId });
                     break;
+                case 'rip-action':
+                    sendCommand(metadata?.rip?.active ? 'rip_cancel' : 'rip_start');
+                    break;
+                case 'rip-automatic':
+                    sendCommand('set_rip_settings', {
+                        automatic: !metadata?.rip?.settings?.automatic
+                    });
+                    break;
+                case 'rip-autoeject':
+                    sendCommand('set_rip_settings', {
+                        autoeject: metadata?.rip?.settings?.autoeject === false
+                    });
+                    break;
+                case 'rip-destination': {
+                    const destinations = metadata?.rip?.destinations || [];
+                    if (!destinations.length) break;
+                    const current = destinations.findIndex(
+                        entry => entry.path === metadata?.rip?.settings?.destination
+                    );
+                    const next = destinations[(current + 1) % destinations.length];
+                    sendCommand('set_rip_settings', { destination: next.path });
+                    break;
+                }
                 case 'action':
                     if (item.id === 'eject') sendCommand('eject');
-                    if (item.id === 'import') sendCommand('import');
                     break;
-            }
-            return true;
         }
-
-        if (button === 'left') {
-            if (viewMode !== 'main') { exitSubmenu(); return true; }
-            sendCommand('prev'); return true;
-        }
-        if (button === 'right') { sendCommand('next'); return true; }
-
-        return false;
     }
 
     // ── Commands ──
+
+    function ripPromptArtworkUrl(value) {
+        const artwork = String(value || '').trim();
+        if (!artwork || /^(?:data:|blob:|https?:\/\/)/i.test(artwork)) return artwork;
+        const massBase = String(window.AppConfig?.massServiceUrl || '').replace(/\/+$/, '');
+        if (!massBase) return artwork;
+        return `${massBase}/${artwork.replace(/^\/+/, '')}`;
+    }
+
+    function updateRipPrompt() {
+        const overlay = document.getElementById('cd-rip-prompt');
+        if (!overlay) return;
+        const prompt = metadata?.rip?.prompt;
+        overlay.classList.toggle('cd-hidden', !prompt);
+        if (!prompt) {
+            ripPromptKey = '';
+            return;
+        }
+        const first = prompt?.matches?.[0];
+        const nextPromptKey = `${prompt?.message || ''}|${first?.id || first?.album || ''}`;
+        if (nextPromptKey !== ripPromptKey) {
+            ripPromptKey = nextPromptKey;
+            ripPromptSelection = false;
+        }
+        const message = overlay.querySelector('.cd-rip-prompt-message');
+        if (message) message.textContent = prompt?.message || '';
+        const match = overlay.querySelector('.cd-rip-prompt-match');
+        if (match) {
+            match.classList.toggle('cd-hidden', !first);
+            const art = match.querySelector('.cd-rip-prompt-art img');
+            const artFallback = match.querySelector('.cd-rip-prompt-art-fallback');
+            const artUrl = ripPromptArtworkUrl(first?.image || first?.artwork || '');
+            if (art) {
+                art.classList.toggle('cd-hidden', !artUrl);
+                if (artUrl) {
+                    art.alt = `Artwork for ${first?.album || 'similar album'}`;
+                    art.onload = () => {
+                        art.classList.remove('cd-hidden');
+                        artFallback?.classList.add('cd-hidden');
+                    };
+                    art.onerror = () => {
+                        art.classList.add('cd-hidden');
+                        artFallback?.classList.remove('cd-hidden');
+                    };
+                    if (art.src !== artUrl) art.src = artUrl;
+                } else {
+                    art.removeAttribute('src');
+                    art.alt = '';
+                }
+            }
+            artFallback?.classList.toggle('cd-hidden', !!artUrl);
+
+            const album = match.querySelector('.cd-rip-prompt-album');
+            if (album) album.textContent = first?.album || 'Unknown album';
+            const artist = match.querySelector('.cd-rip-prompt-artist');
+            if (artist) artist.textContent = first?.artist || 'Unknown artist';
+            const summary = match.querySelector('.cd-rip-prompt-summary');
+            if (summary) {
+                const details = [];
+                if (first?.year) details.push(String(first.year));
+                if (Number(first?.track_count) > 0) {
+                    const count = Number(first.track_count);
+                    details.push(`${count} ${count === 1 ? 'track' : 'tracks'}`);
+                }
+                if (Number(first?.score_percent) > 0) {
+                    details.push(`${Number(first.score_percent)}% match`);
+                } else if (Number(first?.score) > 0) {
+                    details.push(`${Math.round(Number(first.score) * 100)}% match`);
+                }
+                summary.textContent = details.join(' · ');
+            }
+            const reason = match.querySelector('.cd-rip-prompt-reason');
+            if (reason) reason.textContent = first?.reason || '';
+        }
+        const buttons = overlay.querySelectorAll('.cd-rip-prompt-actions button');
+        buttons[0]?.classList.toggle('is-selected', !ripPromptSelection);
+        buttons[1]?.classList.toggle('is-selected', ripPromptSelection);
+    }
+
+    function selectRipPrompt(shouldRip) {
+        ripPromptSelection = !!shouldRip;
+        updateRipPrompt();
+    }
+
+    function respondToRipPrompt(shouldRip) {
+        ripPromptKey = '';
+        sendCommand('rip_confirm', { rip: !!shouldRip });
+    }
 
     async function sendCommand(command, params = {}) {
         try {
             const resp = await fetch(`${CD_SERVICE_URL}/command`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ command, ...params })
+                body: JSON.stringify({
+                    command,
+                    ...(window.PlaybackTargets?.payloadFor?.('cd') || {}),
+                    ...params
+                })
             });
             if (resp.ok) {
                 const result = await resp.json();
@@ -811,6 +1129,7 @@ window.CDView = (() => {
         handleButton,
         updateMetadata,
         sendCommand,
+        respondToRipPrompt,
         get isActive() { return menuActive || (window.uiStore?.activeSource === 'cd'); },
         get metadata() { return metadata; }
     };
@@ -820,6 +1139,16 @@ window.CDView = (() => {
 window.SourcePresets = window.SourcePresets || {};
 window.SourcePresets.cd = {
     controller: window.CDView,
+    playing: window.DEFAULT_PLAYING_PRESET,
+    queueOverlay: {
+        playing: true,
+        capabilities: {
+            playNow: true,
+            playNext: false,
+            remove: false,
+            showInformation: true,
+        },
+    },
     item: { title: 'CD', path: 'menu/cd' },
     after: 'menu/playing',
     view: {
@@ -831,6 +1160,29 @@ window.SourcePresets.cd = {
                     <div class="cd-loading-text">Reading disc<span class="cd-dots"><span>.</span><span>.</span><span>.</span></span></div>
                 </div>
                 <div id="cd-arc-container" class="cd-arc-container cd-hidden"></div>
+                <div id="cd-rip-prompt" class="cd-rip-prompt cd-hidden">
+                    <div class="cd-rip-prompt-card">
+                        <div class="cd-rip-prompt-title">CD ripping</div>
+                        <div class="cd-rip-prompt-message"></div>
+                        <div class="cd-rip-prompt-match cd-hidden">
+                            <div class="cd-rip-prompt-art">
+                                <img class="cd-hidden" alt="">
+                                <div class="cd-rip-prompt-art-fallback">CD</div>
+                            </div>
+                            <div class="cd-rip-prompt-match-copy">
+                                <div class="cd-rip-prompt-album"></div>
+                                <div class="cd-rip-prompt-artist"></div>
+                                <div class="cd-rip-prompt-summary"></div>
+                                <div class="cd-rip-prompt-reason"></div>
+                            </div>
+                        </div>
+                        <div class="cd-rip-prompt-actions">
+                            <button type="button" onclick="window.CDView.respondToRipPrompt(false)">Don’t rip</button>
+                            <button type="button" class="primary" onclick="window.CDView.respondToRipPrompt(true)">Rip CD</button>
+                        </div>
+                        <div class="cd-rip-prompt-hint">LEFT/RIGHT select · GO confirms</div>
+                    </div>
+                </div>
             </div>`
     },
 

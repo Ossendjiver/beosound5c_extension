@@ -261,6 +261,135 @@
             }, 3000);
         }
 
+        /**
+         * ArcList subclass with a Shuffle toggle appended to the playlist arc.
+         * Mirrors the CD view's Play Settings toggle: nav wheel scrolls to it,
+         * GO activates. State comes from the Spotify service /status `shuffle`
+         * field; activation sends the service's existing `shuffle` command.
+         * If the player doesn't support shuffle the service leaves state
+         * unchanged — we detect that and briefly show "Shuffle unavailable".
+         */
+        const SHUFFLE_ITEM_ID = 'shuffle-toggle';
+        const SHUFFLE_ON_COLOR = '#1ED760';
+        const SHUFFLE_OFF_COLOR = '#888888';
+        // Fallback artwork (shuffle glyph) — used when ArcList rebuild paths
+        // remap items from parentData and only keep id/name/image.
+        const SHUFFLE_IMAGE = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='128' height='128' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' fill='%23333333'/%3E%3Cg transform='translate(3 3) scale(0.75)'%3E%3Cpath d='M10.59 9.17L5.41 4 4 5.41l5.17 5.17 1.42-1.41zM14.5 4l2.04 2.04L4 18.59 5.41 20 17.96 7.46 20 9.5V4h-5.5zm.33 9.41l-1.41 1.41 3.13 3.13L14.5 20H20v-5.5l-2.04 2.04-3.13-3.13z' fill='white'/%3E%3C/g%3E%3C/svg%3E";
+
+        class SpotifyArcList extends ArcList {
+            async loadData() {
+                await super.loadData();
+                if (!Array.isArray(this.parentData)) return; // load failed — no toggle
+                // Best-effort initial state — service may be unreachable
+                try {
+                    const resp = await fetch(this.config.spotifyStatusUrl);
+                    if (resp.ok) this.shuffleOn = !!(await resp.json()).shuffle;
+                } catch (e) { /* keep default */ }
+                this.shuffleOn = this.shuffleOn === true;
+                // Register in parentData so every parent-view rebuild
+                // (exitChildView fallbacks, emergencyRestoreParentView, ...)
+                // keeps the toggle; those paths copy id/name/image only.
+                this.parentData.push({
+                    id: SHUFFLE_ITEM_ID,
+                    name: this._shuffleLabel(),
+                    image: SHUFFLE_IMAGE
+                });
+                // The freshly mapped items list gets a nicer Phosphor-icon
+                // version (createImageElement prefers `icon` over `image`).
+                this.items.push({
+                    id: SHUFFLE_ITEM_ID,
+                    name: this._shuffleLabel(),
+                    icon: 'shuffle',
+                    color: this.shuffleOn ? SHUFFLE_ON_COLOR : SHUFFLE_OFF_COLOR
+                });
+            }
+
+            _shuffleLabel() {
+                return `Shuffle: ${this.shuffleOn ? 'On' : 'Off'}`;
+            }
+
+            _isShuffleCentered() {
+                return this.items[Math.round(this.currentIndex)]?.id === SHUFFLE_ITEM_ID;
+            }
+
+            /** Update the arc item (and live DOM) to reflect shuffle state. */
+            _updateShuffleDisplay(overrideLabel) {
+                const label = overrideLabel || this._shuffleLabel();
+                const color = this.shuffleOn ? SHUFFLE_ON_COLOR : SHUFFLE_OFF_COLOR;
+                const item = this.items.find(i => i.id === SHUFFLE_ITEM_ID);
+                if (item) {
+                    item.name = label;
+                    if (item.icon) item.color = color;
+                }
+                const entry = Array.isArray(this.parentData)
+                    && this.parentData.find(p => p.id === SHUFFLE_ITEM_ID);
+                if (entry) entry.name = label;
+                // updateExistingElements() only moves items — patch text/color in place
+                const el = this.container.querySelector(`.arc-item[data-item-id="${SHUFFLE_ITEM_ID}"]`);
+                if (el) {
+                    const nameEl = el.querySelector('.item-name');
+                    if (nameEl) nameEl.textContent = label;
+                    const iconEl = el.querySelector('.item-icon i');
+                    if (iconEl) iconEl.style.color = color;
+                }
+            }
+
+            async _toggleShuffle() {
+                const prev = this.shuffleOn;
+                let ok = false;
+                try {
+                    const resp = await fetch(this.config.sourceCommandUrl, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ command: 'shuffle' })
+                    });
+                    ok = resp.ok;
+                } catch (e) { /* service unreachable */ }
+
+                if (ok) {
+                    // Re-read authoritative state; unchanged state means the
+                    // player doesn't support shuffle (or isn't active).
+                    try {
+                        const resp = await fetch(this.config.spotifyStatusUrl);
+                        if (resp.ok) this.shuffleOn = !!(await resp.json()).shuffle;
+                    } catch (e) { ok = false; }
+                }
+
+                if (!ok || this.shuffleOn === prev) {
+                    this._updateShuffleDisplay('Shuffle unavailable');
+                    if (this._shuffleFlashTimer) clearTimeout(this._shuffleFlashTimer);
+                    this._shuffleFlashTimer = setTimeout(() => {
+                        this._shuffleFlashTimer = null;
+                        this._updateShuffleDisplay();
+                    }, 2000);
+                    return;
+                }
+                this._updateShuffleDisplay();
+            }
+
+            async sendGoWebhook() {
+                if ((this.viewMode === 'parent' || this.viewMode === 'single')
+                        && this._isShuffleCentered()) {
+                    this.snapToNearest();
+                    // Blue flash on GO press (mirrors base behaviour)
+                    const goEl = this.container.querySelector('.arc-item.selected');
+                    if (goEl) {
+                        goEl.classList.add('go-flash');
+                        setTimeout(() => goEl.classList.remove('go-flash'), 400);
+                    }
+                    await this._toggleShuffle();
+                    return;
+                }
+                return super.sendGoWebhook();
+            }
+
+            async enterChildView() {
+                // Action item — nothing to drill into (LEFT is a no-op here)
+                if (this.viewMode === 'parent' && this._isShuffleCentered()) return;
+                return super.enterChildView();
+            }
+        }
+
         function initArcList(dataUrl) {
             const spotifyConfig = {
                 dataSource: dataUrl || '../json/spotify_playlists.json',
@@ -272,6 +401,7 @@
                 title: 'Spotify',
                 context: 'spotify',
                 sourceCommandUrl: getServiceUrl('spotifyServiceUrl', 8771) + '/command',
+                spotifyStatusUrl: getServiceUrl('spotifyServiceUrl', 8771) + '/status',
                 childNameMapper: (track, index, allTracks) => {
                     const allSameArtist = allTracks && allTracks.every(t => t.artist === allTracks[0].artist);
                     let displayName;
@@ -288,7 +418,7 @@
                 }
             };
 
-            const arcList = new ArcList(spotifyConfig);
+            const arcList = new SpotifyArcList(spotifyConfig);
             window.arcListInstance = arcList;
         }
     </script>

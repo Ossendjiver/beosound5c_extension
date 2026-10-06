@@ -91,6 +91,91 @@
             margin: 0 0 1.35rem;
         }
 
+        .page-view.page-view-kodi .page-view-body .kodi-file-path {
+            display: block;
+            margin-top: 0.38rem;
+            color: rgba(255, 255, 255, 0.66);
+            font: 400 0.72rem/1.45 "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+            letter-spacing: 0;
+            word-break: break-all;
+        }
+
+        .kodi-item-visual {
+            position: relative;
+            flex: 0 0 auto;
+            width: 128px;
+            height: 128px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .kodi-item-visual .item-image,
+        .kodi-item-visual .item-icon {
+            width: 128px;
+            height: 128px;
+            border-radius: 0.75rem;
+        }
+
+        .kodi-status-badge {
+            position: absolute;
+            right: -8px;
+            bottom: -8px;
+            min-width: 30px;
+            height: 30px;
+            padding: 0 9px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 999px;
+            color: #fff;
+            background: rgba(11, 16, 24, 0.96);
+            border: 1px solid rgba(255, 255, 255, 0.16);
+            box-shadow: 0 10px 20px rgba(0, 0, 0, 0.34);
+            font: 700 12px/1 Arial, sans-serif;
+            letter-spacing: 0.2px;
+            z-index: 3;
+        }
+
+        .kodi-status-badge i {
+            position: relative;
+            z-index: 1;
+            font-size: 15px;
+            line-height: 1;
+        }
+
+        .kodi-status-badge--watched {
+            background: linear-gradient(135deg, rgba(39, 196, 170, 0.98), rgba(18, 140, 122, 0.98));
+        }
+
+        .kodi-status-badge--count {
+            background: linear-gradient(135deg, rgba(255, 180, 92, 0.98), rgba(221, 118, 41, 0.98));
+        }
+
+        .kodi-status-badge--progress {
+            width: 34px;
+            min-width: 34px;
+            height: 34px;
+            padding: 0;
+            border: none;
+            background:
+                conic-gradient(
+                    from -90deg,
+                    rgba(109, 176, 255, 1) 0deg,
+                    rgba(109, 176, 255, 1) var(--kodi-progress, 0deg),
+                    rgba(16, 24, 36, 0.98) var(--kodi-progress, 0deg),
+                    rgba(16, 24, 36, 0.98) 360deg
+                );
+        }
+
+        .kodi-status-badge--progress::after {
+            content: "";
+            position: absolute;
+            inset: 4px;
+            border-radius: 999px;
+            background: rgba(8, 13, 21, 0.94);
+        }
+
         .fast-letter-overlay {
             position: absolute;
             top: 50%;
@@ -145,6 +230,183 @@
         .action-toast-overlay.visible {
             opacity: 1;
             transform: translateX(-50%) translateY(0);
+        }
+
+        .touch-nav-rail {
+            position: fixed;
+            right: 16px;
+            bottom: 16px;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            z-index: 3900;
+        }
+
+        .touch-nav-wheel,
+        .touch-nav-actions {
+            display: grid;
+            gap: 8px;
+        }
+
+        .touch-nav-actions {
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+
+        .touch-nav-btn {
+            min-width: 74px;
+            min-height: 44px;
+            border: 1px solid rgba(255, 255, 255, 0.16);
+            border-radius: 16px;
+            background: rgba(10, 10, 10, 0.84);
+            box-shadow: 0 16px 36px rgba(0, 0, 0, 0.34);
+            backdrop-filter: blur(14px);
+            color: #f8fbff;
+            font: 600 11px/1 Arial, sans-serif;
+            letter-spacing: 1.1px;
+            text-transform: uppercase;
+            cursor: pointer;
+            touch-action: manipulation;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        .touch-nav-btn:active {
+            background: rgba(80, 140, 255, 0.28);
+            border-color: rgba(148, 199, 255, 0.42);
+        }
+
+        .touch-nav-btn:disabled {
+            opacity: 0.42;
+            cursor: default;
+        }
+
+        .touch-nav-btn:disabled:active {
+            background: rgba(10, 10, 10, 0.84);
+            border-color: rgba(255, 255, 255, 0.16);
+        }
+
+        .touch-nav-btn--nav {
+            min-height: 40px;
+        }
+
+        .options-view {
+            position: absolute;
+            inset: 0;
+            display: flex;
+            align-items: flex-start;
+            justify-content: center;
+            padding-top: 8vh;
+            z-index: 6;
+        }
+
+        .options-panel {
+            width: min(500px, calc(100vw - 500px));
+            max-height: 72vh;
+            padding: 16px 18px 14px;
+            border-radius: 24px;
+            background: rgba(10, 10, 10, 0.84);
+            border: 1px solid rgba(255, 255, 255, 0.14);
+            box-shadow: 0 22px 48px rgba(0, 0, 0, 0.42);
+            backdrop-filter: blur(16px);
+            color: #f4f4f4;
+            overflow: hidden;
+        }
+
+        .options-header {
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            gap: 18px;
+            margin-bottom: 10px;
+        }
+
+        .options-kicker {
+            color: rgba(255, 255, 255, 0.58);
+            font: 600 11px/1.2 Arial, sans-serif;
+            letter-spacing: 1.8px;
+            text-transform: uppercase;
+            margin-bottom: 6px;
+        }
+
+        .options-title {
+            color: #fff;
+            font: 300 22px/1.12 Arial, sans-serif;
+            letter-spacing: 0.4px;
+            margin: 0;
+        }
+
+        .options-subtitle {
+            color: rgba(255, 255, 255, 0.56);
+            font: 400 11px/1.35 Arial, sans-serif;
+            margin-top: 4px;
+            max-width: 280px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .options-hint {
+            flex: 0 0 auto;
+            color: rgba(255, 255, 255, 0.45);
+            font: 500 11px/1.25 Arial, sans-serif;
+            letter-spacing: 1.2px;
+            text-align: right;
+            text-transform: uppercase;
+        }
+
+        .options-list {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            max-height: 54vh;
+            overflow-y: auto;
+            padding-right: 2px;
+            scrollbar-width: none;
+        }
+
+        .options-list::-webkit-scrollbar {
+            display: none;
+        }
+
+        .options-entry {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            min-height: 36px;
+            padding: 8px 10px;
+            border-radius: 12px;
+            color: rgba(245, 245, 245, 0.92);
+            transition: background 120ms ease, box-shadow 120ms ease, color 120ms ease;
+        }
+
+        .options-entry.is-selected {
+            background: rgba(255, 255, 255, 0.14);
+            color: #ffffff;
+            box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.28);
+        }
+
+        .options-entry-icon {
+            width: 24px;
+            color: rgba(255, 255, 255, 0.68);
+            font-size: 18px;
+            text-align: center;
+            flex: 0 0 auto;
+        }
+
+        .options-entry-copy {
+            flex: 1 1 auto;
+            min-width: 0;
+        }
+
+        .options-entry-title {
+            color: inherit;
+            font: 500 14px/1.2 Arial, sans-serif;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .options-entry-subtitle {
+            display: none;
         }
     </style>
 </head>
@@ -345,6 +607,95 @@
             actionToastState.hideTimer = setTimeout(hideActionToast, waitMs);
         };
 
+        const TOUCH_NAV_STEP_SPEED = 20;
+        const touchUiEnabled = (() => {
+            try {
+                return /(?:\?|&)touch=1(?:&|$)/.test(window.location.search)
+                    || window.matchMedia?.('(pointer: coarse)')?.matches
+                    || window.matchMedia?.('(hover: none)')?.matches
+                    || Number(window.navigator?.maxTouchPoints || 0) > 0;
+            } catch (_error) {
+                return false;
+            }
+        })();
+        let touchNavArcList = null;
+
+        const bindTouchRailPress = (element, handler) => {
+            if (!element || typeof handler !== 'function') return;
+            let lastPointerPressAt = 0;
+            const run = (event) => {
+                if (element.disabled || Date.now() - lastPointerPressAt < 120) {
+                    event.preventDefault();
+                    return;
+                }
+                event.preventDefault();
+                lastPointerPressAt = Date.now();
+                handler();
+            };
+            if (window.PointerEvent) {
+                element.addEventListener('pointerup', run);
+            }
+            element.addEventListener('touchend', run, { passive: false });
+            element.addEventListener('click', (event) => {
+                if (element.disabled || Date.now() - lastPointerPressAt < 450) {
+                    event.preventDefault();
+                    return;
+                }
+                event.preventDefault();
+                handler();
+            });
+        };
+
+        const updateTouchNavRailState = () => {
+            const rail = document.getElementById('touch-nav-rail');
+            if (!rail) return;
+            const isReady = Boolean(touchNavArcList);
+            rail.querySelectorAll('[data-touch-action]').forEach((button) => {
+                button.disabled = !isReady;
+            });
+        };
+
+        const ensureTouchNavRail = () => {
+            if (!touchUiEnabled || document.getElementById('touch-nav-rail')) return;
+
+            const rail = document.createElement('div');
+            rail.id = 'touch-nav-rail';
+            rail.className = 'touch-nav-rail';
+            rail.innerHTML = `
+                <div class="touch-nav-wheel">
+                    <button type="button" class="touch-nav-btn touch-nav-btn--nav" data-touch-action="up">Up</button>
+                    <button type="button" class="touch-nav-btn touch-nav-btn--nav" data-touch-action="down">Down</button>
+                </div>
+                <div class="touch-nav-actions">
+                    <button type="button" class="touch-nav-btn" data-touch-action="open">Open</button>
+                    <button type="button" class="touch-nav-btn" data-touch-action="play">Play</button>
+                    <button type="button" class="touch-nav-btn" data-touch-action="back">Back</button>
+                    <button type="button" class="touch-nav-btn" data-touch-action="more">More</button>
+                </div>
+            `;
+            document.body.appendChild(rail);
+
+            const actionMap = {
+                up: () => touchNavArcList?.handleNavFromParent?.({ direction: 'counter', speed: TOUCH_NAV_STEP_SPEED }),
+                down: () => touchNavArcList?.handleNavFromParent?.({ direction: 'clock', speed: TOUCH_NAV_STEP_SPEED }),
+                open: () => touchNavArcList?.handleButtonFromParent?.('left'),
+                play: () => touchNavArcList?.handleButtonFromParent?.('go'),
+                back: () => touchNavArcList?.handleButtonFromParent?.('right'),
+                more: () => touchNavArcList?.handleButtonFromParent?.('go_hold'),
+            };
+
+            rail.querySelectorAll('[data-touch-action]').forEach((button) => {
+                const actionId = String(button.dataset.touchAction || '').trim();
+                bindTouchRailPress(button, () => actionMap[actionId]?.());
+            });
+            updateTouchNavRailState();
+        };
+
+        const attachTouchNavArcList = (arcList) => {
+            touchNavArcList = arcList || null;
+            updateTouchNavRailState();
+        };
+
         async function loadStaticLibrary() {
             const raw = await fetchJson(STATIC_CACHE_URL, {
                 timeoutMs: 2500,
@@ -376,6 +727,7 @@
         // Boot sequence
         // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         document.addEventListener('DOMContentLoaded', async () => {
+            ensureTouchNavRail();
             const KODI_URL = getServiceUrl('kodiServiceUrl', 8782);
             const cachedLibrary = await loadStaticLibrary();
             if (Array.isArray(cachedLibrary) && cachedLibrary.length > 0) {
@@ -489,6 +841,70 @@
                 return raw.startsWith('/art/') ? `${kodiServiceBaseUrl}${raw}` : raw;
             };
 
+            const getKodiStatusBadgeData = (item) => {
+                const safeItem = (item && typeof item === 'object') ? item : {};
+                const state = String(safeItem.watched_state || '').trim().toLowerCase();
+                const isFolder = Array.isArray(safeItem.tracks) && safeItem.tracks.length > 0;
+                const unwatchedCount = Math.max(0, Number(safeItem.unwatched_count || 0));
+                const resumeProgress = Math.max(0, Math.min(1, Number(safeItem.resume_progress || 0)));
+
+                if (isFolder && unwatchedCount > 0) {
+                    return {
+                        variant: 'count',
+                        text: unwatchedCount > 99 ? '99+' : String(unwatchedCount),
+                        title: `${unwatchedCount} unwatched`,
+                    };
+                }
+                if (state === 'watched') {
+                    return {
+                        variant: 'watched',
+                        icon: 'check',
+                        title: 'Watched',
+                    };
+                }
+                if (state === 'inprogress' || resumeProgress > 0.01) {
+                    return {
+                        variant: 'progress',
+                        icon: 'play',
+                        progress: resumeProgress,
+                        title: resumeProgress > 0.01
+                            ? `In progress (${Math.round(resumeProgress * 100)}%)`
+                            : 'In progress',
+                    };
+                }
+                return null;
+            };
+
+            const wrapKodiVisual = (baseElement, item) => {
+                const badgeData = getKodiStatusBadgeData(item);
+                if (!badgeData) return baseElement;
+
+                const wrapper = document.createElement('div');
+                wrapper.className = 'kodi-item-visual';
+                wrapper.appendChild(baseElement);
+
+                const badge = document.createElement('div');
+                badge.className = `kodi-status-badge kodi-status-badge--${badgeData.variant}`;
+                badge.setAttribute('aria-hidden', 'true');
+                if (badgeData.title) badge.title = badgeData.title;
+
+                if (badgeData.variant === 'count') {
+                    badge.textContent = badgeData.text || '';
+                } else {
+                    const icon = document.createElement('i');
+                    icon.className = `ph ph-${badgeData.icon || 'check'}`;
+                    badge.appendChild(icon);
+                }
+
+                if (badgeData.variant === 'progress') {
+                    const degrees = Math.max(0, Math.min(360, Math.round((badgeData.progress || 0) * 360)));
+                    badge.style.setProperty('--kodi-progress', `${degrees}deg`);
+                }
+
+                wrapper.appendChild(badge);
+                return wrapper;
+            };
+
             const firstDescendantImage = (node) => {
                 if (!node || typeof node !== 'object') return '';
                 const directImage = normalizeKodiImageUrl(node.image || '');
@@ -546,12 +962,9 @@
                 return mapped;
             };
 
-            // Convert preloaded data to blob URL for ArcList's fetch path
-            const blob    = new Blob([JSON.stringify(preloadedData)], { type: 'application/json' });
-            const blobUrl = URL.createObjectURL(blob);
-
             const kodiConfig = {
-                dataSource:      blobUrl,
+                dataSource:      STATIC_CACHE_URL,
+                inlineData:      Array.isArray(preloadedData) ? preloadedData : [],
                 dataType:        'parent_child',
                 viewMode:        'hierarchical',
                 parentKey:       'tracks',
@@ -564,6 +977,7 @@
             };
 
             const arcList = new ArcList(kodiConfig);
+            attachTouchNavArcList(arcList);
 
             // Stash originals before override
             const folderStack = [];
@@ -574,6 +988,7 @@
             const origCreateImageElement = arcList.createImageElement?.bind(arcList);
 
             arcList.createImageElement = function (item) {
+                let visual = null;
                 if (item?.icon) {
                     const iconBox = document.createElement('div');
                     iconBox.className = 'item-image item-icon';
@@ -581,16 +996,17 @@
                     const icon = document.createElement('i');
                     icon.className = `ph ph-${item.icon}`;
                     iconBox.appendChild(icon);
-                    return iconBox;
+                    visual = iconBox;
+                } else if (typeof origCreateImageElement === 'function') {
+                    visual = origCreateImageElement(item);
+                } else {
+                    const img = document.createElement('img');
+                    img.className = 'item-image';
+                    img.src = item?.image || FALLBACK_CARD_IMAGE;
+                    img.alt = item?.name || '';
+                    visual = img;
                 }
-                if (typeof origCreateImageElement === 'function') {
-                    return origCreateImageElement(item);
-                }
-                const img = document.createElement('img');
-                img.className = 'item-image';
-                img.src = item?.image || FALLBACK_CARD_IMAGE;
-                img.alt = item?.name || '';
-                return img;
+                return wrapKodiVisual(visual, item);
             };
 
             // Clear stale hierarchy localStorage
@@ -629,6 +1045,99 @@
                 });
             };
 
+            const CONTEXT_ROUTE = 'menu/kodi';
+            const contextMenuItems = () => rootItems().map((entry) => ({
+                id: String(entry?.id || '').trim(),
+                title: cleanTitle(entry?.name || entry?.id || ''),
+            })).filter((entry) => entry.id && entry.title);
+
+            const resolveDefaultContextSectionId = () => {
+                const entries = contextMenuItems();
+                const availableIds = new Set(entries.map((entry) => entry.id));
+                const preferredOrder = ['movies', 'tvshows', 'livetv', 'playlists'];
+                return preferredOrder.find((id) => availableIds.has(id)) || entries[0]?.id || '';
+            };
+
+            const resolveActiveContextSectionId = () =>
+                String(folderStack[0]?.item?.id || '').trim();
+
+            const resolveCurrentContextSectionId = () => {
+                const lockedSectionId = resolveActiveContextSectionId();
+                if (lockedSectionId) return lockedSectionId;
+                const currentId = String(getCurrent()?.id || '').trim();
+                return currentId || resolveDefaultContextSectionId();
+            };
+
+            let lastPublishedContextMenuSignature = '';
+            const publishContextMenu = () => {
+                const payload = {
+                    type: 'bs5c-context-menu',
+                    route: CONTEXT_ROUTE,
+                    items: contextMenuItems(),
+                    selectedId: resolveCurrentContextSectionId(),
+                    activeId: resolveActiveContextSectionId(),
+                };
+                if (!window.parent || window.parent === window) return;
+                const signature = JSON.stringify(payload);
+                if (signature === lastPublishedContextMenuSignature) return;
+                lastPublishedContextMenuSignature = signature;
+                window.parent.postMessage(payload, '*');
+            };
+
+            const openContextSection = (sectionId, options = {}) => {
+                const normalizedId = String(sectionId || '').trim();
+                if (!normalizedId) return false;
+
+                if (String(folderStack[0]?.item?.id || '').trim() === normalizedId) {
+                    publishContextMenu();
+                    return true;
+                }
+
+                const roots = rootItems();
+                const rootIndex = roots.findIndex((entry) => String(entry?.id || '').trim() === normalizedId);
+                if (rootIndex < 0) return false;
+
+                const rootFolder = roots[rootIndex];
+                folderStack.length = 0;
+                folderStack.push({
+                    item: rootFolder,
+                    items: roots.slice(),
+                    currentIndex: rootIndex,
+                    targetIndex: rootIndex,
+                });
+                arcList.items = mapChildrenForParent(rootFolder);
+                arcList.currentIndex = 0;
+                arcList.targetIndex = 0;
+                refreshList();
+                publishContextMenu();
+                return true;
+            };
+
+            const returnToRootState = (preferredSectionId = '') => {
+                const roots = rootItems();
+                const normalizedId = String(preferredSectionId || '').trim();
+                const nextIndex = roots.findIndex((entry) => String(entry?.id || '').trim() === normalizedId);
+
+                folderStack.length = 0;
+                arcList.items = roots;
+                arcList.currentIndex = clamp(roots, nextIndex >= 0 ? nextIndex : 0);
+                arcList.targetIndex = arcList.currentIndex;
+                refreshList();
+                publishContextMenu();
+                return true;
+            };
+
+            const postContextExit = (preferredSectionId = '') => {
+                returnToRootState(preferredSectionId);
+                if (window.parent && window.parent !== window) {
+                    window.parent.postMessage({
+                        type: 'bs5c-context-exit',
+                        route: CONTEXT_ROUTE,
+                    }, '*');
+                }
+                return true;
+            };
+
             const cleanTitle = (value) => String(value || '').split('\n')[0].trim();
             const escapeHtml = (value) => String(value || '')
                 .replace(/&/g, '&amp;')
@@ -658,6 +1167,17 @@
                 }
                 if (subtitle) {
                     body.push(`<p><strong>${escapeHtml(subtitle)}</strong></p>`);
+                }
+                if (safeItem.file_path) {
+                    body.push(
+                        `<p><strong>Path:</strong><span class="kodi-file-path">${escapeHtml(safeItem.file_path)}</span></p>`
+                    );
+                }
+                if (safeItem.watched_state === 'watched') {
+                    body.push('<p><strong>Status:</strong> Watched</p>');
+                } else if (safeItem.watched_state === 'inprogress') {
+                    const progress = Math.max(0, Math.min(100, Math.round(Number(safeItem.resume_progress || 0) * 100)));
+                    body.push(`<p><strong>Status:</strong> In Progress${progress > 0 ? ` (${progress}% watched)` : ''}</p>`);
                 }
                 body.push(`<p>Live ${escapeHtml(label)} information is unavailable right now, but playback is still available from this item.</p>`);
                 return {
@@ -704,10 +1224,12 @@
 
             let detailState = null;
             let detailRequestId = 0;
+            let optionsState = null;
 
             const getDetailSpec = (item) => {
                 const uri = String(item?.url || '');
                 const rawId = String(item?.id || '');
+                const isLeaf = item && (!Array.isArray(item.tracks) || item.tracks.length === 0);
                 const configs = [
                     {
                         kind: 'movie',
@@ -745,11 +1267,20 @@
                         return Object.assign({ id: uriMatch[1] }, config);
                     }
                 }
+                if (isLeaf && uri) {
+                    return {
+                        kind: 'generic',
+                        id: '',
+                        endpoint: '',
+                        loadingLabel: 'item',
+                        emptyLabel: 'item',
+                    };
+                }
                 return null;
             };
 
             const clearPageView = () => {
-                arcList.container?.querySelectorAll('.page-view').forEach(node => node.remove());
+                arcList.container?.querySelectorAll('.page-view, .options-view').forEach(node => node.remove());
             };
 
             const setDetailCounter = () => {
@@ -771,8 +1302,9 @@
             const renderBreadcrumbs = () => {
                 if (!arcList.container) return;
                 arcList.container.querySelectorAll('.kodi-breadcrumb').forEach(n => n.remove());
-                const crumbEntries = folderStack.map(entry => ({ item: entry.item }));
+                const crumbEntries = folderStack.slice(1).map(entry => ({ item: entry.item }));
                 if (detailState?.item) crumbEntries.push({ item: detailState.item });
+                else if (optionsState?.item) crumbEntries.push({ item: optionsState.item });
                 if (!crumbEntries.length) return;
 
                 crumbEntries.slice(-3).forEach((entry, idx, vis) => {
@@ -945,7 +1477,203 @@
                 }
             };
 
+            const dismissOptionsMenu = (refresh = true) => {
+                if (!optionsState) return false;
+                optionsState = null;
+                clearPageView();
+                if (refresh) refreshList();
+                return true;
+            };
+
+            const setOptionsSelection = (index) => {
+                if (!optionsState || !Array.isArray(optionsState.entries) || !optionsState.entries.length) return;
+                const maxIndex = optionsState.entries.length - 1;
+                const nextIndex = Math.max(0, Math.min(maxIndex, Math.round(index || 0)));
+                if (nextIndex === optionsState.currentIndex) return;
+                optionsState.currentIndex = nextIndex;
+                renderOptionsPage();
+            };
+
+            const moveOptionsSelection = (delta) => {
+                if (!optionsState || !Array.isArray(optionsState.entries) || !optionsState.entries.length) return;
+                setOptionsSelection((optionsState.currentIndex || 0) + delta);
+            };
+
+            const showKodiActionUnavailable = (message) => {
+                showActionToast(message, { preserveTiming: true });
+                settleActionToast();
+            };
+
+            const buildKodiOptionsEntries = (item) => {
+                const safeItem = normalizeKodiViewItem(item, ['options']);
+                const spec = getDetailSpec(safeItem);
+                const kind = String(spec?.kind || '').trim().toLowerCase();
+                const subtitle = cleanTitle(safeItem.artist || folderStack[folderStack.length - 1]?.item?.name || '');
+                const queueCapable = ['movie', 'episode', 'channel', 'playlist'].includes(kind);
+                const canFavorite = ['movie', 'episode', 'playlist'].includes(kind);
+                const canMarkUnwatched = ['movie', 'episode'].includes(kind);
+                const canPlayFromHere = ['movie', 'episode', 'playlist'].includes(kind);
+                const canInspect = !!spec;
+
+                return [
+                    {
+                        id: 'play_item',
+                        icon: 'play-circle',
+                        title: 'Play',
+                        subtitle: 'Start this item immediately',
+                        onSelect: async () => {
+                            dismissOptionsMenu(false);
+                            await arcList.sendGoWebhook('play_item', safeItem);
+                            refreshList();
+                        },
+                    },
+                    queueCapable ? {
+                        id: 'play_next',
+                        icon: 'queue',
+                        title: 'Play Next',
+                        subtitle: 'Insert after the current playlist item',
+                        onSelect: async () => {
+                            dismissOptionsMenu(false);
+                            await arcList.sendGoWebhook('play_next', safeItem);
+                            refreshList();
+                        },
+                    } : null,
+                    queueCapable ? {
+                        id: 'queue_item',
+                        icon: 'list-plus',
+                        title: 'Queue Item',
+                        subtitle: 'Append to the active Kodi playlist',
+                        onSelect: async () => {
+                            dismissOptionsMenu(false);
+                            await arcList.sendGoWebhook('queue_item', safeItem);
+                            refreshList();
+                        },
+                    } : null,
+                    canInspect ? {
+                        id: 'info',
+                        icon: 'info',
+                        title: 'Information',
+                        subtitle: 'Open the item detail page',
+                        onSelect: async () => {
+                            dismissOptionsMenu(false);
+                            await openDetailPage(safeItem);
+                        },
+                    } : null,
+                    canMarkUnwatched ? {
+                        id: 'mark_unwatched',
+                        icon: 'eye-slash',
+                        title: 'Mark as Unwatched',
+                        subtitle: 'Reset watched progress for this item',
+                        onSelect: async () => {
+                            dismissOptionsMenu(false);
+                            await arcList.sendGoWebhook('mark_unwatched', safeItem);
+                            refreshList();
+                        },
+                    } : null,
+                    canFavorite ? {
+                        id: 'favorite_add',
+                        icon: 'heart',
+                        title: 'Add to Favorites',
+                        subtitle: 'Save this item in Kodi favourites',
+                        onSelect: async () => {
+                            dismissOptionsMenu(false);
+                            await arcList.sendGoWebhook('favorite_add', safeItem);
+                            refreshList();
+                        },
+                    } : null,
+                    canPlayFromHere ? {
+                        id: 'play_from_here',
+                        icon: 'play',
+                        title: 'Play from Here',
+                        subtitle: 'Play this item and the remaining items in this section',
+                        onSelect: async () => {
+                            dismissOptionsMenu(false);
+                            await arcList.sendGoWebhook('play_from_here', safeItem);
+                            refreshList();
+                        },
+                    } : null,
+                ].filter(Boolean);
+            };
+
+            const showOptionsForItem = (item = detailState?.item || getCurrent()) => {
+                const safeItem = normalizeKodiViewItem(item, ['options']);
+                const entries = buildKodiOptionsEntries(safeItem);
+                if (!entries.length) {
+                    showKodiActionUnavailable('No options available');
+                    return false;
+                }
+                optionsState = {
+                    item: safeItem,
+                    title: 'Item Options',
+                    subtitle: cleanTitle(safeItem.name || 'Kodi'),
+                    entries,
+                    currentIndex: 0,
+                };
+                renderOptionsPage();
+                return true;
+            };
+
+            const activateSelectedOption = async () => {
+                const entry = optionsState?.entries?.[optionsState?.currentIndex || 0];
+                if (!entry || typeof entry.onSelect !== 'function') return false;
+                await entry.onSelect();
+                return true;
+            };
+
+            const renderOptionsPage = () => {
+                if (!optionsState || !arcList.container) return;
+                clearPageView();
+                arcList.container.querySelectorAll('.arc-item:not(.kodi-breadcrumb)').forEach(node => node.remove());
+                renderBreadcrumbs();
+
+                const page = document.createElement('div');
+                page.className = 'options-view';
+
+                const panel = document.createElement('div');
+                panel.className = 'options-panel';
+
+                const header = document.createElement('div');
+                header.className = 'options-header';
+                header.innerHTML = `
+                    <div>
+                        <div class="options-kicker">Hold GO</div>
+                        <h2 class="options-title">${escapeHtml(optionsState.title || 'Options')}</h2>
+                        <div class="options-subtitle">${escapeHtml(optionsState.subtitle || '')}</div>
+                    </div>
+                    <div class="options-hint">GO Select<br>RIGHT Back</div>
+                `;
+
+                const list = document.createElement('div');
+                list.className = 'options-list';
+                optionsState.entries.forEach((entry, index) => {
+                    const row = document.createElement('div');
+                    row.className = `options-entry${index === optionsState.currentIndex ? ' is-selected' : ''}`;
+                    row.innerHTML = `
+                        <div class="options-entry-icon"><i class="ph ph-${escapeHtml(entry.icon || 'dots-three')}"></i></div>
+                        <div class="options-entry-copy">
+                            <div class="options-entry-title">${escapeHtml(entry.title || 'Option')}</div>
+                        </div>
+                    `;
+                    list.appendChild(row);
+                });
+
+                panel.appendChild(header);
+                panel.appendChild(list);
+                page.appendChild(panel);
+                arcList.container.appendChild(page);
+                requestAnimationFrame(() => {
+                    list.querySelector('.options-entry.is-selected')?.scrollIntoView({
+                        block: 'nearest',
+                    });
+                });
+                setDetailCounter();
+            };
+
             const refreshList = () => {
+                if (optionsState) {
+                    renderOptionsPage();
+                    return;
+                }
                 clearPageView();
                 arcList.viewMode       = 'single';
                 arcList.selectedParent = null;
@@ -954,8 +1682,10 @@
                 if (arcList.totalItemsDisplay)
                     arcList.totalItemsDisplay.textContent = arcList.items.length;
                 if (typeof arcList.updateCounter === 'function') arcList.updateCounter();
+                arcList.container?.querySelectorAll('.arc-item:not(.kodi-breadcrumb)').forEach(node => node.remove());
                 if (typeof origRender === 'function') origRender();
                 renderBreadcrumbs();
+                publishContextMenu();
             };
 
             // â”€â”€ Folder navigation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -979,6 +1709,12 @@
             };
 
             const exitFolder = () => {
+                if (!folderStack.length) return false;
+                if (folderStack.length === 1) {
+                    const activeSectionId = String(folderStack[0]?.item?.id || '').trim();
+                    console.log('[KODI] Closing context view back to main menu');
+                    return postContextExit(activeSectionId);
+                }
                 const prev = folderStack.pop();
                 if (!prev) return false;
 
@@ -994,6 +1730,10 @@
             // â”€â”€ Override ArcList methods â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
             arcList.render = function () {
+                if (optionsState) {
+                    renderOptionsPage();
+                    return;
+                }
                 if (detailState) {
                     renderDetailPage();
                     return;
@@ -1001,79 +1741,119 @@
                 clearPageView();
                 if (typeof origRender === 'function') origRender();
                 renderBreadcrumbs();
+                publishContextMenu();
             };
 
             // GO = play the current item directly. LEFT opens detail pages where available.
-            arcList.sendGoWebhook = async function () {
-                const cur = detailState?.item || getCurrent();
+            arcList.sendGoWebhook = async function (command = 'play_item', itemOverride = null, extraPayload = {}) {
+                const cur = itemOverride || detailState?.item || optionsState?.item || getCurrent();
                 if (!cur) return;
 
                 if (detailState?.loading) return;
 
-                const playUri = detailState?.page?.play_uri || cur.url || cur.play_url;
-                if (!playUri) {
+                const playUri = String(
+                    extraPayload.url
+                    || extraPayload.play_url
+                    || detailState?.page?.play_uri
+                    || cur.url
+                    || cur.play_url
+                    || ''
+                ).trim();
+                if (!playUri && command !== 'mark_unwatched') {
                     console.warn('[KODI] No playback URI for:', cur.name);
                     return;
                 }
 
                 if (typeof arcList.snapToNearest === 'function') arcList.snapToNearest();
 
+                const commandMessages = {
+                    play_item:      { pending: 'Starting playback', error: 'Error starting playback', playing: 'Starting playback' },
+                    play_next:      { pending: 'Queueing next…', error: 'Error queueing next', queued: 'Queued to play next' },
+                    queue_item:     { pending: 'Queueing item…', error: 'Error queueing item', queued: 'Added to queue' },
+                    mark_unwatched: { pending: 'Updating item…', error: 'Error updating item', updated: 'Marked as unwatched' },
+                    favorite_add:   { pending: 'Adding to favorites…', error: 'Error adding to favorites', favorited: 'Added to favorites' },
+                    play_from_here: { pending: 'Starting playback', error: 'Error starting playback', playing: 'Playing from here' },
+                };
+                const copy = commandMessages[command] || commandMessages.play_item;
+                const payload = Object.assign({
+                    command,
+                    id: cur.id || '',
+                    url: playUri || cur.url || '',
+                    play_url: detailState ? '' : (cur.play_url || ''),
+                }, extraPayload || {});
+
                 try {
-                    showActionToast('Starting playback');
+                    showActionToast(copy.pending);
                     const resp = await fetch(sourceCommandUrl, {
                         method:  'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body:    JSON.stringify({
-                            command: 'play_item',
-                            id: cur.id || '',
-                            url: playUri || '',
-                            play_url: detailState ? '' : (cur.play_url || ''),
-                        }),
+                        body:    JSON.stringify(payload),
                     });
                     let result = null;
                     try {
                         result = await resp.json();
                     } catch (e) {}
                     if (!resp.ok) {
-                        showActionToast('Error starting playback', { preserveTiming: true });
+                        showActionToast(copy.error, { preserveTiming: true });
                         settleActionToast();
                         console.warn('[KODI] Play failed:', resp.status);
                     } else if (result?.state === 'error') {
-                        showActionToast('Error starting playback', { preserveTiming: true });
+                        showActionToast(copy.error, { preserveTiming: true });
                         settleActionToast();
                         console.warn('[KODI] Service rejected play:', result);
                     } else {
-                        showActionToast('Starting playback', { preserveTiming: true });
-                        pushNowPlayingPayload(cur, detailState?.page || null);
+                        const state = String(result?.state || '').trim().toLowerCase();
+                        const successMessage = copy[state] || copy.playing || copy.queued || copy.pending;
+                        showActionToast(successMessage, { preserveTiming: true });
+                        if (state === 'playing' || command === 'play_item' || command === 'play_from_here') {
+                            pushNowPlayingPayload(cur, detailState?.page || null);
+                        }
                         settleActionToast();
-                        console.log('[KODI] Playing:', cur.name, '→', playUri);
+                        console.log('[KODI] Command complete:', command, cur.name, '→', playUri, result);
                     }
                 } catch (e) {
-                    showActionToast('Error starting playback', { preserveTiming: true });
+                    showActionToast(copy.error, { preserveTiming: true });
                     settleActionToast();
                     console.warn('[KODI] Play error:', e);
                 }
             };
 
             arcList.handleButtonFromParent = function (button) {
-                if (detailState) {
-                    if (button === 'right') { if (closeDetailPage()) return; }
-                    if (button === 'go')    { return arcList.sendGoWebhook(); }
-                    if (button === 'go_very_long' || button === 'go_very_hold') return;
+                const normalized = String(button || '').toLowerCase();
+                if (optionsState) {
+                    if (normalized === 'right' || normalized === 'left') { if (dismissOptionsMenu()) return; }
+                    if (normalized === 'go') { return activateSelectedOption(); }
+                    if (normalized === 'go_long' || normalized === 'go_hold') return;
                     return;
                 }
-                if (button === 'left')  {
+                if (detailState) {
+                    if (normalized === 'right') { if (closeDetailPage()) return; }
+                    if (normalized === 'go')    { return arcList.sendGoWebhook(); }
+                    if (normalized === 'go_long' || normalized === 'go_hold') { return showOptionsForItem(detailState.item); }
+                    return;
+                }
+                if (normalized === 'left')  {
                     const cur = getCurrent();
                     if (cur && getDetailSpec(cur)) { openDetailPage(cur); return; }
                     if (enterFolder()) return;
                 }
-                if (button === 'right') { if (exitFolder())  return; }
-                if (button === 'go_very_long' || button === 'go_very_hold') return;
-                if (button === 'go')    { return arcList.sendGoWebhook(); }
+                if (normalized === 'right') {
+                    if (exitFolder()) return;
+                    return;
+                }
+                if (normalized === 'go_long' || normalized === 'go_hold') { return showOptionsForItem(); }
+                if (normalized === 'go')    { return arcList.sendGoWebhook(); }
                 if (origButton) origButton(button);
             };
 
             arcList.handleKeyPress = function (e) {
+                if (optionsState) {
+                    if (e.key === 'ArrowUp') { moveOptionsSelection(-1); return; }
+                    if (e.key === 'ArrowDown') { moveOptionsSelection(1); return; }
+                    if (e.key === 'ArrowRight' || e.key === 'Escape' || e.key === 'Backspace') { if (dismissOptionsMenu()) return; }
+                    if (e.key === 'Enter') { return activateSelectedOption(); }
+                    return;
+                }
                 if (detailState) {
                     if (e.key === 'ArrowUp')    { if (detailState.scrollEl) detailState.scrollEl.scrollTop -= 42; return; }
                     if (e.key === 'ArrowDown')  { if (detailState.scrollEl) detailState.scrollEl.scrollTop += 42; return; }
@@ -1086,16 +1866,25 @@
                     if (cur && getDetailSpec(cur)) { openDetailPage(cur); return; }
                     if (enterFolder()) return;
                 }
-                if (e.key === 'ArrowRight') { if (exitFolder())  return; }
+                if (e.key === 'ArrowRight') {
+                    if (exitFolder()) return;
+                    return;
+                }
                 if (e.key === 'Enter')      { return arcList.sendGoWebhook(); }
                 if (origKeyPress) origKeyPress(e);
             };
 
             arcList.handleNavFromParent = function (data) {
+                if (optionsState) {
+                    const direction = data?.direction;
+                    if (direction === 'clock') moveOptionsSelection(1);
+                    else if (direction === 'counter') moveOptionsSelection(-1);
+                    return;
+                }
                 if (detailState?.scrollEl) {
                     const direction = data?.direction;
                     const speed = Math.max(1, Number(data?.speed || 1));
-                    const delta = Math.max(24, speed * 10);
+                    const delta = speed * 8;
                     if (direction === 'clock') {
                         detailState.scrollEl.scrollTop += delta;
                     } else if (direction === 'counter') {
@@ -1111,9 +1900,7 @@
 
             const initNavigation = () => {
                 arcList.parentData = Array.isArray(preloadedData) ? preloadedData : [];
-                arcList.items        = rootItems();
-                arcList.currentIndex = 0;
-                arcList.targetIndex  = 0;
+                returnToRootState(resolveDefaultContextSectionId());
                 refreshList();
                 requestAnimationFrame(() => refreshList());
                 setTimeout(() => refreshList(), 120);
@@ -1123,6 +1910,18 @@
                 console.log('[KODI] Navigation ready from preloaded cache');
             };
             setTimeout(initNavigation, 0);
+
+            window.addEventListener('message', (event) => {
+                if (event.data?.type === 'context-select') {
+                    const sectionId = String(event.data?.id || '').trim();
+                    if (!sectionId) return;
+                    openContextSection(sectionId);
+                    return;
+                }
+                if (event.data?.type === 'context-reset') {
+                    returnToRootState(resolveCurrentContextSectionId());
+                }
+            });
         }
     </script>
 </body>

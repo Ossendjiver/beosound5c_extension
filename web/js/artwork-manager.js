@@ -58,8 +58,9 @@ const ArtworkManager = {
      * @param {HTMLImageElement} imgElement - Target img element
      * @param {string} artworkUrl - URL of artwork to display
      * @param {string} placeholderType - Type of placeholder: 'noArtwork', 'artworkUnavailable', 'showing'
+     * @param {string[]} fallbackUrls - Verified same-item artwork candidates
      */
-    displayArtwork(imgElement, artworkUrl, placeholderType = 'noArtwork') {
+    displayArtwork(imgElement, artworkUrl, placeholderType = 'noArtwork', fallbackUrls = []) {
         if (!imgElement) return;
 
         const fadeInDelay = window.Constants?.timeouts?.artworkFadeIn || 100;
@@ -79,53 +80,72 @@ const ArtworkManager = {
         // Helper to fade in new artwork
         const fadeIn = (src) => {
             if (imgElement.src === src) return; // Already showing this image
+            if (imgElement._artworkToken !== requestToken) return;
 
             imgElement.style.opacity = 0;
             setTimeout(() => {
+                if (imgElement._artworkToken !== requestToken) return;
                 imgElement.src = src;
                 setTimeout(() => {
+                    if (imgElement._artworkToken !== requestToken) return;
                     imgElement.style.opacity = 1;
                 }, fadeInComplete);
             }, fadeInDelay);
         };
 
+        const candidates = [artworkUrl, ...(Array.isArray(fallbackUrls) ? fallbackUrls : [])]
+            .map(value => String(value || '').trim())
+            .filter((value, index, values) => value && values.indexOf(value) === index);
+
+        // Remember the complete request rather than only the first URL. A
+        // late failure from track A must not advance to A's fallback after
+        // track B has already arrived.
+        const requestToken = candidates.join('\u001f');
+        imgElement._artworkToken = requestToken;
+
         // No artwork URL - show placeholder
-        if (!artworkUrl) {
+        if (!candidates.length) {
             const placeholder = placeholders[placeholderType] || placeholders.noArtwork;
             imgElement.src = placeholder;
             imgElement.style.opacity = 1;
             return;
         }
 
-        // Data URL (from direct Sonos API) - set immediately with fade
-        if (artworkUrl.startsWith('data:')) {
-            fadeIn(artworkUrl);
-            return;
-        }
-
-        // Check cache first
-        if (this.cache[artworkUrl] && this.cache[artworkUrl].complete) {
-            fadeIn(this.cache[artworkUrl].src);
-            return;
-        }
-
-        // Preload and cache for future use
-        this.preloadImage(artworkUrl)
-            .then(img => {
-                if (img) {
-                    fadeIn(img.src);
-                }
-            })
-            .catch(error => {
-                console.error('Error loading artwork:', error.message);
-                if (error.message.includes('0 bytes')) {
-                    console.warn('Home Assistant media player proxy returned 0 bytes - this is a known issue with Sonos artwork URLs');
-                }
-                // Show error placeholder
+        const tryCandidate = (index) => {
+            if (imgElement._artworkToken !== requestToken) return;
+            const candidate = candidates[index];
+            if (!candidate) {
                 const placeholder = placeholders.artworkUnavailable || placeholders.noArtwork;
                 imgElement.src = placeholder;
                 imgElement.style.opacity = 1;
-            });
+                return;
+            }
+
+            // Data images have already been materialised by the provider and
+            // do not require a network probe.
+            if (candidate.startsWith('data:')) {
+                fadeIn(candidate);
+                return;
+            }
+            if (this.cache[candidate] && this.cache[candidate].complete) {
+                fadeIn(this.cache[candidate].src);
+                return;
+            }
+
+            this.preloadImage(candidate)
+                .then(img => {
+                    if (img && imgElement._artworkToken === requestToken) {
+                        fadeIn(img.src);
+                    }
+                })
+                .catch(error => {
+                    if (imgElement._artworkToken !== requestToken) return;
+                    console.warn('Artwork candidate failed:', candidate, error.message);
+                    tryCandidate(index + 1);
+                });
+        };
+
+        tryCandidate(0);
     },
 
     /**

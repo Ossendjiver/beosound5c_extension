@@ -201,6 +201,16 @@ class PlayerBase:
     async def stop(self) -> bool:
         raise NotImplementedError
 
+    async def set_shuffle(self, enabled: bool) -> bool:
+        """Enable/disable shuffle on the player. Override in subclasses
+        that support it; default is no-op."""
+        return False
+
+    async def play_track_radio(self, track_uri) -> bool:
+        """Start a radio station seeded by *track_uri* (e.g. Spotify track
+        radio). Override in subclasses that support it; default is no-op."""
+        return False
+
     async def get_state(self) -> str:
         """Return "playing", "paused", or "stopped"."""
         return self._current_playback_state or "stopped"
@@ -349,6 +359,8 @@ class PlayerBase:
         app.router.add_get("/player/media", self._handle_media)
         app.router.add_get("/player/queue", self._handle_queue)
         app.router.add_post("/player/play_from_queue", self._handle_play_from_queue)
+        app.router.add_post("/player/play_track_radio", self._handle_play_track_radio)
+        app.router.add_post("/player/shuffle", self._handle_shuffle)
 
         # Let subclass add extra routes
         self.add_routes(app)
@@ -464,9 +476,13 @@ class PlayerBase:
             data = await request.json()
         except Exception:
             data = {}
-        # Timestamp gating: reject stale play commands
+        # Timestamp gating: reject stale play commands.
+        # `_latest_action_ts` is per-process and shared across sources, so a
+        # strict `<` comparison would drop legitimate plays from a different
+        # source whenever another source had run more recently. A 3-second
+        # window still deduplicates rapid double-taps within one interaction.
         action_ts = data.get("action_ts", 0)
-        if action_ts and action_ts < self._latest_action_ts:
+        if action_ts and 0 < self._latest_action_ts - action_ts < 3.0:
             log.warning("Dropped stale play (ts=%.3f < latest=%.3f)",
                         action_ts, self._latest_action_ts)
             return web.json_response(
@@ -484,6 +500,44 @@ class PlayerBase:
         self._stamp_command()
         return web.json_response(
             {"status": "ok" if ok else "error"},
+            headers=self._cors_headers())
+
+    async def _handle_play_track_radio(self, request: web.Request) -> web.Response:
+        self._stamp_command()
+        try:
+            data = await request.json()
+        except Exception:
+            data = {}
+        action_ts = data.get("action_ts", 0)
+        if action_ts and 0 < self._latest_action_ts - action_ts < 3.0:
+            log.warning("Dropped stale play_track_radio (ts=%.3f < latest=%.3f)",
+                        action_ts, self._latest_action_ts)
+            return web.json_response(
+                {"status": "dropped", "reason": "stale"},
+                headers=self._cors_headers())
+        if action_ts:
+            self._latest_action_ts = action_ts
+        track_uri = data.get("track_uri")
+        if not track_uri:
+            return web.json_response(
+                {"status": "error", "reason": "missing track_uri"},
+                headers=self._cors_headers())
+        ok = await self.play_track_radio(track_uri=track_uri)
+        self._stamp_command()
+        return web.json_response(
+            {"status": "ok" if ok else "error"},
+            headers=self._cors_headers())
+
+    async def _handle_shuffle(self, request: web.Request) -> web.Response:
+        self._stamp_command()
+        try:
+            data = await request.json()
+        except Exception:
+            data = {}
+        enabled = bool(data.get("enabled", False))
+        ok = await self.set_shuffle(enabled)
+        return web.json_response(
+            {"status": "ok" if ok else "error", "shuffle": enabled},
             headers=self._cors_headers())
 
     async def _handle_pause(self, request: web.Request) -> web.Response:
@@ -654,8 +708,13 @@ class PlayerBase:
         return False
 
     async def _handle_queue(self, request: web.Request) -> web.Response:
-        start = int(request.query.get("start", "0"))
-        max_items = int(request.query.get("max_items", "50"))
+        try:
+            start = int(request.query.get("start", "0"))
+            max_items = int(request.query.get("max_items", "50"))
+        except ValueError:
+            return web.json_response(
+                {"error": "start and max_items must be integers"},
+                status=400, headers=self._cors_headers())
         result = await self.get_queue(start, max_items)
         return web.json_response(result, headers=self._cors_headers())
 
@@ -695,13 +754,13 @@ class PlayerBase:
         return self._http_session is not None and not self._http_session.closed
 
     async def trigger_wake(self):
-        """Trigger screen wake via input service webhook."""
+        """Wake the display via the input service without changing views."""
         if not self._session_ready():
             return
         try:
             async with self._http_session.post(
                 INPUT_WAKE_URL,
-                json={"command": "wake", "params": {"page": "now_playing"}},
+                json={"command": "screen_on"},
                 timeout=aiohttp.ClientTimeout(total=2),
             ) as resp:
                 if resp.status == 200:

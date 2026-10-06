@@ -13,6 +13,7 @@ html, body {
   padding: 0;
   overflow: hidden;
   background-color: black;
+  touch-action: none;
 }
 
 .container {
@@ -27,6 +28,7 @@ html, body {
   width: 100%;
   height: 100%;
   cursor: none;
+  touch-action: none;
 }
 
 #menuItems {
@@ -76,6 +78,7 @@ html, body {
 #mainMenu {
   transition: none;
   transform: none;
+  touch-action: none;
 }
 
 /* Ensure volume arc stays in place */
@@ -169,6 +172,143 @@ html, body {
   opacity: 0.8;
 }
 
+/* Active source queue */
+.queue-view {
+  position: absolute;
+  inset: 0;
+  color: white;
+  display: flex;
+  flex-direction: column;
+  padding: 44px 58px 46px;
+  background: #000;
+}
+
+.queue-view-header {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 18px;
+  margin-bottom: 22px;
+}
+
+.queue-view-title {
+  font-size: 30px;
+  line-height: 1.1;
+  font-weight: 300;
+}
+
+.queue-view-count,
+.queue-view-status {
+  color: rgba(199, 218, 242, 0.64);
+  font-size: 13px;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+}
+
+.queue-view-list {
+  min-height: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-right: 6px;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  scroll-behavior: smooth;
+  touch-action: pan-y;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+.queue-view-list::-webkit-scrollbar {
+  display: none;
+}
+
+.queue-view-item {
+  appearance: none;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  background: rgba(255, 255, 255, 0.045);
+  color: white;
+  min-height: 56px;
+  display: grid;
+  grid-template-columns: 44px 1fr;
+  gap: 14px;
+  align-items: center;
+  text-align: left;
+  padding: 0 16px 0 10px;
+  border-radius: 6px;
+  touch-action: manipulation;
+}
+
+.queue-view-item.selected {
+  border-color: rgba(139, 198, 255, 0.78);
+  background: rgba(139, 198, 255, 0.16);
+}
+
+.queue-view-item.current .queue-view-index,
+.queue-view-item.current .queue-view-title {
+  color: #9ed1ff;
+}
+
+.queue-view-item.past:not(.selected):not(.current) {
+  border-color: rgba(255, 255, 255, 0.03);
+  background: rgba(255, 255, 255, 0.018);
+}
+
+.queue-view-item.past:not(.selected):not(.current) .queue-view-index,
+.queue-view-item.past:not(.selected):not(.current) .queue-view-title,
+.queue-view-item.past:not(.selected):not(.current) .queue-view-subtitle {
+  color: rgba(188, 198, 212, 0.4);
+}
+
+.queue-view-index {
+  font-size: 13px;
+  color: rgba(174, 196, 224, 0.58);
+  text-align: right;
+}
+
+.queue-view-text {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.queue-view-title,
+.queue-view-subtitle {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.queue-view-item .queue-view-title {
+  font-size: 16px;
+  font-weight: 500;
+}
+
+.queue-view-subtitle {
+  font-size: 12px;
+  color: rgba(206, 220, 238, 0.66);
+}
+
+.queue-view-empty {
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: rgba(206, 220, 238, 0.66);
+  font-size: 18px;
+}
+
+.queue-view-footer {
+  min-height: 28px;
+  margin-top: 18px;
+  display: flex;
+  justify-content: center;
+}
+
 /* ── Immersive PLAYING mode ──
    Pure CSS transform on artwork — no layout changes, GPU-accelerated.
    JS drives all visual state via inline styles (laser tracking = no transition,
@@ -260,6 +400,95 @@ html, body {
   overflow: hidden;
   text-overflow: ellipsis;
   transition: opacity 0.25s ease;
+}
+
+/* Global immersive overlay shown above the current page without changing
+   the underlying route. */
+#immersive-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 99988;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity 280ms ease, visibility 0s linear 280ms;
+  background:
+    radial-gradient(circle at 18% 28%, rgba(67, 116, 172, 0.2), transparent 38%),
+    radial-gradient(circle at 82% 18%, rgba(255, 255, 255, 0.06), transparent 24%),
+    linear-gradient(180deg, rgba(0, 0, 0, 0.88), rgba(0, 0, 0, 0.96));
+}
+
+#immersive-overlay.active {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+  transition: opacity 280ms ease;
+}
+
+#immersive-overlay .immersive-vignette {
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(90deg, rgba(0, 0, 0, 0.12), transparent 36%, rgba(0, 0, 0, 0.42) 100%),
+    radial-gradient(circle at center, transparent 48%, rgba(0, 0, 0, 0.32) 100%);
+}
+
+#immersive-overlay .immersive-shell {
+  position: absolute;
+  inset: 0;
+  transform: scale(0.985);
+  transition: transform 280ms ease;
+}
+
+#immersive-overlay.active .immersive-shell {
+  transform: scale(1);
+}
+
+#immersive-overlay .immersive-artwork-slot {
+  position: absolute;
+  left: clamp(40px, 5vw, 56px);
+  top: clamp(54px, 8vh, 78px);
+  width: min(58vw, 610px);
+  aspect-ratio: 1;
+  border-radius: 22px;
+  overflow: hidden;
+  background: rgba(12, 12, 12, 0.92);
+  box-shadow:
+    0 30px 70px rgba(0, 0, 0, 0.5),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+}
+
+#immersive-overlay .immersive-artwork {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: cover;
+}
+
+#immersive-overlay .immersive-info {
+  left: min(69vw, 700px);
+  right: 54px;
+  bottom: 94px;
+  width: auto;
+  max-width: 280px;
+  opacity: 1;
+}
+
+#immersive-overlay .immersive-info-title {
+  font-size: 30px;
+  font-weight: 600;
+  margin-bottom: 14px;
+}
+
+#immersive-overlay .immersive-info-artist {
+  font-size: 19px;
+  margin-bottom: 10px;
+  color: rgba(255, 255, 255, 0.92);
+}
+
+#immersive-overlay .immersive-info-album {
+  font-size: 15px;
+  color: rgba(255, 255, 255, 0.68);
 }
 
 /* PLAYING + CD view backgrounds */
@@ -792,7 +1021,303 @@ html, body {
   background: rgba(255, 255, 255, 0.03);
 }
 
+/* Rip submenu: fixed two-row tile grid so status and every control remain visible. */
+.cd-arc-container.cd-rip-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-rows: repeat(2, minmax(0, 1fr));
+  gap: 1.1rem;
+  padding: 4rem 4.5rem;
+  align-items: stretch;
+  justify-content: stretch;
+}
 
+.cd-rip-tile {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 0.55rem;
+  padding: 1.25rem 1.35rem;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 1rem;
+  background: rgba(255, 255, 255, 0.055);
+  color: #fff;
+  text-align: left;
+  font: inherit;
+  overflow: hidden;
+  cursor: pointer;
+}
+
+.cd-rip-tile-rip-status {
+  grid-column: auto;
+}
+
+.cd-rip-tile.is-selected {
+  border-color: rgba(102, 153, 255, 0.88);
+  background: rgba(102, 153, 255, 0.17);
+  box-shadow: 0 0 0 2px rgba(102, 153, 255, 0.17);
+}
+
+.cd-rip-tile.is-on .cd-rip-tile-icon {
+  color: rgba(102, 153, 255, 1);
+}
+
+.cd-rip-tile-icon {
+  color: rgba(255, 255, 255, 0.55);
+  font-size: 1.8rem;
+  line-height: 1;
+}
+
+.cd-rip-tile-label {
+  width: 100%;
+  color: #fff;
+  font-size: 1rem;
+  font-weight: 600;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
+.cd-rip-tile-sublabel {
+  width: 100%;
+  color: rgba(255, 255, 255, 0.52);
+  font-size: 0.75rem;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.cd-rip-tile-progress {
+  width: 100%;
+  height: 0.35rem;
+  margin-top: 0.3rem;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.12);
+  overflow: hidden;
+}
+
+.cd-rip-tile-progress > span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: rgba(102, 153, 255, 0.95);
+  transition: width 0.25s ease;
+}
+
+.cd-rip-prompt {
+  position: absolute;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2rem;
+  background: rgba(0, 0, 0, 0.78);
+  pointer-events: auto;
+}
+
+.cd-rip-prompt.cd-hidden {
+  display: none;
+}
+
+.cd-rip-prompt-card {
+  width: min(35rem, 88vw);
+  padding: 1.6rem;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 1rem;
+  background: rgba(20, 20, 22, 0.98);
+  box-shadow: 0 1.5rem 4rem rgba(0, 0, 0, 0.65);
+  color: #fff;
+  text-align: center;
+}
+
+.cd-rip-prompt-title {
+  margin-bottom: 0.8rem;
+  color: rgba(102, 153, 255, 1);
+  font-size: 0.8rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.cd-rip-prompt-message {
+  font-size: 1.2rem;
+  line-height: 1.45;
+}
+
+.cd-rip-prompt-match {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  min-height: 6.5rem;
+  margin-top: 1rem;
+  padding: 0.75rem;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 0.75rem;
+  background: rgba(255, 255, 255, 0.045);
+  text-align: left;
+}
+
+.cd-rip-prompt-match.cd-hidden {
+  display: none;
+}
+
+.cd-rip-prompt-art {
+  position: relative;
+  flex: 0 0 5.25rem;
+  width: 5.25rem;
+  height: 5.25rem;
+  overflow: hidden;
+  border-radius: 0.45rem;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.cd-rip-prompt-art img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.cd-rip-prompt-art img.cd-hidden {
+  display: none;
+}
+
+.cd-rip-prompt-art-fallback {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  color: rgba(255, 255, 255, 0.32);
+  font-size: 0.75rem;
+  letter-spacing: 0.14em;
+}
+
+.cd-rip-prompt-art-fallback.cd-hidden {
+  display: none;
+}
+
+.cd-rip-prompt-match-copy {
+  min-width: 0;
+}
+
+.cd-rip-prompt-album {
+  overflow: hidden;
+  color: #fff;
+  font-size: 1rem;
+  font-weight: 600;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cd-rip-prompt-artist {
+  margin-top: 0.15rem;
+  color: rgba(255, 255, 255, 0.72);
+  font-size: 0.84rem;
+}
+
+.cd-rip-prompt-summary {
+  margin-top: 0.45rem;
+  color: rgba(255, 255, 255, 0.58);
+  font-size: 0.76rem;
+}
+
+.cd-rip-prompt-reason {
+  margin-top: 0.25rem;
+  color: rgba(102, 153, 255, 0.9);
+  font-size: 0.7rem;
+  line-height: 1.3;
+}
+
+.cd-rip-prompt-actions {
+  display: flex;
+  justify-content: center;
+  gap: 0.75rem;
+  margin-top: 1.35rem;
+}
+
+.cd-rip-prompt-actions button {
+  min-width: 8rem;
+  padding: 0.65rem 1rem;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: 0.55rem;
+  background: rgba(255, 255, 255, 0.07);
+  color: #fff;
+  font: inherit;
+  cursor: pointer;
+}
+
+.cd-rip-prompt-actions button.primary {
+  border-color: rgba(102, 153, 255, 0.75);
+  background: rgba(102, 153, 255, 0.24);
+}
+
+.cd-rip-prompt-actions button.is-selected {
+  border-color: rgba(102, 153, 255, 1);
+  background: rgba(102, 153, 255, 0.3);
+  box-shadow: 0 0 0 2px rgba(102, 153, 255, 0.32);
+}
+
+.cd-rip-prompt-hint {
+  margin-top: 1rem;
+  color: rgba(255, 255, 255, 0.35);
+  font-size: 0.7rem;
+}
+
+
+
+
+/* Context-aware suggestions from beo-library.
+ * Pure DOM overlay: intentionally does not call any backlight/wake endpoint. */
+#context-suggestion-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 1900;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    pointer-events: none;
+}
+#context-suggestion-overlay[hidden] { display: none; }
+.context-suggestion-card {
+    width: 620px;
+    max-width: calc(100vw - 150px);
+    padding: 30px 34px 28px;
+    border-radius: 28px;
+    background: rgba(16, 18, 21, 0.96);
+    border: 1px solid rgba(135, 175, 255, 0.36);
+    box-shadow: 0 18px 60px rgba(0,0,0,0.55);
+    pointer-events: auto;
+    color: #fff;
+}
+#context-suggestion-question {
+    font-size: 30px;
+    font-weight: 500;
+    line-height: 1.2;
+    margin-bottom: 24px;
+}
+#context-suggestion-options {
+    display: flex;
+    gap: 14px;
+    flex-wrap: wrap;
+}
+.context-suggestion-option {
+    appearance: none;
+    border: 1px solid rgba(135,175,255,0.5);
+    border-radius: 18px;
+    padding: 13px 22px;
+    background: rgba(102,153,255,0.13);
+    color: #fff;
+    font: inherit;
+    font-size: 20px;
+    cursor: pointer;
+}
+.context-suggestion-option:hover,
+.context-suggestion-option:focus {
+    background: rgba(102,153,255,0.34);
+    outline: none;
+}
 /* Volume Overlay */
 #volume-overlay {
   position: fixed;
@@ -1037,55 +1562,3 @@ html, body {
   transition: width 0.1s linear;
 }
 
-
-
-/* Context-aware suggestions from beo-library.
- * Pure DOM overlay: intentionally does not call any backlight/wake endpoint. */
-#context-suggestion-overlay {
-    position: fixed;
-    inset: 0;
-    z-index: 1900;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    pointer-events: none;
-}
-#context-suggestion-overlay[hidden] { display: none; }
-.context-suggestion-card {
-    width: 620px;
-    max-width: calc(100vw - 150px);
-    padding: 30px 34px 28px;
-    border-radius: 28px;
-    background: rgba(16, 18, 21, 0.96);
-    border: 1px solid rgba(135, 175, 255, 0.36);
-    box-shadow: 0 18px 60px rgba(0,0,0,0.55);
-    pointer-events: auto;
-    color: #fff;
-}
-#context-suggestion-question {
-    font-size: 30px;
-    font-weight: 500;
-    line-height: 1.2;
-    margin-bottom: 24px;
-}
-#context-suggestion-options {
-    display: flex;
-    gap: 14px;
-    flex-wrap: wrap;
-}
-.context-suggestion-option {
-    appearance: none;
-    border: 1px solid rgba(135,175,255,0.5);
-    border-radius: 18px;
-    padding: 13px 22px;
-    background: rgba(102,153,255,0.13);
-    color: #fff;
-    font: inherit;
-    font-size: 20px;
-    cursor: pointer;
-}
-.context-suggestion-option:hover,
-.context-suggestion-option:focus {
-    background: rgba(102,153,255,0.34);
-    outline: none;
-}

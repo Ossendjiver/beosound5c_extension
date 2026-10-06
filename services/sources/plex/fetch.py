@@ -183,6 +183,21 @@ def main():
                     'tracks': cp.get('tracks', []),
                 }
             log(f"Loaded cache with {len(cache)} playlists")
+            # Stream URLs embed X-Plex-Token; if the token has rotated the
+            # cached URLs return 401 and mpv exits immediately. Drop the
+            # cache when the first URL we find no longer carries the
+            # current token, forcing a full refresh.
+            cur_tok = tokens['auth_token']
+            for _pc in cache.values():
+                for _tr in _pc.get('tracks', []):
+                    _u = _tr.get('url', '')
+                    if _u and cur_tok not in _u:
+                        log("Auth token changed - invalidating cache for full refresh")
+                        cache = {}
+                        break
+                else:
+                    continue
+                break
         except Exception as e:
             log(f"Could not load cache: {e}")
 
@@ -312,8 +327,13 @@ def main():
 
     # Save all playlists
     os.makedirs(os.path.dirname(output_file), exist_ok=True)
-    with open(output_file, 'w') as f:
+    # Atomic write — a concurrent fetch (or a reader mid-write) must never
+    # see a truncated file; corrupt JSON means zero playlists until the
+    # next clean refresh.
+    _tmp = output_file + '.tmp'
+    with open(_tmp, 'w') as f:
         json.dump(playlists_with_tracks, f, indent=2)
+    os.replace(_tmp, output_file)
     log(f"Saved {len(playlists_with_tracks)} playlists to {output_file}")
 
     # Build digit mapping
