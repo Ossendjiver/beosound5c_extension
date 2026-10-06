@@ -310,6 +310,8 @@ class LibraryService:
         self.context: dict[str, Any] = self._base_context()
         self._current_media: dict[str, Any] | None = None
         self._current_started = 0.0
+        self._external_media: dict[str, Any] | None = None
+        self._external_started = 0.0
         self._last_run_marker = ""
         self._last_broadcast_prompt = ""
         self._last_broadcast_ts = 0.0
@@ -344,6 +346,8 @@ class LibraryService:
             await asyncio.gather(*self._tasks, return_exceptions=True)
         if self._current_media:
             self._finish_current()
+        if self._external_media:
+            self._finish_external()
         if self.session:
             await self.session.close()
             self.session = None
@@ -777,8 +781,57 @@ class LibraryService:
             headers={"Access-Control-Allow-Origin": "*"},
         )
 
+    def _finish_external(self) -> None:
+        if not self._external_media or not self._external_started:
+            return
+        elapsed = max(0.0, time.monotonic() - self._external_started)
+        duration = _safe_float(self._external_media.get("duration")) or 0.0
+        if duration > 0:
+            elapsed = min(elapsed, duration + 30.0)
+        else:
+            elapsed = min(elapsed, 1800.0)
+        if elapsed >= 5:
+            room = str(self._external_media.get("room") or "")
+            self.model.record_listen(
+                self._external_media,
+                elapsed,
+                self._context_for_room(room),
+            )
+        self._external_media = None
+        self._external_started = 0.0
+
     async def handle_event(self, request: web.Request) -> web.Response:
         payload = await request.json()
+        event_type = str(payload.get("type") or "")
+        if event_type == "listen_start":
+            key = (
+                str(payload.get("title") or "").casefold(),
+                str(payload.get("artist") or "").casefold(),
+                str(payload.get("room") or "").casefold(),
+            )
+            previous = self._external_media or {}
+            previous_key = (
+                str(previous.get("title") or "").casefold(),
+                str(previous.get("artist") or "").casefold(),
+                str(previous.get("room") or "").casefold(),
+            )
+            if key != previous_key:
+                self._finish_external()
+                self._external_media = {
+                    "title": str(payload.get("title") or ""),
+                    "name": str(payload.get("title") or ""),
+                    "artist": str(payload.get("artist") or ""),
+                    "album": str(payload.get("album") or ""),
+                    "uri": str(payload.get("uri") or ""),
+                    "duration": _safe_float(payload.get("duration")) or 0.0,
+                    "room": str(payload.get("room") or ""),
+                }
+                self._external_started = time.monotonic()
+            return web.json_response({"status": "ok", "observing": True}, headers={"Access-Control-Allow-Origin": "*"})
+        if event_type == "listen_stop":
+            self._finish_external()
+            return web.json_response({"status": "ok", "observing": False}, headers={"Access-Control-Allow-Origin": "*"})
+
         prompt_id = str(payload.get("prompt_id") or "")
         kind = str(payload.get("kind") or "")
         action = str(payload.get("action") or "")
