@@ -87,7 +87,8 @@ def test_post_run_yoga_file_selector_prefers_seven_minute_video():
     assert pick["file"].endswith("7min.mp4")
 
 
-def test_recent_garmin_run_detected(mock_config, tmp_path):
+def test_recent_garmin_run_detected(mock_config, tmp_path, monkeypatch):
+    monkeypatch.setattr(lib, "DB_PATH", tmp_path / "service.sqlite3")
     mock_config({
         "device": "Test",
         "library": {"garmin_run_entities": ["sensor.garmin_last_activity"], "post_run_window_minutes": 90},
