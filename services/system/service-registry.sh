@@ -25,6 +25,7 @@ ALL_SERVICES=(
     "beo-source-radio.service"
     "beo-source-kodi.service"
     "beo-source-mass.service"
+    "beo-library.service"
     "beo-ui.service"
     "beo-notify-failure@.service"
     "beo-health.service"
@@ -78,6 +79,7 @@ SERVICE_DESC["beo-source-news.service"]="News Source (Port 8776)"
 SERVICE_DESC["beo-source-radio.service"]="Radio Source (Port 8779)"
 SERVICE_DESC["beo-source-kodi.service"]="Kodi Source (Port 8782)"
 SERVICE_DESC["beo-source-mass.service"]="Music Assistant Source (Port 8783)"
+SERVICE_DESC["beo-library.service"]="Context-Aware Library / Recommendation Service (Port 8788)"
 SERVICE_DESC["beo-ui.service"]="Chromium UI Kiosk"
 
 # Optional sources: menu_key|service|emoji|label
