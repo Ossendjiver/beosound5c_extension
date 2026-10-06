@@ -444,6 +444,7 @@
     <script src="../js/arc-utils.js"></script>
     <script src="../js/fast-letter-index.js"></script>
     <script src="../js/search-composer.js"></script>
+    <script src="../js/youtube-search-options.js"></script>
     <script src="../js/emulator-bridge.js"></script>
     <script src="../assets/qrcode.min.js"></script>
     <script src="script.js"></script>
@@ -1583,6 +1584,21 @@
             let voiceSearchRunning = false;
             let textSearchRunning = false;
             let searchComposerQuery = '';
+            let youtubeSearchDefaults = {};
+            let youtubeSearchOptions = window.YouTubeSearchOptions?.load(window.localStorage) || {};
+            let youtubeOptionsReady = false;
+            const loadYouTubeSearchOptions = async () => {
+                if (youtubeOptionsReady) return;
+                const controller = new AbortController();
+                const timeout = setTimeout(() => controller.abort(), 3000);
+                try {
+                    const response = await fetch(`${serviceBaseUrl}/search_options`, { cache: 'no-store', signal: controller.signal });
+                    if (response.ok) youtubeSearchDefaults = await response.json();
+                } catch (_) {} finally { clearTimeout(timeout); }
+                youtubeSearchOptions = window.YouTubeSearchOptions?.load(window.localStorage, youtubeSearchDefaults) || {};
+                youtubeOptionsReady = true;
+            };
+
             const voiceErrorMessage = (reason, fallback) => {
                 const messages = {
                     disabled: 'Voice search is disabled',
@@ -1642,7 +1658,7 @@
                 showActionToast(`Searching for “${normalizedQuery}”…`, { maxMs: 30000 });
                 try {
                     const response = await fetch(
-                        `${searchUrl}?q=${encodeURIComponent(normalizedQuery)}&limit=8`,
+                        `${searchUrl}?q=${encodeURIComponent(normalizedQuery)}&limit=8${window.YouTubeSearchOptions?.query(youtubeSearchOptions) || ''}`,
                         { cache: 'no-store' },
                     );
                     let payload = null;
@@ -1664,7 +1680,7 @@
                         return true;
                     }
 
-                    showActionToast(`Results for “${normalizedQuery}”`, { preserveTiming: true });
+                    showActionToast(`Results for “${normalizedQuery}”${payload?.warnings?.length ? ' · ' + payload.warnings.join(' · ') : ''}`, { preserveTiming: true });
                     settleActionToast();
                     return true;
                 } catch (error) {
@@ -1677,7 +1693,8 @@
                 }
             };
 
-            const openSearchComposer = (query = searchComposerQuery, selectedIndex = 0) => {
+            const openSearchComposer = async (query = searchComposerQuery, selectedIndex = 0) => {
+                await loadYouTubeSearchOptions();
                 if (!window.SearchComposer) {
                     showActionToast('Search keyboard is unavailable', { preserveTiming: true });
                     settleActionToast();
@@ -1686,8 +1703,13 @@
                 searchComposerQuery = String(query || '').slice(0, window.SearchComposer.MAX_QUERY_LENGTH);
                 const roots = rootItems();
                 const searchRoot = roots.find((entry) => String(entry?.id || '') === 'search') || SEARCH_ROOT;
-                const entries = window.SearchComposer.buildKeySpecs().map((spec, index) => Object.assign({}, spec, {
+                const entries = [...(window.YouTubeSearchOptions?.keys(youtubeSearchOptions) || []), ...window.SearchComposer.buildKeySpecs()].map((spec, index) => Object.assign({}, spec, {
                     onSelect: async () => {
+                        if (spec.action === 'youtube_music' || spec.action === 'youtube_videos') {
+                            youtubeSearchOptions = window.YouTubeSearchOptions.toggle(youtubeSearchOptions, spec.action);
+                            window.YouTubeSearchOptions.save(window.localStorage, youtubeSearchOptions);
+                            return openSearchComposer(searchComposerQuery, index);
+                        }
                         if (spec.action === 'voice') return startVoiceSearch();
                         if (spec.action === 'submit') return startTextSearch(searchComposerQuery);
                         searchComposerQuery = window.SearchComposer.applyAction(
@@ -1720,7 +1742,7 @@
                     const response = await fetch(voiceSearchUrl, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: '{}',
+                        body: JSON.stringify(youtubeSearchOptions),
                     });
                     let payload = null;
                     try {
@@ -1997,6 +2019,7 @@
             let optionsState = null;
 
             const getDetailSpec = (item) => {
+                if (item?.youtube_video) return null;
                 const isLeaf = item && (!Array.isArray(item.tracks) || item.tracks.length === 0);
                 const uri = String(item?.url || item?.play_url || '').trim();
                 if (!isLeaf || !uri) return null;
@@ -2229,6 +2252,10 @@
 
             const buildMassOptionsEntries = (item) => {
                 const safeItem = childNameMapper(item || {}, 0, [item || {}]);
+                if (safeItem.youtube_video) return [{
+                    id: 'play_now', icon: 'youtube-logo', title: 'Play on Samsung Frame',
+                    onSelect: async () => { dismissOptionsMenu(false); await arcList.sendGoWebhook('play_now', safeItem); },
+                }];
                 const metadata = getItemMeta(safeItem);
                 const uri = String(safeItem?.url || safeItem?.play_url || '').trim();
                 const artist = cleanTitle(deriveSectionArtist(safeItem, getCurrentRootSectionId()) || metadata.artist || safeItem?.artist || '');
@@ -2236,7 +2263,7 @@
                 const playlistTargets = resolvePlaylistTargets();
                 const isRadioItem = massUriLooksLikeRadio(uri);
                 const isLeaf = !Array.isArray(safeItem?.tracks) || safeItem.tracks.length === 0;
-                const canInspect = !!getDetailSpec(safeItem);
+                const canInspect = !safeItem.youtube_video && !!getDetailSpec(safeItem);
                 const entries = [
                     {
                         id: 'play_now',
@@ -2733,12 +2760,23 @@
             // GO = PLAY (leaf via `url`, folder via `play_url`)
             // LEFT = navigate INTO folder
             // RIGHT = navigate OUT of folder
+            const activeMassTargetPayload = () => {
+                try {
+                    const targets = window.PlaybackTargets || window.parent?.PlaybackTargets;
+                    return targets?.payloadFor?.('mass') || {};
+                } catch (e) {
+                    return {};
+                }
+            };
+
             arcList.sendGoWebhook = async function (command = 'play_item', itemOverride = null, extraPayload = {}) {
                 const current = itemOverride || detailState?.item || optionsState?.item || getCurrentItem();
                 if (!current) return;
                 if (detailState?.loading) return;
                 if (current.search_root) return openSearchComposer();
                 if (current.search_group) return enterFolder(current);
+                if (current.youtube_video && !['play_item', 'play_now'].includes(command)) return;
+
 
                 const playUri = String(
                     extraPayload.url
@@ -2771,7 +2809,8 @@
                     id: current.id || '',
                     url: current.url || '',
                     play_url: current.play_url || '',
-                }, extraPayload || {});
+                    youtube_video: !!current.youtube_video,
+                }, current.youtube_video ? {} : activeMassTargetPayload(), extraPayload || {});
 
                 showActionToast(copy.pending);
 
@@ -2799,7 +2838,7 @@
                     }
 
                     const state = String(result?.state || '').trim().toLowerCase();
-                    const successMessage = copy[state] || copy.playing || copy.queued || copy.pending;
+                    const successMessage = state === 'video_sent' ? 'Sent to Samsung Frame' : (copy[state] || copy.playing || copy.queued || copy.pending);
                     showActionToast(successMessage, { preserveTiming: true });
                     if (state === 'playing' || command === 'play_now' || command === 'play_radio') {
                         pushNowPlayingPayload(current, detailState?.page || null);
@@ -2942,14 +2981,21 @@
             const initNavigation = () => {
                 arcList.parentData    = Array.isArray(preloadedData) ? preloadedData : [];
                 lastSectionBrowseContext = loadSectionBrowseContext();
-                returnToRootState(resolveDefaultContextSectionId(), { saveState: false });
-                refreshList();
+                const restoredBrowseState = restoreBrowseState(loadBrowseState());
+                if (restoredBrowseState) {
+                    refreshList();
+                } else {
+                    returnToRootState(resolveDefaultContextSectionId(), { saveState: false });
+                }
                 requestAnimationFrame(() => refreshList());
                 setTimeout(() => refreshList(), 120);
                 setTimeout(() => refreshList(), 420);
                 arcList._massFolderStack = folderStack;
                 window.arcListInstance = arcList;
-                console.log('[MASS] Navigation layer initialized from preloaded cache');
+                console.log(
+                    '[MASS] Navigation layer initialized from preloaded cache',
+                    restoredBrowseState ? '(restored browse state)' : '(default position)'
+                );
             };
             setTimeout(initNavigation, 0);
             void refreshQueueRoot(true);
@@ -2963,6 +3009,42 @@
                     if (!sectionId) return;
                     openContextSection(sectionId);
                     return;
+                }
+                if (event.data?.type === 'queue-focus') {
+                    const kind = String(event.data?.kind || '').trim().toLowerCase();
+                    const payload = event.data?.item || {};
+                    const focusItem = childNameMapper({
+                        id: `queue-focus-${kind || 'item'}`,
+                        name: payload.title || payload.name || 'Queue Item',
+                        artist: payload.artist || '',
+                        album: payload.album || '',
+                        url: payload.uri || payload.url || payload.play_url || '',
+                        play_url: payload.uri || payload.play_url || payload.url || '',
+                        image: payload.artwork || '',
+                    }, 0, []);
+                    if (kind === 'artist') {
+                        if (!focusArtistFromItem(focusItem)) {
+                            showActionToast('Artist not available', { preserveTiming: true });
+                            settleActionToast();
+                        } else {
+                            refreshList();
+                        }
+                        return;
+                    }
+                    if (kind === 'album') {
+                        if (!focusAlbumFromItem(focusItem)) {
+                            showActionToast('Album not available', { preserveTiming: true });
+                            settleActionToast();
+                        } else {
+                            refreshList();
+                        }
+                        return;
+                    }
+                    if (kind === 'genre') {
+                        showActionToast('Genre navigation is not available yet', { preserveTiming: true });
+                        settleActionToast();
+                        return;
+                    }
                 }
                 if (event.data?.type === 'context-reset') {
                     returnToRootState(resolveCurrentContextSectionId(), { saveState: false });

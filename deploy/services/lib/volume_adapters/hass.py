@@ -140,6 +140,20 @@ class HassVolume(VolumeAdapter):
     async def _get_active_target(self) -> str | None:
         if not self._ha_token:
             return self._fallback_entity or (self._volume_priority[0] if self._volume_priority else None)
+        # YouTube supplies playback state; the physical Frame owns volume.
+        youtube_entity = "media_player.youtube_on_frame_65"
+        try:
+            async with self._session.get(
+                f"{self._ha_api_base}/states/{youtube_entity}",
+                headers=self._headers(),
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    if data.get("state") in {"playing", "paused", "buffering"}:
+                        return "media_player.the_frame"
+        except Exception as exc:
+            logger.debug("HA state lookup failed for %s: %s", youtube_entity, exc)
+
         for entity in self._volume_priority:
             try:
                 async with self._session.get(

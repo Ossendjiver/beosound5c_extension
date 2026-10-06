@@ -53,6 +53,7 @@ from lib.mass_playback import (
 )
 from lib.playback_targets import get_audio_targets
 from lib.source_base import SourceBase
+from lib.youtube_search import YouTubeSearch, search_flag, VIDEO_URI
 
 # ── CONFIG ────────────────────────────────────────────────────────────────────
 def _mass_ws_url():
@@ -463,6 +464,42 @@ class MassSource(SourceBase):
                 return any("capture" in line.lower() for line in handle)
         except OSError:
             return False
+
+    def _youtube_search(self):
+        host = urllib.parse.urlsplit(MASS_URI).hostname or "localhost"
+        return YouTubeSearch(cfg("mass", "youtube_search", default={}) or {}, f"http://{host}:8089",
+                             VOICE_SEARCH_HA_URL, VOICE_SEARCH_HA_TOKEN)
+
+    async def _search_enabled_sources(self, query, limit=8, music=None, videos=None):
+        bridge = self._youtube_search()
+        music, videos = bridge.flags(music, videos)
+        query = self._clean_voice_query(query)
+        if len(query) < 2 or len(query) > 200:
+            raise VoiceSearchError("invalid_query", "Enter between two and 200 characters.")
+        limit = max(1, min(20, int(limit or 8)))
+        warnings = []
+        try:
+            payload = await self._search_all_mass_providers(query, limit)
+        except VoiceSearchError:
+            if not (music or videos):
+                raise
+            payload = {"query": query, "transcript": query, "groups": [], "scope": "all_mass_providers"}
+            warnings.append("Music Assistant search unavailable")
+        kinds = [kind for kind, active in (("music", music), ("video", videos)) if active]
+        results = await asyncio.gather(*(bridge.search(query, kind, limit) for kind in kinds), return_exceptions=True)
+        for kind, group in zip(kinds, results):
+            if isinstance(group, asyncio.CancelledError):
+                raise group
+            if isinstance(group, Exception):
+                logger.warning("YouTube %s search unavailable (%s)", kind, type(group).__name__)
+                warnings.append(f"YouTube {kind} search unavailable")
+            elif group:
+                payload["groups"].append(group)
+        payload["state"] = "ready" if payload["groups"] else "empty"
+        payload["total"] = sum(len(group["tracks"]) for group in payload["groups"])
+        payload["warnings"] = warnings
+        payload["youtube_options"] = {"youtube_music": music, "youtube_videos": videos}
+        return payload
 
     def _voice_search_status(self):
         reason = ""
@@ -2065,7 +2102,8 @@ class MassSource(SourceBase):
             query = str(request.query.get("q") or "").strip()
             try:
                 limit = int(request.query.get("limit") or 8)
-                payload = await self._search_all_mass_providers(query, limit)
+                payload = await self._search_enabled_sources(query, limit,
+                    search_flag(request.query.get("youtube_music")), search_flag(request.query.get("youtube_videos")))
                 return web.json_response(payload, headers=self._cors_headers())
             except ValueError:
                 return web.json_response(
@@ -2090,11 +2128,18 @@ class MassSource(SourceBase):
                 )
             paused_player_id = ""
             try:
+                options = await request.json() if request.can_read_body else {}
+                music = search_flag(options.get("youtube_music"))
+                videos = search_flag(options.get("youtube_videos"))
                 paused_player_id = await self._pause_for_voice_capture()
                 transcript = await self._transcribe_microphone()
-                payload = await self._search_all_mass_providers(transcript)
+                payload = await self._search_enabled_sources(transcript, music=music, videos=videos)
                 payload["transcript"] = transcript
                 return web.json_response(payload, headers=self._cors_headers())
+            except (ValueError, TypeError) as exc:
+                return web.json_response(
+                    {"state": "error", "reason": "invalid_options", "message": "Search switches must be on or off."},
+                    status=400, headers=self._cors_headers())
             except VoiceSearchError as exc:
                 logger.warning("Voice search failed [%s]: %s", exc.code, exc)
                 status = 408 if exc.code in {"voice_timeout", "no_speech"} else 503
@@ -2111,6 +2156,10 @@ class MassSource(SourceBase):
         app.router.add_get('/now_playing', _handle_now_playing)
         app.router.add_get('/item_info', _handle_item_info)
         app.router.add_get('/art/{filename}', _handle_art)
+        async def _handle_search_options(request):
+            return web.json_response(self._youtube_search().options(), headers=self._cors_headers())
+
+        app.router.add_get('/search_options', _handle_search_options)
         app.router.add_get('/search', _handle_search)
         app.router.add_post('/voice_search', _handle_voice_search)
         app.router.add_options('/voice_search', self._handle_cors)
@@ -3142,6 +3191,9 @@ class MassSource(SourceBase):
         return candidates
 
     async def _resolve_media_candidates(self, uri):
+        youtube_item = await self._youtube_search().audio_item(uri, self.send_command)
+        if youtube_item:
+            return [youtube_item]
         candidates = [[uri]]
         item = await self.send_command("music/item_by_uri", uri=uri)
         if item:
@@ -3733,7 +3785,9 @@ class MassSource(SourceBase):
         if not uri_text:
             return {"state": "error", "error": "missing_uri"}
 
-        item = await self.send_command("music/item_by_uri", uri=uri_text)
+        item = await self._youtube_search().audio_item(uri_text, self.send_command)
+        if item is None:
+            item = await self.send_command("music/item_by_uri", uri=uri_text)
         if not isinstance(item, dict):
             return {"state": "error", "error": "item_not_found", "uri": uri_text}
 
@@ -4708,6 +4762,15 @@ class MassSource(SourceBase):
         return kicked
 
     async def handle_command(self, cmd, data) -> dict:
+        uri = self._resolve_command_url(data)
+        if VIDEO_URI.fullmatch(str(uri)):
+            if cmd not in {"play_item", "play_now"}:
+                return {"state": "error", "reason": "video_action_unsupported"}
+            try:
+                return await self._youtube_search().play_video(uri)
+            except Exception as exc:
+                logger.warning("Frame YouTube request failed (%s)", type(exc).__name__)
+                return {"state": "error", "reason": "frame_youtube_failed"}
         source_switch_stop = cmd == "transport_stop" and str(data.get("action") or "").strip().lower() == "stop"
         if not source_switch_stop:
             self._apply_playback_target_from_data(data)
