@@ -1037,3 +1037,55 @@ html, body {
   transition: width 0.1s linear;
 }
 
+
+
+/* Context-aware suggestions from beo-library.
+ * Pure DOM overlay: intentionally does not call any backlight/wake endpoint. */
+#context-suggestion-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 1900;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    pointer-events: none;
+}
+#context-suggestion-overlay[hidden] { display: none; }
+.context-suggestion-card {
+    width: 620px;
+    max-width: calc(100vw - 150px);
+    padding: 30px 34px 28px;
+    border-radius: 28px;
+    background: rgba(16, 18, 21, 0.96);
+    border: 1px solid rgba(135, 175, 255, 0.36);
+    box-shadow: 0 18px 60px rgba(0,0,0,0.55);
+    pointer-events: auto;
+    color: #fff;
+}
+#context-suggestion-question {
+    font-size: 30px;
+    font-weight: 500;
+    line-height: 1.2;
+    margin-bottom: 24px;
+}
+#context-suggestion-options {
+    display: flex;
+    gap: 14px;
+    flex-wrap: wrap;
+}
+.context-suggestion-option {
+    appearance: none;
+    border: 1px solid rgba(135,175,255,0.5);
+    border-radius: 18px;
+    padding: 13px 22px;
+    background: rgba(102,153,255,0.13);
+    color: #fff;
+    font: inherit;
+    font-size: 20px;
+    cursor: pointer;
+}
+.context-suggestion-option:hover,
+.context-suggestion-option:focus {
+    background: rgba(102,153,255,0.34);
+    outline: none;
+}
