@@ -49,6 +49,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 PORT = int(os.getenv("BS5C_LIBRARY_PORT", "8788"))
 ROUTER_MEDIA = "http://127.0.0.1:8770/router/media"
 ROUTER_EVENT = "http://127.0.0.1:8770/router/event"
+ROUTER_BROADCAST = "http://127.0.0.1:8770/router/broadcast"
 MASS_COMMAND = "http://127.0.0.1:8783/command"
 MASS_LIBRARY = "http://127.0.0.1:8783/playlists"
 CACHE_LIBRARY = Path("/media/local/cache/mass_playlists.json")
@@ -310,6 +311,8 @@ class LibraryService:
         self._current_media: dict[str, Any] | None = None
         self._current_started = 0.0
         self._last_run_marker = ""
+        self._last_broadcast_prompt = ""
+        self._last_broadcast_ts = 0.0
         self._tasks: list[asyncio.Task] = []
 
     def _base_context(self, room: str = "") -> dict[str, Any]:
@@ -331,6 +334,7 @@ class LibraryService:
         self._tasks = [
             asyncio.create_task(self._context_loop(), name="library_context"),
             asyncio.create_task(self._listening_loop(), name="library_listening"),
+            asyncio.create_task(self._suggestion_loop(), name="library_suggestions"),
         ]
 
     async def stop(self, _app: web.Application) -> None:
@@ -434,6 +438,42 @@ class LibraryService:
             except Exception:
                 log.exception("Context refresh failed")
             await asyncio.sleep(60)
+
+    async def _broadcast_suggestion(self, suggestion: dict[str, Any]) -> None:
+        """Push a suggestion to the already-running Chromium UI without waking the display."""
+        if not self.session:
+            return
+        try:
+            async with self.session.post(
+                ROUTER_BROADCAST,
+                json={"type": "context_suggestion", "data": suggestion},
+            ) as resp:
+                if resp.status >= 400:
+                    log.debug("Suggestion broadcast returned HTTP %d", resp.status)
+        except Exception as exc:
+            log.debug("Suggestion broadcast failed: %s", exc)
+
+    async def _suggestion_loop(self) -> None:
+        # Broadcasting to the router WebSocket is deliberately display-neutral:
+        # it never calls router wake/backlight endpoints.
+        await asyncio.sleep(8)
+        while True:
+            try:
+                suggestion = self.suggestion(str(cfg("device", default="bs5c")))
+                prompt_id = str(suggestion.get("id") or "")
+                now = time.time()
+                # Re-push the same still-relevant prompt every 10 min so a UI
+                # reconnect sees it, but avoid nagging continuously.
+                if prompt_id and (
+                    prompt_id != self._last_broadcast_prompt
+                    or now - self._last_broadcast_ts >= 600
+                ):
+                    await self._broadcast_suggestion(suggestion)
+                    self._last_broadcast_prompt = prompt_id
+                    self._last_broadcast_ts = now
+            except Exception:
+                log.exception("Suggestion broadcast failed")
+            await asyncio.sleep(45)
 
     async def _router_media(self) -> dict[str, Any]:
         if not self.session:
@@ -594,17 +634,118 @@ class LibraryService:
             if resp.status >= 400:
                 raise RuntimeError(f"Router HTTP {resp.status}")
 
-    async def _run_yoga(self, room: str) -> None:
+    def _yoga_target_url(self, room: str) -> str:
+        targets = self.cfg.get("yoga_targets") or {}
+        if isinstance(targets, dict):
+            configured = str(targets.get(room) or "").strip()
+            if configured:
+                return configured.rstrip("/")
+        env_name = "KODI_HOST" if room == "lounge" else "BEDROOM_KODI_HOST"
+        host = os.getenv(env_name, "").strip()
+        if not host:
+            return ""
+        if host.startswith("http://") or host.startswith("https://"):
+            return host.rstrip("/")
+        port_name = "KODI_PORT" if room == "lounge" else "BEDROOM_KODI_PORT"
+        port = os.getenv(port_name, os.getenv("KODI_PORT", "8080")).strip() or "8080"
+        return f"http://{host}:{port}"
+
+    async def _kodi_rpc(self, base_url: str, method: str, params: dict[str, Any]) -> Any:
         assert self.session
-        script = str(self.cfg.get("post_run_yoga_script") or "script.home_media_post_run_yoga").strip()
+        user = os.getenv("KODI_USER", "").strip()
+        password = os.getenv("KODI_PASSWORD", "")
+        auth = aiohttp.BasicAuth(user, password) if user else None
+        async with self.session.post(
+            base_url.rstrip("/") + "/jsonrpc",
+            json={"jsonrpc": "2.0", "id": "bs5c-library", "method": method, "params": params},
+            auth=auth,
+        ) as resp:
+            if resp.status >= 400:
+                raise RuntimeError(f"Kodi HTTP {resp.status}")
+            payload = await resp.json(content_type=None)
+        if payload.get("error"):
+            raise RuntimeError(str(payload["error"].get("message") or payload["error"]))
+        return payload.get("result")
+
+    @staticmethod
+    def _choose_post_run_yoga(files: list[dict[str, Any]]) -> dict[str, Any] | None:
+        candidates = []
+        for item in files:
+            if str(item.get("filetype") or "").lower() == "directory":
+                continue
+            text = " ".join([
+                str(item.get("label") or ""),
+                str(item.get("title") or ""),
+                str(item.get("file") or ""),
+            ]).casefold().replace("_", " ").replace("-", " ")
+            if not all(word in text for word in ("post", "run", "yoga")):
+                continue
+            score = 0
+            if "7min" in text or "7 min" in text or "7 minute" in text:
+                score += 20
+            if "yoga for runners" in text:
+                score += 8
+            if text.endswith(".mp4"):
+                score += 2
+            candidates.append((score, item))
+        return max(candidates, key=lambda pair: pair[0])[1] if candidates else None
+
+    async def _run_yoga(self, room: str) -> None:
+        """Play the post-run exercise directly on the selected room's Kodi.
+
+        If no Kodi target is configured, retain an optional HA-script fallback
+        for installations where room routing is owned by Home Assistant.
+        """
+        assert self.session
+        base_url = self._yoga_target_url(room)
+        directory = str(
+            self.cfg.get("post_run_yoga_directory")
+            or "smb://LOUNGE/SSD/Exercise/"
+        ).strip()
+
+        if base_url:
+            result = await self._kodi_rpc(
+                base_url,
+                "Files.GetDirectory",
+                {
+                    "directory": directory,
+                    "media": "video",
+                    "properties": ["title", "file"],
+                },
+            )
+            files = result.get("files", []) if isinstance(result, dict) else []
+            selected = self._choose_post_run_yoga(files)
+            if not selected:
+                raise RuntimeError(
+                    f"No post-run yoga video found in {directory}"
+                )
+            path = str(selected.get("file") or "")
+            if not path:
+                raise RuntimeError("Kodi returned no post-run yoga file")
+            await self._kodi_rpc(base_url, "Player.Open", {"item": {"file": path}})
+            log.info("Started post-run yoga room=%s file=%s", room, path)
+            return
+
+        script = str(self.cfg.get("post_run_yoga_script") or "").strip()
+        if not script:
+            raise RuntimeError(
+                f"No Kodi yoga target is configured for {room}; configure library.yoga_targets"
+            )
         if not _headers():
-            raise RuntimeError("HA_TOKEN is required for post-run yoga")
-        hint = str(self.cfg.get("post_run_yoga_path") or "LOUNGE/SSD/Exercise/7min post run yoga")
+            raise RuntimeError("HA_TOKEN is required for post-run yoga fallback")
         payload = {
             "entity_id": script,
-            "variables": {"room": room, "exercise_path": hint, "title": "7min post run yoga"},
+            "variables": {
+                "room": room,
+                "exercise_path": directory,
+                "title": "7min post run yoga",
+            },
         }
-        async with self.session.post(f"{_ha_base()}/services/script/turn_on", headers=_headers(), json=payload) as resp:
+        async with self.session.post(
+            f"{_ha_base()}/services/script/turn_on",
+            headers=_headers(),
+            json=payload,
+        ) as resp:
             if resp.status >= 400:
                 raise RuntimeError(f"Home Assistant yoga script returned HTTP {resp.status}")
 
