@@ -288,6 +288,10 @@ for entry in "${OPTIONAL_SOURCES[@]}"; do
     fi
 done
 
+# Start the context-aware library service after MASS/source services are ready.
+echo "  🧠 Starting context-aware library service..."
+start_service beo-library.service
+
 # Start UI service last (depends on HTTP)
 echo "  🖥️  Starting UI service..."
 start_service beo-ui.service
