@@ -24,6 +24,14 @@
         <img src="assets/splashscreen-red.png" alt="" id="splash-image">
     </div>
 
+    <!-- Context suggestion overlay. Rendering this never wakes the display. -->
+    <div id="context-suggestion-overlay" aria-live="polite" hidden>
+        <div class="context-suggestion-card">
+            <div id="context-suggestion-question"></div>
+            <div id="context-suggestion-options"></div>
+        </div>
+    </div>
+
     <!-- Volume overlay -->
     <div id="volume-overlay">
         <svg id="volume-arc-svg" width="1024" height="768" style="overflow: visible;">
