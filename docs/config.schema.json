@@ -4,14 +4,19 @@
   "title": "BeoSound 5c Configuration",
   "description": "Device configuration for a BeoSound 5c unit. Lives at /etc/beosound5c/config.json on the device.",
   "type": "object",
-  "required": ["device"],
+  "required": [
+    "device"
+  ],
   "properties": {
     "device": {
       "type": "string",
       "description": "Display name of this device. Used in MQTT topics, webhook payloads, and UI labels.",
-      "examples": ["Living Room", "Kitchen", "Church"]
+      "examples": [
+        "Living Room",
+        "Kitchen",
+        "Church"
+      ]
     },
-
     "menu": {
       "type": "object",
       "description": "Menu items shown on the main arc. Keys are display labels (uppercase), values are source IDs or source config objects. Order determines arc order.",
@@ -20,36 +25,55 @@
           {
             "type": "string",
             "description": "Simple source/view ID.",
-            "examples": ["playing", "spotify", "scenes", "system", "showing"]
+            "examples": [
+              "playing",
+              "spotify",
+              "scenes",
+              "system",
+              "showing"
+            ]
           },
           {
             "$ref": "#/$defs/menuItem"
           }
         ]
       },
-      "examples": [{
-        "PLAYING": "playing",
-        "CD": { "id": "cd", "hidden": true },
-        "SPOTIFY": "spotify",
-        "SCENES": "scenes",
-        "SYSTEM": "system"
-      }]
+      "examples": [
+        {
+          "PLAYING": "playing",
+          "CD": {
+            "id": "cd",
+            "hidden": true
+          },
+          "SPOTIFY": "spotify",
+          "SCENES": "scenes",
+          "SYSTEM": "system"
+        }
+      ]
     },
-
     "scenes": {
       "type": "array",
       "description": "Scene definitions shown when the SCENES menu item is selected. Scenes trigger Home Assistant actions via the webhook/MQTT transport.",
-      "items": { "$ref": "#/$defs/scene" }
+      "items": {
+        "$ref": "#/$defs/scene"
+      }
     },
-
     "player": {
       "type": "object",
       "description": "External player service configuration. The player handles audio playback, monitoring, and artwork.",
-      "required": ["type"],
+      "required": [
+        "type"
+      ],
       "properties": {
         "type": {
           "type": "string",
-          "enum": ["sonos", "bluesound", "mass", "local", "none"],
+          "enum": [
+            "sonos",
+            "bluesound",
+            "mass",
+            "local",
+            "none"
+          ],
           "description": "Player type. Determines which player service handles playback. Networked players use a companion player service; 'local' uses the on-device local player and 'none' disables external player services."
         },
         "ip": {
@@ -59,7 +83,6 @@
       },
       "additionalProperties": false
     },
-
     "bluetooth": {
       "type": "object",
       "description": "BeoRemote One Bluetooth configuration.",
@@ -68,12 +91,14 @@
           "type": "string",
           "pattern": "^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$|^$",
           "description": "MAC address of the paired BeoRemote One. Empty string to disable Bluetooth remote.",
-          "examples": ["AA:BB:CC:DD:EE:FF", ""]
+          "examples": [
+            "AA:BB:CC:DD:EE:FF",
+            ""
+          ]
         }
       },
       "additionalProperties": false
     },
-
     "home_assistant": {
       "type": "object",
       "description": "Home Assistant connection settings.",
@@ -93,14 +118,17 @@
       },
       "additionalProperties": false
     },
-
     "transport": {
       "type": "object",
       "description": "Communication transport between BS5c and Home Assistant.",
       "properties": {
         "mode": {
           "type": "string",
-          "enum": ["webhook", "mqtt", "both"],
+          "enum": [
+            "webhook",
+            "mqtt",
+            "both"
+          ],
           "description": "Transport mode. 'mqtt' is recommended for reliability and bidirectional communication.",
           "default": "webhook"
         },
@@ -119,14 +147,23 @@
       },
       "additionalProperties": false
     },
-
     "volume": {
       "type": "object",
       "description": "Volume output adapter configuration. Each BS5c has one audio output controlled by a pluggable volume adapter.",
       "properties": {
         "type": {
           "type": "string",
-          "enum": ["beolab5", "sonos", "bluesound", "powerlink", "hass", "c4amp", "hdmi", "spdif", "rca"],
+          "enum": [
+            "beolab5",
+            "sonos",
+            "bluesound",
+            "powerlink",
+            "hass",
+            "c4amp",
+            "hdmi",
+            "spdif",
+            "rca"
+          ],
           "description": "Volume adapter type. If omitted, inferred from player.type for sonos/bluesound, otherwise defaults to 'beolab5'.",
           "default": "beolab5"
         },
@@ -171,7 +208,6 @@
       },
       "additionalProperties": false
     },
-
     "cd": {
       "type": "object",
       "description": "CD player configuration.",
@@ -184,7 +220,6 @@
       },
       "additionalProperties": false
     },
-
     "spotify": {
       "type": "object",
       "description": "Spotify integration settings. Requires a Spotify Developer app with PKCE redirect URI.",
@@ -196,7 +231,6 @@
       },
       "additionalProperties": false
     },
-
     "news": {
       "type": "object",
       "description": "Guardian News source settings. Required if NEWS is in the menu.",
@@ -208,7 +242,6 @@
       },
       "additionalProperties": false
     },
-
     "radio": {
       "type": "object",
       "description": "Radio source configuration.",
@@ -221,28 +254,24 @@
       },
       "additionalProperties": false
     },
-
     "join": {
       "type": "object",
       "description": "JOIN source configuration. Empty object is valid; device discovery happens at runtime.",
       "properties": {},
       "additionalProperties": false
     },
-
     "mass": {
       "type": "object",
       "description": "Music Assistant source settings. Connection credentials and target queue/player pins live in /etc/beosound5c/secrets.env.",
       "properties": {},
       "additionalProperties": false
     },
-
     "kodi": {
       "type": "object",
       "description": "Kodi / LibreELEC source settings. Host and credentials are typically supplied through /etc/beosound5c/secrets.env.",
       "properties": {},
       "additionalProperties": false
     },
-
     "system": {
       "type": "object",
       "description": "System-level runtime settings.",
@@ -250,38 +279,94 @@
         "update_repo": {
           "type": "string",
           "description": "GitHub owner/repository to use for OTA update checks. Uses GitHub Releases, not branch heads.",
-          "examples": ["mkirsten/beosound5c", "Ossendjiver/beosound5c_extension"]
+          "examples": [
+            "mkirsten/beosound5c",
+            "Ossendjiver/beosound5c_extension"
+          ]
         }
       },
       "additionalProperties": false
     },
-
     "showing": {
       "type": "object",
       "description": "SHOWING view configuration. Displays what's playing on a media player (e.g. Apple TV) via Home Assistant.",
-      "required": ["entity_id"],
+      "required": [
+        "entity_id"
+      ],
       "properties": {
         "entity_id": {
           "type": "string",
           "description": "Home Assistant media_player entity to monitor.",
-          "examples": ["media_player.living_room_apple_tv", "media_player.cinema_appletv"]
+          "examples": [
+            "media_player.living_room_apple_tv",
+            "media_player.cinema_appletv"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "library": {
+      "type": "object",
+      "description": "Local context-aware recommendation and post-run suggestion service.",
+      "properties": {
+        "weather_entity": {
+          "type": "string",
+          "description": "Optional Home Assistant weather entity. First weather.* entity is used when blank.",
+          "default": ""
+        },
+        "garmin_run_entities": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Optional HA Garmin/activity entities used to detect a recently completed run.",
+          "default": []
+        },
+        "post_run_window_minutes": {
+          "type": "integer",
+          "minimum": 15,
+          "maximum": 360,
+          "description": "How long after a run the yoga suggestion remains eligible.",
+          "default": 90
+        },
+        "post_run_yoga_directory": {
+          "type": "string",
+          "description": "Kodi-visible directory containing the post-run yoga video.",
+          "default": "smb://LOUNGE/SSD/Exercise/"
+        },
+        "post_run_yoga_script": {
+          "type": "string",
+          "description": "Optional HA script fallback used when no direct Kodi yoga target is configured.",
+          "default": ""
+        },
+        "yoga_targets": {
+          "type": "object",
+          "description": "Kodi JSON-RPC base URLs by yoga destination, for example lounge/bedroom. When configured the BS5c plays the exercise directly.",
+          "additionalProperties": {
+            "type": "string"
+          }
         }
       },
       "additionalProperties": false
     }
   },
   "additionalProperties": false,
-
   "$defs": {
     "menuItem": {
       "type": "object",
       "description": "Extended menu item with source-specific configuration.",
-      "required": ["id"],
+      "required": [
+        "id"
+      ],
       "properties": {
         "id": {
           "type": "string",
           "description": "Source or view identifier.",
-          "examples": ["cd", "usb", "security"]
+          "examples": [
+            "cd",
+            "usb",
+            "security"
+          ]
         },
         "hidden": {
           "type": "boolean",
@@ -290,28 +375,42 @@
         },
         "paths": {
           "type": "array",
-          "items": { "type": "string" },
+          "items": {
+            "type": "string"
+          },
           "description": "File system paths to scan (USB source only).",
-          "examples": [["/mnt/usb-music"]]
+          "examples": [
+            [
+              "/mnt/usb-music"
+            ]
+          ]
         },
         "dashboard": {
           "type": "string",
           "description": "Home Assistant dashboard path to embed (security source only).",
-          "examples": ["dashboard-cameras/home"]
+          "examples": [
+            "dashboard-cameras/home"
+          ]
         },
         "url": {
           "type": "string",
           "description": "Direct web view path for static pages such as custom softarc routes.",
-          "examples": ["softarc/security.html"]
+          "examples": [
+            "softarc/security.html"
+          ]
         }
       },
       "additionalProperties": false
     },
-
     "scene": {
       "type": "object",
       "description": "A scene that triggers a Home Assistant action when selected.",
-      "required": ["id", "name", "icon", "color"],
+      "required": [
+        "id",
+        "name",
+        "icon",
+        "color"
+      ],
       "properties": {
         "id": {
           "type": "string",
@@ -324,16 +423,29 @@
         "icon": {
           "type": "string",
           "description": "Phosphor icon name (without 'ph-' prefix).",
-          "examples": ["fork-knife", "fire", "sun", "power", "television"]
+          "examples": [
+            "fork-knife",
+            "fire",
+            "sun",
+            "power",
+            "television"
+          ]
         },
         "color": {
           "type": "string",
           "description": "CSS color for the icon and label.",
-          "examples": ["#fa0", "#c55", "#6c8", "#E50914"]
+          "examples": [
+            "#fa0",
+            "#c55",
+            "#6c8",
+            "#E50914"
+          ]
         },
         "scenes": {
           "type": "array",
-          "items": { "$ref": "#/$defs/scene" },
+          "items": {
+            "$ref": "#/$defs/scene"
+          },
           "description": "Nested sub-scenes. Creates a drill-down menu."
         }
       },
