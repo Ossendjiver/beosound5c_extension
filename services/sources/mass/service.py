@@ -2718,13 +2718,24 @@ class MassSource(SourceBase):
             for target in get_audio_targets()
         ]
 
+    @staticmethod
+    def _player_list(payload):
+        """Accept player lists/envelopes; count fields are not iterable players."""
+        if isinstance(payload, list):
+            return [item for item in payload if isinstance(item, dict)]
+        if isinstance(payload, dict):
+            for key in ("items", "players", "results"):
+                if isinstance(payload.get(key), list):
+                    return MassSource._player_list(payload[key])
+            return [item for item in payload.values()
+                    if isinstance(item, dict) and (item.get("player_id") or item.get("id"))]
+        return []
+
     async def _available_transfer_targets(self):
         """Return live MASS players, preserving configured order where possible."""
         configured = self._configured_transfer_targets()
         players = await self.send_command("players/all")
-        player_items = players.get("items", []) if isinstance(players, dict) else (
-            players if isinstance(players, list) else []
-        )
+        player_items = self._player_list(players)
         discovered = {}
         for player in player_items:
             if not isinstance(player, dict):
@@ -3712,9 +3723,7 @@ class MassSource(SourceBase):
             add(preferred_player)
 
         players = await self.send_command("players/all")
-        player_items = players.get("items", []) if isinstance(players, dict) else (
-            players if isinstance(players, list) else []
-        )
+        player_items = self._player_list(players)
         for player in player_items:
             if not isinstance(player, dict):
                 continue
@@ -5014,9 +5023,7 @@ class MassSource(SourceBase):
             return candidates
 
         players = await self.send_command("players/all")
-        player_items = players.get("items", []) if isinstance(players, dict) else (
-            players if isinstance(players, list) else []
-        )
+        player_items = self._player_list(players)
         for player in player_items:
             if not isinstance(player, dict):
                 continue
