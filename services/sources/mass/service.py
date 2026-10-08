@@ -1283,7 +1283,7 @@ class MassSource(SourceBase):
         if url:    node["url"]    = url   # renamed to play_url by _finalize_node
         return node
 
-    def _make_leaf_node(self, id_, name, artist="", url="", image="", album=""):
+    def _make_leaf_node(self, id_, name, artist="", url="", image="", album="", duration=0):
         """Playable leaf. Has `url`, no `tracks`."""
         node = {
             "id":   id_,
@@ -1293,6 +1293,7 @@ class MassSource(SourceBase):
         if artist: node["artist"] = artist
         if album:  node["album"]  = album
         if image:  node["image"]  = image
+        if duration: node["duration"] = duration
         return node
 
     @staticmethod
@@ -1439,6 +1440,7 @@ class MassSource(SourceBase):
             self._apply_media_identity(
                 self._make_leaf_node(
                     id_=track.get("item_id", ""),
+                    duration=track.get("duration", 0),
                     name=track.get("name", "Unknown Track"),
                     artist=self._get_artist_name(track, ""),
                     album=self._get_album_name(track, ""),
@@ -1490,6 +1492,7 @@ class MassSource(SourceBase):
             self._apply_media_identity(
                 self._make_leaf_node(
                     id_=episode.get("item_id", ""),
+                    duration=episode.get("duration", 0),
                     name=episode.get("name", "Unknown Episode"),
                     artist=self._get_artist_name(episode, podcast_name) or podcast_name,
                     url=episode.get("uri", ""),
@@ -1617,6 +1620,7 @@ class MassSource(SourceBase):
             return self._apply_media_identity(
                 self._make_leaf_node(
                     id_=track.get("item_id", ""),
+                    duration=track.get("duration", 0),
                     name=track.get("name", "Unknown Track"),
                     artist=resolved_artist,
                     album=self._get_album_name(track, album_name),
@@ -1908,6 +1912,7 @@ class MassSource(SourceBase):
                             self._apply_media_identity(
                                 self._make_leaf_node(
                                     id_=t.get('item_id', ''),
+                                    duration=t.get("duration", 0),
                                     name=t.get('name', 'Unknown Track'),
                                     artist=self._get_artist_name(t, a.get('name', '')),
                                     album=self._get_album_name(t, alb.get('name', '')),
@@ -1956,6 +1961,7 @@ class MassSource(SourceBase):
                         self._apply_media_identity(
                             self._make_leaf_node(
                                 id_=t.get('item_id', ''),
+                                duration=t.get("duration", 0),
                                 name=t.get('name', 'Unknown Track'),
                                 artist=self._get_track_artist_for_album(a_name, t),
                                 album=self._get_album_name(t, alb.get('name', '')),
@@ -1981,6 +1987,7 @@ class MassSource(SourceBase):
                     self._apply_media_identity(
                         self._make_leaf_node(
                             id_=s.get('item_id', ''),
+                            duration=s.get("duration", 0),
                             name=s.get('name', 'Unknown Track'),
                             artist=self._get_artist_name(s, ""),
                             album=self._get_album_name(s, ""),
@@ -5616,7 +5623,56 @@ class MassSource(SourceBase):
 
         return kicked
 
+    async def _handle_mood_queue(self, cmd, data):
+        queue = self._explicit_queue_id(data)
+        if not queue:
+            self._apply_playback_target_from_data(data)
+            queues = await self._resolve_queue_candidates()
+            queue = queues[0] if queues else ""
+        if not queue:
+            return {"state": "error", "reason": "missing_queue"}
+        from lib.mood_mix import current
+        locks = getattr(self, "_mood_queue_locks", None)
+        if locks is None:
+            self._mood_queue_locks = locks = {}
+        async with locks.setdefault(queue, asyncio.Lock()):
+            snapshot = await self._get_queue_snapshot(queue)
+            queue = str(snapshot.get("resolved_queue_id") or queue)
+            if cmd == "mood_snapshot":
+                return {"state": "ok", "queue_id": queue, "snapshot": snapshot}
+            playing = current(snapshot)
+            if not playing["id"] or playing["id"] != str(data.get("expected_item_id") or ""):
+                return {"state": "error", "reason": "current_item_changed"}
+            media = data.get("media")
+            if not isinstance(media, list) or len(media) > 50 or any(not isinstance(m, str) or not m.strip() for m in media):
+                return {"state": "error", "reason": "invalid_mix_media"}
+            # Local Pattern Play owns refill; MA's own autoplay must not compete.
+            response = await self._send_command_response("player_queues/dont_stop_the_music", queue_id=queue, dont_stop_the_music_enabled=False)
+            if not self._api_response_ok(response):
+                return {"state": "error", "reason": "cannot_disable_ma_autoplay"}
+            if media:
+                response = await self._send_command_response("player_queues/play_media", queue_id=queue,
+                    media=media, option="replace_next", radio_mode=False)
+                if not self._api_response_ok(response):
+                    return {"state": "error", "reason": "mix_replace_failed"}
+            else:
+                # MA replace_next with an empty list is version dependent; delete only future IDs.
+                index = snapshot.get("current_index")
+                if not isinstance(index, int) or index < 0:
+                    return {"state": "error", "reason": "unknown_current_index"}
+                for item in reversed((snapshot.get("items") or [])[index+1:]):
+                    fresh = await self._get_queue_snapshot(queue)
+                    if current(fresh)["id"] != playing["id"]:
+                        return {"state": "error", "reason": "current_item_changed"}
+                    response = await self._send_command_response("player_queues/delete_item", queue_id=queue,
+                        item_id_or_index=item.get("queue_item_id"))
+                    if not self._api_response_ok(response):
+                        return {"state": "error", "reason": "mix_trim_failed"}
+            return {"state": "queued", "queue_id": queue}
+
     async def handle_command(self, cmd, data) -> dict:
+        if cmd in {"mood_snapshot", "mood_replace_upcoming"}:
+            return await self._handle_mood_queue(cmd, data)
         uri = self._resolve_command_url(data)
         if cmd == "save_channel_podcast":
             try:

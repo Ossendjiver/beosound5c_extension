@@ -1,0 +1,20 @@
+from lib.mix_policy import similar_length, distinct
+
+def item(name='Song', artist='Artist', duration=240):
+    return dict(name=name, artist=artist, duration=duration)
+
+def test_long_mixes_never_enter_song_mix_or_the_reverse():
+    assert not similar_length(item(duration=2700), item())
+    assert not similar_length(item(), item(duration=2700))
+    assert similar_length(item(duration=3000), item(duration=2700))
+    assert not similar_length(item(duration=7000), item(duration=2700))
+
+def test_song_lengths_match_seed_and_unknown_lengths_are_not_guessed():
+    assert similar_length(item(duration=200), item())
+    assert not similar_length(item(duration=900), item())
+    assert not similar_length(item(duration=0), item())
+
+def test_versions_same_artist_deduplicate_but_other_artist_is_allowed():
+    seed=item('Borderline')
+    assert distinct([item('Borderline (Remastered)'), item('Borderline - Live'), item('Borderline', 'Other'), item('Next song')], [seed]) == [item('Borderline', 'Other'), item('Next song')]
+    assert len(distinct([item('The beautiful song'),item('The beautiful songs')], []))==1

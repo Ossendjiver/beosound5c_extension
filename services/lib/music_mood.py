@@ -2,6 +2,16 @@
 import math
 
 
+CENTRE_RADIUS = 0.25
+
+
+def discovery_percent(radius):
+    radius = float(radius)
+    if not math.isfinite(radius) or not 0 <= radius <= 1:
+        raise ValueError("Radius must be finite and between zero and one")
+    return 0 if radius <= CENTRE_RADIUS else min(90, 10 + math.floor((radius-CENTRE_RADIUS)/(1-CENTRE_RADIUS)*80 + .5))
+
+
 def selection(angle, radius):
     angle, radius = float(angle), float(radius)
     if not math.isfinite(angle) or not math.isfinite(radius) or not 0 <= radius <= 1:
@@ -10,8 +20,9 @@ def selection(angle, radius):
     theta = math.radians(angle)
     return {"angle": angle, "radius": radius,
             "energy": (math.sin(theta) + 1) / 2, "valence": (math.cos(theta) + 1) / 2,
-            "ring": "familiar" if radius <= 1/3 else "blend" if radius <= 2/3 else "discover",
-            "discovery_fraction": 0 if radius <= 1/3 else 0.1 if radius <= 2/3 else 0.5}
+            "ring": "familiar" if radius <= CENTRE_RADIUS else "discover",
+            "discovery_percent": discovery_percent(radius),
+            "discovery_fraction": discovery_percent(radius) / 100}
 
 
 TAG_HINTS = {

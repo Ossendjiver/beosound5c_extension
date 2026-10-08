@@ -443,8 +443,8 @@
     <script src="../js/config.js"></script>
     <script src="../js/arc-utils.js"></script>
     <script src="../js/fast-letter-index.js"></script>
-    <link rel="stylesheet" href="../mood-wheel.css?v=20261008.3">
-    <script src="../js/mood-wheel.js?v=20261008.3"></script>
+    <link rel="stylesheet" href="../mood-wheel.css?v=20261009.1">
+    <script src="../js/mood-wheel.js?v=20261009.1"></script>
     <script src="../js/search-composer.js"></script>
     <script src="../js/youtube-search-options.js"></script>
     <script src="../js/emulator-bridge.js"></script>
@@ -689,13 +689,7 @@
             updateTouchNavRailState();
         };
 
-        async function loadStaticLibrary() {
-            const raw = await fetchJson(STATIC_CACHE_URL, {
-                timeoutMs: 2500,
-                cacheMode: 'no-cache',
-            });
-            const data = normalizeLibraryPayload(raw);
-            return Array.isArray(data) && countTotalItems(data) > 0 ? data : null;
+        async function loadStaticLibrary() {ray(data) && countTotalItems(data) > 0 ? data : null;
         }
 
         async function readServiceBootState(serviceUrl) {
@@ -957,8 +951,7 @@
                 [node.id, node.url, node.play_url].forEach((rawKey) => {
                     const key = String(rawKey || '').trim();
                     if (!key) return;
-                    trackMetaByKey.set(key, mergeMeta(trackMetaByKey.get(key), normalizedMeta));
-                });
+         });
             };
 
             const collectTrackMeta = (node, context = {}) => {
@@ -1356,9 +1349,7 @@
                     }
                     const current = getCurrentItem();
                     const payload = {
-                        trail: folderStack.map((entry) => itemKey(entry.item)).filter(Boolean),
-                        selection_key: itemKey(current),
-                        selection_name: cleanTitle(current?.name),
+                  _ne: cleanTitle(current?.name),
                         selection_index: clampIndex(arcList.items, arcList.currentIndex),
                         saved_at: Date.now(),
                     };
@@ -1818,12 +1809,13 @@
                 return resolveDefaultContextSectionId();
             };
 
+            let moodWheel = null;
             let lastPublishedContextMenuSignature = '';
             const publishContextMenu = () => {
                 const payload = {
                     type: 'bs5c-context-menu',
                     route: CONTEXT_ROUTE,
-                    items: contextMenuItems(),
+                    items: moodWheel?.active ? [] : contextMenuItems(),
                     selectedId: resolveCurrentContextSectionId(),
                     activeId: resolveActiveContextSectionId(),
                 };
@@ -1838,7 +1830,7 @@
                 const normalizedId = String(sectionId || '').trim();
                 if (!normalizedId) return false;
                 const activeSectionId = String(folderStack[0]?.item?.id || '').trim();
-                if (normalizedId === 'mood') { moodWheel.open(); return true; }
+                if (normalizedId === 'mood') { moodWheel.open(); publishContextMenu(); return true; }
                 if (moodWheel.active) moodWheel.close();
                 if (normalizedId === 'search') {
                     if (activeSectionId === 'search' || optionsState?.kind === 'search_composer') {
@@ -2024,29 +2016,76 @@
             let detailRequestId = 0;
             let optionsState = null;
             const libraryBase = getServiceUrl('libraryServiceUrl', 8788);
-            const moodWheel = new window.MoodWheel.Wheel({
+            let moodQueue = '';
+            const mixCall = async data => {
+                const response = await fetch(`${libraryBase}/library/mix`, {method:'POST',
+                    headers:{'Content-Type':'application/json'},body:JSON.stringify(data),signal:AbortSignal.timeout(30000)});
+                if (!response.ok) throw new Error(await response.text() || 'Mood session unavailable');
+                return response.json();
+            };
+            const moodSnapshot = async () => {
+                const response = await fetch(sourceCommandUrl, {method:'POST',headers:{'Content-Type':'application/json'},
+                    body:JSON.stringify({command:'mood_snapshot',...activeMassTargetPayload()}),signal:AbortSignal.timeout(15000)});
+                const result=await response.json();
+                if (!response.ok || result.state === 'error') throw new Error('Current queue unavailable');
+                moodQueue=result.queue_id;
+                return result.snapshot;
+            };
+            const startSeedMix = async (item, mode='mood') => {
+                let before;
+                try { before=(await moodSnapshot()).current_item?.queue_item_id; } catch (_) {}
+                const started=await arcList.sendGoWebhook('play_now', {...item,url:item.url || item.play_url || item.uri});
+                if (!started) throw new Error('The seed could not be started');
+                let snapshot;
+                for (let i=0;i<10;i++) {
+                    snapshot=await moodSnapshot();
+                    if (snapshot.current_item?.queue_item_id && snapshot.current_item.queue_item_id !== before) break;
+                    await new Promise(resolve=>setTimeout(resolve,300));
+                }
+                if (!snapshot.current_item?.queue_item_id || snapshot.current_item.queue_item_id === before) throw new Error('Seed playback was not confirmed');
+                const media=snapshot.current_item?.media_item || snapshot.current_item || {};
+                await mixCall({action:'begin',queue_id:moodQueue,room:'lounge',mode,
+                    seed:{uri:media.uri || item.uri || item.url,name:media.name || item.name,
+                        artist:(media.artists || []).map(a=>a.name).join(', '),media_type:media.media_type || 'track'}});
+                if (mode === 'mood') { moodWheel.open(); publishContextMenu(); }
+            };
+            moodWheel = new window.MoodWheel.Wheel({
                 onSuggest: async () => {
+                    try {
+                        await moodSnapshot();
+                        const active=await fetch(`${libraryBase}/library/mix?queue_id=${encodeURIComponent(moodQueue)}`);
+                        const state=await active.json();
+                        if (state.active && state.mood) return state.mood;
+                    } catch (_) {}
                     const response = await fetch(`${libraryBase}/library/mood?room=lounge`, {signal:AbortSignal.timeout(5000)});
                     return response.ok ? (await response.json()).suggested : null;
                 },
                 onClose: () => publishContextMenu(),
-                onPlay: async ({angle, radius}) => {
-                    const response = await fetch(`${libraryBase}/library/recommend/music?room=lounge&limit=20&angle=${angle}&radius=${radius}`, {signal:AbortSignal.timeout(10000)});
-                    if (!response.ok) throw new Error('Mood recommendations unavailable');
-                    const mix = await response.json();
-                    if (!mix.items?.length) throw new Error('Add favourite tracks or a trusted playlist first');
-                    let count = 0;
-                    await fetch(`${libraryBase}/library/event`, {method:'POST',headers:{'Content-Type':'application/json'},
-                        body:JSON.stringify({type:'mood_session',angle,radius,items:mix.items}),signal:AbortSignal.timeout(5000)});
-                    for (const item of mix.items) {
-                        const result = await fetch(sourceCommandUrl, {method:'POST', headers:{'Content-Type':'application/json'},
-                            body:JSON.stringify({command: count ? 'queue_item' : 'play_now', url:item.uri, ...activeMassTargetPayload()}),signal:AbortSignal.timeout(15000)});
-                        const state = await result.json();
-                        if (!result.ok || state.state === 'error' || state.status === 'error') throw new Error(count ? 'Playback started; queue could not be completed' : 'Player rejected this mix');
-                        count++;
+                onQueue: () => window.parent.postMessage({type:'bs5c-mood-queue'},'*'),
+                onState: async () => {
+                    if (!moodQueue) await moodSnapshot();
+                    const response=await fetch(`${libraryBase}/library/mix?queue_id=${encodeURIComponent(moodQueue)}`);
+                    return response.ok ? response.json() : null;
+                },
+                onAdjust: async ({angle,radius}) => {
+                    if (!moodQueue) await moodSnapshot();
+                    const response=await fetch(`${libraryBase}/library/mix?queue_id=${encodeURIComponent(moodQueue)}`);
+                    const state=await response.json();
+                    if (state.active) { await mixCall({action:'update',queue_id:moodQueue,angle,radius}); await refreshQueueRoot(false); }
+                },
+                onPlay: async ({angle,radius}) => {
+                    if (!moodQueue) await moodSnapshot();
+                    const response=await fetch(`${libraryBase}/library/mix?queue_id=${encodeURIComponent(moodQueue)}`);
+                    const state=await response.json();
+                    if (!state.active) {
+                        const rec=await fetch(`${libraryBase}/library/recommend/music?room=lounge&limit=20&angle=${angle}&radius=${radius}`);
+                        const mix=await rec.json();
+                        if (!mix.items?.length) throw new Error('Add favourite tracks or a trusted playlist first');
+                        await startSeedMix(mix.items[0]);
                     }
+                    await mixCall({action:'update',queue_id:moodQueue,angle,radius});
                     await refreshQueueRoot(false);
-                    return `Playing ${count} tracks${mix.mood_coverage?.notice ? ' · '+mix.mood_coverage.notice : ''}`;
+                    return 'Upcoming tracks updated';
                 }
             });
 
@@ -2312,13 +2351,14 @@
                             refreshList();
                         },
                     },
+                    {id:'mood_mix',icon:'sparkles',title:'Start Mood Mix',onSelect:async()=>{ dismissOptionsMenu(false); await startSeedMix(safeItem); }},
                     !isRadioItem ? {
                         id: 'play_radio',
                         icon: 'broadcast',
-                        title: 'Start Radio',
+                        title: 'Play Radio from here',
                         onSelect: async () => {
                             dismissOptionsMenu(false);
-                            await arcList.sendGoWebhook('play_radio', safeItem);
+                            await startSeedMix(safeItem, 'radio');
                             refreshList();
                         },
                     } : null,
@@ -2810,7 +2850,7 @@
                 const current = itemOverride || detailState?.item || optionsState?.item || getCurrentItem();
                 if (!current) return;
                 if (detailState?.loading) return;
-                if (current.mood_root) return moodWheel.open();
+                if (current.mood_root) { moodWheel.open(); publishContextMenu(); return; }
                 if (current.search_root) return openSearchComposer();
                 if (current.search_group) return enterFolder(current);
                 if (current.youtube_video && !['play_item', 'play_now', 'save_channel_podcast'].includes(command)) return;
@@ -2895,6 +2935,7 @@
                     }
                     settleActionToast();
                     console.log('[MASS] Command complete:', command, current.name, '→', playUri, result);
+                    return result;
                 } catch (err) {
                     showActionToast(copy.error, { preserveTiming: true });
                     settleActionToast();
@@ -2934,7 +2975,7 @@
                 if (normalized === 'left')  {
                     clearPendingGoPress();
                     const current = getCurrentItem();
-                    if (current?.mood_root) { moodWheel.open(); return; }
+                    if (current?.mood_root) { moodWheel.open(); publishContextMenu(); return; }
                     if (current && getDetailSpec(current)) { openDetailPage(current); return; }
                     if (enterFolder()) return;
                 }
@@ -2978,7 +3019,7 @@
                 }
                 if (e.key === 'ArrowLeft')  {
                     const current = getCurrentItem();
-                    if (current?.mood_root) { moodWheel.open(); return; }
+                    if (current?.mood_root) { moodWheel.open(); publishContextMenu(); return; }
                     if (current && getDetailSpec(current)) { openDetailPage(current); return; }
                     if (enterFolder()) return;
                 }

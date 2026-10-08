@@ -2,8 +2,6 @@
 .mood-view {position:fixed;inset:0;z-index:1000;background:#000;color:#fff;display:grid;place-items:center;font-family:inherit;}
 .mood-stage {position:relative;width:min(76vw,80vh,560px);height:min(76vw,80vh,560px);}
 .mood-disc {position:absolute;inset:0;border-radius:50%;background:radial-gradient(circle,#101319 0%,#10131990 12%,transparent 58%),conic-gradient(#ffdf00,#ff7400,#f00071,#8336ff,#008dff,#00e8a8,#ffdf00);touch-action:none;box-shadow:0 0 0 1px #aaa3;}
-.mood-ring {position:absolute;border:1px solid #ffffff65;border-radius:50%;pointer-events:none;}
-.mood-ring.one {inset:33.333%;}.mood-ring.two {inset:16.667%;}
 .mood-point {position:absolute;transform:translate(-50%,-50%);width:18px;height:18px;border:3px solid #fff;box-shadow:0 0 12px #000;background:#101319;border-radius:50%;pointer-events:none;}
 .mood-view button {position:absolute;width:54px;height:54px;display:grid;place-items:center;border:1px solid #ffffff25;border-radius:50%;background:transparent;color:#80afff;cursor:pointer;}
 .mood-view button svg {width:30px;height:30px;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round;}
@@ -13,5 +11,6 @@
 .mood-discovery {font-size:17px;color:#c5cdd7;}
 .mood-view.settled .mood-label {animation:mood-idle-pulse 4s ease-in-out infinite;}
 @keyframes mood-idle-pulse {0%,100% {opacity:0;}50% {opacity:.9;}}
-.mood-status {position:absolute;top:22px;left:50%;transform:translateX(-50%);font-size:17px;color:#c5cdd7;max-width:65vw;text-align:center;}
+.mood-status {position:absolute;top:60px;left:50%;transform:translateX(-50%);font-size:17px;color:#c5cdd7;max-width:65vw;text-align:center;}
 @media(prefers-reduced-motion:reduce) {.mood-view.settled .mood-label {animation:none;opacity:.85;}}
+.mood-playing {position:absolute;top:22px;left:22px;max-width:70vw;font-size:21px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}

@@ -17,18 +17,16 @@ for(const [input,expected] of [['left','left'],['right','right'],['go','go'],['g
 }
 console.log('Open mood wheel owns physical buttons without playback/HA fallthrough');
 
-// Pointer movement must reach the main arc while the mood wheel is open.
+// Captured pointer selects discovery and never leaks into the main arc.
 {
  const calls=[];
  const start=source.indexOf('function processLaserEvent(');
  const end=source.indexOf('function updateViaStore(',start);
- const ctx={moodWheelActive:true,lastLaserEvent:{position:123},eventsProcessed:0,
-  window:{uiStore:{currentRoute:'menu/mass'},LaserPositionMapper:{laserPositionToAngle:p=>p+10}},
-  console,updateViaStore(angle,pos){calls.push([angle,pos]);}};
- vm.runInNewContext(source.slice(start,end)+'\nprocessLaserEvent({position:123});',ctx);
- assert.deepEqual(calls,[[133,123]]);
- assert.equal(ctx.lastKnownPointerAngle,133);
+ const ctx={moodWheelActive:true,lastLaserEvent:{position:63},eventsProcessed:0,
+  window:{uiStore:{currentRoute:'menu/mass'},IframeMessenger:{sendToRoute(...args){calls.push(args);}}},
+  console,updateViaStore(){throw Error('Captured pointer leaked to the main arc');}};
+ vm.runInNewContext(source.slice(start,end)+'\nprocessLaserEvent({position:63});',ctx);
+ assert.equal(calls[0][0],'menu/mass');assert.equal(calls[0][1],'mood-laser');assert.equal(calls[0][2].position,.5);
  assert.equal(ctx.lastLaserEvent,null);
- assert.equal(ctx.eventsProcessed,1);
 }
-console.log('Physical pointer reaches main arc with mood wheel open');
+console.log('Pointer captured for mood discovery');
