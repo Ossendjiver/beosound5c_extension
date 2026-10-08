@@ -97,14 +97,6 @@
       "lounge": "media_player.lounge_mini_ma"
     }
   },
-  "library": {
-    "weather_entity": "",
-    "garmin_run_entities": [],
-    "post_run_window_minutes": 90,
-    "post_run_yoga_directory": "smb://LOUNGE/SSD/Exercise/",
-    "post_run_yoga_script": "",
-    "yoga_targets": {}
-  },
   "setup_complete": false,
   "screen": {
     "immersive_delay_s": 180,

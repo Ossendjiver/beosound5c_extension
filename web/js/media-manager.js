@@ -132,8 +132,23 @@ const PlayingQueueOverlay = (() => {
         };
     }
 
+    let moodHost = null;
+    let playingContainer = null;
+    let playingSource = null;
     function isPlayingRoute() {
-        return window.uiStore?.currentRoute === 'menu/playing';
+        return window.uiStore?.currentRoute === 'menu/playing' || !!moodHost;
+    }
+    function openForMood() {
+        if (moodHost) return openOverlay();
+        playingContainer = mountedContainer; playingSource=activeSourceId;
+        moodHost = document.createElement('div');
+        moodHost.className = 'bs5c-mood-queue-host';
+        Object.assign(moodHost.style, {position:'fixed',inset:'0',background:'#000',zIndex:'20000'});
+        document.body.appendChild(moodHost);
+        mountedContainer = moodHost;
+        activeSourceId = 'mass';
+        ensureStyles(); ensureOverlay(moodHost); ensureRefresh();
+        return openOverlay();
     }
 
     function routerUrl() {
@@ -197,6 +212,11 @@ const PlayingQueueOverlay = (() => {
     }
 
     function closeOverlay() {
+        if (moodHost) {
+            moodHost.remove(); moodHost=null;
+            mountedContainer=playingContainer; playingContainer=null;
+            activeSourceId=playingSource || activeSourceId; playingSource=null;
+        }
         ui.open = false;
         ui.mode = 'list';
         ui.actionIndex = 0;
@@ -209,7 +229,7 @@ const PlayingQueueOverlay = (() => {
     }
 
     function openOverlay() {
-        if (!isEnabledFor()) return false;
+        if (!isEnabledFor(activeSourceId)) return false;
         ui.open = true;
         ui.mode = 'list';
         ui.actionIndex = 0;
@@ -225,7 +245,7 @@ const PlayingQueueOverlay = (() => {
         const style = document.createElement('style');
         style.id = STYLE_ID;
         style.textContent = `
-            #now-playing .bs5c-playing-queue-overlay {
+            :is(#now-playing,.bs5c-mood-queue-host) .bs5c-playing-queue-overlay {
                 position: absolute;
                 inset: 0;
                 display: flex;
@@ -235,10 +255,10 @@ const PlayingQueueOverlay = (() => {
                 pointer-events: none;
                 z-index: 8;
             }
-            #now-playing .bs5c-playing-queue-overlay[hidden] {
+            :is(#now-playing,.bs5c-mood-queue-host) .bs5c-playing-queue-overlay[hidden] {
                 display: none !important;
             }
-            #now-playing .bs5c-playing-queue-panel {
+            :is(#now-playing,.bs5c-mood-queue-host) .bs5c-playing-queue-panel {
                 width: min(49%, 470px);
                 max-height: 72vh;
                 display: flex;
@@ -253,52 +273,52 @@ const PlayingQueueOverlay = (() => {
                 pointer-events: auto;
                 overflow: hidden;
             }
-            #now-playing .bs5c-playing-queue-kicker {
+            :is(#now-playing,.bs5c-mood-queue-host) .bs5c-playing-queue-kicker {
                 color: rgba(255, 255, 255, 0.62);
                 font-size: 0.8rem;
                 letter-spacing: 0.22em;
                 text-transform: uppercase;
             }
-            #now-playing .bs5c-playing-queue-heading {
+            :is(#now-playing,.bs5c-mood-queue-host) .bs5c-playing-queue-heading {
                 color: #fff;
                 font-size: 1.9rem;
                 line-height: 1.05;
                 font-weight: 600;
                 min-height: 2.2rem;
             }
-            #now-playing .bs5c-playing-queue-copy,
-            #now-playing .bs5c-playing-queue-meta,
-            #now-playing .bs5c-playing-queue-detail-copy,
-            #now-playing .bs5c-playing-queue-detail-subtitle {
+            :is(#now-playing,.bs5c-mood-queue-host) .bs5c-playing-queue-copy,
+            :is(#now-playing,.bs5c-mood-queue-host) .bs5c-playing-queue-meta,
+            :is(#now-playing,.bs5c-mood-queue-host) .bs5c-playing-queue-detail-copy,
+            :is(#now-playing,.bs5c-mood-queue-host) .bs5c-playing-queue-detail-subtitle {
                 color: rgba(255, 255, 255, 0.72);
                 font-size: 0.95rem;
                 line-height: 1.45;
             }
-            #now-playing .bs5c-playing-queue-meta {
+            :is(#now-playing,.bs5c-mood-queue-host) .bs5c-playing-queue-meta {
                 color: rgba(255, 255, 255, 0.54);
                 min-height: 1.2rem;
             }
-            #now-playing .bs5c-playing-queue-body {
+            :is(#now-playing,.bs5c-mood-queue-host) .bs5c-playing-queue-body {
                 flex: 1;
                 overflow: auto;
                 padding-right: 4px;
             }
-            #now-playing .bs5c-playing-queue-body::-webkit-scrollbar {
+            :is(#now-playing,.bs5c-mood-queue-host) .bs5c-playing-queue-body::-webkit-scrollbar {
                 width: 0;
                 height: 0;
             }
-            #now-playing .bs5c-playing-queue-empty {
+            :is(#now-playing,.bs5c-mood-queue-host) .bs5c-playing-queue-empty {
                 color: rgba(255, 255, 255, 0.74);
                 padding: 10px 0;
             }
-            #now-playing .bs5c-playing-queue-list,
-            #now-playing .bs5c-playing-queue-actions {
+            :is(#now-playing,.bs5c-mood-queue-host) .bs5c-playing-queue-list,
+            :is(#now-playing,.bs5c-mood-queue-host) .bs5c-playing-queue-actions {
                 display: flex;
                 flex-direction: column;
                 gap: 10px;
             }
-            #now-playing .bs5c-playing-queue-item,
-            #now-playing .bs5c-playing-queue-action {
+            :is(#now-playing,.bs5c-mood-queue-host) .bs5c-playing-queue-item,
+            :is(#now-playing,.bs5c-mood-queue-host) .bs5c-playing-queue-action {
                 width: 100%;
                 border: 0;
                 background: rgba(255, 255, 255, 0.05);
@@ -307,31 +327,31 @@ const PlayingQueueOverlay = (() => {
                 text-align: left;
                 cursor: pointer;
             }
-            #now-playing .bs5c-playing-queue-item {
+            :is(#now-playing,.bs5c-mood-queue-host) .bs5c-playing-queue-item {
                 display: grid;
                 grid-template-columns: 42px minmax(0, 1fr);
                 gap: 12px;
                 padding: 14px 16px;
             }
-            #now-playing .bs5c-playing-queue-action {
+            :is(#now-playing,.bs5c-mood-queue-host) .bs5c-playing-queue-action {
                 padding: 16px 18px;
                 font-size: 1rem;
             }
-            #now-playing .bs5c-playing-queue-item.is-selected,
-            #now-playing .bs5c-playing-queue-action.is-selected {
+            :is(#now-playing,.bs5c-mood-queue-host) .bs5c-playing-queue-item.is-selected,
+            :is(#now-playing,.bs5c-mood-queue-host) .bs5c-playing-queue-action.is-selected {
                 background: rgba(255, 255, 255, 0.17);
                 box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.14);
             }
-            #now-playing .bs5c-playing-queue-item.is-current .bs5c-playing-queue-title {
+            :is(#now-playing,.bs5c-mood-queue-host) .bs5c-playing-queue-item.is-current .bs5c-playing-queue-title {
                 color: #98ffc1;
             }
-            #now-playing .bs5c-playing-queue-index {
+            :is(#now-playing,.bs5c-mood-queue-host) .bs5c-playing-queue-index {
                 color: rgba(255, 255, 255, 0.48);
                 font-size: 0.92rem;
                 font-weight: 600;
                 padding-top: 2px;
             }
-            #now-playing .bs5c-playing-queue-title {
+            :is(#now-playing,.bs5c-mood-queue-host) .bs5c-playing-queue-title {
                 display: block;
                 color: #fff;
                 font-size: 1rem;
@@ -340,7 +360,7 @@ const PlayingQueueOverlay = (() => {
                 overflow: hidden;
                 text-overflow: ellipsis;
             }
-            #now-playing .bs5c-playing-queue-subtitle {
+            :is(#now-playing,.bs5c-mood-queue-host) .bs5c-playing-queue-subtitle {
                 display: block;
                 color: rgba(255, 255, 255, 0.58);
                 font-size: 0.9rem;
@@ -350,12 +370,12 @@ const PlayingQueueOverlay = (() => {
                 overflow: hidden;
                 text-overflow: ellipsis;
             }
-            #now-playing .bs5c-playing-queue-detail {
+            :is(#now-playing,.bs5c-mood-queue-host) .bs5c-playing-queue-detail {
                 display: flex;
                 flex-direction: column;
                 gap: 12px;
             }
-            #now-playing .bs5c-playing-queue-detail-image {
+            :is(#now-playing,.bs5c-mood-queue-host) .bs5c-playing-queue-detail-image {
                 width: 100%;
                 aspect-ratio: 1 / 1;
                 object-fit: cover;
@@ -810,6 +830,8 @@ const PlayingQueueOverlay = (() => {
     });
 
     return {
+        openForMood,
+        moodOpen: () => !!moodHost,
         sync,
         handleNavEvent,
         handleButton,

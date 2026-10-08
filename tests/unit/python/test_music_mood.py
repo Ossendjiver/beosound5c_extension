@@ -11,7 +11,7 @@ def test_wheel_axes_rings_and_invalid_coordinates():
     assert mood.selection(180, 1)['valence'] == 0
     assert mood.selection(270, .5)['energy'] == 0
     assert mood.selection(-90, 1)['angle'] == 270
-    assert [mood.selection(0,r)['discovery_fraction'] for r in [0,.5,1]] == [0,.1,.5]
+    assert [mood.selection(0,r)['discovery_fraction'] for r in [0,.5,1]] == [0,.37,.9]
     for a,r in [(math.nan,.5),(0,math.inf),(0,-1),(0,2)]:
         with pytest.raises(ValueError): mood.selection(a,r)
 
@@ -34,14 +34,14 @@ def test_mood_changes_order_but_keeps_trusted_baseline(tmp_path):
     assert m.rank([songs[-1]], {'mood':mood.selection(90,1)},20) == []
 
 
-def test_outer_ring_is_explicit_discovery_and_never_exceeds_half(tmp_path):
+def test_continuous_discovery_honours_requested_fraction(tmp_path):
     m = lib.LocalModel(tmp_path/'db')
     familiar = [{'uri':f'f{i}','name':f'Known{i}','artist':'Known','trusted':True,'genre':'dance'} for i in range(20)]
     discovery = [{'uri':f'd{i}','name':f'New{i}','artist':'Other','genre':'dance'} for i in range(20)]
-    for radius, maximum in [(0,0),(.5,2),(1,10)]:
+    for radius, maximum in [(0,0),(.5,7),(1,18)]:
         picks = m.rank(familiar+discovery, {'mood':mood.selection(90,radius)},20)
         assert sum(i['uri'].startswith('d') for i in picks) <= maximum
-        if radius == 1: assert sum(i['uri'].startswith('d') for i in picks) == 10
+        if radius == 1: assert sum(i['uri'].startswith('d') for i in picks) == 18
     assert all(i['uri'].startswith('f') for i in m.rank(familiar+discovery, {},20))
 
 

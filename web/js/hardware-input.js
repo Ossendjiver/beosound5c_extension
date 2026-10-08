@@ -130,11 +130,24 @@ window.addEventListener('message', event => {
     const iframe = window.IframeMessenger?.getIframeForRoute('menu/mass');
     if (event.source === iframe?.contentWindow && event.data?.type === 'bs5c-mood-active') {
         moodWheelActive = event.data.active === true;
+        if (!moodWheelActive) window.PlayingQueueOverlay?.close?.();
     }
+});
+window.addEventListener('message', event => {
+    const iframe = window.IframeMessenger?.getIframeForRoute('menu/mass');
+    if (event.source === iframe?.contentWindow && event.data?.type === 'bs5c-mood-queue') window.PlayingQueueOverlay?.openForMood?.();
 });
 
 function processLaserEvent(data) {
-    // The physical pointer always controls the main arc, including over the mood wheel.
+    if (moodWheelActive && window.uiStore?.currentRoute === 'menu/mass') {
+        if (window.PlayingQueueOverlay?.moodOpen?.()) { lastLaserEvent=null; return; }
+        const mapping = window.LaserPositionMapper?.LASER_MAPPING_CONFIG;
+        const min = mapping?.MIN_LASER_POS ?? 3, max = mapping?.MAX_LASER_POS ?? 123;
+        const level = Math.max(0, Math.min(1, (data.position-min)/(max-min)));
+        window.IframeMessenger?.sendToRoute('menu/mass','mood-laser',{position:level});
+        lastLaserEvent = null;
+        return;
+    }
     const pos = data.position;
 
     if (!window.LaserPositionMapper) {
@@ -192,6 +205,7 @@ function updateViaStore(angle, laserPosition) {
 
 function handleNavEvent(uiStore, data) {
     notifyUserInteraction('nav', data || {});
+    if (window.PlayingQueueOverlay?.moodOpen?.() && window.PlayingQueueOverlay.handleNavEvent(data, 'mass')) return;
     if (window.ContextSuggestions?.handleNav?.(data)) return;
     if (window.ImmersiveMode?.consumeUserActivity?.('nav')) return;
     if (window.PlaybackTargets?.handleNav?.(data)) return;
@@ -449,6 +463,7 @@ function handleButtonEvent(uiStore, data) {
         window.CameraOverlayManager.handleAction(button)) return;
     // An open mood wheel owns layer/play buttons before generic context handlers.
     if (moodWheelActive && page === 'menu/mass') {
+        if (window.PlayingQueueOverlay?.moodOpen?.() && window.PlayingQueueOverlay.handleButton(button, 'mass')) return;
         window.IframeMessenger?.sendButtonEvent(page, button);
         return;
     }

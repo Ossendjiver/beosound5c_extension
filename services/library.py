@@ -42,6 +42,8 @@ HERE = Path(__file__).resolve().parent
 from lib.config import cfg
 from lib.background_tasks import BackgroundTaskSet
 from lib import music_mood
+from lib.mood_mix import MoodMixes
+from lib import mix_policy
 
 log = logging.getLogger("beo-library")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -291,9 +293,11 @@ class LocalModel:
             if feedback.get(identity) == "dislike":
                 continue
             trusted = item.get("trusted") or item.get("favorite") or key in known or feedback.get(identity) == "like"
-            if not trusted and key[0] not in seed_artists and not (mood and mood["ring"] == "discover" and music_mood.profile(item, mood_profiles) and music_mood.adjustment(item, mood, mood_profiles) >= -2):
+            if not trusted and key[0] not in seed_artists and not (mood and mood["discovery_fraction"] >= .1 and music_mood.profile(item, mood_profiles) and music_mood.adjustment(item, mood, mood_profiles) >= -2):
                 continue  # Discovery is constrained to artists already represented by seeds.
             score = 12.0 if item.get("favorite") else 10.0 if trusted else 0.0
+            if context.get("seed_artist") == key[0] and key[0]:
+                score += 3.5
             if mood:
                 score += music_mood.adjustment(item, mood, mood_profiles)
             for row in history:
@@ -324,7 +328,7 @@ class LocalModel:
         familiar.sort(key=lambda pair: pair[0], reverse=True)
         discovery.sort(key=lambda pair: pair[0], reverse=True)
         fraction = mood["discovery_fraction"] if mood else 0.1
-        discovery_count = min(int(limit * fraction), len(discovery), int(len(familiar) * fraction / (1 - fraction)))
+        discovery_count = min(int(math.floor(limit * fraction + .5)), len(discovery), int(len(familiar) * fraction / (1 - fraction)))
         chosen = [i for _, i in familiar[:max(0, limit - discovery_count)]]
         # Discovery never fills a missing familiar baseline beyond its 10% quota.
         if chosen:
@@ -351,6 +355,7 @@ class LibraryService:
         self._seed_sync_ts = 0.0
         self._automatic_keys: set[tuple[str, str]] = set()
         self._mood_sessions = {}
+        self.mixes = MoodMixes(self._mix_command, self._mix_recommend, self._mix_record)
         self._manual_choices = {}
         self._background = BackgroundTaskSet(log, label="library")
 
@@ -372,6 +377,7 @@ class LibraryService:
     async def start(self, _app: web.Application) -> None:
         self.session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=12))
         self._background.spawn(self._context_loop(), name="library_context")
+        self._background.spawn(self._mix_loop(), name="library_mood_mix")
         self._background.spawn(self._seed_loop(), name="library_seed_sync")
         self._background.spawn(self._listening_loop(), name="library_listening")
         self._background.spawn(self._suggestion_loop(), name="library_suggestions")
@@ -601,6 +607,7 @@ class LibraryService:
                 items[uri] = {
                     "name": str(node.get("name") or "Unknown"), "title": str(node.get("name") or "Unknown"),
                     "artist": artist, "album": str(node.get("album") or ""), "uri": uri,
+                    "duration": _safe_float(node.get("duration")) or previous.get("duration", 0),
                     "image": str(node.get("image") or ""), "media_type": str(node.get("media_type") or "track"),
                     "trusted": trusted or previous.get("trusted", False),
                     "favorite": bool(node.get("favorite") or previous.get("favorite", False)),
@@ -650,6 +657,7 @@ class LibraryService:
                 artists = item.get("artists") or []
                 metadata[uri] = {"uri": uri, "name": str(item.get("name") or ""), "title": str(item.get("name") or ""),
                     "artist": str(artists[0].get("name") or "") if artists else "",
+                    "duration": _safe_float(item.get("duration")) or 0,
                     "media_type": str(item.get("media_type") or "track"), "favorite": True,
                     "genres": (item.get("metadata") or {}).get("genres") or []}
             if len(page) < 500: break
@@ -673,7 +681,7 @@ class LibraryService:
         if len(weighted) < 5: return None
         total = sum(w for w,_,_ in weighted)
         e, v = sum(w*e for w,e,_ in weighted)/total, sum(w*v for w,_,v in weighted)/total
-        return music_mood.selection(math.degrees(math.atan2(2*e-1,2*v-1)), .5)
+        return music_mood.selection(math.degrees(math.atan2(2*e-1,2*v-1)), .250001)
 
     async def handle_mood(self, request: web.Request) -> web.Response:
         mood = self.pattern_mood(request.query.get("room", "lounge"))
@@ -686,6 +694,63 @@ class LibraryService:
         picks = self.model.rank(candidates, context, max(1, min(limit, 50)))
         self._automatic_keys = {self.model._candidate_key(item) for item in picks}
         return picks
+
+    async def _mix_command(self, command, **payload):
+        assert self.session
+        async with self.session.post(MASS_COMMAND, json={"command": command, **payload}) as response:
+            result = await response.json()
+            if response.status >= 400:
+                raise ValueError(result.get("reason") or "Mix queue request failed")
+            return result
+
+    async def _mix_recommend(self, room, limit, mood, seed):
+        candidates = self._load_library()
+        context = self._context_for_room(room)
+        selected = mood or self.pattern_mood(room)
+        if selected:
+            context["mood"] = selected
+        if seed and seed.get("uri"):
+            seed = dict(seed, trusted=True, media_type=seed.get("media_type") or "track")
+            candidates = [seed] + [c for c in candidates if c.get("uri") != seed["uri"]]
+            context["seed_artist"] = mix_policy.identity(seed)[0]
+        candidates = [c for c in candidates if mix_policy.similar_length(c, seed or {})]
+        return self.model.rank(candidates, context, limit)
+
+    def _mix_record(self, mood, picks):
+        for item in picks:
+            self._mood_sessions[self.model._candidate_key(item)] = {"mood": mood, "ts": time.time()}
+
+    async def _mix_loop(self):
+        while True:
+            for queue in list(self.mixes.sessions):
+                try:
+                    await self.mixes.tick(queue)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    log.debug("Mood mix monitor: %s", exc)
+            await asyncio.sleep(1)
+
+    async def handle_mix(self, request):
+        try:
+            if request.method == "GET":
+                return web.json_response(self.mixes.public(request.query.get("queue_id", "")), headers={"Access-Control-Allow-Origin": "*"})
+            data = await request.json()
+            queue = str(data.get("queue_id") or "").strip()
+            if not queue or len(queue) > 512:
+                raise ValueError("A queue is required")
+            if data.get("action") == "begin":
+                result = await self.mixes.begin(queue, str(data.get("room") or "lounge"), data.get("seed"), data.get("mode", "mood"))
+            elif data.get("action") == "update":
+                result = await self.mixes.update(queue, data["angle"], data["radius"])
+            elif data.get("action") == "stop":
+                self.mixes.sessions.pop(queue, None)
+                result = self.mixes.public(queue)
+            else:
+                raise ValueError("Unknown mix action")
+            return web.json_response(result, headers={"Access-Control-Allow-Origin": "*"})
+        except (ValueError, KeyError, TypeError) as exc:
+            raise web.HTTPBadRequest(text=str(exc))
 
     def suggestion(self, room: str) -> dict[str, Any]:
         context = self._context_for_room(room)
@@ -1066,6 +1131,8 @@ def create_app() -> web.Application:
     service = LibraryService()
     app = web.Application()
     app["library_service"] = service
+    app.router.add_get("/library/mix", service.handle_mix)
+    app.router.add_post("/library/mix", service.handle_mix)
     app.router.add_get("/library/mood", service.handle_mood)
     app.router.add_get("/library/context", service.handle_context)
     app.router.add_get("/library/recommend/music", service.handle_recommend)
