@@ -443,6 +443,8 @@
     <script src="../js/config.js"></script>
     <script src="../js/arc-utils.js"></script>
     <script src="../js/fast-letter-index.js"></script>
+    <link rel="stylesheet" href="../mood-wheel.css">
+    <script src="../js/mood-wheel.js"></script>
     <script src="../js/search-composer.js"></script>
     <script src="../js/youtube-search-options.js"></script>
     <script src="../js/emulator-bridge.js"></script>
@@ -903,6 +905,7 @@
             const voiceSearchUrl = serviceBaseUrl + '/voice_search';
             const FALLBACK_CARD_IMAGE = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNjQiIGhlaWdodD0iNjQiIHZpZXdCb3g9IjAgMCA2NCA2NCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPHJlY3Qgd2lkdGg9IjY0IiBoZWlnaHQ9IjY0IiBmaWxsPSIjMzMzMzMzIi8+Cjx0ZXh0IHg9IjMyIiB5PSI0MCIgZm9udC1mYW1pbHk9IkFyaWFsLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjI0IiBmaWxsPSIjZmZmZmZmIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIj7imqo8L3RleHQ+Cjwvc3ZnPgo=';
             const ROOT_ICON_STYLE = {
+                mood: { icon: 'circle', color: '#c471ed' },
                 search:     { icon: 'magnifying-glass', color: '#f03e3e' },
                 artists:   { icon: 'users-three', color: '#e05618' },
                 albums:    { icon: 'vinyl-record', color: '#1c7ed6' },
@@ -913,8 +916,9 @@
                 mixes:     { icon: 'radio', color: '#e6ca19' },
             };
             const SOURCE_ROOT_IDS = new Set(['queue', 'artists', 'albums', 'songs', 'playlists', 'playlist_mixes', 'podcasts', 'mixes']);
-            const ROOT_SECTION_IDS = new Set(['queue', 'search', 'artists', 'albums', 'titles', 'playlists', 'playlist_mixes', 'podcasts', 'mixes']);
+            const ROOT_SECTION_IDS = new Set(['queue', 'mood', 'search', 'artists', 'albums', 'titles', 'playlists', 'playlist_mixes', 'podcasts', 'mixes']);
             const CROSS_SECTION_TARGET_IDS = new Set(['artists', 'albums', 'titles']);
+            const MOOD_ROOT = {id: 'mood', name: 'Mood wheel', mood_root: true, tracks: []};
             const SEARCH_ROOT = {
                 id: 'search',
                 name: 'Search',
@@ -1565,7 +1569,7 @@
 
             const rootItems = () => {
                 const libraryItems = buildDisplayRootSource(withQueueRoot(arcList.parentData || preloadedData || []));
-                const src = [SEARCH_ROOT].concat(libraryItems);
+                const src = [MOOD_ROOT, SEARCH_ROOT].concat(libraryItems);
                 return src.map((item, idx, arr) => applyRootPresentation(childNameMapper(item, idx, arr)));
             };
 
@@ -1834,6 +1838,8 @@
                 const normalizedId = String(sectionId || '').trim();
                 if (!normalizedId) return false;
                 const activeSectionId = String(folderStack[0]?.item?.id || '').trim();
+                if (normalizedId === 'mood') { moodWheel.open(); return true; }
+                if (moodWheel.active) moodWheel.close();
                 if (normalizedId === 'search') {
                     if (activeSectionId === 'search' || optionsState?.kind === 'search_composer') {
                         publishContextMenu();
@@ -2017,6 +2023,32 @@
             let detailState = null;
             let detailRequestId = 0;
             let optionsState = null;
+            const libraryBase = getServiceUrl('libraryServiceUrl', 8788);
+            const moodWheel = new window.MoodWheel.Wheel({
+                onSuggest: async () => {
+                    const response = await fetch(`${libraryBase}/library/mood?room=lounge`, {signal:AbortSignal.timeout(5000)});
+                    return response.ok ? (await response.json()).suggested : null;
+                },
+                onClose: () => publishContextMenu(),
+                onPlay: async ({angle, radius}) => {
+                    const response = await fetch(`${libraryBase}/library/recommend/music?room=lounge&limit=20&angle=${angle}&radius=${radius}`, {signal:AbortSignal.timeout(10000)});
+                    if (!response.ok) throw new Error('Mood recommendations unavailable');
+                    const mix = await response.json();
+                    if (!mix.items?.length) throw new Error('Add favourite tracks or a trusted playlist first');
+                    let count = 0;
+                    await fetch(`${libraryBase}/library/event`, {method:'POST',headers:{'Content-Type':'application/json'},
+                        body:JSON.stringify({type:'mood_session',angle,radius,items:mix.items}),signal:AbortSignal.timeout(5000)});
+                    for (const item of mix.items) {
+                        const result = await fetch(sourceCommandUrl, {method:'POST', headers:{'Content-Type':'application/json'},
+                            body:JSON.stringify({command: count ? 'queue_item' : 'play_now', url:item.uri, ...activeMassTargetPayload()}),signal:AbortSignal.timeout(15000)});
+                        const state = await result.json();
+                        if (!result.ok || state.state === 'error' || state.status === 'error') throw new Error(count ? 'Playback started; queue could not be completed' : 'Player rejected this mix');
+                        count++;
+                    }
+                    await refreshQueueRoot(false);
+                    return `Playing ${count} tracks${mix.mood_coverage?.notice ? ' · '+mix.mood_coverage.notice : ''}`;
+                }
+            });
 
             const getDetailSpec = (item) => {
                 if (item?.youtube_video) return null;
@@ -2778,6 +2810,7 @@
                 const current = itemOverride || detailState?.item || optionsState?.item || getCurrentItem();
                 if (!current) return;
                 if (detailState?.loading) return;
+                if (current.mood_root) return moodWheel.open();
                 if (current.search_root) return openSearchComposer();
                 if (current.search_group) return enterFolder(current);
                 if (current.youtube_video && !['play_item', 'play_now', 'save_channel_podcast'].includes(command)) return;
@@ -2844,6 +2877,13 @@
                         return;
                     }
 
+                    if (!current.youtube_video && !Array.isArray(current.tracks) &&
+                        (result?.state === 'playing' || command === 'play_now')) {
+                        const meta = getItemMeta(current);
+                        void fetch(`${libraryBase}/library/event`, {method:'POST',headers:{'Content-Type':'application/json'},
+                            body:JSON.stringify({type:'selection',title:current.name,artist:current.artist || meta.artist,uri:playUri,
+                                media_type:'track',selection_origin:'manual',room:'lounge'}),signal:AbortSignal.timeout(5000)}).catch(()=>{});
+                    }
                     const state = String(result?.state || '').trim().toLowerCase();
                     const successMessage = state === 'video_sent' ? 'Sent to Samsung Frame' : (copy[state] || copy.playing || copy.queued || copy.pending);
                     showActionToast(successMessage, { preserveTiming: true });
@@ -2869,6 +2909,7 @@
 
             arcList.handleButtonFromParent = function (button) {
                 const normalized = String(button || '').toLowerCase();
+                if (moodWheel.active) { if (normalized === 'right') moodWheel.close(); else if (normalized === 'go') return moodWheel.play(); return; }
                 if (optionsState) {
                     if (normalized === 'left') {
                         const entry = optionsState.entries?.[optionsState.currentIndex || 0];
@@ -2893,6 +2934,7 @@
                 if (normalized === 'left')  {
                     clearPendingGoPress();
                     const current = getCurrentItem();
+                    if (current?.mood_root) { moodWheel.open(); return; }
                     if (current && getDetailSpec(current)) { openDetailPage(current); return; }
                     if (enterFolder()) return;
                 }
@@ -2912,6 +2954,7 @@
 
             arcList.handleKeyPress = function (e) {
                 clearPendingGoPress();
+                if (moodWheel.active) return moodWheel.key(e.key);
                 if (optionsState) {
                     if (e.key === 'ArrowUp') { moveOptionsSelection(-1); return; }
                     if (e.key === 'ArrowDown') { moveOptionsSelection(1); return; }
@@ -2935,6 +2978,7 @@
                 }
                 if (e.key === 'ArrowLeft')  {
                     const current = getCurrentItem();
+                    if (current?.mood_root) { moodWheel.open(); return; }
                     if (current && getDetailSpec(current)) { openDetailPage(current); return; }
                     if (enterFolder()) return;
                 }
@@ -2947,6 +2991,7 @@
             };
 
             arcList.handleNavFromParent = function (data) {
+                if (moodWheel.active) return moodWheel.nav(data);
                 if (optionsState) {
                     fastLetterMode?.reset();
                     if (optionWheelStateRef !== optionsState) {
@@ -3011,6 +3056,8 @@
             }, 5000);
 
             window.addEventListener('message', (event) => {
+                if (event.source !== window.parent) return;
+                if (event.data?.type === 'mood-laser' && moodWheel.active) { moodWheel.laser(event.data.position); return; }
                 if (event.data?.type === 'context-select') {
                     const sectionId = String(event.data?.id || '').trim();
                     if (!sectionId) return;

@@ -41,6 +41,7 @@ HERE = Path(__file__).resolve().parent
 
 from lib.config import cfg
 from lib.background_tasks import BackgroundTaskSet
+from lib import music_mood
 
 log = logging.getLogger("beo-library")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -176,6 +177,11 @@ class LocalModel:
         )
         if "origin" not in {row[1] for row in self.db.execute("PRAGMA table_info(listens)")}:
             self.db.execute("ALTER TABLE listens ADD COLUMN origin TEXT NOT NULL DEFAULT 'legacy'")
+        if "weekday" not in {row[1] for row in self.db.execute("PRAGMA table_info(listens)")}:
+            self.db.execute("ALTER TABLE listens ADD COLUMN weekday INTEGER NOT NULL DEFAULT -1")
+        for column in ("mood_energy", "mood_valence"):
+            if column not in {row[1] for row in self.db.execute("PRAGMA table_info(listens)")}:
+                self.db.execute(f"ALTER TABLE listens ADD COLUMN {column} REAL")
         self.db.commit()
 
     def put_kv(self, key: str, value: Any) -> None:
@@ -216,14 +222,15 @@ class LocalModel:
         now = dt.datetime.now()
         self.db.execute(
             """INSERT INTO listens(ts,title,artist,album,uri,seconds,reward,hour,time_bucket,
-               weekpart,weather,temperature,room,origin) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+               weekpart,weather,temperature,room,origin,weekday,mood_energy,mood_valence) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 time.time(), title, artist, str(item.get("album") or ""),
                 str(item.get("uri") or ""), float(seconds), reward, now.hour,
                 context.get("time_bucket", _time_bucket(now.hour)),
                 context.get("weekpart", _weekpart(now)),
                 context.get("weather", "unknown"), context.get("temperature"),
-                context.get("room", ""), origin,
+                context.get("room", ""), origin, context.get("weekday", now.weekday()),
+                (item.get("listening_mood") or {}).get("energy"), (item.get("listening_mood") or {}).get("valence"),
             ),
         )
         cutoff = time.time() - 180 * 86400
@@ -272,6 +279,8 @@ class LocalModel:
         seed_artists = {self._candidate_key(i)[0] for i in seeds if self._candidate_key(i)[0]}
         if not seeds:
             return []  # Never substitute random catalogue entries for an empty baseline.
+        mood = context.get("mood")
+        mood_profiles = self.get_kv("mood_profiles", {})
         now_ts = time.time()
         familiar, discovery = [], []
         for item in candidates:
@@ -282,9 +291,11 @@ class LocalModel:
             if feedback.get(identity) == "dislike":
                 continue
             trusted = item.get("trusted") or item.get("favorite") or key in known or feedback.get(identity) == "like"
-            if not trusted and key[0] not in seed_artists:
+            if not trusted and key[0] not in seed_artists and not (mood and mood["ring"] == "discover" and music_mood.profile(item, mood_profiles) and music_mood.adjustment(item, mood, mood_profiles) >= -2):
                 continue  # Discovery is constrained to artists already represented by seeds.
             score = 12.0 if item.get("favorite") else 10.0 if trusted else 0.0
+            if mood:
+                score += music_mood.adjustment(item, mood, mood_profiles)
             for row in history:
                 if row["artist"].casefold() != key[0] or not key[0]:
                     continue
@@ -295,10 +306,14 @@ class LocalModel:
                 if reward < 0 and not same_track:
                     reward *= 0.15
                 similarity = 1.0
+                if mood and row["mood_energy"] is not None and row["mood_valence"] is not None:
+                    distance = math.hypot(mood["energy"]-row["mood_energy"], mood["valence"]-row["mood_valence"])
+                    similarity *= 1 + max(0, 1-distance)*2
                 if contextual:
                     hour_delta = abs(int(context.get("hour", 12)) - int(row["hour"]))
                     hour_delta = min(hour_delta, 24 - hour_delta)
                     similarity *= 1.25 if hour_delta <= 2 else 1.0
+                    if context.get("weekday") == row["weekday"]: similarity *= 1.2
                     if context.get("room") == row["room"]: similarity *= 1.15
                     if context.get("weather") not in (None, "unknown") and context.get("weather") == row["weather"]: similarity *= 1.1
                 score += reward * similarity * 0.5 ** (max(0.0, now_ts - row["ts"]) / (28 * 86400))
@@ -308,10 +323,11 @@ class LocalModel:
             (familiar if trusted else discovery).append((score, item))
         familiar.sort(key=lambda pair: pair[0], reverse=True)
         discovery.sort(key=lambda pair: pair[0], reverse=True)
-        discovery_count = min(limit // 10, len(discovery), len(familiar) // 9)
+        fraction = mood["discovery_fraction"] if mood else 0.1
+        discovery_count = min(int(limit * fraction), len(discovery), int(len(familiar) * fraction / (1 - fraction)))
         chosen = [i for _, i in familiar[:max(0, limit - discovery_count)]]
         # Discovery never fills a missing familiar baseline beyond its 10% quota.
-        if len(chosen) >= 9:
+        if chosen:
             for _, item in discovery[:discovery_count]:
                 chosen.insert(min(len(chosen), 9), item)
         return chosen[:max(1, limit)]
@@ -334,6 +350,8 @@ class LibraryService:
         self._seed_metadata: dict[str, dict[str, Any]] = self.model.get_kv("favorite_tracks", {})
         self._seed_sync_ts = 0.0
         self._automatic_keys: set[tuple[str, str]] = set()
+        self._mood_sessions = {}
+        self._manual_choices = {}
         self._background = BackgroundTaskSet(log, label="library")
 
     def _base_context(self, room: str = "") -> dict[str, Any]:
@@ -342,6 +360,7 @@ class LibraryService:
             "hour": now.hour,
             "time_bucket": _time_bucket(now.hour),
             "weekpart": _weekpart(now),
+            "weekday": now.weekday(),
             "weather": "unknown",
             "temperature": None,
             "room": room,
@@ -508,6 +527,12 @@ class LibraryService:
 
     def _learning_item(self, media: dict[str, Any]) -> dict[str, Any]:
         item = dict(media)
+        key = self.model._candidate_key(item)
+        session = self._mood_sessions.get(key)
+        if session and time.time() - session["ts"] < 7200:
+            item["listening_mood"] = session["mood"]
+        if time.time() - self._manual_choices.get(key, 0) < 1800:
+            item["selection_origin"] = "manual"
         if item.get("selection_origin") not in {"manual", "automatic"}:
             item["selection_origin"] = "automatic" if self.model._candidate_key(item) in self._automatic_keys else "unknown"
         return item
@@ -562,9 +587,12 @@ class LibraryService:
         items: dict[str, dict[str, Any]] = {}
 
         trusted_names = {str(n).casefold() for n in self.cfg.get("trusted_playlists", ["Trusted music", "All favorited tracks"])}
-        def walk(node: Any, inherited_artist: str = "", trusted: bool = False) -> None:
+        def walk(node: Any, inherited_artist: str = "", trusted: bool = False, playlist_tags: str = "", playlist_mode: bool = False) -> None:
             if not isinstance(node, dict): return
             artist = str(node.get("artist") or inherited_artist or "")
+            playlist_mode = playlist_mode or node.get("id") == "playlists"
+            if playlist_mode and isinstance(node.get("tracks"), list) and node.get("id") != "playlists":
+                playlist_tags = playlist_tags + " " + str(node.get("name") or "")
             trusted = trusted or str(node.get("name") or "").casefold() in trusted_names
             children = node.get("tracks")
             uri = str(node.get("url") or node.get("uri") or "")
@@ -576,9 +604,11 @@ class LibraryService:
                     "image": str(node.get("image") or ""), "media_type": str(node.get("media_type") or "track"),
                     "trusted": trusted or previous.get("trusted", False),
                     "favorite": bool(node.get("favorite") or previous.get("favorite", False)),
+                    "genres": node.get("genres") or node.get("genre") or previous.get("genres", ""),
+                    "playlist_tags": (str(previous.get("playlist_tags") or "") + " " + playlist_tags).strip(),
                 }
             if isinstance(children, list):
-                for child in children: walk(child, artist, trusted)
+                for child in children: walk(child, artist, trusted, playlist_tags, playlist_mode)
         for root in raw:
             if isinstance(root, dict) and str(root.get("id") or "") in {"songs", "playlists"}:
                 walk(root)
@@ -620,15 +650,40 @@ class LibraryService:
                 artists = item.get("artists") or []
                 metadata[uri] = {"uri": uri, "name": str(item.get("name") or ""), "title": str(item.get("name") or ""),
                     "artist": str(artists[0].get("name") or "") if artists else "",
-                    "media_type": str(item.get("media_type") or "track"), "favorite": True}
+                    "media_type": str(item.get("media_type") or "track"), "favorite": True,
+                    "genres": (item.get("metadata") or {}).get("genres") or []}
             if len(page) < 500: break
         self._seed_metadata = metadata
         self.model.put_kv("favorite_tracks", metadata)
         self._seed_sync_ts = time.monotonic()
 
-    async def recommend_music(self, room: str, limit: int) -> list[dict[str, Any]]:
+    def pattern_mood(self, room: str) -> dict | None:
+        context = self._context_for_room(room)
+        weighted = []
+        for row in self.model._history():
+            if row["reward"] <= 0 or row["mood_energy"] is None or row["mood_valence"] is None: continue
+            hour_delta = abs(int(context.get("hour", 12))-row["hour"])
+            hour_delta = min(hour_delta, 24-hour_delta)
+            weight = float(row["reward"]) * 0.5 ** ((time.time()-row["ts"])/(28*86400))
+            weight *= 2 if hour_delta <= 2 else .5
+            if context.get("weekday") == row["weekday"]: weight *= 1.2
+            if context.get("room") == row["room"]: weight *= 1.15
+            if context.get("weather") not in (None,"unknown") and context.get("weather") == row["weather"]: weight *= 1.1
+            weighted.append((weight,row["mood_energy"],row["mood_valence"]))
+        if len(weighted) < 5: return None
+        total = sum(w for w,_,_ in weighted)
+        e, v = sum(w*e for w,e,_ in weighted)/total, sum(w*v for w,_,v in weighted)/total
+        return music_mood.selection(math.degrees(math.atan2(2*e-1,2*v-1)), .5)
+
+    async def handle_mood(self, request: web.Request) -> web.Response:
+        mood = self.pattern_mood(request.query.get("room", "lounge"))
+        return web.json_response({"suggested": mood, "source": "listening_patterns" if mood else "not_enough_history"}, headers={"Access-Control-Allow-Origin":"*"})
+
+    async def recommend_music(self, room: str, limit: int, mood: dict | None = None) -> list[dict[str, Any]]:
         candidates = self._load_library()
-        picks = self.model.rank(candidates, self._context_for_room(room), max(1, min(limit, 50)))
+        context = self._context_for_room(room)
+        if mood or self.pattern_mood(room): context["mood"] = mood or self.pattern_mood(room)
+        picks = self.model.rank(candidates, context, max(1, min(limit, 50)))
         self._automatic_keys = {self.model._candidate_key(item) for item in picks}
         return picks
 
@@ -831,12 +886,19 @@ class LibraryService:
             limit = int(request.query.get("limit", "20"))
         except ValueError:
             limit = 20
-        picks = await self.recommend_music(room, limit)
+        mood = None
+        if "angle" in request.query or "radius" in request.query:
+            try: mood = music_mood.selection(request.query["angle"], request.query["radius"])
+            except (KeyError, TypeError, ValueError): raise web.HTTPBadRequest(text="Invalid mood coordinates")
+        picks = await self.recommend_music(room, limit, mood)
+        classified = sum(music_mood.profile(i, self.model.get_kv("mood_profiles", {})) is not None for i in picks)
         return web.json_response(
             {
                 "model": "trusted-baseline-v2",
                 "baseline": {"trusted_playlists": self.cfg.get("trusted_playlists", ["Trusted music", "All favorited tracks"]), "favourites": True, "discovery_fraction": 0.1, "seed_required": True},
                 "context": self._context_for_room(room),
+                "mood": mood,
+                "mood_coverage": {"classified": classified, "total": len(picks), "notice": "Mood data limited; familiar mix" if mood and classified < len(picks) else ""},
                 "uris": [item["uri"] for item in picks],
                 "items": picks,
             },
@@ -872,6 +934,28 @@ class LibraryService:
     async def handle_event(self, request: web.Request) -> web.Response:
         payload = await request.json()
         event_type = str(payload.get("type") or "")
+        if event_type == "selection":
+            if _music_item(payload) and str(payload.get("uri") or "").strip():
+                self._manual_choices[self.model._candidate_key(payload)] = time.time()
+            return web.json_response({"status":"ok"}, headers={"Access-Control-Allow-Origin":"*"})
+        if event_type == "mood_session":
+            try: mood = music_mood.selection(payload["angle"], payload["radius"])
+            except (KeyError, TypeError, ValueError): raise web.HTTPBadRequest(text="Invalid mood coordinates")
+            items = payload.get("items")
+            if not isinstance(items, list) or len(items) > 50: raise web.HTTPBadRequest(text="Invalid mood items")
+            for item in items:
+                if isinstance(item, dict) and _music_item(item):
+                    self._mood_sessions[self.model._candidate_key(item)] = {"mood": mood, "ts": time.time()}
+            return web.json_response({"status":"ok"}, headers={"Access-Control-Allow-Origin":"*"})
+        if event_type == "mood_profile":
+            uri = str(payload.get("uri") or "").strip()
+            try: mood = music_mood.selection(payload["angle"], payload["radius"])
+            except (KeyError, TypeError, ValueError): raise web.HTTPBadRequest(text="Invalid mood coordinates")
+            if not uri: raise web.HTTPBadRequest(text="Track URI required")
+            profiles = self.model.get_kv("mood_profiles", {})
+            profiles[uri] = {"energy": mood["energy"], "valence": mood["valence"]}
+            self.model.put_kv("mood_profiles", profiles)
+            return web.json_response({"status": "ok"}, headers={"Access-Control-Allow-Origin": "*"})
         if event_type == "feedback":
             uri = str(payload.get("uri") or "").strip()
             action = str(payload.get("action") or "")
@@ -907,8 +991,12 @@ class LibraryService:
                     "selection_origin": str(payload.get("selection_origin") or "unknown"),
                 }
                 self._external_started = time.monotonic()
+            elif payload.get("selection_origin") == "manual" and self._external_media:
+                self._external_media["selection_origin"] = "manual"
             return web.json_response({"status": "ok", "observing": True}, headers={"Access-Control-Allow-Origin": "*"})
         if event_type == "listen_stop":
+            if payload.get("room") and self._external_media and payload["room"] != self._external_media.get("room"):
+                return web.json_response({"status":"ok", "ignored":True}, headers={"Access-Control-Allow-Origin":"*"})
             if self._external_media: self._external_media["end_reason"] = str(payload.get("reason") or "unknown")
             self._finish_external()
             return web.json_response({"status": "ok", "observing": False}, headers={"Access-Control-Allow-Origin": "*"})
@@ -978,6 +1066,7 @@ def create_app() -> web.Application:
     service = LibraryService()
     app = web.Application()
     app["library_service"] = service
+    app.router.add_get("/library/mood", service.handle_mood)
     app.router.add_get("/library/context", service.handle_context)
     app.router.add_get("/library/recommend/music", service.handle_recommend)
     app.router.add_get("/library/suggestions", service.handle_suggestions)

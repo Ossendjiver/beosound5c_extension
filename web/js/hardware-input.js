@@ -125,7 +125,20 @@ function processLaserEvents() {
     requestAnimationFrame(processLaserEvents);
 }
 
+let moodWheelCapturesPointer = false;
+window.addEventListener('message', event => {
+    const iframe = window.IframeMessenger?.getIframeForRoute('menu/mass');
+    if (event.source === iframe?.contentWindow && event.data?.type === 'bs5c-mood-active') {
+        moodWheelCapturesPointer = event.data.active === true;
+    }
+});
+
 function processLaserEvent(data) {
+    if (moodWheelCapturesPointer && window.uiStore?.currentRoute === 'menu/mass') {
+        window.IframeMessenger?.sendToRoute('menu/mass', 'mood-laser', {position: data.position});
+        lastLaserEvent = null;
+        return;
+    }
     const pos = data.position;
 
     if (!window.LaserPositionMapper) {

@@ -1,0 +1,23 @@
+const assert = require('node:assert/strict');
+const {normalize,fromPoint,ring} = require('../../../web/js/mood-wheel.js');
+assert.equal(fromPoint(0,-1).angle,0);
+assert.equal(fromPoint(1,0).angle,90);
+assert.equal(fromPoint(0,1).angle,180);
+assert.equal(fromPoint(-1,0).angle,270);
+assert.equal(fromPoint(2,0).radius,1);
+assert.deepEqual(normalize(-5,-1),{angle:355,radius:0});
+assert.equal(ring(1/3),'Familiar');
+assert.equal(ring(.5),'Blend');
+assert.equal(ring(1),'Discover');
+// Physical controls change independent axes; moving the pointer must not reset mood.
+global.localStorage = {setItem(){}};
+const wheel = new (require('../../../web/js/mood-wheel.js').Wheel)({onPlay(){}});
+wheel.nav({direction:'clock',speed:1});
+assert.equal(wheel.state.angle,5);
+wheel.laser(3);
+assert.equal(wheel.state.angle,5);
+assert.equal(wheel.state.radius,0);
+wheel.laser(123);
+assert.equal(wheel.state.radius,1);
+wheel.nav({direction:'counter',speed:1});
+assert.equal(wheel.state.angle,0);

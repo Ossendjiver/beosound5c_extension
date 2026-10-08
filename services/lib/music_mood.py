@@ -1,0 +1,50 @@
+"""Transparent MoodWheel coordinates; tags are hints, never acoustic analysis."""
+import math
+
+
+def selection(angle, radius):
+    angle, radius = float(angle), float(radius)
+    if not math.isfinite(angle) or not math.isfinite(radius) or not 0 <= radius <= 1:
+        raise ValueError("Mood angle must be finite and radius between zero and one")
+    angle %= 360
+    theta = math.radians(angle)
+    return {"angle": angle, "radius": radius,
+            "energy": (math.sin(theta) + 1) / 2, "valence": (math.cos(theta) + 1) / 2,
+            "ring": "familiar" if radius <= 1/3 else "blend" if radius <= 2/3 else "discover",
+            "discovery_fraction": 0 if radius <= 1/3 else 0.1 if radius <= 2/3 else 0.5}
+
+
+TAG_HINTS = {
+    "ambient": (0.1, 0.5), "downtempo": (0.2, 0.5), "chill": (0.2, 0.6),
+    "relax": (0.15, 0.6), "acoustic": (0.3, 0.5), "jazz": (0.35, 0.55),
+    "classical": (0.3, 0.5), "dance": (0.85, 0.7), "disco": (0.8, 0.8),
+    "house": (0.8, 0.65), "techno": (0.9, 0.4), "metal": (0.9, 0.2),
+    "punk": (0.85, 0.35), "happy": (0.65, 0.9), "upbeat": (0.8, 0.8),
+    "melanchol": (0.3, 0.1), "sad": (0.25, 0.1), "dark": (0.55, 0.15),
+}
+
+
+def profile(item, learned):
+    explicit = learned.get(item.get("uri")) or item.get("mood_profile")
+    if isinstance(explicit, dict):
+        try:
+            e, v = float(explicit["energy"]), float(explicit["valence"])
+            if all(math.isfinite(n) and 0 <= n <= 1 for n in (e, v)):
+                return {"energy": e, "valence": v, "source": "manual"}
+        except (KeyError, TypeError, ValueError):
+            pass
+    # Use supplied genres/curated playlist labels, not guessed title or artist mood.
+    tags = str(item.get("genres") or item.get("genre") or "") + " " + str(item.get("playlist_tags") or "")
+    matches = [values for tag, values in TAG_HINTS.items() if tag in tags.casefold()]
+    if not matches:
+        return None
+    return {"energy": sum(p[0] for p in matches)/len(matches),
+            "valence": sum(p[1] for p in matches)/len(matches), "source": "tag_hint"}
+
+
+def adjustment(item, mood, learned):
+    p = profile(item, learned)
+    if not p:
+        return -4.0
+    distance = math.hypot(p["energy"]-mood["energy"], p["valence"]-mood["valence"])
+    return 4.0 - 10.0 * distance

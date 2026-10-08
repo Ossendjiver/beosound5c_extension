@@ -30,7 +30,7 @@ Existing SQLite history is retained. Rows created before this change receive ori
 
 ## Event contract and current limits
 
-`POST /library/event` accepts `listen_start` with `selection_origin` set to `manual` or `automatic`, and `listen_stop` with `reason` set to `skip`, `pause`, `transfer` or `stop`. Listeners that do not supply explicit origin or reason are treated conservatively as unknown. The existing passive router monitor does not reliably identify deliberate choices or explicit skips; this change does not invent those signals. Recommendations returned by this service are recognised as automatic observations. Manual-learning context therefore remains gated until clients supply reliable deliberate selection events.
+`POST /library/event` accepts `listen_start` with `selection_origin` set to `manual` or `automatic`, and `listen_stop` with `reason` set to `skip`, `pause`, `transfer` or `stop`. Listeners that do not supply explicit origin or reason are treated conservatively as unknown. The passive router monitor alone cannot reliably identify deliberate choices or explicit skips. The MoodWheel revision adds explicit selection events from the BS5c music UI and Home Media music-library playback. Recommendations remain automatic observations. Context remains gated by sufficient reliable history. See `mood-wheel-patternplay.md` for the shared learning model and discovery rings.
 
 Explicit feedback can be recorded using:
 
