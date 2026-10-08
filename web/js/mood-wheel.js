@@ -35,6 +35,8 @@
             disc.onpointermove = e => { if (disc.hasPointerCapture(e.pointerId)) point(e); };
             this.render(); this.notify(true);
             this.poll = setInterval(async () => {
+                // Reassert ownership after mounting or a missed open message.
+                if (this.el) this.notify(true);
                 try { const state = await this.onState?.(); if (this.el) this.el.querySelector(".mood-playing").textContent = state?.title || ""; } catch (_) {}
             }, 1500);
             this.changed = false;

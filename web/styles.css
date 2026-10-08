@@ -1579,3 +1579,23 @@ html, body {
   transition: width 0.1s linear;
 }
 
+
+/* Mood Wheel owns the display, including the parent menu arc and pointer. */
+body.mood-wheel-active #menuItems,
+body.mood-wheel-active #mainMenu > svg {
+    visibility: hidden !important;
+    pointer-events: none !important;
+}
+body.mood-wheel-active #contentArea {
+    top: 0 !important;
+    left: 0 !important;
+    width: 100% !important;
+    height: 100% !important;
+    opacity: 1 !important;
+}
+body.mood-wheel-active #contentArea iframe {
+    width: 100% !important;
+    height: 100% !important;
+    border: 0 !important;
+    box-sizing: border-box;
+}

@@ -126,16 +126,23 @@ function processLaserEvents() {
 }
 
 let moodWheelActive = false;
+function setMoodWheelActive(active) {
+    moodWheelActive = active && window.uiStore?.currentRoute === 'menu/mass';
+    document.body.classList.toggle('mood-wheel-active', moodWheelActive);
+    if (!moodWheelActive) window.PlayingQueueOverlay?.close?.();
+}
+document.addEventListener('bs5c:view-change', event => {
+    if (event.detail?.to !== 'menu/mass') setMoodWheelActive(false);
+});
 window.addEventListener('message', event => {
     const iframe = window.IframeMessenger?.getIframeForRoute('menu/mass');
     if (event.source === iframe?.contentWindow && event.data?.type === 'bs5c-mood-active') {
-        moodWheelActive = event.data.active === true;
-        if (!moodWheelActive) window.PlayingQueueOverlay?.close?.();
+        setMoodWheelActive(event.data.active === true);
     }
 });
 window.addEventListener('message', event => {
     const iframe = window.IframeMessenger?.getIframeForRoute('menu/mass');
-    if (event.source === iframe?.contentWindow && event.data?.type === 'bs5c-mood-queue') window.PlayingQueueOverlay?.openForMood?.();
+    if (moodWheelActive && event.source === iframe?.contentWindow && event.data?.type === 'bs5c-mood-queue') window.PlayingQueueOverlay?.openForMood?.();
 });
 
 function processLaserEvent(data) {
@@ -206,6 +213,10 @@ function updateViaStore(angle, laserPosition) {
 function handleNavEvent(uiStore, data) {
     notifyUserInteraction('nav', data || {});
     if (window.PlayingQueueOverlay?.moodOpen?.() && window.PlayingQueueOverlay.handleNavEvent(data, 'mass')) return;
+    if (moodWheelActive && uiStore.currentRoute === 'menu/mass') {
+        window.IframeMessenger?.sendNavEvent('menu/mass', data);
+        return;
+    }
     if (window.ContextSuggestions?.handleNav?.(data)) return;
     if (window.ImmersiveMode?.consumeUserActivity?.('nav')) return;
     if (window.PlaybackTargets?.handleNav?.(data)) return;
