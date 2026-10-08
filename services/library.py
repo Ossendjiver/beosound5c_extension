@@ -27,6 +27,7 @@ import logging
 import math
 import os
 import random
+import re
 import sqlite3
 import time
 from pathlib import Path
@@ -118,14 +119,20 @@ def _weekpart(now: dt.datetime) -> str:
     return "weekend" if now.weekday() >= 5 else "weekday"
 
 
-class LocalModel:
-    """Small persistent contextual recommender.
+def _music_item(item: dict[str, Any]) -> bool:
+    media_type = str(item.get("media_type") or item.get("type") or "track").casefold()
+    if media_type not in {"track", "song", "music", ""}:
+        return False
+    words = " ".join(str(item.get(k) or "") for k in ("name", "title", "artist", "genre", "channel"))
+    return not re.search(r"\b(podcast|audiobook|hypnosis|meditation|sleep cove|morning news|spoken word)\b", words, re.I)
 
-    This is intentionally transparent rather than a black-box network. Each
-    completed listening session becomes a training sample. Ranking is a
-    recency-decayed weighted nearest-neighbour estimate across artist, hour,
-    weather, temperature, room and weekday/weekend context, with repeat
-    suppression and a small exploration window.
+
+class LocalModel:
+    """Trusted seed baseline with conservative learning and capped artist discovery.
+
+    Explicit choices can expand the familiar pool. Passive observations cannot
+    promote random automatic selections into seeds. Context is used only once
+    enough deliberate listening evidence exists.
     """
 
     def __init__(self, path: Path):
@@ -167,6 +174,8 @@ class LocalModel:
             );
             """
         )
+        if "origin" not in {row[1] for row in self.db.execute("PRAGMA table_info(listens)")}:
+            self.db.execute("ALTER TABLE listens ADD COLUMN origin TEXT NOT NULL DEFAULT 'legacy'")
         self.db.commit()
 
     def put_kv(self, key: str, value: Any) -> None:
@@ -186,29 +195,35 @@ class LocalModel:
             return default
 
     def record_listen(self, item: dict[str, Any], seconds: float, context: dict[str, Any]) -> None:
-        title = str(item.get("title") or "").strip()
+        if not _music_item(item):
+            return
+        title = str(item.get("title") or item.get("name") or "").strip()
         artist = str(item.get("artist") or "").strip()
         if not title and not artist:
             return
         duration = _safe_float(item.get("duration")) or 0.0
-        # A fast skip is negative evidence; a meaningful listen is positive.
-        if seconds < 25:
-            reward = -1.0
-        elif seconds >= 90 or (duration > 0 and seconds >= duration * 0.45):
-            reward = 1.0
+        origin = str(item.get("selection_origin") or "unknown")
+        reason = str(item.get("end_reason") or "unknown")
+        meaningful = seconds >= 90 or (duration > 0 and seconds >= duration * 0.45)
+        if reason == "dislike":
+            reward = -4.0
+        elif reason == "skip" and seconds < 25:
+            reward = -2.0
+        elif meaningful:
+            reward = 1.0 if origin == "manual" else 0.05 if origin == "automatic" else 0.15
         else:
-            reward = 0.25
+            reward = 0.0  # Pauses, transfers, stops and buffering are not dislikes.
         now = dt.datetime.now()
         self.db.execute(
             """INSERT INTO listens(ts,title,artist,album,uri,seconds,reward,hour,time_bucket,
-               weekpart,weather,temperature,room) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+               weekpart,weather,temperature,room,origin) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 time.time(), title, artist, str(item.get("album") or ""),
                 str(item.get("uri") or ""), float(seconds), reward, now.hour,
                 context.get("time_bucket", _time_bucket(now.hour)),
                 context.get("weekpart", _weekpart(now)),
                 context.get("weather", "unknown"), context.get("temperature"),
-                context.get("room", ""),
+                context.get("room", ""), origin,
             ),
         )
         cutoff = time.time() - 180 * 86400
@@ -236,68 +251,71 @@ class LocalModel:
         )
 
     def rank(self, candidates: list[dict[str, Any]], context: dict[str, Any], limit: int) -> list[dict[str, Any]]:
-        if not candidates:
-            return []
-        history = self._history()
-        now_ts = time.time()
-        current_hour = int(context.get("hour", dt.datetime.now().hour))
-        current_weather = str(context.get("weather") or "unknown")
-        current_temp = _safe_float(context.get("temperature"))
-        current_room = str(context.get("room") or "").casefold()
-        current_weekpart = str(context.get("weekpart") or "")
-
-        recent_keys = {
-            (str(row["artist"]).casefold(), str(row["title"]).casefold())
-            for row in history[:80]
-        }
-
-        scored: list[tuple[float, dict[str, Any]]] = []
+        feedback = self.get_kv("music_feedback", {})
+        rejected = {self._candidate_key(i) for i in candidates if feedback.get(i.get("uri")) == "dislike"}
+        candidates = [i for i in candidates if self._candidate_key(i) not in rejected]
+        deduplicated = {}
         for item in candidates:
-            artist_key, title_key = self._candidate_key(item)
-            if not title_key or not item.get("uri"):
+            key = self._candidate_key(item)
+            existing = deduplicated.get(key)
+            if existing is None or item.get("favorite") and not existing.get("favorite"):
+                deduplicated[key] = item
+            elif item.get("trusted"):
+                existing["trusted"] = True
+        candidates = list(deduplicated.values())
+        history = self._history()
+        feedback = self.get_kv("music_feedback", {})
+        meaningful = [r for r in history if r["origin"] == "manual" and r["reward"] >= 1]
+        contextual = len(meaningful) >= 20 and len({r["uri"] or r["title"] for r in meaningful}) >= 5
+        known = {(r["artist"].casefold(), r["title"].casefold()) for r in meaningful}
+        seeds = [i for i in candidates if _music_item(i) and (i.get("trusted") or i.get("favorite") or self._candidate_key(i) in known or feedback.get(i.get("uri")) == "like")]
+        seed_artists = {self._candidate_key(i)[0] for i in seeds if self._candidate_key(i)[0]}
+        if not seeds:
+            return []  # Never substitute random catalogue entries for an empty baseline.
+        now_ts = time.time()
+        familiar, discovery = [], []
+        for item in candidates:
+            if not _music_item(item) or not item.get("uri"):
                 continue
-            score = 0.15
-            matching_samples = 0
+            key = self._candidate_key(item)
+            identity = item["uri"]
+            if feedback.get(identity) == "dislike":
+                continue
+            trusted = item.get("trusted") or item.get("favorite") or key in known or feedback.get(identity) == "like"
+            if not trusted and key[0] not in seed_artists:
+                continue  # Discovery is constrained to artists already represented by seeds.
+            score = 12.0 if item.get("favorite") else 10.0 if trusted else 0.0
             for row in history:
-                row_artist = str(row["artist"]).casefold()
-                if artist_key and row_artist != artist_key:
+                if row["artist"].casefold() != key[0] or not key[0]:
                     continue
-                # Artist-level learned preference is the base signal.
-                age_days = max(0.0, (now_ts - float(row["ts"])) / 86400.0)
-                decay = 0.5 ** (age_days / 28.0)
+                same_track = row["title"].casefold() == key[1]
+                reward = float(row["reward"])
+                if row["origin"] == "legacy":
+                    reward = max(0.0, reward) * 0.05  # Old observations had no reliable skip/origin signal.
+                if reward < 0 and not same_track:
+                    reward *= 0.15
                 similarity = 1.0
-                hour_delta = abs(current_hour - int(row["hour"]))
-                hour_delta = min(hour_delta, 24 - hour_delta)
-                similarity *= 1.8 if hour_delta <= 2 else (1.25 if hour_delta <= 4 else 0.8)
-                if str(row["weather"]) == current_weather:
-                    similarity *= 1.35
-                if current_weekpart and str(row["weekpart"]) == current_weekpart:
-                    similarity *= 1.2
-                if current_room and str(row["room"]).casefold() == current_room:
-                    similarity *= 1.25
-                row_temp = _safe_float(row["temperature"])
-                if current_temp is not None and row_temp is not None:
-                    similarity *= max(0.75, 1.2 - min(abs(current_temp - row_temp), 15.0) / 40.0)
-                score += float(row["reward"]) * decay * similarity
-                matching_samples += 1
-                if matching_samples >= 50:
-                    break
+                if contextual:
+                    hour_delta = abs(int(context.get("hour", 12)) - int(row["hour"]))
+                    hour_delta = min(hour_delta, 24 - hour_delta)
+                    similarity *= 1.25 if hour_delta <= 2 else 1.0
+                    if context.get("room") == row["room"]: similarity *= 1.15
+                    if context.get("weather") not in (None, "unknown") and context.get("weather") == row["weather"]: similarity *= 1.1
+                score += reward * similarity * 0.5 ** (max(0.0, now_ts - row["ts"]) / (28 * 86400))
+                if same_track and now_ts - row["ts"] < 2 * 3600:
+                    score -= 1.5  # Modest temporary suppression; favourites remain eligible.
+            score += random.Random(f"{identity}:{int(now_ts // 3600)}").uniform(-0.1, 0.1)
+            (familiar if trusted else discovery).append((score, item))
+        familiar.sort(key=lambda pair: pair[0], reverse=True)
+        discovery.sort(key=lambda pair: pair[0], reverse=True)
+        discovery_count = min(limit // 10, len(discovery), len(familiar) // 9)
+        chosen = [i for _, i in familiar[:max(0, limit - discovery_count)]]
+        # Discovery never fills a missing familiar baseline beyond its 10% quota.
+        if len(chosen) >= 9:
+            for _, item in discovery[:discovery_count]:
+                chosen.insert(min(len(chosen), 9), item)
+        return chosen[:max(1, limit)]
 
-            if (artist_key, title_key) in recent_keys:
-                score -= 4.5
-            # Do not let catalogue order become deterministic when the model is young.
-            score += random.Random(f"{title_key}:{int(now_ts // 10800)}").uniform(-0.18, 0.18)
-            scored.append((score, item))
-
-        scored.sort(key=lambda pair: pair[0], reverse=True)
-        # 12% local exploration from the middle-ranked catalogue keeps learning fresh.
-        rng = random.Random(int(now_ts // 3600))
-        if len(scored) > max(limit, 8) and rng.random() < 0.12:
-            start = max(1, len(scored) // 5)
-            end = max(start + 1, min(len(scored), len(scored) * 3 // 5))
-            exploration_item = rng.choice(scored[start:end])
-            scored = [exploration_item] + [pair for pair in scored if pair is not exploration_item]
-        return [item for _, item in scored[: max(1, limit)]]
 
 
 class LibraryService:
@@ -313,6 +331,9 @@ class LibraryService:
         self._last_run_marker = ""
         self._last_broadcast_prompt = ""
         self._last_broadcast_ts = 0.0
+        self._seed_metadata: dict[str, dict[str, Any]] = self.model.get_kv("favorite_tracks", {})
+        self._seed_sync_ts = 0.0
+        self._automatic_keys: set[tuple[str, str]] = set()
         self._background = BackgroundTaskSet(log, label="library")
 
     def _base_context(self, room: str = "") -> dict[str, Any]:
@@ -332,6 +353,7 @@ class LibraryService:
     async def start(self, _app: web.Application) -> None:
         self.session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=12))
         self._background.spawn(self._context_loop(), name="library_context")
+        self._background.spawn(self._seed_loop(), name="library_seed_sync")
         self._background.spawn(self._listening_loop(), name="library_listening")
         self._background.spawn(self._suggestion_loop(), name="library_suggestions")
 
@@ -484,12 +506,18 @@ class LibraryService:
         except Exception:
             return {}
 
+    def _learning_item(self, media: dict[str, Any]) -> dict[str, Any]:
+        item = dict(media)
+        if item.get("selection_origin") not in {"manual", "automatic"}:
+            item["selection_origin"] = "automatic" if self.model._candidate_key(item) in self._automatic_keys else "unknown"
+        return item
+
     def _finish_current(self) -> None:
         if not self._current_media or not self._current_started:
             return
         seconds = max(0.0, time.monotonic() - self._current_started)
         if seconds >= 5:
-            self.model.record_listen(self._current_media, seconds, self.context)
+            self.model.record_listen(self._learning_item(self._current_media), seconds, self.context)
         self._current_media = None
         self._current_started = 0.0
 
@@ -508,7 +536,7 @@ class LibraryService:
                     str((self._current_media or {}).get("title") or ""),
                     str((self._current_media or {}).get("artist") or ""),
                 )
-                active = state in ACTIVE_STATES
+                active = state == "playing"
                 if active and key != current_key:
                     self._finish_current()
                     self._current_media = dict(media)
@@ -529,35 +557,34 @@ class LibraryService:
             except Exception:
                 pass
         if not isinstance(raw, list):
-            return []
+            raw = []
 
         items: dict[str, dict[str, Any]] = {}
 
-        def walk(node: Any, inherited_artist: str = "") -> None:
-            if not isinstance(node, dict):
-                return
+        trusted_names = {str(n).casefold() for n in self.cfg.get("trusted_playlists", ["Trusted music", "All favorited tracks"])}
+        def walk(node: Any, inherited_artist: str = "", trusted: bool = False) -> None:
+            if not isinstance(node, dict): return
             artist = str(node.get("artist") or inherited_artist or "")
+            trusted = trusted or str(node.get("name") or "").casefold() in trusted_names
             children = node.get("tracks")
-            uri = str(node.get("url") or "")
+            uri = str(node.get("url") or node.get("uri") or "")
             if uri and not isinstance(children, list):
-                key = uri
-                items[key] = {
-                    "name": str(node.get("name") or "Unknown"),
-                    "title": str(node.get("name") or "Unknown"),
-                    "artist": artist,
-                    "album": str(node.get("album") or ""),
-                    "uri": uri,
-                    "image": str(node.get("image") or ""),
+                previous = items.get(uri, {})
+                items[uri] = {
+                    "name": str(node.get("name") or "Unknown"), "title": str(node.get("name") or "Unknown"),
+                    "artist": artist, "album": str(node.get("album") or ""), "uri": uri,
+                    "image": str(node.get("image") or ""), "media_type": str(node.get("media_type") or "track"),
+                    "trusted": trusted or previous.get("trusted", False),
+                    "favorite": bool(node.get("favorite") or previous.get("favorite", False)),
                 }
             if isinstance(children, list):
-                for child in children:
-                    walk(child, artist)
-
+                for child in children: walk(child, artist, trusted)
         for root in raw:
-            # Songs plus playlist leaves provide good variety without treating
-            # album/artist folder play URLs as individual recommendations.
             if isinstance(root, dict) and str(root.get("id") or "") in {"songs", "playlists"}:
                 walk(root)
+        for uri, item in self._seed_metadata.items():
+            previous = items.get(uri, {})
+            items[uri] = {**previous, **item, "trusted": bool(previous.get("trusted") or item.get("trusted"))}
         return list(items.values())
 
     def _context_for_room(self, room: str) -> dict[str, Any]:
@@ -565,9 +592,45 @@ class LibraryService:
         value["room"] = room.strip().lower()
         return value
 
+    async def _seed_loop(self) -> None:
+        while True:
+            try: await asyncio.wait_for(self._refresh_seed_metadata(), timeout=60)
+            except Exception: log.warning("Favourite sync unavailable; retaining cached seeds", exc_info=False)
+            await asyncio.sleep(900)
+
+    async def _refresh_seed_metadata(self) -> None:
+        if not self.session or time.monotonic() - self._seed_sync_ts < 900: return
+        configured = (os.getenv("MASS_WS_URL") or os.getenv("BS5C_MASS_WS_URL") or "").strip()
+        host = (os.getenv("PLAYER_IP") or cfg("player", "ip", default="") or "localhost").strip()
+        base = configured.replace("wss://", "https://").replace("ws://", "http://").removesuffix("/ws") if configured else f"http://{host}:8095"
+        token = os.getenv("MASS_TOKEN", "").strip()
+        headers = {"Authorization": "Bearer " + token} if token else {}
+        metadata = {}
+        # Read-only paginated favourites. Cached trusted playlists work if MA is offline.
+        for offset in range(0, 10000, 500):
+            async with self.session.post(base.rstrip("/") + "/api", headers=headers,
+                json={"command": "music/tracks/library_items", "args": {"favorite": True, "limit": 500, "offset": offset}}) as resp:
+                resp.raise_for_status()
+                page = await resp.json()
+            if not isinstance(page, list): raise ValueError("Invalid MA favourites response")
+            for item in page:
+                if not item.get("favorite"): continue
+                uri = str(item.get("uri") or "")
+                if not uri: continue
+                artists = item.get("artists") or []
+                metadata[uri] = {"uri": uri, "name": str(item.get("name") or ""), "title": str(item.get("name") or ""),
+                    "artist": str(artists[0].get("name") or "") if artists else "",
+                    "media_type": str(item.get("media_type") or "track"), "favorite": True}
+            if len(page) < 500: break
+        self._seed_metadata = metadata
+        self.model.put_kv("favorite_tracks", metadata)
+        self._seed_sync_ts = time.monotonic()
+
     async def recommend_music(self, room: str, limit: int) -> list[dict[str, Any]]:
         candidates = self._load_library()
-        return self.model.rank(candidates, self._context_for_room(room), max(1, min(limit, 50)))
+        picks = self.model.rank(candidates, self._context_for_room(room), max(1, min(limit, 50)))
+        self._automatic_keys = {self.model._candidate_key(item) for item in picks}
+        return picks
 
     def suggestion(self, room: str) -> dict[str, Any]:
         context = self._context_for_room(room)
@@ -771,7 +834,8 @@ class LibraryService:
         picks = await self.recommend_music(room, limit)
         return web.json_response(
             {
-                "model": "local-context-knn-v1",
+                "model": "trusted-baseline-v2",
+                "baseline": {"trusted_playlists": self.cfg.get("trusted_playlists", ["Trusted music", "All favorited tracks"]), "favourites": True, "discovery_fraction": 0.1, "seed_required": True},
                 "context": self._context_for_room(room),
                 "uris": [item["uri"] for item in picks],
                 "items": picks,
@@ -798,7 +862,7 @@ class LibraryService:
         if elapsed >= 5:
             room = str(self._external_media.get("room") or "")
             self.model.record_listen(
-                self._external_media,
+                self._learning_item(self._external_media),
                 elapsed,
                 self._context_for_room(room),
             )
@@ -808,6 +872,15 @@ class LibraryService:
     async def handle_event(self, request: web.Request) -> web.Response:
         payload = await request.json()
         event_type = str(payload.get("type") or "")
+        if event_type == "feedback":
+            uri = str(payload.get("uri") or "").strip()
+            action = str(payload.get("action") or "")
+            if not uri or action not in {"like", "dislike", "clear"}: raise web.HTTPBadRequest(text="Invalid feedback")
+            feedback = self.model.get_kv("music_feedback", {})
+            if action == "clear": feedback.pop(uri, None)
+            else: feedback[uri] = action
+            self.model.put_kv("music_feedback", feedback)
+            return web.json_response({"status": "ok"})
         if event_type == "listen_start":
             key = (
                 str(payload.get("title") or "").casefold(),
@@ -830,10 +903,13 @@ class LibraryService:
                     "uri": str(payload.get("uri") or ""),
                     "duration": _safe_float(payload.get("duration")) or 0.0,
                     "room": str(payload.get("room") or ""),
+                    "media_type": str(payload.get("media_type") or "track"),
+                    "selection_origin": str(payload.get("selection_origin") or "unknown"),
                 }
                 self._external_started = time.monotonic()
             return web.json_response({"status": "ok", "observing": True}, headers={"Access-Control-Allow-Origin": "*"})
         if event_type == "listen_stop":
+            if self._external_media: self._external_media["end_reason"] = str(payload.get("reason") or "unknown")
             self._finish_external()
             return web.json_response({"status": "ok", "observing": False}, headers={"Access-Control-Allow-Origin": "*"})
 
