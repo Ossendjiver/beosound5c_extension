@@ -125,20 +125,16 @@ function processLaserEvents() {
     requestAnimationFrame(processLaserEvents);
 }
 
-let moodWheelCapturesPointer = false;
+let moodWheelActive = false;
 window.addEventListener('message', event => {
     const iframe = window.IframeMessenger?.getIframeForRoute('menu/mass');
     if (event.source === iframe?.contentWindow && event.data?.type === 'bs5c-mood-active') {
-        moodWheelCapturesPointer = event.data.active === true;
+        moodWheelActive = event.data.active === true;
     }
 });
 
 function processLaserEvent(data) {
-    if (moodWheelCapturesPointer && window.uiStore?.currentRoute === 'menu/mass') {
-        // Ignore the laser here; left/right buttons choose mood layers.
-        lastLaserEvent = null;
-        return;
-    }
+    // The physical pointer always controls the main arc, including over the mood wheel.
     const pos = data.position;
 
     if (!window.LaserPositionMapper) {
@@ -452,7 +448,7 @@ function handleButtonEvent(uiStore, data) {
     if (window.CameraOverlayManager?.isActive &&
         window.CameraOverlayManager.handleAction(button)) return;
     // An open mood wheel owns layer/play buttons before generic context handlers.
-    if (moodWheelCapturesPointer && page === 'menu/mass') {
+    if (moodWheelActive && page === 'menu/mass') {
         window.IframeMessenger?.sendButtonEvent(page, button);
         return;
     }

@@ -1,7 +1,7 @@
 /* The wheel shares the page background; controls never affect centering. */
 .mood-view {position:fixed;inset:0;z-index:1000;background:#000;color:#fff;display:grid;place-items:center;font-family:inherit;}
 .mood-stage {position:relative;width:min(76vw,80vh,560px);height:min(76vw,80vh,560px);}
-.mood-disc {position:absolute;inset:0;border-radius:50%;background:radial-gradient(circle,#101319 0%,transparent 85%),conic-gradient(#edcf45,#ed8034,#cb4077,#7057c9,#328cbe,#4eafa3,#edcf45);touch-action:none;box-shadow:0 0 0 1px #aaa3;}
+.mood-disc {position:absolute;inset:0;border-radius:50%;background:radial-gradient(circle,#101319 0%,#10131990 12%,transparent 58%),conic-gradient(#ffdf00,#ff7400,#f00071,#8336ff,#008dff,#00e8a8,#ffdf00);touch-action:none;box-shadow:0 0 0 1px #aaa3;}
 .mood-ring {position:absolute;border:1px solid #ffffff65;border-radius:50%;pointer-events:none;}
 .mood-ring.one {inset:33.333%;}.mood-ring.two {inset:16.667%;}
 .mood-point {position:absolute;transform:translate(-50%,-50%);width:18px;height:18px;border:3px solid #fff;box-shadow:0 0 12px #000;background:#101319;border-radius:50%;pointer-events:none;}
