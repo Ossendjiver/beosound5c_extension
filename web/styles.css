@@ -1283,7 +1283,8 @@ html, body {
 .context-suggestion-card {
     width: 620px;
     max-width: calc(100vw - 150px);
-    padding: 30px 34px 28px;
+    padding: 32px 34px;
+    text-align: center;
     border-radius: 28px;
     background: rgba(16, 18, 21, 0.96);
     border: 1px solid rgba(135, 175, 255, 0.36);
@@ -1298,12 +1299,15 @@ html, body {
     margin-bottom: 24px;
 }
 #context-suggestion-options {
-    display: flex;
+    display: grid;
+    grid-auto-flow: column;
+    grid-auto-columns: minmax(0, 1fr);
     gap: 14px;
-    flex-wrap: wrap;
 }
 .context-suggestion-option {
     appearance: none;
+    min-width: 0;
+    overflow-wrap: anywhere;
     border: 1px solid rgba(135,175,255,0.5);
     border-radius: 18px;
     padding: 13px 22px;
