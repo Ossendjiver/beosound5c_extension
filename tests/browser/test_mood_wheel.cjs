@@ -1,0 +1,45 @@
+const assert=require('node:assert/strict');
+const fs=require('node:fs');
+const path=require('node:path');
+const root=path.resolve(__dirname,'../..');
+const {chromium}=require('playwright');
+(async()=>{
+ const browser=await chromium.launch({headless:true,args:['--no-sandbox']});
+ const page=await browser.newPage({viewport:{width:1024,height:768}});
+ await page.route('**/*',route=>route.fulfill({contentType:'text/html',body:'<!doctype html><html><head><style>body{margin:0;background:#000;color:#fff;font-family:Arial}</style></head><body></body></html>'}));
+ await page.goto('http://bs5c.test');
+ await page.addStyleTag({content:fs.readFileSync(path.join(root,'web/mood-wheel.css'),'utf8')});
+ await page.addScriptTag({path:path.join(root,'web/js/mood-wheel.js')});
+ await page.evaluate(()=>{window.wheel=new MoodWheel.Wheel({onPlay:()=>{window.played=true;return 'Playing';}});wheel.open();});
+ assert.equal(await page.locator('.mood-view').evaluate(e=>getComputedStyle(e).backgroundColor),await page.locator('body').evaluate(e=>getComputedStyle(e).backgroundColor));
+ assert.equal(await page.locator('.mood-view h1,.mood-view p,.mood-north,.mood-south,.mood-east,.mood-west').count(),0);
+ assert.equal(await page.locator('.mood-label').evaluate(e=>getComputedStyle(e).opacity),'0');
+ for(const viewport of [{width:1024,height:768},{width:800,height:600}]){
+  await page.setViewportSize(viewport);
+  const box=await page.locator('.mood-disc').boundingBox();
+  assert.ok(Math.abs(box.x+box.width/2-viewport.width/2)<1);
+  assert.ok(Math.abs(box.y+box.height/2-viewport.height/2)<1);
+  assert.ok(box.width>=480 && box.height===box.width);
+ }
+ await page.evaluate(()=>{wheel.state=MoodWheel.normalize(270,.25);wheel.render();wheel.button('left');});
+ assert.equal(await page.evaluate(()=>wheel.state.radius),.5);
+ await page.waitForTimeout(1050);
+ assert.equal(await page.locator('.mood-view').evaluate(e=>e.classList.contains('settled')),true);
+ assert.equal(await page.locator('.mood-atmosphere').textContent(),'Relaxed');
+ assert.equal(await page.locator('.mood-discovery').textContent(),'Blend · 10% discovery');
+ assert.equal(await page.locator('.mood-label').evaluate(e=>getComputedStyle(e).animationName),'mood-idle-pulse');
+ await page.evaluate(()=>wheel.button('right'));
+ assert.equal(await page.locator('.mood-label').evaluate(e=>getComputedStyle(e).opacity),'0');
+ assert.equal(await page.locator('.mood-view').evaluate(e=>e.classList.contains('settled')),false);
+ await page.setViewportSize({width:1024,height:768});
+ await page.screenshot({path:'/tmp/bs5c-mood-wheel-refined.png'});
+ await page.waitForTimeout(3100);
+ await page.screenshot({path:'/tmp/bs5c-mood-wheel-idle.png'});
+ await page.evaluate(()=>wheel.button('go'));
+ assert.equal(await page.evaluate(()=>window.played),true);
+ await page.evaluate(()=>wheel.button('go_long'));
+ assert.equal(await page.locator('.mood-view').count(),0);
+ await page.waitForTimeout(1100);
+ assert.equal(await page.locator('.mood-view').count(),0);
+ await browser.close();console.log('Browser checks passed: backgrounds, centered/enlarged geometry, labels, idle pulse/reset, GO and hold-GO');
+})().catch(e=>{console.error(e);process.exit(1)});

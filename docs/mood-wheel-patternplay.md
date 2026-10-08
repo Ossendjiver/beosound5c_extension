@@ -15,7 +15,7 @@ Public documentation does not expose the proprietary music analysis, model weigh
 
 ## Controls
 
-BS5c: Music submenu → Mood wheel, immediately above Search. Turn the navigation wheel to rotate the selection; move the laser pointer inward/outward. GO starts the selected mix; right/back exits. Mouse/touch and keyboard controls are also available. Selecting a mood does not start playback until GO/Play.
+BS5c: Music submenu → Mood wheel, immediately above Search. Turn the navigation wheel to rotate the selection. Left/right move through the three layers: the button toward the screen edge moves outward, and the other moves inward. Laser input is ignored while open. GO starts the selected mix; hold GO or use the Back icon to exit. Mood and discovery labels fade slowly in and out only after one second without movement. Mouse/touch and keyboard controls are also available. Selecting a mood does not start playback until GO/Play.
 
 Home Media: Music library → Mood wheel. Drag the point, or use the mood/discovery sliders. Play targets the current room music player or local Music Assistant player using existing routing/default-player logic. The shared library currently requires home Wi-Fi. No separate phone recommender is introduced.
 

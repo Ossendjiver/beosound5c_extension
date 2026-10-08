@@ -135,7 +135,7 @@ window.addEventListener('message', event => {
 
 function processLaserEvent(data) {
     if (moodWheelCapturesPointer && window.uiStore?.currentRoute === 'menu/mass') {
-        window.IframeMessenger?.sendToRoute('menu/mass', 'mood-laser', {position: data.position});
+        // Ignore the laser here; left/right buttons choose mood layers.
         lastLaserEvent = null;
         return;
     }
@@ -451,6 +451,11 @@ function handleButtonEvent(uiStore, data) {
     // Global overlay intercept — camera overlay captures all buttons when active
     if (window.CameraOverlayManager?.isActive &&
         window.CameraOverlayManager.handleAction(button)) return;
+    // An open mood wheel owns layer/play buttons before generic context handlers.
+    if (moodWheelCapturesPointer && page === 'menu/mass') {
+        window.IframeMessenger?.sendButtonEvent(page, button);
+        return;
+    }
     if (window.ContextSuggestions?.handleButton?.(button)) return;
     if (window.PlaybackTargets?.handleButton?.(button)) return;
 

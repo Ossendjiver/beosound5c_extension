@@ -29,6 +29,7 @@ function harness() {
     let underlyingInputs = 0;
     const ctx = vm.createContext({
         window: {
+            addEventListener() {},
             location: { protocol: 'http:', hostname: 'fixture.local' },
             WsBackoff: { wsNextBackoff: n => n, WS_RECONNECT_BASE_MS: 3000 },
             AppConfig: {},
