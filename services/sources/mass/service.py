@@ -355,11 +355,16 @@ class MassSource(SourceBase):
             await self._art_http_session.close()
         self._art_http_session = None
 
+    def _cached_music_needs_duration_sync(self):
+        tracks = [node for node in getattr(self, "_library_node_by_uri", {}).values()
+                  if node.get("media_type") == "track"]
+        return bool(tracks) and not any(node.get("duration") for node in tracks)
+
     async def _schedule_sync_loop(self):
-        if not self.has_cache:
+        if not self.has_cache or self._cached_music_needs_duration_sync():
             while not self._connected:
                 await asyncio.sleep(2)
-            logger.info("No cache — running initial library sync.")
+            logger.info("Initial library/duration metadata sync.")
             await self.update_library_cache()
 
         while True:

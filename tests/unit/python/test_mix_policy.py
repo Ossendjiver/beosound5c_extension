@@ -18,3 +18,12 @@ def test_versions_same_artist_deduplicate_but_other_artist_is_allowed():
     seed=item('Borderline')
     assert distinct([item('Borderline (Remastered)'), item('Borderline - Live'), item('Borderline', 'Other'), item('Next song')], [seed]) == [item('Borderline', 'Other'), item('Next song')]
     assert len(distinct([item('The beautiful song'),item('The beautiful songs')], []))==1
+
+
+def test_old_library_cache_refreshes_duration_metadata_once_available():
+    from sources.mass.service import MassSource
+    source=object.__new__(MassSource)
+    source._library_node_by_uri={'one':{'media_type':'track'},'two':{'media_type':'radio'}}
+    assert source._cached_music_needs_duration_sync()
+    source._library_node_by_uri['one']['duration']=240
+    assert not source._cached_music_needs_duration_sync()

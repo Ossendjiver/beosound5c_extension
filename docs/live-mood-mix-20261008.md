@@ -10,7 +10,7 @@ The centre quarter of the wheel radius is a generous 0% discovery area. The rest
 
 Play Radio from here uses the same local ranking, listening history, trusted seeds and mood feedback instead of enabling MA's provider radio/autoplay. Queue Autoplay in Home Media also controls this local Pattern Play refill. Native MA autoplay is disabled for these queues.
 
-Duration policy separates long mixes at 20 minutes. A normal song seed excludes all long mixes; a long mix seed excludes short tracks. Candidates must be between half and twice the seed duration. Unknown candidate durations are excluded rather than guessed. Duration is retained in the MA library export and favorite metadata; existing exports will gain it on the next source library refresh. Different versions with the same normalized title and artist, including very similar titles, are filtered from the batch and from subsequent played history for that session.
+Duration policy separates long mixes at 20 minutes. A normal song seed excludes all long mixes; a long mix seed excludes short tracks. Candidates must be between half and twice the seed duration. Unknown candidate durations are excluded rather than guessed. Duration is retained in the MA library export and favorite metadata; old exports without track durations trigger a read-only library refresh on startup. Different versions with the same normalized title and artist, including very similar titles, are filtered from the batch and from subsequent played history for that session.
 
 ## Frontends
 
@@ -34,6 +34,6 @@ Sources checked:
 
 ## Validation and deployment
 
-Offline tests: 778 Python passed, 2 skipped; 102 JavaScript passed. Real browser checks pass for geometry, background, pulse, removal of outlines, captured discovery, title callback, queue overlay mount/content/close and right exit. Python tests include preserving current item and elapsed position, rejecting stale recommendations, five-second/paused fallback, MA command contract, duration separation and recording deduplication.
+Offline tests: 779 Python passed, 2 skipped; 102 JavaScript passed. Real browser checks pass for geometry, background, pulse, removal of outlines, captured discovery, title callback, queue overlay mount/content/close and right exit. Python tests include preserving current item and elapsed position, rejecting stale recommendations, five-second/paused fallback, MA command contract, duration separation and recording deduplication.
 
 No live playback commands have been issued. Backend deployment requires the staged installer, which validates current file hashes, backs up files and the listening database, and restarts only `beo-source-mass.service` and `beo-library.service`. Home Media must be installed alongside that backend update to use the new mix API.
