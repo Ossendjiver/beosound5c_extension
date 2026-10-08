@@ -13,6 +13,12 @@ const AppConfig = {
         url: 'http://homeassistant.local:8123'
     },
 
+    // Entity identity stays in device configuration; no household default.
+    showing: {
+        entityId: '',
+        exclusivePlayingFallback: false
+    },
+
     // Webhook forwarding endpoint (backend forwards to HA)
     webhookUrl: 'http://localhost:8767/forward',
 
@@ -90,6 +96,10 @@ const AppConfig = {
         if (config.scenes) AppConfig.scenes = config.scenes;
         if (config.home_assistant) {
             if (config.home_assistant.url) AppConfig.homeAssistant.url = config.home_assistant.url;
+        }
+        if (config.showing) {
+            AppConfig.showing.entityId = String(config.showing.entity_id || '').trim();
+            AppConfig.showing.exclusivePlayingFallback = config.showing.exclusive_playing_fallback === true;
         }
         if (config.screen) {
             const immersiveDelaySeconds = Number(config.screen.immersive_delay_s);

@@ -25,7 +25,7 @@ def _load_input_module(monkeypatch):
 
 
 def _mock_cfg(
-    entity_id: str = "media_player.beosound_global_showing",
+    entity_id: str = "media_player.display_target",
     ha_url: str = "http://ha.local:8123",
 ):
     values = {
@@ -117,11 +117,11 @@ async def test_handle_appletv_returns_showing_media_payload(monkeypatch):
     assert response.status == 200
     assert response.headers["Access-Control-Allow-Origin"] == "*"
     assert session.last_get == {
-        "url": "http://ha.local:8123/api/states/media_player.beosound_global_showing",
+        "url": "http://ha.local:8123/api/states/media_player.display_target",
         "headers": {},
     }
     assert body == {
-        "entity_id": "media_player.beosound_global_showing",
+        "entity_id": "media_player.display_target",
         "title": "Arrival",
         "artist": "Hans Zimmer",
         "album": "Dune OST",
@@ -152,11 +152,11 @@ async def test_handle_appletv_command_forwards_transport_to_home_assistant(monke
     assert session.last_post == {
         "url": "http://ha.local:8123/api/services/media_player/media_play_pause",
         "headers": {"Content-Type": "application/json"},
-        "json": {"entity_id": "media_player.beosound_global_showing"},
+        "json": {"entity_id": "media_player.display_target"},
     }
     assert body == {
         "status": "ok",
-        "entity_id": "media_player.beosound_global_showing",
+        "entity_id": "media_player.display_target",
         "command": "toggle",
         "service": "media_play_pause",
     }
@@ -166,7 +166,7 @@ def test_showing_relay_takes_over_when_router_is_idle(monkeypatch):
     input_mod = _load_input_module(monkeypatch)
 
     showing_media = {
-        "entity_id": "media_player.beosound_global_showing",
+        "entity_id": "media_player.display_target",
         "title": "The Walk",
         "artist": "Christine & the Queens",
         "album": "BeoSound Global Showing",
@@ -240,3 +240,42 @@ def test_showing_relay_clears_stale_relay_when_showing_stops(monkeypatch):
     assert payload["relay_id"] == "showing"
     assert payload["state"] == "idle"
     assert payload["title"] == ""
+
+
+def test_exclusive_showing_replaces_passive_other_room_metadata(monkeypatch):
+    input_mod = _load_input_module(monkeypatch)
+    monkeypatch.setattr(input_mod, "cfg", lambda *keys, default=None: True if keys == ("showing", "exclusive_playing_fallback") else default)
+    action, payload = input_mod._decide_showing_relay_action(
+        None, {"state": "playing", "title": "Bedroom", "source_id": "mass"},
+        {"entity_id": "media_player.display_target", "state": "playing", "title": "Lounge"})
+    assert action == "takeover_idle_router"
+    assert payload["title"] == "Lounge"
+    assert payload["entity_id"] == "media_player.display_target"
+
+
+def test_exclusive_showing_clears_other_room_cache_when_aggregate_idle(monkeypatch):
+    input_mod = _load_input_module(monkeypatch)
+    monkeypatch.setattr(input_mod, "cfg", lambda *keys, default=None: True if keys == ("showing", "exclusive_playing_fallback") else default)
+    action, payload = input_mod._decide_showing_relay_action(
+        None, {"state": "playing", "title": "Ensuite", "artwork": "old.jpg"},
+        {"entity_id": "media_player.display_target", "state": "idle", "title": "Cached lounge title"})
+    assert action == "clear_relay"
+    assert payload["title"] == ""
+    assert payload["artwork"] == ""
+    assert payload["entity_id"] == "media_player.display_target"
+
+
+def test_exclusive_showing_yields_to_selected_bs5c_source(monkeypatch):
+    input_mod = _load_input_module(monkeypatch)
+    monkeypatch.setattr(input_mod, "cfg", lambda *keys, default=None: True if keys == ("showing", "exclusive_playing_fallback") else default)
+    action, payload = input_mod._decide_showing_relay_action(
+        "mass", {"state": "playing", "title": "Direct BS5c track"},
+        {"entity_id": "media_player.display_target", "state": "playing", "title": "Lounge"})
+    assert action == "blocked_active_source"
+    assert payload is None
+
+
+@pytest.mark.parametrize("command,service", [("play", "media_play"), ("pause", "media_pause")])
+def test_explicit_showing_transport_preserves_play_and_pause(monkeypatch, command, service):
+    input_mod = _load_input_module(monkeypatch)
+    assert input_mod._showing_command_service(command) == service

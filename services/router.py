@@ -46,6 +46,7 @@ from lib.endpoints import (
     PLAYER_STATE,
     PLAYER_STOP,
     PLAYER_TRACK_URI,
+    input_url,
     player_url,
     spotify_canvas_url,
 )
@@ -453,6 +454,27 @@ class EventRouter:
                             self.media.state.get("title", "?")[:40])
                 self._spawn(self._player_announce(), name="player_announce")
                 return
+
+        # An exclusive configured SHOWING fallback owns idle transport too.
+        # Do not resume a stale MASS/default target or an unrelated room.
+        showing_command = {
+            "go": "toggle", "play": "play", "pause": "pause", "stop": "stop",
+            "left": "previous", "right": "next", "up": "next", "down": "previous",
+            "next": "next", "prev": "previous",
+        }.get(action)
+        if (is_local and not active and showing_command
+                and cfg("showing", "exclusive_playing_fallback", default=False)
+                and cfg("showing", "entity_id", default="")):
+            try:
+                async with self._session.post(
+                    input_url("/appletv/command"), json={"command": showing_command},
+                    timeout=aiohttp.ClientTimeout(total=5.0),
+                ) as resp:
+                    if resp.status >= 400:
+                        logger.warning("SHOWING transport %s failed (HTTP %d)", showing_command, resp.status)
+            except Exception as exc:
+                logger.warning("SHOWING transport failed: %s", exc)
+            return
 
         # 1b. Stop with no active source
         if is_local and not active and action == "stop":
@@ -1014,6 +1036,11 @@ class EventRouter:
             self.registry.active_id,
             self._latest_action_ts,
             active_source_owns_media=bool(active_source and active_source.manages_queue),
+            fallback_entity_id=(
+                cfg("showing", "entity_id", default="")
+                if cfg("showing", "exclusive_playing_fallback", default=False)
+                else None
+            ),
         )
         if rejection:
             return web.json_response(rejection)

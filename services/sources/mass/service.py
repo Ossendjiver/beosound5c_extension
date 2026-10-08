@@ -72,6 +72,7 @@ def _mass_ws_url():
 MASS_URI = _mass_ws_url()
 MASS_TOKEN = os.getenv("MASS_TOKEN", "").strip()
 ROUTER_PLAYBACK_URL = "http://127.0.0.1:8770/router/playback"
+ROUTER_STATUS_URL = "http://127.0.0.1:8770/router/status"
 TARGET_QUEUE_ID = (
     os.getenv("MASS_QUEUE_ID")
     or os.getenv("BS5C_MASS_TARGET_QUEUE_ID")
@@ -3582,7 +3583,11 @@ class MassSource(SourceBase):
                 return {"status": "ok", "resynced": True, "state": payload.get("state", "playing")}
             await self.register("available")
             return {"status": "ok", "resynced": False}
-        for queue_id in await self._resolve_queue_candidates():
+        if cfg("showing", "exclusive_playing_fallback", default=False):
+            selected = await self._router_selected_mass()
+            if selected is None or (not selected and self._registered_state not in {"playing", "paused"}):
+                return {"status": "ok", "resynced": False}
+        for queue_id in await self._resolve_metadata_queue_candidates():
             payload = await self._build_now_playing_payload(queue_id)
             if not isinstance(payload, dict):
                 continue
@@ -4638,12 +4643,41 @@ class MassSource(SourceBase):
             self._preferred_player_id = target
         return self._preferred_player_id
 
+    async def _router_selected_mass(self):
+        """Return None on failure so a read error cannot claim PLAYING."""
+        session = self._art_http_session
+        if not session or session.closed:
+            return None
+        try:
+            async with session.get(ROUTER_STATUS_URL, timeout=ClientTimeout(total=2)) as response:
+                if response.status != 200:
+                    return None
+                status = await response.json(content_type=None)
+            return status.get("active_source") == self.id
+        except Exception as exc:
+            logger.debug("Unable to verify selected MASS source: %s", exc)
+            return None
+
+    async def _resolve_metadata_queue_candidates(self):
+        """Inspect the selected target only; never hunt other rooms' queues."""
+        await self._refresh_preferred_player_from_router()
+        if not cfg("showing", "exclusive_playing_fallback", default=False):
+            return await self._resolve_queue_candidates()
+        target = str(self._preferred_player_id or TARGET_PLAYER_ID or "").strip()
+        if not target:
+            queue = str(TARGET_QUEUE_ID or "").strip()
+            return [queue] if queue else []
+        active = await self.send_command("player_queues/get_active_queue", player_id=target)
+        queue = ""
+        if isinstance(active, dict):
+            queue = str(active.get("queue_id") or active.get("id") or "").strip()
+        return list(dict.fromkeys(value for value in (queue, target) if value))
+
     async def _best_now_playing_payload(self):
         """Prefer the targeted active queue; keep idle data only as fallback."""
-        await self._refresh_preferred_player_from_router()
         idle_fallback = None
         loaded_fallback = None
-        for queue_id in await self._resolve_queue_candidates():
+        for queue_id in await self._resolve_metadata_queue_candidates():
             payload = await self._build_now_playing_payload(queue_id)
             if not isinstance(payload, dict):
                 continue
@@ -4672,10 +4706,20 @@ class MassSource(SourceBase):
                 if not self._connected or self._local_queue_active:
                     await asyncio.sleep(1.0)
                     continue
+                if cfg("showing", "exclusive_playing_fallback", default=False):
+                    if await self._router_selected_mass() is not True:
+                        self._remote_metadata_signature = None
+                        await asyncio.sleep(2.0)
+                        continue
                 payload = await self._best_now_playing_payload()
                 if not isinstance(payload, dict):
                     await asyncio.sleep(2.0)
                     continue
+                if cfg("showing", "exclusive_playing_fallback", default=False):
+                    if await self._router_selected_mass() is not True:
+                        self._remote_metadata_signature = None
+                        await asyncio.sleep(2.0)
+                        continue
                 state = str(payload.get("state") or "").strip().lower()
                 register_state = "paused" if state == "paused" else (
                     "playing" if self._is_active_state(state) else "available"

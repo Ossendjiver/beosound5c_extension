@@ -183,6 +183,7 @@ function updateViaStore(angle, laserPosition) {
 
 function handleNavEvent(uiStore, data) {
     notifyUserInteraction('nav', data || {});
+    if (window.ContextSuggestions?.handleNav?.(data)) return;
     if (window.ImmersiveMode?.consumeUserActivity?.('nav')) return;
     if (window.PlaybackTargets?.handleNav?.(data)) return;
 
@@ -198,6 +199,8 @@ function handleNavEvent(uiStore, data) {
 function resolvePlayingSourceId(uiStore) {
     const activeSource = String(uiStore?.activeSource || '').trim();
     if (activeSource) return activeSource;
+    if (uiStore?.media?.shouldUseShowingAsPlaying?.()
+            || window.AppConfig?.showing?.exclusivePlayingFallback) return '';
     const activePreset = uiStore?.activePlayingPreset;
     if (!activePreset) return '';
     const match = Object.entries(window.SourcePresets || {})
@@ -435,6 +438,7 @@ function handleButtonEvent(uiStore, data) {
     // Global overlay intercept — camera overlay captures all buttons when active
     if (window.CameraOverlayManager?.isActive &&
         window.CameraOverlayManager.handleAction(button)) return;
+    if (window.ContextSuggestions?.handleButton?.(button)) return;
     if (window.PlaybackTargets?.handleButton?.(button)) return;
 
     // Route to current view — if handled, done
@@ -473,7 +477,8 @@ function routeButtonToView(page, button, uiStore) {
         if (activeCtrl?.hasPlayingOverlay?.() && activeCtrl.handleButton?.(button)) {
             return true;
         }
-        if (uiStore.media?.shouldRoutePlayingButtonsToShowing?.()
+        if ((uiStore.media?.shouldRoutePlayingButtonsToShowing?.()
+                || (!uiStore.activeSource && window.AppConfig?.showing?.exclusivePlayingFallback))
                 && uiStore.media.handleShowingButton?.(button)) {
             return true;
         }

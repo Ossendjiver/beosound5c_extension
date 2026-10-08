@@ -184,6 +184,7 @@ function processWebSocketEvent(message) {
 // ── Context-aware library suggestions ──
 let _activeContextSuggestion = null;
 let _contextSuggestionTimer = null;
+let _contextSuggestionIndex = 0;
 
 function _libraryBaseUrl() {
     return `${window.location.protocol}//${window.location.hostname}:8788`;
@@ -193,6 +194,7 @@ function hideContextSuggestion() {
     const overlay = document.getElementById('context-suggestion-overlay');
     if (overlay) overlay.hidden = true;
     _activeContextSuggestion = null;
+    _contextSuggestionIndex = 0;
     if (_contextSuggestionTimer) {
         clearTimeout(_contextSuggestionTimer);
         _contextSuggestionTimer = null;
@@ -201,7 +203,7 @@ function hideContextSuggestion() {
 
 async function contextSuggestionAction(optionId) {
     const suggestion = _activeContextSuggestion;
-    if (!suggestion) return;
+    if (!suggestion || !suggestion.options.some(option => option.id === optionId)) return;
     // Hide immediately; no backlight or wake call is made.
     hideContextSuggestion();
     try {
@@ -231,15 +233,21 @@ function showContextSuggestion(data) {
     if (!overlay || !question || !options) return;
 
     if (_activeContextSuggestion?.id === data.id && !overlay.hidden) return;
-    _activeContextSuggestion = data;
+    const choices = (Array.isArray(data.options) ? data.options : [])
+        .filter(option => option && typeof option.id === 'string' && option.id.trim());
+    if (!choices.length) return;
+    _activeContextSuggestion = { ...data, options: choices };
+    _contextSuggestionIndex = 0;
     question.textContent = data.question;
     options.replaceChildren();
 
-    (Array.isArray(data.options) ? data.options : []).forEach(option => {
+    choices.forEach((option, index) => {
         const button = document.createElement('button');
         button.className = 'context-suggestion-option';
         button.type = 'button';
         button.textContent = option.label || option.id || 'Select';
+        button.classList.toggle('selected', index === _contextSuggestionIndex);
+        button.tabIndex = index === _contextSuggestionIndex ? 0 : -1;
         button.addEventListener('click', () => contextSuggestionAction(option.id));
         options.appendChild(button);
     });
@@ -250,6 +258,56 @@ function showContextSuggestion(data) {
     // or changing the physical display/backlight state.
     _contextSuggestionTimer = setTimeout(hideContextSuggestion, 12 * 60 * 1000);
 }
+
+function contextSuggestionIsActive() {
+    const overlay = document.getElementById('context-suggestion-overlay');
+    return Boolean(_activeContextSuggestion && overlay && !overlay.hidden);
+}
+
+function stepContextSuggestion(delta) {
+    if (!contextSuggestionIsActive()) return false;
+    const choices = _activeContextSuggestion.options;
+    _contextSuggestionIndex = Math.max(0, Math.min(choices.length - 1, _contextSuggestionIndex + delta));
+    document.getElementById('context-suggestion-options')?.querySelectorAll('button').forEach((button, index) => {
+        button.classList.toggle('selected', index === _contextSuggestionIndex);
+        button.tabIndex = index === _contextSuggestionIndex ? 0 : -1;
+    });
+    return true;
+}
+
+function handleContextSuggestionNav(data) {
+    if (!contextSuggestionIsActive()) return false;
+    const direction = String(data?.direction || '').toLowerCase();
+    if (direction === 'clock') stepContextSuggestion(1);
+    else if (direction === 'counter') stepContextSuggestion(-1);
+    return true;
+}
+
+function handleContextSuggestionButton(button) {
+    if (!contextSuggestionIsActive()) return false;
+    const normalized = String(button || '').toLowerCase();
+    if (normalized === 'go') {
+        void contextSuggestionAction(_activeContextSuggestion.options[_contextSuggestionIndex].id);
+    } else if (normalized === 'right') {
+        if (_activeContextSuggestion.options.some(option => option.id === 'dismiss')) {
+            void contextSuggestionAction('dismiss');
+        } else {
+            hideContextSuggestion();
+        }
+    } else if (normalized === 'up') {
+        stepContextSuggestion(-1);
+    } else if (normalized === 'down') {
+        stepContextSuggestion(1);
+    }
+    // A visible question owns its buttons; never leak GO/skip to playback.
+    return true;
+}
+
+window.ContextSuggestions = {
+    handleNav: handleContextSuggestionNav,
+    handleButton: handleContextSuggestionButton,
+    get isActive() { return contextSuggestionIsActive(); },
+};
 
 async function refreshContextSuggestion() {
     try {

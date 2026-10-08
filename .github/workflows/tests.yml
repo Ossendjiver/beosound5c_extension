@@ -46,3 +46,13 @@ jobs:
             tests/unit/python/test_cross_source_import.py \
             tests/unit/python/test_service_import_order.py \
             -v
+
+  javascript-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Run JavaScript unit tests
+        run: node --test tests/unit/js/*.js

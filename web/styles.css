@@ -1318,6 +1318,19 @@ html, body {
     background: rgba(102,153,255,0.34);
     outline: none;
 }
+.context-suggestion-option.selected,
+.context-suggestion-option.selected:hover,
+.context-suggestion-option.selected:focus {
+    background: #9bd0ff;
+    border-color: #cce7ff;
+    color: #06111f;
+    box-shadow: 0 0 0 2px rgba(155,208,255,0.25);
+}
+.context-suggestion-hint {
+    margin-top: 18px;
+    color: rgba(255,255,255,0.6);
+    font-size: 13px;
+}
 /* Volume Overlay */
 #volume-overlay {
   position: fixed;

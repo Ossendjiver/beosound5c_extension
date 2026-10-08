@@ -950,12 +950,11 @@ class MediaManager {
 
     shouldTreatAsStaleNowPlaying(data) {
         const state = String(data?.state || '').trim().toLowerCase();
-        const relayId = String(data?.relay_id || '').trim().toLowerCase();
-        return !this.activeSource && !relayId && state === 'stopped';
+        return !this.activeSource && ['idle', 'stopped', 'off', 'standby', 'unavailable', 'unknown'].includes(state);
     }
 
     normalizeMediaUpdatePayload(data) {
-        if (!this.shouldTreatAsStaleNowPlaying(data)) return data;
+        if (!this.shouldTreatAsStaleNowPlaying(data) && Object.keys(data || {}).length) return data;
         return {
             ...data,
             title: '',
@@ -1058,10 +1057,11 @@ class MediaManager {
     }
 
     shouldRoutePlayingButtonsToShowing() {
-        return this.hasActiveShowingRelay();
+        return this.shouldUseShowingAsPlaying();
     }
 
     _hasShowingTransportTarget() {
+        if (window.AppConfig?.showing?.entityId) return true;
         if (this.hasActiveShowingRelay()) return true;
         const state = String(this.appleTVMediaInfo?.state || '').trim().toLowerCase();
         return !!state && !['error', 'unknown', 'unavailable'].includes(state);

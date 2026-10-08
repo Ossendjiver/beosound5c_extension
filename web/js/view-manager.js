@@ -161,7 +161,7 @@ class ViewManager {
             if (stale) {
                 const url = `${window.AppConfig?.routerUrl || 'http://localhost:8770'}/router/media`;
                 fetch(url).then(r => r.ok ? r.json() : null).then(data => {
-                    if (data && data.title) {
+                    if (data && typeof data === 'object') {
                         this.mediaManager.handleMediaUpdate(data, 'view_entry_resync');
                     }
                 }).catch(() => { /* router unreachable — preset already showed placeholder */ });

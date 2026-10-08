@@ -2243,6 +2243,8 @@ def _showing_command_service(command: str) -> str | None:
     normalized = str(command or '').strip().lower()
     return {
         'toggle': 'media_play_pause',
+        'play': 'media_play',
+        'pause': 'media_pause',
         'previous': 'media_previous_track',
         'next': 'media_next_track',
         'stop': 'media_stop',
@@ -2339,7 +2341,7 @@ def _showing_router_media_payload(showing_media: dict | None) -> dict:
             'duration': '0:00',
             'app_name': '',
             'friendly_name': '',
-            'entity_id': '',
+            'entity_id': (showing_media or {}).get('entity_id') or '',
         }
 
     return {
@@ -2370,12 +2372,14 @@ def _decide_showing_relay_action(
         return 'blocked_active_source', None
 
     relay_owns_router_media = _showing_relay_owns_router_media(router_media)
-    if not relay_owns_router_media and not _showing_relay_router_is_idle(router_media):
+    if (not cfg("showing", "exclusive_playing_fallback", default=False)
+            and not relay_owns_router_media and not _showing_relay_router_is_idle(router_media)):
         return 'blocked_existing_media', None
 
     next_payload = _showing_router_media_payload(showing_media)
     if next_payload.get('state') == 'idle':
-        if relay_owns_router_media and not _showing_relay_router_is_idle(router_media):
+        if ((relay_owns_router_media or cfg("showing", "exclusive_playing_fallback", default=False))
+                and not _showing_relay_router_is_idle(router_media)):
             return 'clear_relay', next_payload
         return 'idle', None
 
@@ -2438,7 +2442,8 @@ async def _showing_relay_tick() -> str:
         return 'blocked_active_source'
 
     router_media = await _fetch_router_media_snapshot()
-    if not _showing_relay_owns_router_media(router_media) and not _showing_relay_router_is_idle(router_media):
+    if (not cfg("showing", "exclusive_playing_fallback", default=False)
+            and not _showing_relay_owns_router_media(router_media) and not _showing_relay_router_is_idle(router_media)):
         return 'blocked_existing_media'
 
     showing_media, fetch_status, fetch_error = await _fetch_showing_media_payload()

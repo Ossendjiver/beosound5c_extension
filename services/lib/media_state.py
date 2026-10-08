@@ -140,7 +140,8 @@ class MediaState:
     def validate_update(self, payload: dict,
                         active_source_id: str | None,
                         latest_action_ts: float,
-                        active_source_owns_media: bool = False) -> dict | None:
+                        active_source_owns_media: bool = False,
+                        fallback_entity_id: str | None = None) -> dict | None:
         """Validate an incoming media update.
 
         Extracts and removes internal fields (_reason, _source_id, _action_ts)
@@ -156,6 +157,18 @@ class MediaState:
         is_active = source_id and source_id == active_source_id
         playback_state = _normalize_playback_state(payload.get("state"))
         relay_id = str(payload.get("relay_id") or "").strip().lower()
+        # An exclusive HA fallback must not be replaced by passive player
+        # updates or source bootstrap metadata when no source is selected.
+        if fallback_entity_id is not None:
+            valid_relay = (
+                not source_id
+                and relay_id == "showing"
+                and payload.get("entity_id") == fallback_entity_id
+            )
+            if relay_id and (active_source_id or not valid_relay):
+                return {"status": "ok", "dropped": True, "reason": "invalid_showing_relay"}
+            if not active_source_id and not valid_relay:
+                return {"status": "ok", "dropped": True, "reason": "exclusive_showing_fallback"}
         trusted_bootstrap = bool(
             source_id
             and not active_source_id
