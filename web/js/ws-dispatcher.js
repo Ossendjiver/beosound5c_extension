@@ -226,6 +226,10 @@ async function contextSuggestionAction(optionId) {
 }
 
 function showContextSuggestion(data) {
+    if (data?.clear && data.kind === 'music') {
+        if (_activeContextSuggestion?.kind === 'music') hideContextSuggestion();
+        return;
+    }
     if (!data || !data.id || !data.question) return;
     const overlay = document.getElementById('context-suggestion-overlay');
     const question = document.getElementById('context-suggestion-question');

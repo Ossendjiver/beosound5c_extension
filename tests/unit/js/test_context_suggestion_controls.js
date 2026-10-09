@@ -65,6 +65,16 @@ function harness() {
 }
 const choices = [{ id: 'play', label: 'Yes' }, { id: 'dismiss', label: 'No thanks' }];
 
+test('playback suppression clears music without recording a dismissal or hiding news', () => {
+    const h = harness(); h.show(choices);
+    h.ctx.showContextSuggestion({clear: true, kind: 'music'});
+    assert.equal(h.elements['context-suggestion-overlay'].hidden, true);
+    assert.equal(h.requests.length, 0);
+    h.ctx.showContextSuggestion({id:'news',kind:'news',question:'News?',options:choices});
+    h.ctx.showContextSuggestion({clear: true, kind: 'music'});
+    assert.equal(h.elements['context-suggestion-overlay'].hidden, false);
+});
+
 test('wheel highlights options without playing or dismissing; GO selects highlighted answer', () => {
     const h = harness();
     h.show(choices);

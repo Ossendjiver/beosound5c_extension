@@ -60,6 +60,7 @@ STATUS_SERVICES=(
 )
 
 # Service descriptions (for status display)
+STATUS_SERVICES+=("beo-library.service" "beo-provider-profile.service" "beo-provider-sweep.service")
 declare -A SERVICE_DESC
 SERVICE_DESC["beo-http.service"]="HTTP Web Server (Port 8000)"
 SERVICE_DESC["beo-player-sonos.service"]="Sonos Player (Port 8766)"
@@ -83,6 +84,8 @@ SERVICE_DESC["beo-source-radio.service"]="Radio Source (Port 8779)"
 SERVICE_DESC["beo-source-kodi.service"]="Kodi Source (Port 8782)"
 SERVICE_DESC["beo-source-mass.service"]="Music Assistant Source (Port 8783)"
 SERVICE_DESC["beo-library.service"]="Context-Aware Library / Recommendation Service (Port 8788)"
+SERVICE_DESC["beo-provider-profile.service"]="Daily Provider Metadata / Audio Profiling"
+SERVICE_DESC["beo-provider-sweep.service"]="Full Provider Library Sweep"
 SERVICE_DESC["beo-ui.service"]="Chromium UI Kiosk"
 
 # Optional sources: menu_key|service|emoji|label

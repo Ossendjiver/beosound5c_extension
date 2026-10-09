@@ -47,6 +47,7 @@ from lib import music_familiarity
 from lib.mood_mix import MoodMixes
 from lib import mix_policy
 from lib import music_features, provider_profiles, music_relations
+from lib.prompt_playback import Guard as PromptPlaybackGuard
 
 log = logging.getLogger("beo-library")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -416,6 +417,7 @@ class LibraryService:
         self._last_run_marker = ""
         self._last_broadcast_prompt = ""
         self._last_broadcast_ts = 0.0
+        self._prompt_playback = PromptPlaybackGuard()
         self._seed_metadata: dict[str, dict[str, Any]] = self.model.get_kv("favorite_tracks", {})
         self._seed_sync_ts = 0.0
         self._familiarity_status = self.model.get_kv("music_familiarity_status", {})
@@ -526,6 +528,14 @@ class LibraryService:
 
     async def _refresh_context(self) -> None:
         states = await self._ha_states()
+        media_keys = {s.get('entity_id') for s in states if str(s.get('entity_id', '')).startswith('media_player.')}
+        for key in list(self._prompt_playback.states):
+            if key.startswith('media_player.') and states and key not in media_keys:
+                self._prompt_playback.states.pop(key, None)
+                self._prompt_playback.paused.pop(key, None)
+        for state in states:
+            if state.get('entity_id') in media_keys:
+                self._prompt_playback.observe(state['entity_id'], state.get('state'), time.time(), state.get('last_changed'))
         context = self._base_context()
         weather_entity = str(self.cfg.get("weather_entity") or "").strip()
         weather = None
@@ -578,6 +588,9 @@ class LibraryService:
                 suggestion = self.suggestion(str(cfg("device", default="bs5c")))
                 prompt_id = str(suggestion.get("id") or "")
                 now = time.time()
+                if suggestion.get('clear') and self._last_broadcast_prompt:
+                    await self._broadcast_suggestion(suggestion)
+                    self._last_broadcast_prompt = ''
                 # Re-push the same still-relevant prompt every 10 min so a UI
                 # reconnect sees it, but avoid nagging continuously.
                 if prompt_id and (
@@ -642,6 +655,7 @@ class LibraryService:
             try:
                 media = await self._router_media()
                 state = str(media.get("state") or "").lower()
+                self._prompt_playback.observe('router', state, time.time(), media.get('last_changed'))
                 key = (
                     str(media.get("uri") or media.get("track_uri") or ""),
                     str(media.get("title") or ""),
@@ -1043,6 +1057,8 @@ class LibraryService:
                     "context": context,
                 }
 
+        if suggestion['kind'] == 'music' and self._prompt_playback.blocked(time.time()):
+            return {'clear': True, 'kind': 'music'}
         if self.model.get_kv("handled_prompt_id", "") == suggestion["id"]:
             return {}
         return suggestion
@@ -1233,6 +1249,19 @@ class LibraryService:
             headers={"Access-Control-Allow-Origin": "*"},
         )
 
+    async def handle_status(self, request: web.Request) -> web.Response:
+        path = Path(os.getenv('BS5C_PROVIDER_PROFILES_FILE') or CACHE_LIBRARY.parent / 'provider_profiles.json').with_suffix('.status.json')
+        try:
+            provider = json.loads(path.read_text())
+        except (OSError, ValueError):
+            provider = {}
+        return web.json_response({'library': {
+            'status': 'running', 'mix_sessions': len(self.mixes.sessions),
+            'listens': self.model.db.execute('SELECT count(*) FROM listens').fetchone()[0],
+            'relationships': self.model.db.execute('SELECT count(*) FROM track_relations').fetchone()[0],
+            'music_prompts_suppressed': self._prompt_playback.blocked(time.time())},
+            'provider': provider}, headers={'Access-Control-Allow-Origin': '*'})
+
     def _finish_external(self) -> None:
         if not self._external_media or not self._external_started:
             return
@@ -1416,6 +1445,7 @@ def create_app() -> web.Application:
     app.router.add_post("/library/mix", service.handle_mix)
     app.router.add_get("/library/mood", service.handle_mood)
     app.router.add_get("/library/context", service.handle_context)
+    app.router.add_get("/library/status", service.handle_status)
     app.router.add_get("/library/recommend/music", service.handle_recommend)
     app.router.add_get("/library/suggestions", service.handle_suggestions)
     app.router.add_post("/library/event", service.handle_event)

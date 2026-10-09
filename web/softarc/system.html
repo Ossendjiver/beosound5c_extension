@@ -1442,6 +1442,46 @@
                 },
             },
             {
+                id: 'library',
+                title: 'LIBRARY',
+                service: 'beo-library',
+                fetch: async () => {
+                    const resp = await fetch('http://' + location.hostname + ':8788/library/status');
+                    if (!resp.ok) throw new Error('offline');
+                    return (await resp.json()).library;
+                },
+                render: (data) => {
+                    if (!data) return '<div class="subcard-body">' + row('Status', 'No data', 'dim') + '</div>';
+                    return '<div class="subcard-body">' + row('Service', 'Running', 'ok') +
+                        row('Mix Sessions', Number(data.mix_sessions) || 0) +
+                        row('Listening Events', Number(data.listens) || 0) +
+                        row('Relationships', Number(data.relationships) || 0) +
+                        row('Music Prompts', data.music_prompts_suppressed ? 'Suppressed by playback' : 'Available') + '</div>';
+                },
+            },
+            {
+                id: 'provider',
+                title: 'PROVIDER',
+                service: 'beo-provider-profile',
+                fetch: async () => {
+                    const resp = await fetch('http://' + location.hostname + ':8788/library/status');
+                    if (!resp.ok) throw new Error('offline');
+                    return (await resp.json()).provider;
+                },
+                render: (data) => {
+                    if (!data || !Object.keys(data).length) return '<div class="subcard-body">' + row('Status', 'Not profiled yet', 'dim') + '</div>';
+                    const sweep = data.sweep || {};
+                    const total = Number(sweep.total || data.catalogue_entries) || 0;
+                    const visited = Number(sweep.visited) || 0;
+                    return '<div class="subcard-body">' + row('Sweep', data.running ? 'Running' : sweep.complete ? 'Complete' : 'Idle', data.running ? 'warn' : '') +
+                        row('Checked', `${visited} / ${total}`) +
+                        row('Progress', total ? Math.round(visited * 100 / total) + '%' : '—') +
+                        row('Ready Profiles', data.ready == null ? 'Available after sweep' : Number(data.ready)) +
+                        row('Pending Samples', sweep.pending_samples == null ? 'Available after sweep' : Number(sweep.pending_samples)) +
+                        row('Errors', Number(sweep.errors || data.failed) || 0) + '</div>';
+                },
+            },
+            {
                 id: 'kodi',
                 title: 'KODI',
                 service: 'beo-source-kodi',
