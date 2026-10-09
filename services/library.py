@@ -42,6 +42,7 @@ HERE = Path(__file__).resolve().parent
 from lib.config import cfg
 from lib.background_tasks import BackgroundTaskSet
 from lib import music_mood
+from lib import music_familiarity
 from lib.mood_mix import MoodMixes
 from lib import mix_policy
 
@@ -273,6 +274,7 @@ class LocalModel:
                 existing["trusted"] = True
         candidates = list(deduplicated.values())
         history = self._history()
+        familiarity = music_familiarity.Prior(self.get_kv("music_familiarity", {}), history)
         feedback = self.get_kv("music_feedback", {})
         meaningful = [r for r in history if r["origin"] == "manual" and r["reward"] >= 1]
         contextual = len(meaningful) >= 20 and len({r["uri"] or r["title"] for r in meaningful}) >= 5
@@ -296,6 +298,7 @@ class LocalModel:
             if not trusted and key[0] not in seed_artists and not (mood and mood["discovery_fraction"] >= .1 and music_mood.profile(item, mood_profiles) and music_mood.adjustment(item, mood, mood_profiles) >= -2):
                 continue  # Discovery is constrained to artists already represented by seeds.
             score = 12.0 if item.get("favorite") else 10.0 if trusted else 0.0
+            score += familiarity.boost(item)
             if context.get("seed_artist") == key[0] and key[0]:
                 score += 3.5
             if mood:
@@ -353,6 +356,7 @@ class LibraryService:
         self._last_broadcast_ts = 0.0
         self._seed_metadata: dict[str, dict[str, Any]] = self.model.get_kv("favorite_tracks", {})
         self._seed_sync_ts = 0.0
+        self._familiarity_status = self.model.get_kv("music_familiarity_status", {})
         self._automatic_keys: set[tuple[str, str]] = set()
         self._mood_sessions = {}
         self.mixes = MoodMixes(self._mix_command, self._mix_recommend, self._mix_record)
@@ -379,6 +383,7 @@ class LibraryService:
         self._background.spawn(self._context_loop(), name="library_context")
         self._background.spawn(self._mix_loop(), name="library_mood_mix")
         self._background.spawn(self._seed_loop(), name="library_seed_sync")
+        self._background.spawn(self._familiarity_loop(), name="library_familiarity_sync")
         self._background.spawn(self._listening_loop(), name="library_listening")
         self._background.spawn(self._suggestion_loop(), name="library_suggestions")
 
@@ -622,6 +627,12 @@ class LibraryService:
         for uri, item in self._seed_metadata.items():
             previous = items.get(uri, {})
             items[uri] = {**previous, **item, "trusted": bool(previous.get("trusted") or item.get("trusted"))}
+        for entry in self.model.get_kv("music_familiarity", {}).values():
+            item = entry.get("item", {})
+            uri = item.get("uri")
+            if not uri: continue
+            previous = items.get(uri, {})
+            items[uri] = {**item, **previous}
         return list(items.values())
 
     def _context_for_room(self, room: str) -> dict[str, Any]:
@@ -664,6 +675,32 @@ class LibraryService:
         self._seed_metadata = metadata
         self.model.put_kv("favorite_tracks", metadata)
         self._seed_sync_ts = time.monotonic()
+
+    async def _familiarity_loop(self) -> None:
+        while True:
+            try:
+                await asyncio.wait_for(self._refresh_familiarity(), timeout=120)
+            except asyncio.CancelledError: raise
+            except Exception:
+                log.warning("Familiarity sync unavailable; retaining cached evidence", exc_info=False)
+            await asyncio.sleep(900)
+
+    async def _refresh_familiarity(self) -> None:
+        if not self.session: return
+        configured = (os.getenv("MASS_WS_URL") or os.getenv("BS5C_MASS_WS_URL") or "").strip()
+        host = (os.getenv("PLAYER_IP") or cfg("player", "ip", default="") or "localhost").strip()
+        base = configured.replace("wss://", "https://").replace("ws://", "http://").removesuffix("/ws") if configured else f"http://{host}:8095"
+        token = os.getenv("MASS_TOKEN", "").strip()
+        headers = {"Authorization": "Bearer " + token} if token else {}
+        async def command(name, args):
+            async with self.session.post(base.rstrip("/") + "/api", headers=headers,
+                json={"command": name, "args": args}) as response:
+                response.raise_for_status()
+                return await response.json()
+        evidence, status = await music_familiarity.collect(command, self.model.get_kv("music_familiarity", {}))
+        self.model.put_kv("music_familiarity", evidence)
+        self.model.put_kv("music_familiarity_status", status)
+        self._familiarity_status = status
 
     def pattern_mood(self, room: str) -> dict | None:
         context = self._context_for_room(room)
@@ -959,7 +996,8 @@ class LibraryService:
         classified = sum(music_mood.profile(i, self.model.get_kv("mood_profiles", {})) is not None for i in picks)
         return web.json_response(
             {
-                "model": "trusted-baseline-v2",
+                "model": "trusted-baseline-v3",
+                "familiarity": {"max_boost": music_familiarity.MAX_BOOST, "status": self._familiarity_status},
                 "baseline": {"trusted_playlists": self.cfg.get("trusted_playlists", ["Trusted music", "All favorited tracks"]), "favourites": True, "discovery_fraction": 0.1, "seed_required": True},
                 "context": self._context_for_room(room),
                 "mood": mood,

@@ -42,3 +42,40 @@ Genre tags and curated playlist labels provide coarse mood hints. Unknown tracks
 Python tests cover axes, rings, invalid values, seed preservation, discovery quotas, learning integration and history migration. JS and Kotlin tests verify shared pointer geometry and ring boundaries. Android compilation and unit tests are required; this source change does not request or produce a new APK.
 
 Device deployment replaces the library service, its new pure mood helper, the MASS iframe and new wheel JS/CSS. The hardware-input change is a narrow pointer interception applied to the device's existing file, preserving unrelated local edits. Back up source and SQLite first. Restart only the library service; no Music Assistant, router, Home Assistant or speaker restart is required. Refresh the BS5c browser to load the UI. Verification uses read-only endpoints and offline UI interaction, without starting speakers.
+
+### Imported familiarity (trusted-baseline-v3)
+
+Both clients use the shared library service. It now reads a separate familiarity
+snapshot every 15 minutes; neither the APK nor the wheel maintains a second learner.
+
+- Music Assistant: read up to 500 tracks ordered by `play_count_desc`. Use numeric
+  `play_count` when the API returns it. Versions which omit that field can supply a
+  smaller ordinal signal only for library tracks with a positive `last_played`.
+  An unplayed row gets no signal just because it appears in the ordered list.
+- Providers: inspect the provider's explicit personal history folders, including
+  SoundCloud's `recently-played` dynamic playlist. Related recommendations, “Top
+  Tracks”, editorial charts, and public popularity/playback counts are excluded.
+  Explicit `user_play_count`/`personal_play_count` are supported within history.
+- Numeric counts add a logarithmic score capped at **0.25**. A history appearance
+  adds at most **0.10**; count-order-only evidence adds at most **0.08**. Take the
+  strongest overlapping source rather than adding MA/provider counters together.
+- Each source/track's first positive snapshot is frozen, not incremented on every
+  poll. Locally observed meaningful plays (manual or automatic) are subtracted;
+  learning from those outcomes already occurs in `listens`. This prevents an
+  automatic mix from growing its own imported reward. Priors decay with a 90-day
+  half-life and expire after 180 days.
+- History does not mark tracks as favourites/trusted, enlarge the trusted seed
+  pool, teach a mood/time/room, or override dislikes, discovery quotas, recording
+  deduplication or track-length policy. New history metadata remains untrusted.
+- Snapshot reads have per-call and total time limits. Unsupported providers and
+  temporary failures retain the existing cached evidence. No provider credentials
+  or personal history are published in GitHub. The MA calls are read-only.
+
+The SQLite `kv` entries `music_familiarity` and `music_familiarity_status` store the
+separate cache and import diagnostics. Recommendation responses include a small
+`familiarity` status object. Remove `music_familiarity` to deliberately reset the
+frozen import baseline; do not reset it on ordinary polling or queue changes.
+
+Deploy `services/library.py` and `services/lib/music_familiarity.py` together and
+restart only `beo-library`. Existing preference history is retained. No APK build,
+MA database write, HA change, or playback action is needed.
