@@ -674,8 +674,20 @@ class LibraryService:
                 payload = json.loads(feature_path.read_text())
                 if payload.get('version') != 1 or not isinstance(payload.get('tracks'), dict):
                     raise ValueError('Invalid audio feature sidecar')
-                self._audio_feature_cache = {uri: music_features.clean(entry.get('audio_features'))
-                    for uri, entry in payload['tracks'].items() if isinstance(entry, dict)}
+                feature_cache = {}
+                for uri, entry in payload['tracks'].items():
+                    if not isinstance(entry, dict):
+                        continue
+                    features = music_features.calibrate(music_features.clean(entry.get('audio_features')), payload.get('mood_calibration'))
+                    feature_cache[uri] = features
+                    # Only exact MA provider mappings supplied by the analyser;
+                    # artist/title similarity is never an identity assertion.
+                    aliases = entry.get('aliases', [])
+                    if isinstance(aliases, list):
+                        for alias in aliases:
+                            if isinstance(alias, str) and 0 < len(alias) <= 1024:
+                                feature_cache.setdefault(alias, features)
+                self._audio_feature_cache = feature_cache
                 self._audio_feature_stamp = stamp
             for uri, features in self._audio_feature_cache.items():
                 if uri in items and features:
@@ -862,9 +874,11 @@ class LibraryService:
         previous = policy.get("previous", [])
         versions = policy.get("versions", [])
         # Filter before ranking, so lower ranked eligible tracks are not starved.
+        previous_index = mix_policy.RecordingIndex(previous)
+        version_index = mix_policy.RecordingIndex(versions)
         candidates = [c for c in candidates if c.get("uri") not in excluded
-                      and not any(mix_policy.same_recording(c, p) for p in previous)
-                      and not any(c.get("uri") != p.get("uri") and mix_policy.same_recording(c, p) for p in versions)]
+                      and not previous_index.matches(c)
+                      and not version_index.matches(c, alternate_only=True)]
         picks = self.model.rank(candidates, context, limit)
         self._automatic_keys.update(self.model._candidate_key(item) for item in picks)
         return picks

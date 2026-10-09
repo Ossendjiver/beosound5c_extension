@@ -131,7 +131,7 @@ tracks rather than pretending unclassified high-count tracks fit the wheel.
 
 ## Validation for this revision
 
-Local Python suite: 828 passed, 2 skipped. JavaScript suite: 102 passed.
+Local Python suite: 842 passed, 2 skipped. JavaScript suite: 102 passed.
 Regression coverage includes incompatible high-history tracks, mood distance
 ordering, metadata preservation, bounded enrichment, queue-transition races,
 no-match reporting and atomic sidecar writes. The real MusiCNN/emoMusic models
@@ -139,3 +139,101 @@ also ran on an offline synthetic sample, producing finite normalized mood
 coordinates and a 200-value embedding. That smoke test verifies execution and
 schema, not subjective recommendation quality on the user's music. Existing
 HA bridge policy permits the unchanged steering and state requests.
+
+## Portable incremental profiler (optional deployment)
+
+`tools/music_audio_onnx.py` uses the published ONNX versions of the same
+MusiCNN/emoMusic models with NumPy and CPU ONNX Runtime. The frontend matches
+Essentia's 512-point Hann/96-band Slaney mel compression. Three 30-second
+sections are read; four evenly spaced 3-second inference patches per section
+keep CPU work bounded. Tempo/RMS/centroid use the complete sampled sections.
+The spectral-flux BPM estimate is conservative and omitted when weak; it is
+not substituted for emotional labels. `sample_seconds` and `inference_patches`
+record the actual analysis coverage.
+
+Real-recording parity testing against Essentia's TensorFlow implementation,
+using identical model windows, gave a mean embedding absolute error below
+0.00001 and valence/arousal output differences below 0.00002. This checks
+implementation fidelity, not subjective accuracy of learned mood estimates.
+ONNX Runtime provides CPU wheels for Linux ARM64; verify the installed Python
+version is supported before deployment.
+
+Prepare the optional environment **on the SSD**, as the BS5c account:
+
+```sh
+mkdir -p /media/local/cache/audio-analysis/models
+python3 -m venv /media/local/cache/audio-analysis/venv
+/media/local/cache/audio-analysis/venv/bin/pip install numpy onnxruntime
+```
+
+Model files (same CC BY-NC-SA 4.0 licensing and Essentia attribution):
+
+- [MusiCNN ONNX](https://essentia.upf.edu/models/feature-extractors/musicnn/msd-musicnn-1.onnx)
+- [emoMusic ONNX](https://essentia.upf.edu/models/classification-heads/emomusic/emomusic-msd-musicnn-2.onnx)
+
+Copy these into `/media/local/cache/audio-analysis/models`, and copy the
+prepared `audio_features.json` atomically beside `mass_playlists.json` on the
+SSD. Exact provider aliases share a recording's features. Similar names are
+never treated as a provider identity assertion.
+
+`tools/profile_music_library.py` paginates the existing MA catalogue API and
+checks locally accessible filesystem mappings. It analyses new/modified files
+and model changes, updates aliases without reanalysing unchanged audio, and
+retries failed analysis next day. It leaves successful old descriptors intact
+on decoder errors or files changing mid-read. There are bounded batches,
+one writer lock, atomic/checkpoint writes and a separate
+`audio_features.status.json` coverage report. No MA database access or queue
+commands are involved. Provider-only tracks with no local audio are explicitly
+reported as unprofiled; this worker does not open protected provider streams
+or synthesize listening/play-count events.
+
+The accompanying `beo-audio-profile.timer` checks daily at 04:15, with up to
+30 minutes of jitter and catch-up after downtime. The service uses idle I/O,
+nice 19, a 25% CPU limit and SSD-only writes, processing up to 250 recordings
+or one hour per run. The ordinary playback service automatically notices a
+changed profile file. More than a daily batch of new music is completed over
+subsequent runs; a manual catch-up can use higher explicit limits.
+
+After preparing the optional files, install the timer with:
+
+```sh
+sudo bash ~/beosound5c/tools/install_audio_profiler.sh
+systemctl list-timers beo-audio-profile.timer
+```
+
+The optional timer is deliberately installed separately from ordinary BS5c
+services, so deploying UI/backend code alone cannot unexpectedly start a
+large audio-analysis job. The installer does not install models/dependencies,
+edit HA, or touch music/play-count databases.
+
+### Acoustic range calibration
+
+Real-library testing exposed the model's central score clustering: literal
+0/1 wheel targets could have no eligible familiar recordings despite adequate
+audio coverage. The sidecar now includes an **unweighted** 5th/95th-percentile
+range per model and axis. On loading, the backend maps that measured range to
+0..1, clipping the tails. Thus the wheel expresses mood relative to the
+profiled collection. Raw model predictions remain unchanged in the profile;
+BPM and embeddings are untouched, and manual mood annotations retain priority.
+At least 100 profiles and a 0.1-wide axis range are required, so a tiny or
+near-constant sample is not stretched into fabricated emotional variety.
+Play counts, reference playlists and favourites do not enter calibration.
+The daily updater recomputes the ranges after integrating new audio.
+
+Eligibility now validates only the two mood coordinates. It does not
+revalidate a 200-number embedding every time a mood distance is computed,
+which avoids unnecessary work during steering over a large profiled library.
+
+Long-session recording/version exclusions now use artist-indexed lookups with
+unchanged exact/fuzzy recording rules. Real-library queue simulation exercised
+six mood changes and 15 consecutive refill batches, preserving the playing
+item and its elapsed position each time. Full profile embeddings use six
+decimal places without expanding float32 representation noise in JSON.
+
+The normal MA library cache refresh now runs daily at 02:00 (previously a
+second day was added), before the audio profiler's 04:15 window. This ensures
+new catalogue music reaches the recommendation candidates as well as the
+profile file. Both jobs read the supported MA APIs; neither requests playback.
+
+The optional service requires the `/media/local` SSD mount. If it is absent,
+profiling is skipped rather than writing its cache into the SD-card root.

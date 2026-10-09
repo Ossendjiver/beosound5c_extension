@@ -27,6 +27,13 @@ def normalize_predictions(predictions):
     return {'energy': float(arousal), 'valence': float(valence)}
 
 
+def rounded_embedding(vectors):
+    import numpy as np
+    # Convert before rounding: numpy.float32.tolist() otherwise expands the
+    # binary approximation back to long decimals, doubling sidecar size.
+    return [round(float(value), 6) for value in np.mean(vectors, axis=0)]
+
+
 def atomic_write(path, payload):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -60,7 +67,7 @@ def segments(path):
     offsets = sorted({max(0, min(duration-30, duration*fraction)) for fraction in (.1,.45,.75)})
     for offset in offsets:
         raw = subprocess.check_output(
-            ['ffmpeg', '-nostdin', '-v', 'error', '-ss', str(offset), '-i', str(path),
+            ['ffmpeg', '-nostdin', '-v', 'error', '-threads', '1', '-ss', str(offset), '-i', str(path),
              '-t', '30', '-ac', '1', '-ar', '16000', '-f', 'f32le', 'pipe:1'], timeout=60)
         audio = np.frombuffer(raw, dtype='<f4').copy()
         if len(audio) < 15*16000 or not np.isfinite(audio).all():
@@ -92,7 +99,7 @@ def analyze(path, embedding_model, mood_model):
             centroids.append(float(np.mean((spectrum[valid]*np.fft.rfftfreq(1024,1/16000)).sum(axis=1)/mass[valid])))
     result = normalize_predictions(predictions)
     result.update(model=MODEL, embedding_model=EMBEDDING,
-                  embedding=np.mean(vectors, axis=0).round(6).tolist(),
+                  embedding=rounded_embedding(vectors),
                   rms=float(np.mean(levels)), sample_seconds=sample_seconds)
     if tempos:
         result['bpm'] = float(np.median(tempos))

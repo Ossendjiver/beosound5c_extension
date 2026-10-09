@@ -41,3 +41,8 @@ def test_samples_are_bounded_and_short_recordings_are_not_triplicated(monkeypatc
     monkeypatch.setattr(worker.subprocess,'check_output',output)
     assert len(list(worker.segments(Path('/music/file.flac'))))==1
     assert len(calls)==2
+
+
+def test_embedding_rounding_does_not_expand_float32_binary_noise():
+    np=pytest.importorskip('numpy')
+    assert worker.rounded_embedding(np.array([[.12345679, .3]], dtype=np.float32)) == [.123457, .3]

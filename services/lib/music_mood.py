@@ -44,10 +44,15 @@ def profile(item, learned):
                 return {"energy": e, "valence": v, "source": "manual"}
         except (KeyError, TypeError, ValueError):
             pass
-    from .music_features import clean
-    features = clean(item.get('audio_features'))
-    if 'energy' in features and 'valence' in features:
-        return {'energy': features['energy'], 'valence': features['valence'], 'source': 'audio_model'}
+    from .music_features import number
+    features = item.get('audio_features')
+    # Eligibility needs two validated coordinates, not a re-validation of every
+    # 200-value embedding on each distance/ranking call across the full library.
+    if isinstance(features, dict) and features.get('model'):
+        energy = number(features.get('energy'), 0, 1)
+        valence = number(features.get('valence'), 0, 1)
+        if energy is not None and valence is not None:
+            return {'energy': energy, 'valence': valence, 'source': 'audio_model'}
     # Use supplied genres/curated playlist labels, not guessed title or artist mood.
     tags = str(item.get("genres") or item.get("genre") or "") + " " + str(item.get("playlist_tags") or "") + " " + str(item.get('mood_tags') or '')
     matches = [values for tag, values in TAG_HINTS.items() if tag in tags.casefold()]

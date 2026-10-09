@@ -44,8 +44,43 @@ def same_recording(a, b):
 
 def distinct(picks, previous):
     result = []
+    index = RecordingIndex(previous)
     for item in picks:
-        if any(same_recording(item, other) for other in previous + result):
+        if index.matches(item):
             continue
         result.append(item)
+        index.add(item)
     return result
+
+
+class RecordingIndex:
+    """Same recording rules indexed by artist, for large persistent sessions."""
+    def __init__(self, items=()):
+        self.uris = set()
+        self.aliases = {}
+        self.identities = {}
+        for item in items:
+            self.add(item)
+
+    def add(self, item):
+        uri = item.get('uri') or ''
+        if uri:
+            self.uris.add(uri)
+        for artist, title in skip_policy.aliases(item):
+            self.aliases.setdefault(artist, set()).add((title, uri))
+        artist, title = identity(item)
+        if artist and title:
+            self.identities.setdefault(artist, set()).add((title, uri))
+
+    def matches(self, item, *, alternate_only=False):
+        uri = item.get('uri') or ''
+        if not alternate_only and uri and uri in self.uris:
+            return True
+        def match(artist, title, groups):
+            return any((not alternate_only or old_uri != uri) and
+                       (old_title == title or SequenceMatcher(None, title, old_title).ratio() >= .88)
+                       for old_title, old_uri in groups.get(artist, ()))
+        if any(match(artist, title, self.aliases) for artist, title in skip_policy.aliases(item)):
+            return True
+        artist, title = identity(item)
+        return bool(artist and title and match(artist, title, self.identities))

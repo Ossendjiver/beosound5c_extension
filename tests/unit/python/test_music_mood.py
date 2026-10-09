@@ -59,3 +59,14 @@ def test_patternplay_and_wheel_share_history(mock_config, tmp_path, monkeypatch)
     assert service._learning_item({'name':'Chosen','artist':'Known'})['selection_origin'] == 'manual'
     service._manual_choices[('known','chosen')] -= 1801
     assert service._learning_item({'name':'Chosen','artist':'Known'})['selection_origin'] == 'unknown'
+
+
+def test_mood_eligibility_validates_coordinates_without_scanning_embedding():
+    class UnneededEmbedding(list):
+        def __iter__(self):
+            raise AssertionError('Mood eligibility should not scan acoustic vectors')
+    assert mood.profile({'audio_features': {'model': 'm', 'energy': .2, 'valence': .4,
+        'embedding': UnneededEmbedding([1]*200)}}, {}) == {
+        'energy': .2, 'valence': .4, 'source': 'audio_model'}
+    for bad in [True, float('nan'), -1, 2]:
+        assert mood.profile({'audio_features': {'model': 'm', 'energy': bad, 'valence': .4}}, {}) is None

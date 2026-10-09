@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import pytest
 from unittest.mock import patch
 
 from sources.mass.service import MASS_MIXES_PLAYLIST_ROOT_ID, MassSource
@@ -339,3 +340,28 @@ class TestMassLibraryIdentity:
             "podcast:501",
         ]
         assert [track["id"] for track in podcasts_root["tracks"][0]["tracks"]] == ["podcast_episode:802"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('hour,expected_hours', [(1, 1), (3, 23)])
+async def test_library_sync_runs_daily_before_audio_profile_window(monkeypatch, hour, expected_hours):
+    import asyncio
+    import datetime
+    import sources.mass.service as service_module
+    real_datetime = datetime.datetime
+    class FixedDatetime(real_datetime):
+        @classmethod
+        def now(cls):
+            return real_datetime(2026, 10, 9, hour, 0)
+    source = object.__new__(service_module.MassSource)
+    source.has_cache = True
+    source._cached_music_needs_duration_sync = lambda: False
+    captured = []
+    async def sleep(seconds):
+        captured.append(seconds)
+        raise asyncio.CancelledError
+    monkeypatch.setattr(service_module.datetime, 'datetime', FixedDatetime)
+    monkeypatch.setattr(service_module.asyncio, 'sleep', sleep)
+    with pytest.raises(asyncio.CancelledError):
+        await source._schedule_sync_loop()
+    assert captured == [expected_hours*3600]

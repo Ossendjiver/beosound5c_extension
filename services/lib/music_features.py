@@ -85,3 +85,58 @@ def similarity(item, root):
         cosine = sum(i*j for i,j in zip(x,y)) / math.sqrt(sum(i*i for i in x)*sum(j*j for j in y))
         bonus += .6 * max(0, min(1, cosine))
     return bonus
+
+
+def library_calibration(records):
+    """Unweighted acoustic range, never driven by play counts or favourites.
+
+    Models often occupy a much narrower range than their nominal 0..1 scale.
+    Interpret the wheel relative to a sufficiently varied profiled library.
+    Keep raw predictions on disk; this transform applies at load time only.
+    """
+    groups = {}
+    for record in records:
+        features = record.get('audio_features') or {}
+        if not isinstance(features, dict) or not features.get('model'):
+            continue
+        energy, valence = number(features.get('energy'), 0, 1), number(features.get('valence'), 0, 1)
+        if energy is not None and valence is not None:
+            groups.setdefault(str(features['model']), []).append((energy, valence))
+    def quantile(values, fraction):
+        values = sorted(values)
+        index = (len(values)-1)*fraction
+        lower = math.floor(index)
+        return values[lower]+(values[min(lower+1, len(values)-1)]-values[lower])*(index-lower)
+    result = {'version': 1, 'method': 'unweighted-library-p05-p95', 'models': {}}
+    for model, values in groups.items():
+        if len(values) < 100:
+            continue
+        axes = {}
+        for index, key in enumerate(('energy', 'valence')):
+            low, high = quantile([v[index] for v in values], .05), quantile([v[index] for v in values], .95)
+            if high-low >= .1:  # Never expand a near-constant collection/noise.
+                axes[key] = {'low': low, 'high': high}
+        if axes:
+            result['models'][model] = {'count': len(values), **axes}
+    return result
+
+
+def calibrate(features, calibration):
+    """Validated library-relative coordinates; embeddings/BPM remain unchanged."""
+    result = dict(features)
+    if not isinstance(calibration, dict) or calibration.get('version') != 1:
+        return result
+    models = calibration.get('models')
+    if not isinstance(models, dict):
+        return result
+    model = models.get(features.get('model'))
+    if not isinstance(model, dict) or number(model.get('count'), 100, 1e7) is None:
+        return result
+    for key in ('energy', 'valence'):
+        axis = model.get(key)
+        if not isinstance(axis, dict):
+            continue
+        low, high, value = number(axis.get('low'), 0, 1), number(axis.get('high'), 0, 1), number(features.get(key), 0, 1)
+        if low is not None and high is not None and high-low >= .1 and value is not None:
+            result[key] = max(0., min(1., (value-low)/(high-low)))
+    return result

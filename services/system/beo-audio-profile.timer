@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily new/changed music audio profiling
+
+[Timer]
+OnCalendar=*-*-* 04:15:00
+RandomizedDelaySec=30min
+Persistent=true
+Unit=beo-audio-profile.service
+
+[Install]
+WantedBy=timers.target

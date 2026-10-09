@@ -1,0 +1,33 @@
+[Unit]
+Description=BeoSound5c incremental local music audio profiling
+After=network-online.target
+Wants=network-online.target
+RequiresMountsFor=/media/local/music /media/local/cache/audio-analysis
+ConditionPathIsMountPoint=/media/local
+ConditionPathExists=/media/local/cache/audio-analysis/venv/bin/python
+ConditionPathExists=/media/local/cache/audio-analysis/models/msd-musicnn-1.onnx
+ConditionPathExists=/media/local/cache/audio-analysis/models/emomusic-msd-musicnn-2.onnx
+
+[Service]
+Type=oneshot
+User=__USER__
+Group=__USER__
+WorkingDirectory=__HOME__/beosound5c/tools
+EnvironmentFile=-/etc/beosound5c/secrets.env
+Environment=OPENBLAS_NUM_THREADS=1
+Environment=OMP_NUM_THREADS=1
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/media/local/cache/audio-analysis/venv/bin/python __HOME__/beosound5c/tools/profile_music_library.py
+Nice=19
+IOSchedulingClass=idle
+CPUQuota=25%
+MemoryMax=512M
+TimeoutStartSec=75min
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/media/local/cache
+
+[Install]
+WantedBy=multi-user.target

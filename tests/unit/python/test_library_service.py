@@ -203,3 +203,24 @@ def test_legacy_history_is_preserved_but_cannot_seed_pool(tmp_path):
     m = _model(tmp_path)
     assert len(m._history()) == 1
     assert m.rank([{"name": "Old", "artist": "Old artist", "uri": "old"}], {}, 20) == []
+
+
+def test_audio_sidecar_applies_exact_aliases_and_reloads_changes(mock_config, tmp_path, monkeypatch):
+    import json
+    mock_config({})
+    monkeypatch.setattr(lib, 'DB_PATH', tmp_path/'model.sqlite3')
+    cache = tmp_path/'library.json'
+    cache.write_text(json.dumps([{'id': 'songs', 'tracks': [
+        {'url': 'tidal://track/7', 'name': 'Song', 'artist': 'Artist', 'duration': 200},
+        {'url': 'tidal://track/8', 'name': 'Song', 'artist': 'Artist', 'duration': 200}]}]))
+    monkeypatch.setattr(lib, 'CACHE_LIBRARY', cache)
+    feature = tmp_path/'audio_features.json'
+    feature.write_text(json.dumps({'version': 1, 'tracks': {'library://track/1': {
+        'aliases': ['tidal://track/7'], 'audio_features': {'model': 'm', 'energy': .2, 'valence': .4}}}}))
+    service = lib.LibraryService()
+    items = {i['uri']: i for i in service._load_library()}
+    assert items['tidal://track/7']['audio_features']['energy'] == .2
+    assert 'audio_features' not in items['tidal://track/8']  # Same title is not a mapping.
+    feature.write_text(json.dumps({'version': 1, 'tracks': {'library://track/1': {
+        'aliases': ['tidal://track/7'], 'audio_features': {'model': 'm', 'energy': .73, 'valence': .4}}}}))
+    assert service._load_library()[0]['audio_features']['energy'] == .73

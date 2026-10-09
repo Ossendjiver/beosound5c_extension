@@ -43,3 +43,22 @@ def test_root_duration_boundaries_are_inclusive_and_unknown_root_rejected():
 def test_provider_upload_versions_are_excluded_from_same_session():
     from lib.mix_policy import same_recording
     assert same_recording(item('Borderline','Sufjan Stevens'),item('Sufjan Stevens - Borderline','Culturcide'))
+
+
+def test_recording_index_matches_pairwise_rules_including_exact_reuse():
+    from lib import mix_policy as policy
+    songs = [
+        {'uri': 'a', 'artist': 'A', 'name': 'Song'},
+        {'uri': 'b', 'artist': 'A', 'name': 'Song (Remastered)'},
+        {'uri': 'c', 'artist': 'Uploader', 'name': 'A - Song'},
+        {'uri': 'd', 'artist': 'A / B', 'name': 'Different Song'},
+        {'uri': 'e', 'artist': 'Other', 'name': 'Song'},
+        {'uri': 'f', 'artist': 'A', 'name': 'Song live'},
+        {'uri': 'g', 'artist': 'À', 'name': 'Sóng'},
+    ]
+    for previous in [[s] for s in songs] + [songs[:3], songs]:
+        index = policy.RecordingIndex(previous)
+        for song in songs:
+            assert index.matches(song) == any(policy.same_recording(song, old) for old in previous)
+            assert index.matches(song, alternate_only=True) == any(
+                song['uri'] != old['uri'] and policy.same_recording(song, old) for old in previous)

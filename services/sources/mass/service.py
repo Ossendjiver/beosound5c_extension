@@ -372,13 +372,12 @@ class MassSource(SourceBase):
             next_sync = now.replace(hour=2, minute=0, second=0, microsecond=0)
             if now >= next_sync:
                 next_sync += datetime.timedelta(days=1)
-            next_sync += datetime.timedelta(days=1)
             wait_s = (next_sync - now).total_seconds()
             logger.info(f"Next sync in {wait_s / 3600:.1f}h.")
             await asyncio.sleep(wait_s)
             while not self._connected:
                 await asyncio.sleep(10)
-            logger.info("Triggering scheduled 48h library sync...")
+            logger.info("Triggering scheduled daily library sync...")
             await self.update_library_cache()
 
     # ── WebSocket ─────────────────────────────────────────────────────────────
