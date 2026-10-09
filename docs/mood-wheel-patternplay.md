@@ -84,13 +84,14 @@ MA database write, HA change, or playback action is needed.
 ## Personal “Most played…” baseline and continuing queues
 
 MA library playlists whose names start with `most played` (case insensitive,
-leading whitespace ignored) are imported every 15 minutes. Library pagination
+leading whitespace ignored) are imported once daily. Library pagination
 finds up to 2,000 playlists; up to 40 matching playlists and 1,000 tracks per
 playlist are processed within the existing read-only snapshot time budget.
 Only playable track metadata is retained. These saved personal History Mixes
 make their tracks eligible for the familiar pool, while favourites still rank
-higher. Overlapping month/year playlists take the maximum capped membership
-signal rather than accumulating invented play counts. They do not train mood,
+higher. Overlapping month/year playlists use the user-approved rank weights as a
+separate capped familiarity signal. These are inferred reference weights, not
+actual historical timestamps or provider-reported counts. They do not train mood,
 time of day, room, or weather; dislikes and duration rules continue to apply.
 
 Mood Mix and Play Radio from here replenish below five upcoming tracks. Excluded
@@ -109,3 +110,29 @@ upcoming tail. Normal Home Media Play music now starts the same server-owned
 radio session instead of a finite recommended batch; that frontend change
 requires an app update. BS5c's contextual music action also registers the active
 MA queue with this monitor. Plain manually queued playlists remain finite.
+
+
+## One-time weighted MA count import
+
+At the user's request, `tools/import_reference_plays.py` adds rank-weighted
+estimates to MA **track** play counts. A playlist of N tracks is interpolated
+from N+1 plays at the first position to 1 at the last, rounded half-up; a
+single-track playlist gets 1. A five-track playlist gives 6, 5, 4, 2, 1.
+Every occurrence contributes, including overlaps between playlists. Existing
+counts are added to, not overwritten. These are synthetic baseline estimates.
+
+A `homemedia_reference_play_imports` table in the same MA database records each
+stable provider playlist identity once. Counts and ledger are committed in one
+transaction; repeated runs and edits to an already-imported playlist do not
+apply it again. No last_played timestamps, playlog entries, artist counts, or
+provider play reports are created. The tool requires a verified online backup
+and aborts before writes if any track is unresolved. It is schema-dependent and
+must be checked before use with a different MA version. Retain the ledger and
+backups during MA migration; dropping the ledger removes the once-only guard.
+
+The normal reference checker remains read-only and runs once every 24 hours.
+Its last completed check is persisted so service restarts do not cause an extra
+scan. It can discover new playlists for the shared baseline; MA count imports
+are a separate explicit one-time operation and are not repeated by that scan.
+Rank weights also feed the capped familiarity prior without training listening
+context or promoting items to favourites.

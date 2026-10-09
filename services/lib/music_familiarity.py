@@ -10,6 +10,8 @@ import asyncio
 import math
 import re
 import time
+from collections import Counter
+from .reference_plays import weights
 from typing import Any
 
 MAX_BOOST = .25
@@ -156,6 +158,8 @@ async def collect(command, previous: dict, now=None) -> tuple[dict, dict]:
         page = await read("music/playlists/library_items", limit=100, offset=offset)
         playlists.extend(x for x in page if most_played(x.get("name")))
         if len(page) < 100: break
+    reference_counts = Counter()
+    reference_items = {}
     for playlist in playlists[:40]:
         provider = playlist.get("provider")
         item_id = playlist.get("item_id")
@@ -165,14 +169,18 @@ async def collect(command, previous: dict, now=None) -> tuple[dict, dict]:
         # here (some versions accept it but return the same list again).
         items = await read("music/playlists/playlist_tracks", item_id=item_id,
                            provider_instance_id_or_domain=provider)
-        for item in items[:1000]:
+        for item, rank_count in zip(items[:1000], weights(len(items))):
             if track(item):
+                reference_counts[item["uri"]] += rank_count
+                reference_items[item["uri"]] = item
                 observe(cache, item, "most-played:" + str(playlist.get("uri") or f"{provider}:{item_id}"),
                         history=True, baseline=True, now=now)
                 status["baseline_tracks"] += 1
                 imported = True
         status["baseline_playlists"] += int(imported)
         if time.monotonic() >= deadline: break
+    for uri, count in reference_counts.items():
+        observe(cache, reference_items[uri], "reference-rank", count=count, baseline=True, now=now)
     providers = await read("providers")
     for provider in [p for p in providers if p.get("type") == "music" and p.get("available")
                      and "browse" in p.get("supported_features", [])][:8]:

@@ -678,12 +678,16 @@ class LibraryService:
 
     async def _familiarity_loop(self) -> None:
         while True:
+            last_check = self.model.get_kv("music_familiarity_last_check", 0)
+            wait = max(0, float(last_check) + 86400 - time.time())
+            if wait:
+                await asyncio.sleep(wait)
             try:
                 await asyncio.wait_for(self._refresh_familiarity(), timeout=120)
             except asyncio.CancelledError: raise
             except Exception:
                 log.warning("Familiarity sync unavailable; retaining cached evidence", exc_info=False)
-            await asyncio.sleep(900)
+            await asyncio.sleep(86400)
 
     async def _refresh_familiarity(self) -> None:
         if not self.session: return
@@ -701,6 +705,7 @@ class LibraryService:
         self.model.put_kv("music_familiarity", evidence)
         self.model.put_kv("music_familiarity_status", status)
         self._familiarity_status = status
+        self.model.put_kv("music_familiarity_last_check", time.time())
 
     def pattern_mood(self, room: str) -> dict | None:
         context = self._context_for_room(room)

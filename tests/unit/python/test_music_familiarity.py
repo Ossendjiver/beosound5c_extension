@@ -188,8 +188,8 @@ async def test_most_played_playlists_are_paginated_case_insensitive_baselines():
     assert status['baseline_playlists']==2 and status['baseline_tracks']==2
     prior=f.Prior(c,[],now=NOW)
     assert prior.baseline(song('library://track/99',name='Baseline'))
-    assert prior.boost(song('library://track/99',name='Baseline'))==.1
-    assert all(s['count']==0 for e in c.values() for s in e['signals'].values())
+    assert .1 <= prior.boost(song('library://track/99',name='Baseline')) <= f.MAX_BOOST
+    assert c['tidal://track/1']['signals']['reference-rank']['count']==2
     again,_=await f.collect(command,c,now=NOW+900)
     assert again==c
     assert f.Prior(c,[],now=NOW+f.RETENTION+1).baseline(song('tidal://track/1',name='Baseline')) is False
@@ -219,4 +219,18 @@ async def test_mix_exclusions_are_applied_before_top_fifty(tmp_path,monkeypatch,
     picks=await service._mix_recommend('lounge',50,None,{}, {'exclude':[i['uri'] for i in items[:70]]})
     assert len(picks)==30
     assert not {i['uri'] for i in picks}&{i['uri'] for i in items[:70]}
+    service.model.db.close()
+
+
+@pytest.mark.asyncio
+async def test_daily_check_survives_service_restart(tmp_path,monkeypatch,mock_config):
+    monkeypatch.setattr(lib,'DB_PATH',tmp_path/'service.sqlite3');mock_config({'device':'Test'})
+    service=lib.LibraryService();service.model.put_kv('music_familiarity_last_check',NOW)
+    monkeypatch.setattr(lib.time,'time',lambda:NOW+60)
+    waits=[]
+    async def sleep(seconds):
+        waits.append(seconds);raise asyncio.CancelledError()
+    monkeypatch.setattr(lib.asyncio,'sleep',sleep)
+    with pytest.raises(asyncio.CancelledError):await service._familiarity_loop()
+    assert waits==[86340]
     service.model.db.close()
