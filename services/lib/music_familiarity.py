@@ -13,9 +13,14 @@ import time
 from typing import Any
 
 MAX_BOOST = .25
-MAX_ITEMS = 1000
+MAX_ITEMS = 5000
+MOST_PLAYED = re.compile(r"^most\s+played\b", re.I)
 RETENTION = 180 * 86400
 HISTORY_ID = re.compile(r"(?:^|[:/_-])(?:recently[-_]played|listening[-_]history|play[-_]history)(?:$|[:/_-])", re.I)
+
+
+def most_played(name: Any) -> bool:
+    return bool(MOST_PLAYED.match(str(name or "").strip()))
 
 
 def number(value: Any) -> float:
@@ -56,16 +61,16 @@ def track(item: Any) -> dict | None:
             "genres": (item.get("metadata") or {}).get("genres") or []}
 
 
-def observe(cache: dict, item: dict, source: str, *, count=0, rank=0, history=False, now=None) -> None:
+def observe(cache: dict, item: dict, source: str, *, count=0, rank=0, history=False, baseline=False, now=None) -> None:
     media = track(item)
     count, rank = number(count), min(1.0, number(rank))
-    if not media or not (count or rank or history): return
+    if not media or not (count or rank or history or baseline): return
     now = time.time() if now is None else now
     entry = cache.setdefault(media["uri"], {"item": media, "signals": {}})
     # Refresh descriptive metadata, but not the initial evidence timestamp/counter.
     entry["item"] = media
     entry["signals"].setdefault(source, {"count": count, "rank": rank,
-        "history": bool(history), "observed_at": now})
+        "history": bool(history), "baseline": bool(baseline), "observed_at": now})
 
 
 class Prior:
@@ -84,6 +89,12 @@ class Prior:
             self.local_uris.setdefault(row["uri"], set()).add(index)
             key = (row["artist"].strip().casefold(), row["title"].strip().casefold())
             if key[0] and key[1]: self.local_keys.setdefault(key, set()).add(index)
+
+    def baseline(self, item: dict) -> bool:
+        matches = set(self.keys.get(identity(item), ()))
+        for uri in aliases(item): matches.update(self.uris.get(uri, ()))
+        return any(signal.get("baseline") and 0 <= self.now - number(signal.get("observed_at")) <= RETENTION
+                   for uri in matches for signal in self.cache[uri].get("signals", {}).values())
 
     def boost(self, item: dict) -> float:
         key, uris = identity(item), aliases(item)
@@ -115,7 +126,7 @@ async def collect(command, previous: dict, now=None) -> tuple[dict, dict]:
     now = time.time() if now is None else now
     cache = {uri: {"item": dict(e.get("item", {})), "signals": dict(e.get("signals", {}))}
              for uri, e in previous.items() if isinstance(e, dict)}
-    status = {"ma_count_items": 0, "provider_history_items": 0, "unavailable": []}
+    status = {"ma_count_items": 0, "provider_history_items": 0, "baseline_playlists": 0, "baseline_tracks": 0, "unavailable": []}
     deadline = time.monotonic() + 60
 
     async def read(name, **args):
@@ -138,6 +149,30 @@ async def collect(command, previous: dict, now=None) -> tuple[dict, dict]:
         if count or played:
             observe(cache, item, "ma:count" if count else "ma:rank", count=count, rank=(len(rows)-index)/max(1,len(rows)) if played and not count else 0, now=now)
             status["ma_count_items"] += 1
+    # Saved personal History Mix playlists are explicit evidence of familiarity.
+    # Membership is not a numeric play count or a time/mood training observation.
+    playlists = []
+    for offset in range(0, 2000, 100):
+        page = await read("music/playlists/library_items", limit=100, offset=offset)
+        playlists.extend(x for x in page if most_played(x.get("name")))
+        if len(page) < 100: break
+    for playlist in playlists[:40]:
+        provider = playlist.get("provider")
+        item_id = playlist.get("item_id")
+        if not provider or not item_id: continue
+        imported = False
+        # MA's controller returns the complete playlist; page is not pagination
+        # here (some versions accept it but return the same list again).
+        items = await read("music/playlists/playlist_tracks", item_id=item_id,
+                           provider_instance_id_or_domain=provider)
+        for item in items[:1000]:
+            if track(item):
+                observe(cache, item, "most-played:" + str(playlist.get("uri") or f"{provider}:{item_id}"),
+                        history=True, baseline=True, now=now)
+                status["baseline_tracks"] += 1
+                imported = True
+        status["baseline_playlists"] += int(imported)
+        if time.monotonic() >= deadline: break
     providers = await read("providers")
     for provider in [p for p in providers if p.get("type") == "music" and p.get("available")
                      and "browse" in p.get("supported_features", [])][:8]:

@@ -279,7 +279,7 @@ class LocalModel:
         meaningful = [r for r in history if r["origin"] == "manual" and r["reward"] >= 1]
         contextual = len(meaningful) >= 20 and len({r["uri"] or r["title"] for r in meaningful}) >= 5
         known = {(r["artist"].casefold(), r["title"].casefold()) for r in meaningful}
-        seeds = [i for i in candidates if _music_item(i) and (i.get("trusted") or i.get("favorite") or self._candidate_key(i) in known or feedback.get(i.get("uri")) == "like")]
+        seeds = [i for i in candidates if _music_item(i) and (i.get("trusted") or i.get("favorite") or self._candidate_key(i) in known or feedback.get(i.get("uri")) == "like" or familiarity.baseline(i))]
         seed_artists = {self._candidate_key(i)[0] for i in seeds if self._candidate_key(i)[0]}
         if not seeds:
             return []  # Never substitute random catalogue entries for an empty baseline.
@@ -294,7 +294,7 @@ class LocalModel:
             identity = item["uri"]
             if feedback.get(identity) == "dislike":
                 continue
-            trusted = item.get("trusted") or item.get("favorite") or key in known or feedback.get(identity) == "like"
+            trusted = item.get("trusted") or item.get("favorite") or key in known or feedback.get(identity) == "like" or familiarity.baseline(item)
             if not trusted and key[0] not in seed_artists and not (mood and mood["discovery_fraction"] >= .1 and music_mood.profile(item, mood_profiles) and music_mood.adjustment(item, mood, mood_profiles) >= -2):
                 continue  # Discovery is constrained to artists already represented by seeds.
             score = 12.0 if item.get("favorite") else 10.0 if trusted else 0.0
@@ -740,7 +740,7 @@ class LibraryService:
                 raise ValueError(result.get("reason") or "Mix queue request failed")
             return result
 
-    async def _mix_recommend(self, room, limit, mood, seed):
+    async def _mix_recommend(self, room, limit, mood, seed, policy=None):
         candidates = self._load_library()
         context = self._context_for_room(room)
         selected = mood or self.pattern_mood(room)
@@ -751,7 +751,17 @@ class LibraryService:
             candidates = [seed] + [c for c in candidates if c.get("uri") != seed["uri"]]
             context["seed_artist"] = mix_policy.identity(seed)[0]
         candidates = [c for c in candidates if mix_policy.similar_length(c, seed or {})]
-        return self.model.rank(candidates, context, limit)
+        policy = policy or {}
+        excluded = set(policy.get("exclude", []))
+        previous = policy.get("previous", [])
+        versions = policy.get("versions", [])
+        # Filter before ranking, so lower ranked eligible tracks are not starved.
+        candidates = [c for c in candidates if c.get("uri") not in excluded
+                      and not any(mix_policy.same_recording(c, p) for p in previous)
+                      and not any(c.get("uri") != p.get("uri") and mix_policy.same_recording(c, p) for p in versions)]
+        picks = self.model.rank(candidates, context, limit)
+        self._automatic_keys.update(self.model._candidate_key(item) for item in picks)
+        return picks
 
     def _mix_record(self, mood, picks):
         for item in picks:
@@ -855,7 +865,10 @@ class LibraryService:
                 results.append(body)
             if index == 0:
                 await asyncio.sleep(0.3)
-        return {"count": len(results), "first": picks[0]}
+        queue = str(results[0].get("queue_id") or "") if results else ""
+        if queue:
+            await self.mixes.begin(queue, str(cfg("device", default="bs5c")), picks[0], mode="radio")
+        return {"count": len(results), "first": picks[0], "continuous": bool(queue)}
 
     async def _play_news_local(self) -> None:
         assert self.session
@@ -996,9 +1009,9 @@ class LibraryService:
         classified = sum(music_mood.profile(i, self.model.get_kv("mood_profiles", {})) is not None for i in picks)
         return web.json_response(
             {
-                "model": "trusted-baseline-v3",
+                "model": "trusted-baseline-v4",
                 "familiarity": {"max_boost": music_familiarity.MAX_BOOST, "status": self._familiarity_status},
-                "baseline": {"trusted_playlists": self.cfg.get("trusted_playlists", ["Trusted music", "All favorited tracks"]), "favourites": True, "discovery_fraction": 0.1, "seed_required": True},
+                "baseline": {"trusted_playlists": self.cfg.get("trusted_playlists", ["Trusted music", "All favorited tracks"]), "favourites": True, "most_played_playlist_prefix": "most played", "discovery_fraction": 0.1, "seed_required": True},
                 "context": self._context_for_room(room),
                 "mood": mood,
                 "mood_coverage": {"classified": classified, "total": len(picks), "notice": "Mood data limited; familiar mix" if mood and classified < len(picks) else ""},

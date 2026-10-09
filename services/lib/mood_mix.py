@@ -8,7 +8,7 @@ def current(snapshot):
     item = snapshot.get('current_item') or {}
     if not item:
         items = snapshot.get('items') or []
-        index = snapshot.get('current_index')
+        index = item_index(snapshot)
         if isinstance(index, int) and 0 <= index < len(items):
             item = items[index]
     media = item.get('media_item') or item
@@ -21,6 +21,11 @@ def current(snapshot):
             'title': media.get('name') or item.get('name') or '',
             'duration': float(item.get('duration') or media.get('duration') or 0),
             'elapsed': elapsed}
+
+
+def item_index(snapshot):
+    index = snapshot.get('current_index')
+    return index - int(snapshot.get('items_offset') or 0) if isinstance(index, int) else None
 
 
 class MoodMixes:
@@ -53,14 +58,14 @@ class MoodMixes:
             session = {'queue_id': queue, 'room': room, 'mode': mode, 'seed': seed or {},
                        'awaiting_choice': mode == 'mood', 'mood': None,
                        'current_id': playing['id'], 'current_uri': playing['uri'], 'seen': [], 'owned': [playing['uri']],
-                       'recordings': [seed], 'title': playing['title'], 'updated': time.time(), 'generation': 0}
+                       'recordings': [seed], 'versions': [seed], 'title': playing['title'], 'updated': time.time(), 'generation': 0}
             self.sessions[queue] = session
             if mode == 'radio':
                 await self.fill(queue, snap)
             else:
                 # Seed collections must wait for a deliberate mood; retain only the playing item.
                 result = await self.command('mood_replace_upcoming', queue_id=queue,
-                    expected_item_id=playing['id'], expected_index=snap.get('current_index'), media=[])
+                    expected_item_id=playing['id'], expected_index=item_index(snap), media=[])
                 if result.get('state') == 'error':
                     self.sessions.pop(queue, None)
                     raise ValueError(result.get('reason', 'Seed queue could not be prepared'))
@@ -94,23 +99,37 @@ class MoodMixes:
             return
         playing = current(snap)
         generation = s['generation']
-        picks = s.pop('fallback', None) if not s['mood'] else None
-        if picks is None:
-            picks = await self.recommend(s['room'], 50, s['mood'], s['seed'])
+        fallback = s.pop('fallback', None) if not s['mood'] else None
         upcoming=[]
-        index=snap.get('current_index')
+        index=item_index(snap)
         if append and isinstance(index, int):
             for item in (snap.get('items') or [])[index+1:]:
                 media=item.get('media_item') or item
                 if media.get('uri'): upcoming.append(media['uri'])
         exclude = set(s['seen']) | {playing['uri']} | set(upcoming)
-        picks = [p for p in picks if p.get('uri') and p['uri'] not in exclude]
-        unique = {p['uri']: p for p in picks}
         existing = []
         if append and isinstance(index, int):
             existing = [item.get('media_item') or item for item in (snap.get('items') or [])[index+1:]]
-        picks = mix_policy.distinct([p for p in unique.values() if mix_policy.similar_length(p, s['seed'])],
-                                  s.get('recordings', []) + existing)[:20]
+        previous = s.get('recordings', []) + existing
+        versions = s.get('versions', s.get('recordings', []))
+        policy = {'exclude': list(exclude), 'previous': previous, 'versions': versions}
+        picks = fallback if fallback is not None else await self.recommend(s['room'], 50, s['mood'], s['seed'], policy)
+        def eligible(items, blocked, recordings):
+            unique = {p['uri']: p for p in items if p.get('uri') and p['uri'] not in blocked
+                      and mix_policy.similar_length(p, s['seed'])
+                      and not any(p['uri'] != old.get('uri') and mix_policy.same_recording(p, old) for old in versions)}
+            return mix_policy.distinct(list(unique.values()), recordings)[:20]
+        picks = eligible(picks, exclude, previous)
+        if not picks:
+            # An endless session can reuse older exact recordings after exhausting
+            # fresh candidates, but never alternate versions of the same song.
+            blocked = {playing['uri']} | set(upcoming)
+            current_media = (snap.get('current_item') or {}).get('media_item') or snap.get('current_item') or {}
+            repeat_policy = {'exclude': list(blocked), 'previous': [current_media] + existing, 'versions': versions}
+            candidates = await self.recommend(s['room'], 50, s['mood'], s['seed'], repeat_policy)
+            last_played = {p.get('uri'): i for i,p in enumerate(s.get('recordings', []))}
+            candidates = sorted(candidates, key=lambda p: last_played.get(p.get('uri'), -1))
+            picks = eligible(candidates, blocked, [current_media] + existing)
         if not picks:
             # Do not wipe a useful queue when the library temporarily fails or has no candidates.
             return
@@ -152,14 +171,16 @@ class MoodMixes:
                     s['seen'] = (s['seen'] + [old_uri])[-200:]
                 s['current_id'] = playing['id']
                 media = (snap.get('current_item') or {}).get('media_item') or snap.get('current_item') or {}
-                s['recordings'].append(media)
+                s['recordings'] = (s['recordings'] + [media])[-200:]
+                if not any(p.get('uri') == media.get('uri') for p in s.setdefault('versions', [])):
+                    s['versions'].append(media)
             s['current_uri'], s['title'] = playing['uri'], playing['title']
-            index = snap.get('current_index')
+            index = item_index(snap)
             upcoming = len(snap.get('items') or []) - index - 1 if isinstance(index, int) else 0
             remaining = playing['duration'] - playing['elapsed']
             if s['awaiting_choice']:
                 if snap.get('state') == 'playing' and playing['duration'] > 0 and remaining <= 5:
                     s['awaiting_choice'] = False
                     await self.fill(queue, snap)  # None mood means normal Pattern Play.
-            elif upcoming < 3:
+            elif upcoming < 5:
                 await self.fill(queue, snap, append=True)

@@ -5628,6 +5628,22 @@ class MassSource(SourceBase):
 
         return kicked
 
+    async def _get_mood_snapshot(self, queue):
+        snapshot = await self._get_queue_snapshot(queue)
+        index = snapshot.get("current_index")
+        if isinstance(index, int) and index >= 400:
+            # A continuing queue may have more than 500 already-played items.
+            # Fetch around its current item, keeping the global index for guards.
+            offset = max(0, index - 20)
+            payload = await self.send_command("player_queues/items",
+                queue_id=snapshot.get("resolved_queue_id") or queue, offset=offset, limit=100)
+            items = self._coerce_queue_items(payload)
+            if items is None:
+                raise ValueError("Mix queue items unavailable")
+            snapshot["items"] = snapshot["queue_items"] = items
+            snapshot["items_offset"] = offset
+        return snapshot
+
     async def _handle_mood_queue(self, cmd, data):
         queue = self._explicit_queue_id(data)
         if not queue:
@@ -5636,12 +5652,12 @@ class MassSource(SourceBase):
             queue = queues[0] if queues else ""
         if not queue:
             return {"state": "error", "reason": "missing_queue"}
-        from lib.mood_mix import current
+        from lib.mood_mix import current, item_index
         locks = getattr(self, "_mood_queue_locks", None)
         if locks is None:
             self._mood_queue_locks = locks = {}
         async with locks.setdefault(queue, asyncio.Lock()):
-            snapshot = await self._get_queue_snapshot(queue)
+            snapshot = await self._get_mood_snapshot(queue)
             queue = str(snapshot.get("resolved_queue_id") or queue)
             if cmd == "mood_snapshot":
                 return {"state": "ok", "queue_id": queue, "snapshot": snapshot}
@@ -5662,11 +5678,11 @@ class MassSource(SourceBase):
                     return {"state": "error", "reason": "mix_replace_failed"}
             else:
                 # MA replace_next with an empty list is version dependent; delete only future IDs.
-                index = snapshot.get("current_index")
+                index = item_index(snapshot)
                 if not isinstance(index, int) or index < 0:
                     return {"state": "error", "reason": "unknown_current_index"}
                 for item in reversed((snapshot.get("items") or [])[index+1:]):
-                    fresh = await self._get_queue_snapshot(queue)
+                    fresh = await self._get_mood_snapshot(queue)
                     if current(fresh)["id"] != playing["id"]:
                         return {"state": "error", "reason": "current_item_changed"}
                     response = await self._send_command_response("player_queues/delete_item", queue_id=queue,

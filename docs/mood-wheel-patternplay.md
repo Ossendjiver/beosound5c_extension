@@ -79,3 +79,33 @@ frozen import baseline; do not reset it on ordinary polling or queue changes.
 Deploy `services/library.py` and `services/lib/music_familiarity.py` together and
 restart only `beo-library`. Existing preference history is retained. No APK build,
 MA database write, HA change, or playback action is needed.
+
+
+## Personal “Most played…” baseline and continuing queues
+
+MA library playlists whose names start with `most played` (case insensitive,
+leading whitespace ignored) are imported every 15 minutes. Library pagination
+finds up to 2,000 playlists; up to 40 matching playlists and 1,000 tracks per
+playlist are processed within the existing read-only snapshot time budget.
+Only playable track metadata is retained. These saved personal History Mixes
+make their tracks eligible for the familiar pool, while favourites still rank
+higher. Overlapping month/year playlists take the maximum capped membership
+signal rather than accumulating invented play counts. They do not train mood,
+time of day, room, or weather; dislikes and duration rules continue to apply.
+
+Mood Mix and Play Radio from here replenish below five upcoming tracks. Excluded
+tracks are filtered before ranking, avoiding starvation after the initial top
+50. Once fresh eligible tracks are exhausted, older exact recordings may be
+reused, preferring the least recently used, while alternate versions stay
+excluded. The current item and existing upcoming items are always preserved.
+A single eligible song cannot provide a distinct next song; temporary MA/library
+failures are retried while the mix remains active. Stops or external playback
+end the session. Sessions currently live in service memory, so restarting the
+library service ends their monitoring.
+
+Queue snapshots for mixes fetch around the current index once it reaches 400,
+so playback beyond the first 500 historical queue entries does not lose the
+upcoming tail. Normal Home Media Play music now starts the same server-owned
+radio session instead of a finite recommended batch; that frontend change
+requires an app update. BS5c's contextual music action also registers the active
+MA queue with this monitor. Plain manually queued playlists remain finite.

@@ -89,6 +89,7 @@ async def test_collect_uses_only_explicit_personal_history_and_ignores_public_co
         if name=='music/tracks/library_items':
             return [song(play_count=9,last_played=NOW),song('library://track/2',name='Unplayed',last_played=0),
                     song('library://track/3',name='Rank only',last_played=NOW)]
+        if name=='music/playlists/library_items':return []
         if name=='providers':return [{'type':'music','available':True,'instance_id':'soundcloud--test','domain':'soundcloud','supported_features':['browse']}]
         path=args.get('path','')
         if name=='music/browse' and path=='soundcloud--test://':
@@ -108,7 +109,7 @@ async def test_collect_uses_only_explicit_personal_history_and_ignores_public_co
     assert c['soundcloud--test://track/9']['signals']['provider:soundcloud--test']['count']==0
     assert f.boost(song('soundcloud--test://track/9',name='Heard'),c,[],now=NOW)==.1
     assert not any('related' in args.get('path','') or 'other-provider' in args.get('path','') for _,args in calls)
-    assert {name for name,_ in calls} <= {'music/tracks/library_items','providers','music/browse','music/playlists/playlist_tracks'}
+    assert {name for name,_ in calls} <= {'music/tracks/library_items','music/playlists/library_items','providers','music/browse','music/playlists/playlist_tracks'}
     again,_=await f.collect(command,c,now=NOW+900)
     assert again==c
 
@@ -119,7 +120,7 @@ async def test_source_failures_retain_cache_and_do_not_rewrite_local_listens():
     async def unavailable(*args):raise ConnectionError('offline')
     result,status=await f.collect(unavailable,c,now=NOW+10)
     assert result==c
-    assert status['unavailable']==['music/tracks/library_items','providers']
+    assert status['unavailable']==['music/tracks/library_items','music/playlists/library_items','providers']
 
 
 @pytest.mark.asyncio
@@ -165,6 +166,57 @@ async def test_service_import_persists_separate_snapshot_with_read_only_ma_reque
     assert service.model.get_kv('music_familiarity')['library://track/1']['signals']['ma:count']['count']==5
     assert service._familiarity_status['ma_count_items']==1
     assert service.model._history()==[]
-    assert [x['command'] for x in calls]==['music/tracks/library_items','providers']
+    assert [x['command'] for x in calls]==['music/tracks/library_items','music/playlists/library_items','providers']
     assert calls[0]['args']['order_by']=='play_count_desc'
+    service.model.db.close()
+
+@pytest.mark.asyncio
+async def test_most_played_playlists_are_paginated_case_insensitive_baselines():
+    calls=[]
+    async def command(name,args):
+        calls.append((name,args))
+        if name=='music/playlists/library_items':
+            if args['offset']==0:
+                return [{'name':'Editorial mix','item_id':str(i),'provider':'library'} for i in range(99)]+[{'name':' Most Played 2024','provider':'library','item_id':'one','uri':'library://playlist/one'}]
+            return [{'name':'most played April','provider':'tidal--test','item_id':'two','uri':'tidal--test://playlist/two'},
+                    {'name':'My most played guesses','item_id':'bad','provider':'library'}]
+        if name=='music/playlists/playlist_tracks':
+            assert args['item_id'] in ('one','two')
+            return [song('tidal://track/1',name='Baseline',playback_count=1000000)]
+        return []
+    c,status=await f.collect(command,{},now=NOW)
+    assert status['baseline_playlists']==2 and status['baseline_tracks']==2
+    prior=f.Prior(c,[],now=NOW)
+    assert prior.baseline(song('library://track/99',name='Baseline'))
+    assert prior.boost(song('library://track/99',name='Baseline'))==.1
+    assert all(s['count']==0 for e in c.values() for s in e['signals'].values())
+    again,_=await f.collect(command,c,now=NOW+900)
+    assert again==c
+    assert f.Prior(c,[],now=NOW+f.RETENTION+1).baseline(song('tidal://track/1',name='Baseline')) is False
+
+
+def test_most_played_creates_familiar_pool_without_favourites_or_fake_listens(tmp_path):
+    m=lib.LocalModel(tmp_path/'baseline.sqlite3');c={}
+    base=song('tidal://track/1',name='Baseline')
+    f.observe(c,base,'most-played:one',history=True,baseline=True)
+    m.put_kv('music_familiarity',c)
+    candidate={'name':'Baseline','artist':'Artist','uri':base['uri'],'duration':200}
+    assert m.rank([candidate],{},1)==[candidate]
+    assert not candidate.get('favorite') and not candidate.get('trusted')
+    assert m._history()==[]
+    m.put_kv('music_feedback',{base['uri']:'dislike'})
+    assert m.rank([candidate],{},1)==[]
+    m.db.close()
+
+
+@pytest.mark.asyncio
+async def test_mix_exclusions_are_applied_before_top_fifty(tmp_path,monkeypatch,mock_config):
+    monkeypatch.setattr(lib,'DB_PATH',tmp_path/'service.sqlite3');mock_config({'device':'Test'})
+    service=lib.LibraryService()
+    items=[dict(uri=f'track://{i}',name=f'Track {i}',artist=f'Artist {i}',duration=200,trusted=True) for i in range(100)]
+    service._load_library=lambda:items
+    service._context_for_room=lambda room:{}
+    picks=await service._mix_recommend('lounge',50,None,{}, {'exclude':[i['uri'] for i in items[:70]]})
+    assert len(picks)==30
+    assert not {i['uri'] for i in picks}&{i['uri'] for i in items[:70]}
     service.model.db.close()

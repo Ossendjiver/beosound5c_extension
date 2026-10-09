@@ -39,7 +39,7 @@ async def test_choice_replaces_future_only_keeps_played_current_and_position():
 @pytest.mark.asyncio
 async def test_server_fallback_only_at_final_five_seconds_and_not_while_paused():
     q=FakeQueue();moods=[]
-    async def recommend(room,limit,mood,seed): moods.append(mood);return [{'uri':'a','duration':100}]
+    async def recommend(room,limit,mood,seed,policy=None): moods.append(mood);return [{'uri':'a','duration':100}]
     mixes=MoodMixes(q.command,recommend)
     await mixes.begin('q','kitchen')
     q.state['elapsed_time']=94;await mixes.tick('q');assert mixes.public('q')['awaiting_choice']
@@ -88,3 +88,55 @@ async def test_mass_command_uses_replace_next_batch_and_never_transport_or_seek(
     calls.clear()
     result=await source._handle_mood_queue('mood_replace_upcoming',{'queue_id':'q','expected_item_id':'stale','media':['a']})
     assert result['state']=='error' and calls==[]
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('mode',['radio','mood'])
+async def test_mix_refills_over_many_batches_and_preserves_current(mode):
+    q=FakeQueue();serial=0
+    async def recommend(room,limit,mood,seed,policy=None):
+        nonlocal serial
+        serial+=1
+        return [dict(uri=f'batch{serial}-{i}',name=f'Song {serial}-{i}',artist=f'Artist {serial}-{i}',duration=100) for i in range(20)]
+    mixes=MoodMixes(q.command,recommend)
+    await mixes.begin('q','lounge',mode=mode)
+    if mode=='mood':await mixes.update('q',90,.4)
+    for _ in range(80):
+        # Consume the tail until the proactive threshold is reached.
+        q.state['current_index']=len(q.state['items'])-4
+        q.state['current_item']=copy.deepcopy(q.state['items'][q.state['current_index']])
+        current_id=q.state['current_item']['queue_item_id']
+        elapsed=q.state['elapsed_time']
+        await mixes.tick('q')
+        assert mixes.public('q')['active']
+        assert len(q.state['items'])-q.state['current_index']-1>=20
+        assert q.state['current_item']['queue_item_id']==current_id and q.state['elapsed_time']==elapsed
+    assert serial>=80
+
+
+@pytest.mark.asyncio
+async def test_exhausted_pool_reuses_recording_but_never_alternate_version():
+    q=FakeQueue()
+    old=dict(uri='old',name='Old Song',artist='Artist',duration=100)
+    version=dict(uri='remaster',name='Old Song (Remastered)',artist='Artist',duration=100)
+    async def recommend(*args):return [old,version]
+    mixes=MoodMixes(q.command,recommend)
+    mixes.sessions['q']={'room':'lounge','mood':None,'seed':{'duration':100},'seen':['old'],
+                        'owned':['seed'],'recordings':[old],'versions':[old],'generation':0}
+    await mixes.fill('q',copy.deepcopy(q.state))
+    assert q.state['items'][-1]['media_item']['uri']=='old'
+    assert all(i.get('media_item',{}).get('uri')!='remaster' for i in q.state['items'])
+
+
+@pytest.mark.asyncio
+async def test_long_queue_snapshot_fetches_window_using_global_position():
+    source=object.__new__(MassSource);calls=[]
+    async def snapshot(queue):return {'state':'playing','current_index':1200,'resolved_queue_id':'holder'}
+    async def command(cmd,**args):
+        calls.append((cmd,args))
+        return [{'queue_item_id':str(i),'media_item':{'uri':f'uri{i}'}} for i in range(1180,1220)]
+    source._get_queue_snapshot=snapshot;source.send_command=command
+    snap=await source._get_mood_snapshot('member')
+    from lib.mood_mix import current,item_index
+    assert snap['current_index']==1200 and item_index(snap)==20
+    assert current(snap)['uri']=='uri1200'
+    assert calls==[('player_queues/items',{'queue_id':'holder','offset':1180,'limit':100})]
