@@ -1,6 +1,7 @@
 """Server-owned live mood sessions; never restart the current queue item."""
 import asyncio
 import time
+import uuid
 from . import music_mood, mix_policy
 
 
@@ -40,6 +41,8 @@ class MoodMixes:
                          all(k in s for k in ('seed','mode','owned','seen','current_id','current_uri','room','awaiting_choice','mood','generation','updated','title')) and
                          s['mode'] in ('mood','radio') and isinstance(s['owned'],list)} if isinstance(stored,dict) and stored.get('version')==1 else {}
         self.locks = {}
+        for session in self.sessions.values():
+            session.setdefault('session_id', uuid.uuid4().hex)
 
     def persist(self):
         if self.save:
@@ -72,7 +75,7 @@ class MoodMixes:
             if not mix_policy.duration(seed):
                 raise ValueError('The root track needs a known duration before starting a mix')
             if media.get('artists'): seed['artists'] = media['artists']; seed.pop('artist', None)
-            session = {'queue_id': queue, 'room': room, 'mode': mode, 'seed': seed or {},
+            session = {'session_id': uuid.uuid4().hex, 'queue_id': queue, 'room': room, 'mode': mode, 'seed': seed or {},
                        'awaiting_choice': mode == 'mood', 'mood': None,
                        'current_id': playing['id'], 'current_uri': playing['uri'], 'seen': [], 'owned': [playing['uri']],
                        'recordings': [seed], 'versions': [seed], 'title': playing['title'], 'updated': time.time(), 'generation': 0}
@@ -141,7 +144,7 @@ class MoodMixes:
         versions = s.get('versions', s.get('recordings', []))
         current_media=(snap.get('current_item') or {}).get('media_item') or snap.get('current_item') or {}
         relation_seed=existing[-1] if append and existing else current_media
-        policy = {'exclude': list(exclude), 'previous': previous, 'versions': versions, 'relation_seed':relation_seed}
+        policy = {'queue_id': queue, 'exclude': list(exclude), 'previous': previous, 'versions': versions, 'relation_seed':relation_seed}
         picks = await self.recommend(s['room'], 50, s['mood'], s['seed'], policy)
         def eligible(items, blocked, recordings):
             unique = {p['uri']: p for p in items if p.get('uri') and p['uri'] not in blocked
@@ -154,7 +157,7 @@ class MoodMixes:
             # fresh candidates, but never alternate versions of the same song.
             blocked = {playing['uri']} | set(upcoming)
             current_media = (snap.get('current_item') or {}).get('media_item') or snap.get('current_item') or {}
-            repeat_policy = {'exclude': list(blocked), 'previous': [current_media] + existing, 'versions': versions, 'relation_seed':relation_seed}
+            repeat_policy = {'queue_id': queue, 'exclude': list(blocked), 'previous': [current_media] + existing, 'versions': versions, 'relation_seed':relation_seed}
             candidates = await self.recommend(s['room'], 50, s['mood'], s['seed'], repeat_policy)
             last_played = {p.get('uri'): i for i,p in enumerate(s.get('recordings', []))}
             candidates = sorted(candidates, key=lambda p: last_played.get(p.get('uri'), -1))
@@ -162,7 +165,7 @@ class MoodMixes:
         if not picks:
             if append and upcoming:
                 return  # Already-compatible tail survives a temporary refill shortage.
-            if s.get('mood'):
+            if s.get('mood') or s.get('pending_refresh'):
                 # A mood change must not silently keep an incompatible old tail.
                 latest = await self.snapshot(queue)
                 if current(latest)['id'] != playing['id']:
@@ -176,10 +179,11 @@ class MoodMixes:
                     raise ValueError(result.get('reason', 'Queue refresh rejected'))
                 s['owned'] = [playing['uri']]
                 s['pending_refresh'] = True
-                s['refresh_status'] = 'insufficient_mood_data'
+                s['refresh_status'] = 'insufficient_mood_data' if s.get('mood') else 'insufficient_session_matches'
                 s['retry_after'] = time.time()+900
                 self.persist()
-                raise ValueError('No mood-compatible tracks with sufficient metadata; current song kept, upcoming queue cleared')
+                reason = 'No mood-compatible tracks' if s.get('mood') else 'No session-compatible tracks'
+                raise ValueError(reason+' with sufficient metadata; current song kept, upcoming queue cleared')
             return
         latest = await self.snapshot(queue)
         now = current(latest)

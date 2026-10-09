@@ -92,6 +92,34 @@ def similarity(item, root):
     return bonus
 
 
+class Similarity:
+    """Validate/normalise descriptors once per ranking pass, not per queue slot."""
+    def __init__(self):
+        self.cache = {}
+
+    def features(self, item):
+        key = id(item)
+        if key not in self.cache:
+            value = clean(item.get('audio_features'))
+            vector = value.get('embedding')
+            if vector:
+                norm = math.sqrt(sum(v*v for v in vector))
+                value['embedding'] = [v/norm for v in vector]
+            self.cache[key] = (item, value)  # Keep references so object IDs cannot be reused.
+        return self.cache[key][1]
+
+    def __call__(self, item, root):
+        a, b = self.features(item), self.features(root)
+        bonus = 0.
+        if a.get('bpm') and b.get('bpm'):
+            delta = min(abs(math.log2(a['bpm']*ratio/b['bpm'])) for ratio in (.5, 1, 2))
+            bonus += .4*max(0, 1-delta/.25)
+        x, y = a.get('embedding'), b.get('embedding')
+        if x and y and len(x) == len(y) and a.get('embedding_model') and a['embedding_model'] == b.get('embedding_model'):
+            bonus += .6*max(0, min(1, sum(i*j for i,j in zip(x,y))))
+        return bonus
+
+
 def library_calibration(records):
     """Unweighted acoustic range, never driven by play counts or favourites.
 

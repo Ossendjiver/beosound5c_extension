@@ -23,6 +23,7 @@ from __future__ import annotations
 import asyncio
 import datetime as dt
 import json
+import heapq
 import logging
 import math
 import os
@@ -47,6 +48,8 @@ from lib import music_familiarity
 from lib.mood_mix import MoodMixes
 from lib import mix_policy
 from lib import music_features, provider_profiles, music_relations
+from lib import session_intent
+from lib.session_feedback import SessionFeedback
 from lib.prompt_playback import Guard as PromptPlaybackGuard
 
 log = logging.getLogger("beo-library")
@@ -228,16 +231,11 @@ class LocalModel:
         duration = _safe_float(item.get("duration")) or 0.0
         origin = str(item.get("selection_origin") or "unknown")
         reason = str(item.get("end_reason") or "unknown")
-        meaningful = seconds >= 90 or (duration > 0 and seconds >= duration * 0.45)
-        if reason == "dislike":
-            reward = -4.0
-        elif reason == "skip":
-            reward = -2.0 if seconds < 25 else -1.0
-        elif meaningful:
-            reward = 1.0 if origin == "manual" else 0.05 if origin == "automatic" else 0.15
-        else:
-            reward = 0.0  # Pauses, transfers, stops and buffering are not dislikes.
         stamp = time.time() if event_ts is None else event_ts
+        recent = self.db.execute('SELECT * FROM listens WHERE room=? AND ts BETWEEN ? AND ? AND reward>0 ORDER BY ts DESC LIMIT 10',
+            (context.get('room', ''), stamp-3600, stamp)).fetchall()
+        replay = origin == 'manual' and any(mix_policy.same_recording(item, dict(r)) for r in recent)
+        reward = session_intent.reward(seconds, duration, origin, reason, replay)
         now = dt.datetime.fromtimestamp(stamp)
         with self.db:
             if event_id:
@@ -302,6 +300,9 @@ class LocalModel:
                 existing["trusted"] = True
         candidates = list(deduplicated.values())
         history = self._history()
+        sound = music_features.Similarity()
+        recent_intent = session_intent.accepted(history, context.get('intent_catalogue', candidates), context.get('room', ''), time.time())
+        votes = context.get('session_votes') or []
         familiarity = music_familiarity.Prior(self.get_kv("music_familiarity", {}), history)
         feedback = self.get_kv("music_feedback", {})
         meaningful = [r for r in history if r["origin"] == "manual" and r["reward"] >= 1]
@@ -335,6 +336,8 @@ class LocalModel:
         for item in candidates:
             if not _music_item(item) or not item.get("uri"):
                 continue
+            if any(v['vote'] == -1 and mix_policy.same_recording(item, v['item']) for v in votes):
+                continue
             if mood and not music_mood.compatible(item, mood, mood_profiles):
                 continue  # Familiarity never admits an unknown or incompatible mood.
             key = self._candidate_key(item)
@@ -352,7 +355,8 @@ class LocalModel:
                 score += 3.5
             if mood:
                 score += music_mood.adjustment(item, mood, mood_profiles)
-            score += music_features.similarity(item, context.get('seed_features') or {})
+            score += .5 * sound(item, explicit_seed)
+            score += session_intent.bonus(item, recent_intent, votes, {}, similarity=sound)
             for row in history:
                 if row["artist"].casefold() != key[0] or not key[0]:
                     continue
@@ -387,6 +391,7 @@ class LocalModel:
         fraction = mood["discovery_fraction"] if mood else 0.1
         discovery_count = min(int(math.floor(limit * fraction + .5)), len(discovery), int(len(familiar) * fraction / (1 - fraction)))
         from lib import queue_spacing
+        artist_names = {item['uri']: queue_spacing.artist(item) for _,item in familiar+discovery}
         slots=queue_spacing.slots(min(len(familiar),max(0,limit-discovery_count)), discovery_count)
         pools={'familiar':familiar,'discovery':discovery}
         chosen=[];anchor=relation_root
@@ -397,7 +402,11 @@ class LocalModel:
             pool=pools[category]
             # Re-evaluate each immediate predecessor. A -> B aversion must not
             # suppress B globally after choosing C; neither signal crosses a mood band.
-            selected=min(queue_spacing.spaced(pool,recent),key=lambda pair:(band(pair[1]),-(pair[0]+relations.boost(anchor,pair[1]))))
+            # Refine a bounded shortlist acoustically, rather than comparing
+            # every library embedding with every upcoming track on the device.
+            shortlist=heapq.nsmallest(64, queue_spacing.spaced(pool,recent,artist_names),
+                key=lambda pair:(band(pair[1]),-(pair[0]+relations.boost(anchor,pair[1]))))
+            selected=min(shortlist,key=lambda pair:(band(pair[1]),-(pair[0]+relations.boost(anchor,pair[1])+.7*sound(pair[1],anchor))))
             pool.remove(selected);chosen.append(selected[1]);anchor=selected[1]
             recent.append(queue_spacing.artist(selected[1]));recent=recent[-3:]
         return chosen[:max(1, limit)]
@@ -428,6 +437,8 @@ class LibraryService:
         self.mixes = MoodMixes(self._mix_command, self._mix_recommend, self._mix_record,
             load=lambda: self.model.get_kv("mix_sessions_v1", {}),
             save=lambda data: self.model.put_kv("mix_sessions_v1", data))
+        self.session_feedback = SessionFeedback(lambda: self.model.get_kv('queue_feedback_v1', {}),
+            lambda data: self.model.put_kv('queue_feedback_v1', data))
         self._manual_choices = {tuple(k.split('\0')):v for k,v in self.model.get_kv('manual_choices_v1',{}).items() if isinstance(v,dict) and v.get('expires',0)>time.time()}
         self._background = BackgroundTaskSet(log, label="library")
 
@@ -935,7 +946,8 @@ class LibraryService:
         context = self._context_for_room(room)
         if mood or self.pattern_mood(room): context["mood"] = mood or self.pattern_mood(room)
         playing=self._external_media if self._external_media and self._external_media.get('room')==room else self._current_media
-        if playing and str(playing.get('room') or 'lounge')==room:context['relation_seed']=playing
+        if playing and str(playing.get('room') or 'lounge')==room:
+            context['relation_seed'] = music_features.merge(next((c for c in candidates if mix_policy.same_recording(c, playing)), {}), playing)
         picks = self.model.rank(candidates, context, max(1, min(limit, 50)))
         self._automatic_keys = {self.model._candidate_key(item) for item in picks}
         return picks
@@ -961,9 +973,16 @@ class LibraryService:
             candidates = [seed] + [c for c in candidates if c.get("uri") != seed["uri"]]
             context["seed_artist"] = mix_policy.identity(seed)[0]
             context['seed_features'] = seed
+        # Keep descriptors for already-played songs as intent evidence even
+        # though recording/length rules subsequently remove them from picks.
+        context['intent_catalogue'] = candidates
         candidates = [c for c in candidates if mix_policy.similar_length(c, seed or {})]
         policy = policy or {}
-        context['relation_seed']=policy.get('relation_seed') or seed or {}
+        current = policy.get('relation_seed') or seed or {}
+        context['relation_seed'] = music_features.merge(next((c for c in candidates if c.get('uri') == current.get('uri')), {}), current)
+        context['session_votes'] = [dict(v, item=music_features.merge(next((c for c in candidates if mix_policy.same_recording(c, v['item'])), {}), v['item']))
+            for v in self.session_feedback.votes(policy.get('queue_id', ''),
+                (self.mixes.sessions.get(policy.get('queue_id', '')) or {}).get('session_id'))]
         excluded = set(policy.get("exclude", []))
         previous = policy.get("previous", [])
         context['queue_previous'] = previous
@@ -996,7 +1015,12 @@ class LibraryService:
     async def handle_mix(self, request):
         try:
             if request.method == "GET":
-                return web.json_response(self.mixes.public(request.query.get("queue_id", "")), headers={"Access-Control-Allow-Origin": "*"})
+                queue = request.query.get('queue_id', '')
+                result = self.mixes.public(queue)
+                if queue and len(queue) <= 512 and request.query.get('feedback') == '1':
+                    snapshot = await self.mixes.snapshot(queue)
+                    result['feedback'] = self.session_feedback.state(queue, snapshot, (self.mixes.sessions.get(queue) or {}).get('session_id'))
+                return web.json_response(result, headers={"Access-Control-Allow-Origin": "*"})
             data = await request.json()
             queue = str(data.get("queue_id") or "").strip()
             if not queue or len(queue) > 512:
@@ -1008,6 +1032,19 @@ class LibraryService:
             elif data.get("action") == "stop":
                 self.mixes.stop(queue)
                 result = self.mixes.public(queue)
+            elif data.get('action') == 'feedback':
+                async with self.mixes.lock(queue):
+                    snapshot = await self.mixes.snapshot(queue)
+                    session = self.mixes.sessions.get(queue) or {}
+                    state = self.session_feedback.state(queue, snapshot, session.get('session_id'))
+                    voted = self.session_feedback.vote(queue, state, data.get('session_id'), data.get('current_item_id'), data.get('vote'))
+                    if session and not session['awaiting_choice']:
+                        session['generation'] += 1
+                        session.update(pending_refresh=True, refresh_status='pending')
+                        session.pop('next_refill', None)
+                        session.pop('retry_after', None)
+                        self.mixes.persist()
+                    result = self.mixes.public(queue) | {'feedback': voted}
             else:
                 raise ValueError("Unknown mix action")
             return web.json_response(result, headers={"Access-Control-Allow-Origin": "*"})

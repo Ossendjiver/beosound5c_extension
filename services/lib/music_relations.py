@@ -60,7 +60,14 @@ class Playlists:
         self._weights={p:1/(size-1) for p,size in self.sizes.items()}
 
     def identity(self,item):
-        return self.aliases.get(dict(item).get('uri')) or key(item)
+        uri = dict(item).get('uri')
+        identity = self.aliases.get(uri)
+        if identity:
+            return identity
+        identity = key(item)
+        if uri and identity:
+            self.aliases[uri] = identity
+        return identity
 
     def overlap(self,a,b):
         left,right=self.identity(a),self.identity(b)
