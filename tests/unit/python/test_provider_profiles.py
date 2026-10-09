@@ -81,7 +81,7 @@ def test_sample_attempt_budget_also_counts_failures():
     assert count['deferred']==2 and 'signed-private' not in json.dumps(state)
 
 def test_previous_good_profile_survives_preview_failure():
-    old={'metadata':{'audio_features':FEATURES},'source':'ma_preview','analysis_fingerprint':'old'}
+    old={'metadata':{'audio_features':FEATURES},'source':'ma_preview','analysis_fingerprint':'old','input_fingerprint':p.fingerprint(ITEM)}
     payload={'version':1,'tracks':{ITEM['uri']:old}}
     def failing(*a):raise OSError('secret')
     state,counts,calls=run(payload=payload,preview=failing)
@@ -148,3 +148,26 @@ def test_canonical_ma_response_requires_exact_requested_provider_mapping():
     assert p.provider_identity(canonical,'tidal','1')
     assert not p.provider_identity(canonical,'tidal--different','1')
     assert not p.provider_identity(canonical,'tidal--p','2')
+
+
+def test_full_sweep_ignores_ttl_and_resumes_completed_entries_without_repeat():
+    old={'metadata':{'genres':['ambient']},'next_check':500,'input_fingerprint':p.fingerprint(ITEM)}
+    payload={'version':1,'tracks':{ITEM['uri']:old},'sweep':{'id':'sweep','total':1,'visited':0}}
+    state,counts,calls=run(meta={'genres':['ambient']},payload=payload,full_sweep=True)
+    assert counts['metadata']==1 and calls and state['sweep']['visited']==1
+    state,counts,calls=run(meta={'genres':['ambient']},payload=state,full_sweep=True)
+    assert counts['unchanged']==1 and not calls
+
+
+def test_full_sweep_reuses_unchanged_recent_preview_before_sampling():
+    old={'metadata':{'audio_features':FEATURES},'source':'ma_preview','analysis_fingerprint':Analyzer.fingerprint,'next_check':500,'input_fingerprint':p.fingerprint(ITEM)}
+    payload={'version':1,'tracks':{ITEM['uri']:old},'sweep':{'id':'full','total':1,'visited':0}}
+    state,counts,calls=run(payload=payload,full_sweep=True)
+    assert counts['preview_reused']==1 and 'music/tracks/preview' not in calls
+
+
+def test_audio_provenance_retained_when_online_tags_refresh_preview():
+    old={'metadata':{'audio_features':FEATURES},'source':'ma_preview','analysis_fingerprint':Analyzer.fingerprint,'input_fingerprint':p.fingerprint(ITEM)}
+    state,counts,calls=run(meta={'genres':['ambient']},payload={'version':1,'tracks':{ITEM['uri']:old}})
+    metadata,source=p.load(state)[ITEM['uri']]
+    assert source=='ma_preview' and metadata['audio_features']==FEATURES

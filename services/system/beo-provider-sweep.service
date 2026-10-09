@@ -1,0 +1,35 @@
+[Unit]
+Description=BeoSound5c full metadata-first provider sweep
+After=network-online.target
+Wants=network-online.target
+RequiresMountsFor=/media/local/music /media/local/cache/audio-analysis
+ConditionPathIsMountPoint=/media/local
+ConditionPathExists=/media/local/cache/audio-analysis/venv/bin/python
+ConditionPathExists=/media/local/cache/audio-analysis/models/msd-musicnn-1.onnx
+ConditionPathExists=/media/local/cache/audio-analysis/models/emomusic-msd-musicnn-2.onnx
+
+[Service]
+Type=oneshot
+User=__USER__
+Group=__USER__
+WorkingDirectory=__HOME__/beosound5c/tools
+EnvironmentFile=-/etc/beosound5c/secrets.env
+Environment=OPENBLAS_NUM_THREADS=1
+Environment=OMP_NUM_THREADS=1
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/media/local/cache/audio-analysis/venv/bin/python __HOME__/beosound5c/tools/profile_provider_library.py --full-sweep --max-items 10000 --max-samples 10000 --max-seconds 165600
+Nice=19
+IOSchedulingClass=idle
+CPUQuota=25%
+MemoryMax=512M
+TimeoutStartSec=48h
+Restart=on-failure
+RestartSec=60
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/media/local/cache
+
+[Install]
+WantedBy=multi-user.target

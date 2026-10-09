@@ -2927,11 +2927,11 @@
                     }
 
                     if (!current.youtube_video && !Array.isArray(current.tracks) &&
-                        (result?.state === 'playing' || command === 'play_now')) {
+                        (result?.state === 'playing' || result?.state === 'queued' || command === 'play_now')) {
                         const meta = getItemMeta(current);
                         void fetch(`${libraryBase}/library/event`, {method:'POST',headers:{'Content-Type':'application/json'},
                             body:JSON.stringify({type:'selection',title:current.name,artist:current.artist || meta.artist,uri:playUri,
-                                media_type:'track',selection_origin:'manual',room:'lounge'}),signal:AbortSignal.timeout(5000)}).catch(()=>{});
+                                media_type:'track',selection_origin:'manual',action:command,room:'lounge'}),signal:AbortSignal.timeout(5000)}).catch(()=>{});
                     }
                     const state = String(result?.state || '').trim().toLowerCase();
                     const successMessage = state === 'video_sent' ? 'Sent to Samsung Frame' : (copy[state] || copy.playing || copy.queued || copy.pending);

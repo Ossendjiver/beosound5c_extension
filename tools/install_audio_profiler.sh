@@ -13,7 +13,7 @@ mountpoint -q /media/local || { echo '/media/local must be mounted on SSD storag
 for file in /media/local/cache/audio-analysis/venv/bin/python /media/local/cache/audio-analysis/models/msd-musicnn-1.onnx /media/local/cache/audio-analysis/models/emomusic-msd-musicnn-2.onnx; do
     [[ -f "$file" ]] || { echo "Missing runtime/model: $file" >&2; exit 1; }
 done
-for unit in beo-audio-profile.service beo-audio-profile.timer beo-provider-profile.service beo-provider-profile.timer; do
+for unit in beo-audio-profile.service beo-audio-profile.timer beo-provider-profile.service beo-provider-profile.timer beo-provider-sweep.service; do
     sed -e "s|__USER__|$PROFILE_USER|g" -e "s|__HOME__|$PROFILE_HOME|g" \
         "$PROFILE_REPO/services/system/$unit" > "/etc/systemd/system/$unit"
 done

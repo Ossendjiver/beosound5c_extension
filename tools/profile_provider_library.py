@@ -12,6 +12,8 @@ import socket
 import subprocess
 import sys
 import time
+import hashlib
+import uuid
 import urllib.parse
 import urllib.request
 import urllib.error
@@ -226,20 +228,25 @@ def players_idle(command):
     return True
 
 
-def update(entries,payload,command,online,analyzer,local_aliases,*,max_items=500,max_samples=40,max_seconds=3600,now=None,preview=fetch_preview,decode=decode_preview,checkpoint=None,base='',token=''):
+def update(entries,payload,command,online,analyzer,local_aliases,*,max_items=500,max_samples=40,max_seconds=3600,now=None,preview=fetch_preview,decode=decode_preview,checkpoint=None,base='',token='',full_sweep=False):
     now=time.time() if now is None else now;started=time.monotonic()
     tracks=payload.setdefault('tracks',{});assert payload.get('version')==1 and isinstance(tracks,dict)
-    counts={'metadata':0,'sampled':0,'local_reused':0,'unchanged':0,'failed':0,'deferred':0,'busy':0,'sample_attempts':0}
+    counts={'metadata':0,'sampled':0,'local_reused':0,'unchanged':0,'failed':0,'deferred':0,'busy':0,'sample_attempts':0,'preview_reused':0}
     entries=sorted(entries,key=lambda e:(tracks.get(e['uri'],{}).get('checked_at',0),not e.get('favorite')))
     attempted=0
     for entry in entries:
         uri=entry['uri'];previous=tracks.get(uri,{})
         previous['aliases']=entry['aliases'] if previous else []
-        model_current = previous.get('source') != 'ma_preview' or previous.get('analysis_fingerprint') == analyzer.fingerprint
-        if previous.get('next_check',0)>now and previous.get('input_fingerprint')==profiles.fingerprint(entry) and model_current:
+        if full_sweep and previous.get('sweep_id')==payload['sweep']['id']:
+            counts['unchanged']+=1;continue
+        model_current = (previous.get('audio_source') or previous.get('source')) != 'ma_preview' or previous.get('analysis_fingerprint') == analyzer.fingerprint
+        if not full_sweep and previous.get('next_check',0)>now and previous.get('input_fingerprint')==profiles.fingerprint(entry) and model_current:
             counts['unchanged']+=1;continue
         if attempted>=max_items or time.monotonic()-started>=max_seconds:counts['deferred']+=1;continue
         attempted+=1
+        same_input=previous.get('input_fingerprint')==profiles.fingerprint(entry)
+        if previous and not same_input:
+            previous={k:v for k,v in previous.items() if k not in ('metadata','audio_source','analysis_fingerprint','source')}
         record=dict(previous,aliases=entry['aliases'],checked_at=now,input_fingerprint=profiles.fingerprint(entry))
         try:
             provider,identifier=uri.split('://track/',1)
@@ -248,11 +255,17 @@ def update(entries,payload,command,online,analyzer,local_aliases,*,max_items=500
             # Provider may resolve aliases; accept no unexpected track identifier.
             if not profiles.provider_identity(detail,provider,identifier):raise ValueError('Provider track identity mismatch')
             metadata,sources,mbid=online_metadata(detail,online)
+            acoustic=metadata.get('audio_features',{})
+            audio_source='online_metadata' if acoustic.get('model') and 'energy' in acoustic and 'valence' in acoustic else (previous.get('audio_source') or previous.get('source'))
+            record['audio_source']=audio_source
             record.update(metadata=music_features.merge(previous.get('metadata',{}),metadata),sources=sources,matched_recording=mbid,next_check=now+30*86400,source='online_metadata')
             if profiles.useful(metadata):
                 counts['metadata']+=1;record['status']='metadata_ready'
             elif any(alias in local_aliases for alias in entry['aliases']):
                 counts['local_reused']+=1;record.update(status='local_audio_available',source='local_audio')
+            elif same_input and model_current and previous.get('next_check',0)>now and profiles.useful(previous.get('metadata',{})):
+                record.update(status=previous.get('status','sample_ready'),source=previous.get('source','ma_preview'),next_check=previous['next_check'])
+                counts['preview_reused']+=1
             elif counts['sample_attempts']>=max_samples:
                 record.update(status='awaiting_sample',next_check=now+86400);counts['deferred']+=1
             elif not players_idle(command):
@@ -263,7 +276,7 @@ def update(entries,payload,command,online,analyzer,local_aliases,*,max_items=500
                 if not isinstance(sample_url,str):raise ValueError('Invalid preview response')
                 features=analyzer.analyze(decode(preview(sample_url,base,token)))
                 features.update(analysis='provider-preview-four-patches-v1')
-                record.update(metadata=music_features.merge(metadata,{'audio_features':features}),source='ma_preview',status='sample_ready',analysis_fingerprint=analyzer.fingerprint)
+                record.update(metadata=music_features.merge(metadata,{'audio_features':features}),source='ma_preview',audio_source='ma_preview',status='sample_ready',analysis_fingerprint=analyzer.fingerprint)
                 counts['sampled']+=1
             record.pop('error',None)
         except (OSError,ValueError,RuntimeError,TypeError,AttributeError,subprocess.SubprocessError) as exc:
@@ -272,7 +285,11 @@ def update(entries,payload,command,online,analyzer,local_aliases,*,max_items=500
             if previous.get('metadata',{}).get('audio_features'):
                 record['source']=previous.get('source','ma_preview')
             counts['failed']+=1
+        if full_sweep:record['sweep_id']=payload['sweep']['id']
         tracks[uri]=record
+        if full_sweep:
+            payload['sweep']['visited']=sum(r.get('sweep_id')==payload['sweep']['id'] for r in tracks.values())
+            payload['sweep']['updated_at']=time.time()
         if checkpoint and attempted%25==0:checkpoint(payload)
     return counts
 
@@ -283,9 +300,10 @@ def main():
     parser.add_argument('--library',type=Path,default=Path('/media/local/cache/mass_playlists.json'))
     parser.add_argument('--audio-profile',type=Path,default=Path('/media/local/cache/audio_features.json'))
     parser.add_argument('--models',type=Path,default=Path('/media/local/cache/audio-analysis/models'))
+    parser.add_argument('--full-sweep',action='store_true',help='Visit all provider tracks once, resuming an interrupted sweep')
     parser.add_argument('--max-items',type=int,default=500);parser.add_argument('--max-samples',type=int,default=40);parser.add_argument('--max-seconds',type=int,default=3600)
     args=parser.parse_args()
-    if not 1<=args.max_items<=10000 or not 0<=args.max_samples<=1000 or not 1<=args.max_seconds<=86400:raise ValueError('Invalid limits')
+    if not 1<=args.max_items<=10000 or not 0<=args.max_samples<=10000 or not 1<=args.max_seconds<=172800:raise ValueError('Invalid limits')
     os.umask(0o077);args.output.parent.mkdir(parents=True,exist_ok=True)
     with args.output.with_suffix('.lock').open('w') as lock:
         try:fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
@@ -297,6 +315,11 @@ def main():
         entries=profiles.inventory(canonical,cached)
         payload=json.loads(args.output.read_text()) if args.output.exists() else {'version':1,'tracks':{}}
         if payload.get('version')!=1 or not isinstance(payload.get('tracks'),dict):raise ValueError('Invalid provider cache')
+        if args.full_sweep:
+            fingerprint=hashlib.sha256(json.dumps(sorted((e['uri'],profiles.fingerprint(e)) for e in entries)).encode()).hexdigest()
+            sweep=payload.get('sweep',{})
+            if sweep.get('inventory_fingerprint')!=fingerprint or sweep.get('complete'):
+                payload['sweep']={'id':uuid.uuid4().hex,'started_at':time.time(),'visited':0,'total':len(entries),'inventory_fingerprint':fingerprint,'complete':False}
         request_path=args.output.with_name('provider_metadata_requests.json')
         requests=json.loads(request_path.read_text()) if request_path.exists() else {}
         online=Online(requests,os.getenv('BS5C_DISCOGS_TOKEN',''))
@@ -305,9 +328,13 @@ def main():
         for record in local['tracks'].values():aliases.update(record.get('aliases',[]))
         from music_audio_onnx import Analyzer
         counts=update(entries,payload,command,online,Analyzer(args.models),aliases,max_items=args.max_items,max_samples=args.max_samples,max_seconds=args.max_seconds,
-            checkpoint=lambda value:(atomic_write(args.output,value),atomic_write(request_path,requests)),base=base,token=token)
+            checkpoint=lambda value:(atomic_write(args.output,value),atomic_write(request_path,requests),atomic_write(args.output.with_suffix('.status.json'),{'running':True,'sweep':value.get('sweep'), 'updated_at':time.time()})),base=base,token=token,full_sweep=args.full_sweep)
+        if args.full_sweep:
+            payload['sweep']['complete']=payload['sweep']['visited']>=len(entries)
+            payload['sweep']['pending_samples']=sum(r.get('status') in ('awaiting_sample','sampling_deferred_busy') for r in payload['tracks'].values())
+            payload['sweep']['errors']=sum(bool(r.get('error')) for r in payload['tracks'].values())
         payload['generated_at']=time.time();atomic_write(args.output,payload);atomic_write(request_path,requests)
-        status={'checked_at':time.time(),'catalogue_entries':len(entries),**counts,'ready':sum(profiles.useful(r.get('metadata',{})) or r.get('status')=='local_audio_available' for r in payload['tracks'].values())}
+        status={'checked_at':time.time(),'catalogue_entries':len(entries),'sweep':payload.get('sweep'),'running':False,**counts,'ready':sum(profiles.useful(r.get('metadata',{})) or r.get('status')=='local_audio_available' for r in payload['tracks'].values())}
         atomic_write(args.output.with_suffix('.status.json'),status);print(json.dumps(status));return 0
 
 

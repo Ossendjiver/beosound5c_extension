@@ -152,5 +152,5 @@ def load(payload, calibration=None):
         if metadata.get('audio_features'):
             metadata['audio_features'] = music_features.calibrate(metadata['audio_features'], calibration)
         for alias in [uri]+[a for a in record.get('aliases', []) if isinstance(a, str)]:
-            result.setdefault(alias, (metadata, record.get('source', 'metadata')))
+            result.setdefault(alias, (metadata, record.get('audio_source') or record.get('source', 'metadata')))
     return result

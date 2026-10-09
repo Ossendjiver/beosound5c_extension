@@ -139,7 +139,9 @@ class MoodMixes:
             existing = [item.get('media_item') or item for item in (snap.get('items') or [])[index+1:]]
         previous = s.get('recordings', []) + existing
         versions = s.get('versions', s.get('recordings', []))
-        policy = {'exclude': list(exclude), 'previous': previous, 'versions': versions}
+        current_media=(snap.get('current_item') or {}).get('media_item') or snap.get('current_item') or {}
+        relation_seed=existing[-1] if append and existing else current_media
+        policy = {'exclude': list(exclude), 'previous': previous, 'versions': versions, 'relation_seed':relation_seed}
         picks = await self.recommend(s['room'], 50, s['mood'], s['seed'], policy)
         def eligible(items, blocked, recordings):
             unique = {p['uri']: p for p in items if p.get('uri') and p['uri'] not in blocked
@@ -152,7 +154,7 @@ class MoodMixes:
             # fresh candidates, but never alternate versions of the same song.
             blocked = {playing['uri']} | set(upcoming)
             current_media = (snap.get('current_item') or {}).get('media_item') or snap.get('current_item') or {}
-            repeat_policy = {'exclude': list(blocked), 'previous': [current_media] + existing, 'versions': versions}
+            repeat_policy = {'exclude': list(blocked), 'previous': [current_media] + existing, 'versions': versions, 'relation_seed':relation_seed}
             candidates = await self.recommend(s['room'], 50, s['mood'], s['seed'], repeat_policy)
             last_played = {p.get('uri'): i for i,p in enumerate(s.get('recordings', []))}
             candidates = sorted(candidates, key=lambda p: last_played.get(p.get('uri'), -1))

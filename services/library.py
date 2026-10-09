@@ -46,7 +46,7 @@ from lib import music_mood
 from lib import music_familiarity
 from lib.mood_mix import MoodMixes
 from lib import mix_policy
-from lib import music_features, provider_profiles
+from lib import music_features, provider_profiles, music_relations
 
 log = logging.getLogger("beo-library")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -166,6 +166,14 @@ class LocalModel:
             );
             CREATE INDEX IF NOT EXISTS idx_listens_ts ON listens(ts);
             CREATE INDEX IF NOT EXISTS idx_listens_artist ON listens(artist);
+            CREATE INDEX IF NOT EXISTS idx_listens_room_ts ON listens(room,ts);
+            CREATE TABLE IF NOT EXISTS track_relations (
+              source_id INTEGER NOT NULL, target_id INTEGER NOT NULL,
+              source_key TEXT NOT NULL, target_key TEXT NOT NULL, room TEXT NOT NULL,
+              ts REAL NOT NULL, sign INTEGER NOT NULL, weight REAL NOT NULL,
+              UNIQUE(source_id,target_key,sign)
+            );
+            CREATE INDEX IF NOT EXISTS idx_track_relations_source ON track_relations(source_key,ts);
             CREATE TABLE IF NOT EXISTS feedback_receipts (event_id TEXT PRIMARY KEY, ts REAL NOT NULL);
             CREATE TABLE IF NOT EXISTS kv (
               key TEXT PRIMARY KEY,
@@ -191,6 +199,7 @@ class LocalModel:
         if "end_reason" not in {row[1] for row in self.db.execute("PRAGMA table_info(listens)")}:
             self.db.execute("ALTER TABLE listens ADD COLUMN end_reason TEXT NOT NULL DEFAULT 'unknown'")
         self.db.commit()
+        self.playlist_relations = music_relations.Playlists()
 
     def put_kv(self, key: str, value: Any) -> None:
         self.db.execute(
@@ -234,7 +243,7 @@ class LocalModel:
                 cursor = self.db.execute("INSERT OR IGNORE INTO feedback_receipts VALUES (?,?)", (event_id,stamp))
                 if not cursor.rowcount:
                     return False
-            self.db.execute(
+            cursor=self.db.execute(
                 """INSERT INTO listens(ts,title,artist,album,uri,seconds,reward,hour,time_bucket,
                    weekpart,weather,temperature,room,origin,weekday,mood_energy,mood_valence,end_reason) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
@@ -247,8 +256,14 @@ class LocalModel:
                     (item.get("listening_mood") or {}).get("energy"), (item.get("listening_mood") or {}).get("valence"), reason,
                 ),
             )
+            current=self.db.execute('SELECT * FROM listens WHERE id=?',(cursor.lastrowid,)).fetchone()
+            rows=self.db.execute('SELECT * FROM listens WHERE room=? AND id!=? AND ts<=? ORDER BY ts DESC,id DESC LIMIT 6',
+                                     (current['room'],current['id'],stamp)).fetchall()
+            previous=music_relations.predecessor(rows,current,self.playlist_relations.identity)
+            music_relations.record(self.db,previous,current,self.playlist_relations.identity)
             cutoff = time.time() - 180 * 86400
             self.db.execute("DELETE FROM listens WHERE ts < ?", (cutoff,))
+            self.db.execute("DELETE FROM track_relations WHERE ts < ?", (cutoff,))
             self.db.execute("DELETE FROM feedback_receipts WHERE ts < ?", (time.time()-30*86400,))
         return True
 
@@ -309,6 +324,12 @@ class LocalModel:
         skip_history = list(self.db.execute(
             "SELECT * FROM listens WHERE ts>=? AND origin!='legacy' AND (end_reason='skip' OR reward=-2)",
             (now_ts-7*86400,)))
+        relations=music_relations.Prior(self.playlist_relations,
+            self.db.execute('SELECT * FROM track_relations WHERE ts>=?',(now_ts-music_relations.RETENTION,)),
+            context.get('room',''),now_ts)
+        relation_root=context.get('relation_seed') or context.get('seed_features') or {}
+        if not relation_root:
+            relation_root=next((dict(r) for r in history if r['room']==context.get('room') and r['reward']>0),{})
         familiar, discovery = [], []
         for item in candidates:
             if not _music_item(item) or not item.get("uri"):
@@ -356,19 +377,24 @@ class LocalModel:
                     score -= 1.5  # Modest temporary suppression; favourites remain eligible.
             score += random.Random(f"{identity}:{int(now_ts // 3600)}").uniform(-0.1, 0.1)
             (familiar if trusted else discovery).append((score, item))
-        def order(pair):
-            # Mood proximity first; familiarity only breaks ties in a small band.
-            band = int(music_mood.distance(pair[1], mood, mood_profiles) / .05) if mood else 0
-            return (band, -pair[0])
-        familiar.sort(key=order)
-        discovery.sort(key=order)
+        bands={}
+        def band(item):
+            uri=item['uri']
+            if uri not in bands:
+                bands[uri]=int(music_mood.distance(item,mood,mood_profiles)/.05) if mood else 0
+            return bands[uri]
         fraction = mood["discovery_fraction"] if mood else 0.1
         discovery_count = min(int(math.floor(limit * fraction + .5)), len(discovery), int(len(familiar) * fraction / (1 - fraction)))
-        chosen = [i for _, i in familiar[:max(0, limit - discovery_count)]]
-        # Discovery never fills a missing familiar baseline beyond its 10% quota.
-        if chosen:
-            for _, item in discovery[:discovery_count]:
-                chosen.insert(min(len(chosen), 9), item)
+        slots=['familiar']*min(len(familiar),max(0,limit-discovery_count))
+        for _ in range(discovery_count):slots.insert(min(len(slots),9),'discovery')
+        pools={'familiar':familiar,'discovery':discovery}
+        chosen=[];anchor=relation_root
+        for category in slots:
+            pool=pools[category]
+            # Re-evaluate each immediate predecessor. A -> B aversion must not
+            # suppress B globally after choosing C; neither signal crosses a mood band.
+            selected=min(pool,key=lambda pair:(band(pair[1]),-(pair[0]+relations.boost(anchor,pair[1]))))
+            pool.remove(selected);chosen.append(selected[1]);anchor=selected[1]
         return chosen[:max(1, limit)]
 
 
@@ -396,7 +422,7 @@ class LibraryService:
         self.mixes = MoodMixes(self._mix_command, self._mix_recommend, self._mix_record,
             load=lambda: self.model.get_kv("mix_sessions_v1", {}),
             save=lambda data: self.model.put_kv("mix_sessions_v1", data))
-        self._manual_choices = {}
+        self._manual_choices = {tuple(k.split('\0')):v for k,v in self.model.get_kv('manual_choices_v1',{}).items() if isinstance(v,dict) and v.get('expires',0)>time.time()}
         self._background = BackgroundTaskSet(log, label="library")
 
     def _base_context(self, room: str = "") -> dict[str, Any]:
@@ -579,10 +605,23 @@ class LibraryService:
         session = self._mood_sessions.get(key)
         if session and time.time() - session["ts"] < 7200:
             item["listening_mood"] = session["mood"]
-        if time.time() - self._manual_choices.get(key, 0) < 1800:
+        mark=self._manual_choices.get(key)
+        matches_room=not isinstance(mark,dict) or not mark.get('room') or mark['room']==str(item.get('room') or 'lounge')
+        valid=mark.get('expires',0)>time.time() if isinstance(mark,dict) else time.time()-float(mark or 0)<1800
+        if valid and matches_room:
             item["selection_origin"] = "manual"
         if item.get("selection_origin") not in {"manual", "automatic"}:
             item["selection_origin"] = "automatic" if self.model._candidate_key(item) in self._automatic_keys else "unknown"
+        return item
+
+    def _persist_manual_choices(self):
+        self._manual_choices={k:v for k,v in self._manual_choices.items() if isinstance(v,dict) and v.get('expires',0)>time.time()}
+        self.model.put_kv('manual_choices_v1',{'\0'.join(k):v for k,v in self._manual_choices.items()})
+
+    def _start_learning_item(self, media):
+        item=self._learning_item(media)
+        if item.get('selection_origin')=='manual' and self._manual_choices.pop(self.model._candidate_key(item),None) is not None:
+            self._persist_manual_choices()
         return item
 
     def _finish_current(self) -> None:
@@ -590,7 +629,7 @@ class LibraryService:
             return
         seconds = max(0.0, time.monotonic() - self._current_started)
         if seconds >= 5:
-            self.model.record_listen(self._learning_item(self._current_media), seconds, self.context)
+            self.model.record_listen(self._learning_item(self._current_media), seconds, self._context_for_room(str(self._current_media.get('room') or 'lounge')))
         self._current_media = None
         self._current_started = 0.0
 
@@ -612,7 +651,7 @@ class LibraryService:
                 active = state == "playing"
                 if active and key != current_key:
                     self._finish_current()
-                    self._current_media = dict(media)
+                    self._current_media = self._start_learning_item(media)
                     self._current_started = time.monotonic()
                 elif not active and self._current_media:
                     self._finish_current()
@@ -649,6 +688,7 @@ class LibraryService:
                 items[uri] = {
                     "name": str(node.get("name") or "Unknown"), "title": str(node.get("name") or "Unknown"),
                     "artist": artist, "album": str(node.get("album") or ""), "uri": uri,
+                    "version": str(node.get("version") or previous.get("version") or ""),
                     "duration": _safe_float(node.get("duration")) or previous.get("duration", 0),
                     "image": str(node.get("image") or ""), "media_type": str(node.get("media_type") or "track"),
                     "trusted": trusted or previous.get("trusted", False),
@@ -719,6 +759,14 @@ class LibraryService:
                     items[uri] = music_features.merge(items[uri], incoming)
         except (OSError, ValueError, TypeError, AttributeError):
             pass
+        playlist_stamp=(str(path),path.stat().st_mtime_ns,path.stat().st_size) if path.exists() else None
+        if playlist_stamp != getattr(self,'_playlist_relation_stamp',None):
+            self.model.playlist_relations=music_relations.Playlists(raw,list(items.values()))
+            self._playlist_relation_stamp=playlist_stamp
+        if not self.model.get_kv('track_relations_backfill_v1',False):
+            with self.model.db:
+                music_relations.backfill(self.model.db,self.model.playlist_relations.identity)
+                self.model.db.execute("INSERT INTO kv(key,value) VALUES('track_relations_backfill_v1','true') ON CONFLICT(key) DO UPDATE SET value=excluded.value")
         return list(items.values())
 
     def _context_for_room(self, room: str) -> dict[str, Any]:
@@ -868,6 +916,8 @@ class LibraryService:
         candidates = self._load_library()
         context = self._context_for_room(room)
         if mood or self.pattern_mood(room): context["mood"] = mood or self.pattern_mood(room)
+        playing=self._external_media if self._external_media and self._external_media.get('room')==room else self._current_media
+        if playing and str(playing.get('room') or 'lounge')==room:context['relation_seed']=playing
         picks = self.model.rank(candidates, context, max(1, min(limit, 50)))
         self._automatic_keys = {self.model._candidate_key(item) for item in picks}
         return picks
@@ -895,6 +945,7 @@ class LibraryService:
             context['seed_features'] = seed
         candidates = [c for c in candidates if mix_policy.similar_length(c, seed or {})]
         policy = policy or {}
+        context['relation_seed']=policy.get('relation_seed') or seed or {}
         excluded = set(policy.get("exclude", []))
         previous = policy.get("previous", [])
         versions = policy.get("versions", [])
@@ -1218,7 +1269,14 @@ class LibraryService:
             return web.json_response({"status":"ok","duplicate":accepted is False},headers={"Access-Control-Allow-Origin":"*"})
         if event_type == "selection":
             if _music_item(payload) and str(payload.get("uri") or "").strip():
-                self._manual_choices[self.model._candidate_key(payload)] = time.time()
+                key=self.model._candidate_key(payload)
+                queued=payload.get('action') in ('play_next','queue_add','queue_item','add','next')
+                self._manual_choices[key]={'expires':time.time()+(72*3600 if queued else 1800),'room':str(payload.get('room') or '')}
+                for media in (self._current_media,self._external_media):
+                    if not queued and media and self.model._candidate_key(media)==key:
+                        media['selection_origin']='manual'
+                        self._manual_choices.pop(key,None)
+                self._persist_manual_choices()
             return web.json_response({"status":"ok"}, headers={"Access-Control-Allow-Origin":"*"})
         if event_type == "mood_session":
             try: mood = music_mood.selection(payload["angle"], payload["radius"])
@@ -1272,6 +1330,7 @@ class LibraryService:
                     "media_type": str(payload.get("media_type") or "track"),
                     "selection_origin": str(payload.get("selection_origin") or "unknown"),
                 }
+                self._external_media=self._start_learning_item(self._external_media)
                 self._external_started = time.monotonic()
             elif payload.get("selection_origin") == "manual" and self._external_media:
                 self._external_media["selection_origin"] = "manual"
