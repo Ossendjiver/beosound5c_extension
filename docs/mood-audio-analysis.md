@@ -242,3 +242,46 @@ A manually selected mix seed remains an artist preference anchor after it is
 excluded from upcoming queue items. Same-artist tracks can continue the session
 without prior favourites, but must still pass mood, duration, skip and recording
 exclusion rules. Unrelated artists retain the normal discovery limits.
+
+## Provider metadata first (Tidal and SoundCloud)
+
+`tools/profile_provider_library.py` enriches exact MA provider mappings and cached
+provider playlist tracks without editing the MA database or issuing queue/player
+commands. `/media/local/cache/provider_profiles.json` is an atomic, separate SSD
+sidecar, loaded automatically by the library service for Pattern Play and Mood Mix.
+
+The order is MA-supplied mood/style/BPM, then recording-specific MusicBrainz tags
+and archived AcousticBrainz classifiers/tempo, then matching Discogs release
+styles. Title **including version**, first artist and duration must match; ambiguous
+recordings are rejected. ISRC/MBID improves matching but never bypasses these
+checks. Release genre/style is coarse context, not a measured emotional label.
+AcousticBrainz happy/sad/relaxed/aggressive probabilities are mapped to approximate
+valence/energy only when the recording duration and classifier confidence agree.
+Their model ID is distinct from the local regression model; conflicting/weak
+classifiers are discarded. Online requests are HTTPS, host-restricted, cached and
+rate-limited to at most one per 1.1 seconds per host. Only recording identifiers or
+track/artist/album queries are sent, never listening history or play counts.
+
+Discogs linked release IDs work without a search credential where its API permits.
+Optional `BS5C_DISCOGS_TOKEN` in `/etc/beosound5c/secrets.env` enables release search;
+it is not committed or exposed to the UI. MusicBrainz/AcousticBrainz require no key.
+
+If metadata still cannot place a track, reuse an existing exact local-audio alias.
+Otherwise obtain the provider preview through the authenticated MA preview API
+and analyse at most 30 seconds in memory with the installed local ONNX models.
+No raw provider audio or signed preview URLs are retained. Previews can be absent,
+blocked, or unrepresentative of long mixes; the status file records failures and
+retries without inventing mood coordinates. A preview never replaces a richer
+local file profile. Sampling defers while any available MA player is playing,
+paused, or has unknown state. Sampling never starts playback on a device.
+
+`beo-provider-profile.timer` runs daily at 06:00 Melbourne time plus up to 30 minutes
+of jitter. Each run allows 500 metadata entries, 40 preview **attempts** (including
+failures), and one hour. It rotates through the catalogue, prioritizes previously
+unchecked entries, retries deferred/failed work after a day, and refreshes unchanged
+metadata after 30 days. Changed track identity/model fingerprints are revisited.
+The service uses the SSD runtime/cache, idle I/O, 25% CPU and 512 MB memory limits.
+The updated `tools/install_audio_profiler.sh` installs both local and provider timers.
+Coverage/provenance live in `provider_profiles.status.json` and the sidecar; metadata
+request caching is separate in `provider_metadata_requests.json`. Neither private
+cache is committed to GitHub.

@@ -60,11 +60,16 @@ def merge(existing, incoming):
 
 def metadata(item):
     """Use provider descriptors when actually supplied, never infer from titles."""
-    meta = item.get('metadata') or {}
+    meta = item.get('metadata') if isinstance(item.get('metadata'), dict) else {}
     result = {key: item.get(key) or meta.get(key) for key in
               ('genres', 'genre', 'mood_tags', 'mood_profile', 'isrc')}
+    styles = item.get('style') or meta.get('style')
+    if styles:
+        result['genres'] = ([result['genres']] if isinstance(result.get('genres'), str) else list(result.get('genres') or [])) + ([styles] if isinstance(styles, str) else list(styles))
+    if not result.get('mood_tags') and meta.get('mood'):
+        result['mood_tags'] = [meta['mood']] if isinstance(meta['mood'], str) else meta['mood']
     features = clean(item.get('audio_features') or meta.get('audio_features'))
-    bpm = number(item.get('bpm') or meta.get('bpm'), 30, 300)
+    bpm = number(item.get('bpm') or meta.get('bpm') or (item.get('audio_metadata') if isinstance(item.get('audio_metadata'), dict) else {}).get('bpm'), 30, 300)
     if bpm is not None:
         features['bpm'] = bpm
     if features:

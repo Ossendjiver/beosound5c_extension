@@ -46,7 +46,7 @@ from lib import music_mood
 from lib import music_familiarity
 from lib.mood_mix import MoodMixes
 from lib import mix_policy
-from lib import music_features
+from lib import music_features, provider_profiles
 
 log = logging.getLogger("beo-library")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -695,11 +695,28 @@ class LibraryService:
                         for alias in aliases:
                             if isinstance(alias, str) and 0 < len(alias) <= 1024:
                                 feature_cache.setdefault(alias, features)
+                self._audio_feature_calibration = payload.get('mood_calibration')
                 self._audio_feature_cache = feature_cache
                 self._audio_feature_stamp = stamp
             for uri, features in self._audio_feature_cache.items():
                 if uri in items and features:
                     items[uri]['audio_features'] = features
+        except (OSError, ValueError, TypeError, AttributeError):
+            pass
+        provider_path = Path(os.getenv('BS5C_PROVIDER_PROFILES_FILE') or CACHE_LIBRARY.parent / 'provider_profiles.json')
+        try:
+            stat = provider_path.stat()
+            stamp = (str(provider_path), stat.st_mtime_ns, stat.st_size, getattr(self, '_audio_feature_stamp', None))
+            if stamp != getattr(self, '_provider_profile_stamp', None):
+                self._provider_profile_cache = provider_profiles.load(json.loads(provider_path.read_text()), getattr(self, '_audio_feature_calibration', None))
+                self._provider_profile_stamp = stamp
+            for uri, (metadata, source) in self._provider_profile_cache.items():
+                if uri in items:
+                    incoming = dict(metadata)
+                    # A short provider preview never replaces the richer local profile.
+                    if source == 'ma_preview' and items[uri].get('audio_features'):
+                        incoming.pop('audio_features', None)
+                    items[uri] = music_features.merge(items[uri], incoming)
         except (OSError, ValueError, TypeError, AttributeError):
             pass
         return list(items.values())
