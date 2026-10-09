@@ -246,7 +246,7 @@ def update(entries,payload,command,online,analyzer,local_aliases,*,max_items=500
             detail=command('music/tracks/get',{'item_id':identifier,'provider_instance_id_or_domain':provider,'allow_update_metadata':False,'recursive':False})
             if not isinstance(detail,dict) or detail.get('media_type')!='track':raise ValueError('Invalid provider track')
             # Provider may resolve aliases; accept no unexpected track identifier.
-            if str(detail.get('item_id'))!=identifier:raise ValueError('Provider track identity mismatch')
+            if not profiles.provider_identity(detail,provider,identifier):raise ValueError('Provider track identity mismatch')
             metadata,sources,mbid=online_metadata(detail,online)
             record.update(metadata=music_features.merge(previous.get('metadata',{}),metadata),sources=sources,matched_recording=mbid,next_check=now+30*86400,source='online_metadata')
             if profiles.useful(metadata):

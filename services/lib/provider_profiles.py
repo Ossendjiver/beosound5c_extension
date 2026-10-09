@@ -43,6 +43,16 @@ def choose_recording(item, recordings):
     return next(iter(matches.values())) if len(matches) == 1 else None
 
 
+def provider_identity(item, provider, identifier):
+    """MA may return a canonical library item with exact provider mappings."""
+    if str(item.get('item_id')) == str(identifier):
+        return True
+    return any(str(mapping.get('item_id')) == str(identifier) and
+               (mapping.get('provider_instance') == provider or
+                '--' not in provider and mapping.get('provider_domain') == provider)
+               for mapping in item.get('provider_mappings') or [] if isinstance(mapping, dict))
+
+
 def external_ids(item):
     result = {}
     for pair in item.get('external_ids') or []:

@@ -140,3 +140,11 @@ def test_sidecar_enriches_exact_alias_and_local_profile_wins_over_preview(mock_c
     payload['tracks'][ITEM['uri']]['source']='online_metadata';sidecar.write_text(json.dumps(payload))
     assert service._load_library()[0]['audio_features']['model']=='other'
     service.model.db.close()
+
+
+def test_canonical_ma_response_requires_exact_requested_provider_mapping():
+    canonical={'item_id':'999','provider':'library','provider_mappings':[{'provider_instance':'tidal--p','provider_domain':'tidal','item_id':'1'}]}
+    assert p.provider_identity(canonical,'tidal--p','1')
+    assert p.provider_identity(canonical,'tidal','1')
+    assert not p.provider_identity(canonical,'tidal--different','1')
+    assert not p.provider_identity(canonical,'tidal--p','2')
