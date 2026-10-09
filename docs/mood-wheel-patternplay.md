@@ -125,8 +125,12 @@ A `homemedia_reference_play_imports` table in the same MA database records each
 stable provider playlist identity once. Counts and ledger are committed in one
 transaction; repeated runs and edits to an already-imported playlist do not
 apply it again. No last_played timestamps, playlog entries, artist counts, or
-provider play reports are created. The tool requires a verified online backup
-and aborts before writes if any track is unresolved. It is schema-dependent and
+provider play reports are created. Apply must run as root on the Linux MA host with MA and its clients stopped.
+The tool refuses writes when another process holds the database or its sidecars.
+It requires a backup and full database/FTS consistency checks, and aborts before
+writes if any track is unresolved. Never access the live exclusive-mode database
+from an external writer. Prepare large repairs in RAM, then flush the staged
+file and directory renames before restarting MA to limit SD-card writes. It is schema-dependent and
 must be checked before use with a different MA version. Retain the ledger and
 backups during MA migration; dropping the ledger removes the once-only guard.
 
