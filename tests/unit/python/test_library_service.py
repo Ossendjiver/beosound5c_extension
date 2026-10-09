@@ -224,3 +224,23 @@ def test_audio_sidecar_applies_exact_aliases_and_reloads_changes(mock_config, tm
     feature.write_text(json.dumps({'version': 1, 'tracks': {'library://track/1': {
         'aliases': ['tidal://track/7'], 'audio_features': {'model': 'm', 'energy': .73, 'valence': .4}}}}))
     assert service._load_library()[0]['audio_features']['energy'] == .73
+
+
+def test_excluded_manual_mix_seed_keeps_artist_baseline_and_mood_guard(tmp_path):
+    from lib.music_mood import selection
+    m = _model(tmp_path)
+    seed = {"uri": "soundcloud://track/root", "name": "Seed mix", "artist": "Selected DJ", "duration": 2700, "trusted": True}
+    good = {"uri": "soundcloud://track/next", "name": "Another mix", "artist": "Selected DJ", "duration": 3000, "audio_features": {"model": "test", "energy": .1, "valence": .5}}
+    wrong = dict(good, uri="soundcloud://track/wrong", name="Wrong mood", audio_features={"model": "test", "energy": 1, "valence": .5})
+    unrelated = dict(good, uri="soundcloud://track/unrelated", artist="Other DJ")
+    # Root has been excluded from the upcoming queue, and there is no history.
+    picks = m.rank([good, wrong, unrelated], {"seed_features": seed, "mood": selection(270, 0)}, 20)
+    assert [i["uri"] for i in picks] == [good["uri"]]
+    m.db.close()
+
+
+def test_audio_similarity_seed_alone_cannot_create_a_trusted_baseline(tmp_path):
+    m = _model(tmp_path)
+    seed = {"uri": "root", "name": "Seed", "artist": "Unknown artist"}
+    assert m.rank([{"uri": "other", "name": "Other", "artist": "Unknown artist"}], {"seed_features": seed}, 20) == []
+    m.db.close()

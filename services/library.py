@@ -292,6 +292,14 @@ class LocalModel:
         contextual = len(meaningful) >= 20 and len({r["uri"] or r["title"] for r in meaningful}) >= 5
         known = {(r["artist"].casefold(), r["title"].casefold()) for r in meaningful}
         seeds = [i for i in candidates if _music_item(i) and (i.get("trusted") or i.get("favorite") or self._candidate_key(i) in known or feedback.get(i.get("uri")) == "like" or familiarity.baseline(i))]
+        # A manually selected session seed remains a preference anchor after
+        # its queue item is excluded. Otherwise long-form sessions with no
+        # historical favourites lose their entire baseline on the first refill.
+        explicit_seed = context.get('seed_features') or {}
+        selected_artist = ''
+        if explicit_seed.get('trusted') and explicit_seed.get('uri') and _music_item(explicit_seed):
+            seeds.append(explicit_seed)
+            selected_artist = self._candidate_key(explicit_seed)[0]
         seed_artists = {self._candidate_key(i)[0] for i in seeds if self._candidate_key(i)[0]}
         if not seeds:
             return []  # Never substitute random catalogue entries for an empty baseline.
@@ -313,7 +321,7 @@ class LocalModel:
             if blocked: continue
             if feedback.get(identity) == "dislike":
                 continue
-            trusted = item.get("trusted") or item.get("favorite") or key in known or feedback.get(identity) == "like" or familiarity.baseline(item)
+            trusted = item.get("trusted") or item.get("favorite") or key in known or feedback.get(identity) == "like" or familiarity.baseline(item) or bool(selected_artist and key[0] == selected_artist)
             if not trusted and key[0] not in seed_artists and not (mood and mood["discovery_fraction"] >= .1 and music_mood.profile(item, mood_profiles) and music_mood.adjustment(item, mood, mood_profiles) >= -2):
                 continue  # Discovery is constrained to artists already represented by seeds.
             score = 12.0 if item.get("favorite") else 10.0 if trusted else 0.0

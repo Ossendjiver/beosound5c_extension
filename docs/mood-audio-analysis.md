@@ -131,7 +131,7 @@ tracks rather than pretending unclassified high-count tracks fit the wheel.
 
 ## Validation for this revision
 
-Local Python suite: 842 passed, 2 skipped. JavaScript suite: 102 passed.
+Local Python suite: 844 passed, 2 skipped. JavaScript suite: 102 passed.
 Regression coverage includes incompatible high-history tracks, mood distance
 ordering, metadata preservation, bounded enrichment, queue-transition races,
 no-match reporting and atomic sidecar writes. The real MusiCNN/emoMusic models
@@ -237,3 +237,8 @@ profile file. Both jobs read the supported MA APIs; neither requests playback.
 
 The optional service requires the `/media/local` SSD mount. If it is absent,
 profiling is skipped rather than writing its cache into the SD-card root.
+
+A manually selected mix seed remains an artist preference anchor after it is
+excluded from upcoming queue items. Same-artist tracks can continue the session
+without prior favourites, but must still pass mood, duration, skip and recording
+exclusion rules. Unrelated artists retain the normal discovery limits.
