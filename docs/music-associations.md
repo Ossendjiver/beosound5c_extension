@@ -58,6 +58,15 @@ steering and the queued tail when appending; the original seed still controls th
 session's duration constraints. Playlist names/styles and counts cannot bypass
 mood compatibility.
 
+Discovery slots are spread evenly over each ranked batch, preserving the requested
+quota rather than collecting them at the tenth position. Within each familiar or
+discovery slot, the selector prefers artists absent from the preceding three
+tracks, including the current track and existing queue tail at refill boundaries.
+Mood compatibility and all eligibility filters are applied first. Among spaced
+candidates, mood distance and the existing preference/relationship scores still
+decide. When a category lacks enough artists, spacing relaxes oldest-first instead
+of admitting incompatible tracks, dropping good tracks, or changing its quota.
+
 ## Full provider sweep
 
 `beo-provider-sweep.service` runs the metadata-first provider worker once over the

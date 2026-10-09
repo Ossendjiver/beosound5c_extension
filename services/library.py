@@ -385,16 +385,20 @@ class LocalModel:
             return bands[uri]
         fraction = mood["discovery_fraction"] if mood else 0.1
         discovery_count = min(int(math.floor(limit * fraction + .5)), len(discovery), int(len(familiar) * fraction / (1 - fraction)))
-        slots=['familiar']*min(len(familiar),max(0,limit-discovery_count))
-        for _ in range(discovery_count):slots.insert(min(len(slots),9),'discovery')
+        from lib import queue_spacing
+        slots=queue_spacing.slots(min(len(familiar),max(0,limit-discovery_count)), discovery_count)
         pools={'familiar':familiar,'discovery':discovery}
         chosen=[];anchor=relation_root
+        recent=[queue_spacing.artist(i) for i in context.get('queue_previous', [])][-3:]
+        root_artist=queue_spacing.artist(context.get('relation_seed') or context.get('seed_features') or {})
+        if root_artist and (not recent or recent[-1]!=root_artist):recent.append(root_artist)
         for category in slots:
             pool=pools[category]
             # Re-evaluate each immediate predecessor. A -> B aversion must not
             # suppress B globally after choosing C; neither signal crosses a mood band.
-            selected=min(pool,key=lambda pair:(band(pair[1]),-(pair[0]+relations.boost(anchor,pair[1]))))
+            selected=min(queue_spacing.spaced(pool,recent),key=lambda pair:(band(pair[1]),-(pair[0]+relations.boost(anchor,pair[1]))))
             pool.remove(selected);chosen.append(selected[1]);anchor=selected[1]
+            recent.append(queue_spacing.artist(selected[1]));recent=recent[-3:]
         return chosen[:max(1, limit)]
 
 
@@ -948,6 +952,7 @@ class LibraryService:
         context['relation_seed']=policy.get('relation_seed') or seed or {}
         excluded = set(policy.get("exclude", []))
         previous = policy.get("previous", [])
+        context['queue_previous'] = previous
         versions = policy.get("versions", [])
         # Filter before ranking, so lower ranked eligible tracks are not starved.
         previous_index = mix_policy.RecordingIndex(previous)
