@@ -40,7 +40,7 @@ def same_recording(a, b):
     artist_a, name_a = identity(a)
     artist_b, name_b = identity(b)
     return skip_policy.same(a, b) or bool(artist_a and artist_a == artist_b and name_a and name_b and
-                (name_a == name_b or SequenceMatcher(None, name_a, name_b).ratio() >= .88))
+                skip_policy.titles_match(name_a, name_b))
 
 def distinct(picks, previous):
     result = []
@@ -78,7 +78,7 @@ class RecordingIndex:
             return True
         def match(artist, title, groups):
             return any((not alternate_only or old_uri != uri) and
-                       (old_title == title or SequenceMatcher(None, title, old_title).ratio() >= .88)
+                       skip_policy.titles_match(title, old_title)
                        for old_title, old_uri in groups.get(artist, ()))
         if any(match(artist, title, self.aliases) for artist, title in skip_policy.aliases(item)):
             return True

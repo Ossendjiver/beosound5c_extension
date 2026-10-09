@@ -171,3 +171,13 @@ def test_audio_provenance_retained_when_online_tags_refresh_preview():
     state,counts,calls=run(meta={'genres':['ambient']},payload={'version':1,'tracks':{ITEM['uri']:old}})
     metadata,source=p.load(state)[ITEM['uri']]
     assert source=='ma_preview' and metadata['audio_features']==FEATURES
+def test_pending_retry_keeps_ready_profiles_and_bypasses_only_needed_ttls():
+    from profile_provider_library import pending_entries
+    entries=[{'uri':str(n)} for n in range(4)]
+    payload={'tracks':{'0':{'status':'sampling_deferred_busy','next_check':999},
+                       '1':{'status':'awaiting_sample','next_check':999},
+                       '2':{'status':'sample_ready','next_check':999},
+                       '3':{'status':'metadata_ready','next_check':999}}}
+    assert pending_entries(entries,payload)==entries[:2]
+    assert payload['tracks']['0']['next_check']==0
+    assert payload['tracks']['2']['next_check']==999

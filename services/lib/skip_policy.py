@@ -26,8 +26,16 @@ def aliases(item):
 def same(a,b):
     a,b=dict(a),dict(b)
     if a.get('uri') and a.get('uri')==b.get('uri'):return True
-    return any(aa==ab and (ta==tb or SequenceMatcher(None,ta,tb).ratio()>=.88)
+    return any(aa==ab and titles_match(ta,tb)
                for aa,ta in aliases(a) for ab,tb in aliases(b))
+
+def titles_match(a,b):
+    if a==b or SequenceMatcher(None,a,b).ratio()>=.88:return True
+    # Require matching ordered substantive words, not a loose substring match.
+    framing={'and','i','was','a','an','the'}
+    core_a=[w for w in a.split() if w not in framing]
+    core_b=[w for w in b.split() if w not in framing]
+    return len(core_a)>=3 and core_a==core_b
 
 def recent(item,history,now):
     skips=[dict(row) for row in history if row['origin']!='legacy' and

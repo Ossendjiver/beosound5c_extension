@@ -294,6 +294,15 @@ def update(entries,payload,command,online,analyzer,local_aliases,*,max_items=500
     return counts
 
 
+def pending_entries(entries,payload):
+    selected=[]
+    for entry in entries:
+        record=payload['tracks'].get(entry['uri'],{})
+        if record.get('status') in ('awaiting_sample','sampling_deferred_busy','retry_pending') and not profiles.useful(record.get('metadata',{})):
+            record['next_check']=0
+            selected.append(entry)
+    return selected
+
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output',type=Path,default=Path('/media/local/cache/provider_profiles.json'))
@@ -301,8 +310,10 @@ def main():
     parser.add_argument('--audio-profile',type=Path,default=Path('/media/local/cache/audio_features.json'))
     parser.add_argument('--models',type=Path,default=Path('/media/local/cache/audio-analysis/models'))
     parser.add_argument('--full-sweep',action='store_true',help='Visit all provider tracks once, resuming an interrupted sweep')
+    parser.add_argument('--retry-pending',action='store_true',help='After a completed sweep, retry only needed profiles while idle')
     parser.add_argument('--max-items',type=int,default=500);parser.add_argument('--max-samples',type=int,default=40);parser.add_argument('--max-seconds',type=int,default=3600)
     args=parser.parse_args()
+    if args.full_sweep and args.retry_pending:raise ValueError('Choose full sweep or pending retry')
     if not 1<=args.max_items<=10000 or not 0<=args.max_samples<=10000 or not 1<=args.max_seconds<=172800:raise ValueError('Invalid limits')
     os.umask(0o077);args.output.parent.mkdir(parents=True,exist_ok=True)
     with args.output.with_suffix('.lock').open('w') as lock:
@@ -315,6 +326,13 @@ def main():
         entries=profiles.inventory(canonical,cached)
         payload=json.loads(args.output.read_text()) if args.output.exists() else {'version':1,'tracks':{}}
         if payload.get('version')!=1 or not isinstance(payload.get('tracks'),dict):raise ValueError('Invalid provider cache')
+        catalogue_entries=len(entries)
+        if args.retry_pending:
+            if not payload.get('sweep',{}).get('complete') or not players_idle(command):
+                print(json.dumps({'skipped':True,'reason':'Sweep incomplete or playback not idle'}));return 0
+            entries=pending_entries(entries,payload)
+            if not entries:
+                print(json.dumps({'skipped':True,'reason':'No profiles need sampling'}));return 0
         if args.full_sweep:
             fingerprint=hashlib.sha256(json.dumps(sorted((e['uri'],profiles.fingerprint(e)) for e in entries)).encode()).hexdigest()
             sweep=payload.get('sweep',{})
@@ -334,7 +352,11 @@ def main():
             payload['sweep']['pending_samples']=sum(r.get('status') in ('awaiting_sample','sampling_deferred_busy') for r in payload['tracks'].values())
             payload['sweep']['errors']=sum(bool(r.get('error')) for r in payload['tracks'].values())
         payload['generated_at']=time.time();atomic_write(args.output,payload);atomic_write(request_path,requests)
-        status={'checked_at':time.time(),'catalogue_entries':len(entries),'sweep':payload.get('sweep'),'running':False,**counts,'ready':sum(profiles.useful(r.get('metadata',{})) or r.get('status')=='local_audio_available' for r in payload['tracks'].values())}
+        if args.retry_pending:
+            payload['sweep']['pending_samples']=sum(r.get('status') in ('awaiting_sample','sampling_deferred_busy') for r in payload['tracks'].values())
+            payload['sweep']['errors']=sum(bool(r.get('error')) for r in payload['tracks'].values())
+            atomic_write(args.output,payload)
+        status={'checked_at':time.time(),'catalogue_entries':catalogue_entries,'sweep':payload.get('sweep'),'running':False,**counts,'ready':sum(profiles.useful(r.get('metadata',{})) or r.get('status')=='local_audio_available' for r in payload['tracks'].values())}
         atomic_write(args.output.with_suffix('.status.json'),status);print(json.dumps(status));return 0
 
 

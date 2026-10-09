@@ -44,6 +44,18 @@ def test_provider_upload_versions_are_excluded_from_same_session():
     from lib.mix_policy import same_recording
     assert same_recording(item('Borderline','Sufjan Stevens'),item('Sufjan Stevens - Borderline','Culturcide'))
 
+def test_hot_chip_alternate_title_and_remix_share_recording():
+    from lib import mix_policy, skip_policy
+    a=item('Boy From School (Erol Alkan’s rework)','Hot Chip')
+    b=item('And I Was a Boy From School','Hot Chip')
+    assert mix_policy.same_recording(a,b)
+    assert skip_policy.same(a,b)
+    assert len(distinct([a,b],[]))==1
+    assert mix_policy.RecordingIndex([a]).matches(b)
+    assert not mix_policy.same_recording(a,item(b['name'],'Other Artist'))
+    assert not mix_policy.same_recording(a,item('Boy From School Again','Hot Chip'))
+    assert not mix_policy.same_recording(item('I Was Here','Hot Chip'),item('Here','Hot Chip'))
+
 
 def test_recording_index_matches_pairwise_rules_including_exact_reuse():
     from lib import mix_policy as policy
