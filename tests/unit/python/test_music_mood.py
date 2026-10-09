@@ -29,7 +29,7 @@ def test_mood_changes_order_but_keeps_trusted_baseline(tmp_path):
              {'uri':'random','name':'Random','artist':'Other','genre':'metal'}]
     picks = m.rank(songs, {'mood':mood.selection(270,0)}, 20)
     assert picks[0]['uri'] == 'calm'
-    assert len(picks) == 2
+    assert len(picks) == 1  # Familiarity cannot keep the wrong mood eligible.
     assert m.rank(songs, {'mood':mood.selection(90,0)}, 20)[0]['uri'] == 'dance'
     assert m.rank([songs[-1]], {'mood':mood.selection(90,1)},20) == []
 

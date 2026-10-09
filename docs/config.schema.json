@@ -389,6 +389,17 @@
       "type": "object",
       "description": "Local context-aware recommendation and post-run suggestion service.",
       "properties": {
+        "audio_features_file": {
+          "type": "string",
+          "description": "Optional atomic audio-analysis sidecar produced by tools/analyze_music_audio.py. Defaults to audio_features.json beside the cached music library."
+        },
+        "metadata_enrichment_batch": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 40,
+          "default": 24,
+          "description": "Maximum MA track metadata API reads per 15 minutes. Zero disables enrichment. No direct MA database access."
+        },
         "weather_entity": {
           "type": "string",
           "description": "Optional Home Assistant weather entity. First weather.* entity is used when blank.",

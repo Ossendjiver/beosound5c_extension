@@ -44,13 +44,33 @@ def profile(item, learned):
                 return {"energy": e, "valence": v, "source": "manual"}
         except (KeyError, TypeError, ValueError):
             pass
+    from .music_features import clean
+    features = clean(item.get('audio_features'))
+    if 'energy' in features and 'valence' in features:
+        return {'energy': features['energy'], 'valence': features['valence'], 'source': 'audio_model'}
     # Use supplied genres/curated playlist labels, not guessed title or artist mood.
-    tags = str(item.get("genres") or item.get("genre") or "") + " " + str(item.get("playlist_tags") or "")
+    tags = str(item.get("genres") or item.get("genre") or "") + " " + str(item.get("playlist_tags") or "") + " " + str(item.get('mood_tags') or '')
     matches = [values for tag, values in TAG_HINTS.items() if tag in tags.casefold()]
     if not matches:
         return None
     return {"energy": sum(p[0] for p in matches)/len(matches),
             "valence": sum(p[1] for p in matches)/len(matches), "source": "tag_hint"}
+
+
+def distance(item, mood, learned):
+    p = profile(item, learned)
+    if not p:
+        return None
+    return math.hypot(p['energy']-mood['energy'], p['valence']-mood['valence'])
+
+
+def compatible(item, mood, learned):
+    p = profile(item, learned)
+    if not p:
+        return False
+    # Tags are coarse hints, so do not stretch them to far-away wheel positions.
+    maximum = .28 if p['source'] == 'tag_hint' else .35
+    return distance(item, mood, learned) <= maximum
 
 
 def adjustment(item, mood, learned):

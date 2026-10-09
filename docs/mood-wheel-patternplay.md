@@ -1,5 +1,9 @@
 # MoodWheel and shared PatternPlay-style learning
 
+For the current mood-first selection, acoustic analysis setup and HA compatibility,
+see [Mood audio analysis](mood-audio-analysis.md). The implementation notes below
+also describe earlier iterations.
+
 The mood wheel and automatic recommendations use the same SQLite listening history, favourite/trusted-playlist pool, explicit feedback, room, weather and time context. Existing news, sleep and post-run yoga behavior remains separate from music learning. This is a transparent local implementation inspired by documented B&O behavior, not a reproduction of its proprietary algorithm.
 
 ## OEM comparison
@@ -98,11 +102,11 @@ Mood Mix and Play Radio from here replenish below five upcoming tracks. Excluded
 tracks are filtered before ranking, avoiding starvation after the initial top
 50. Once fresh eligible tracks are exhausted, older exact recordings may be
 reused, preferring the least recently used, while alternate versions stay
-excluded. The current item and existing upcoming items are always preserved.
+excluded. The current item is preserved; steering replaces upcoming items.
 A single eligible song cannot provide a distinct next song; temporary MA/library
 failures are retried while the mix remains active. Stops or external playback
-end the session. Sessions currently live in service memory, so restarting the
-library service ends their monitoring.
+end the session. Sessions persist locally and resume monitoring after a service
+restart only while actual playback still belongs to the session.
 
 Queue snapshots for mixes fetch around the current index once it reaches 400,
 so playback beyond the first 500 historical queue entries does not lose the

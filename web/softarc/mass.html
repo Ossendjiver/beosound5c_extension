@@ -2089,12 +2089,12 @@
                     if (!state.active) {
                         const rec=await fetch(`${libraryBase}/library/recommend/music?room=lounge&limit=20&angle=${angle}&radius=${radius}`);
                         const mix=await rec.json();
-                        if (!mix.items?.length) throw new Error('Add favourite tracks or a trusted playlist first');
+                        if (!mix.items?.length) throw new Error(mix.mood_coverage?.notice || 'No mood-compatible tracks with sufficient metadata');
                         await startSeedMix(mix.items[0]);
                     }
-                    await mixCall({action:'update',queue_id:moodQueue,angle,radius});
+                    const updated=await mixCall({action:'update',queue_id:moodQueue,angle,radius});
                     await refreshQueueRoot(false);
-                    return 'Upcoming tracks updated';
+                    return updated.pending_refresh ? 'Updating upcoming tracks…' : 'Upcoming tracks updated';
                 }
             });
 

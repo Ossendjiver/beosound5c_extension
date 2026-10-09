@@ -37,7 +37,15 @@
             this.poll = setInterval(async () => {
                 // Reassert ownership after mounting or a missed open message.
                 if (this.el) this.notify(true);
-                try { const state = await this.onState?.(); if (this.el) this.el.querySelector(".mood-playing").textContent = state?.title || ""; } catch (_) {}
+                try {
+                    const state = await this.onState?.();
+                    if (this.el) {
+                        this.el.querySelector('.mood-playing').textContent = state?.title || '';
+                        if (state?.active) this.el.querySelector('.mood-status').textContent =
+                            state.refresh_status === 'insufficient_mood_data' ? 'More mood data needed for this selection' :
+                            state.pending_refresh ? 'Updating upcoming tracks…' : '';
+                    }
+                } catch (_) {}
             }, 1500);
             this.changed = false;
             if (!localStorage.getItem('bs5c-mood-user') && this.onSuggest) {

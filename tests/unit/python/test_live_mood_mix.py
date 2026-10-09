@@ -22,6 +22,55 @@ class FakeQueue:
 
 
 @pytest.mark.asyncio
+async def test_pending_steering_retries_after_transition_with_full_old_queue():
+    q=FakeQueue();race=False
+    async def recommend(*args):
+        nonlocal race
+        if race:
+            race=False
+            q.state['current_index']=2
+            q.state['current_item']=copy.deepcopy(q.state['items'][2])
+        return [dict(uri=f'track{i}',duration=100) for i in range(20)]
+    mixes=MoodMixes(q.command,recommend)
+    await mixes.begin('q','bedroom',mode='radio')
+    race=True
+    await mixes.update('q',90,.5)
+    assert mixes.public('q')['pending_refresh']
+    assert len(q.state['items'])-q.state['current_index']-1>5
+    before=len(q.calls)
+    await mixes.tick('q')
+    assert not mixes.public('q')['pending_refresh']
+    assert any(cmd=='mood_replace_upcoming' for cmd,_ in q.calls[before:])
+
+
+@pytest.mark.asyncio
+async def test_insufficient_mood_coverage_removes_old_tail_and_reports_reason():
+    q=FakeQueue();available=True
+    async def recommend(*args):return [dict(uri='a',duration=100)] if available else []
+    mixes=MoodMixes(q.command,recommend)
+    await mixes.begin('q','bedroom',mode='radio')
+    available=False
+    with pytest.raises(ValueError,match='No mood-compatible tracks'):
+        await mixes.update('q',270,.5)
+    assert len(q.state['items'])==2 and q.state['elapsed_time']==10
+    assert mixes.public('q')['refresh_status']=='insufficient_mood_data'
+    calls=len(q.calls);await mixes.tick('q')
+    assert all(cmd=='mood_snapshot' for cmd,_ in q.calls[calls:])
+
+
+@pytest.mark.asyncio
+async def test_refill_shortage_does_not_remove_existing_compatible_upcoming_tracks():
+    q=FakeQueue();available=True
+    async def recommend(*args):return [dict(uri='a',duration=100)] if available else []
+    mixes=MoodMixes(q.command,recommend)
+    await mixes.begin('q','bedroom')
+    await mixes.update('q',270,.5)
+    available=False
+    await mixes.tick('q')
+    assert q.state['items'][-1]['media_item']['uri']=='a'
+
+
+@pytest.mark.asyncio
 async def test_choice_replaces_future_only_keeps_played_current_and_position():
     q=FakeQueue()
     async def recommend(*args): return [{'uri':'seed','duration':100},{'uri':'a','duration':100},{'uri':'a','duration':100},{'uri':'b','duration':100}]

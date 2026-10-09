@@ -46,6 +46,7 @@ from lib import music_mood
 from lib import music_familiarity
 from lib.mood_mix import MoodMixes
 from lib import mix_policy
+from lib import music_features
 
 log = logging.getLogger("beo-library")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -304,6 +305,8 @@ class LocalModel:
         for item in candidates:
             if not _music_item(item) or not item.get("uri"):
                 continue
+            if mood and not music_mood.compatible(item, mood, mood_profiles):
+                continue  # Familiarity never admits an unknown or incompatible mood.
             key = self._candidate_key(item)
             identity = item["uri"]
             blocked, skip_penalty = skip_policy.recent(item, skip_history, now_ts)
@@ -319,6 +322,7 @@ class LocalModel:
                 score += 3.5
             if mood:
                 score += music_mood.adjustment(item, mood, mood_profiles)
+            score += music_features.similarity(item, context.get('seed_features') or {})
             for row in history:
                 if row["artist"].casefold() != key[0] or not key[0]:
                     continue
@@ -344,8 +348,12 @@ class LocalModel:
                     score -= 1.5  # Modest temporary suppression; favourites remain eligible.
             score += random.Random(f"{identity}:{int(now_ts // 3600)}").uniform(-0.1, 0.1)
             (familiar if trusted else discovery).append((score, item))
-        familiar.sort(key=lambda pair: pair[0], reverse=True)
-        discovery.sort(key=lambda pair: pair[0], reverse=True)
+        def order(pair):
+            # Mood proximity first; familiarity only breaks ties in a small band.
+            band = int(music_mood.distance(pair[1], mood, mood_profiles) / .05) if mood else 0
+            return (band, -pair[0])
+        familiar.sort(key=order)
+        discovery.sort(key=order)
         fraction = mood["discovery_fraction"] if mood else 0.1
         discovery_count = min(int(math.floor(limit * fraction + .5)), len(discovery), int(len(familiar) * fraction / (1 - fraction)))
         chosen = [i for _, i in familiar[:max(0, limit - discovery_count)]]
@@ -375,6 +383,8 @@ class LibraryService:
         self._familiarity_status = self.model.get_kv("music_familiarity_status", {})
         self._automatic_keys: set[tuple[str, str]] = set()
         self._mood_sessions = {}
+        self._audio_feature_stamp = None
+        self._audio_feature_cache = {}
         self.mixes = MoodMixes(self._mix_command, self._mix_recommend, self._mix_record,
             load=lambda: self.model.get_kv("mix_sessions_v1", {}),
             save=lambda data: self.model.put_kv("mix_sessions_v1", data))
@@ -402,6 +412,7 @@ class LibraryService:
         self._background.spawn(self._mix_loop(), name="library_mood_mix")
         self._background.spawn(self._seed_loop(), name="library_seed_sync")
         self._background.spawn(self._familiarity_loop(), name="library_familiarity_sync")
+        self._background.spawn(self._metadata_loop(), name="library_metadata_sync")
         self._background.spawn(self._listening_loop(), name="library_listening")
         self._background.spawn(self._suggestion_loop(), name="library_suggestions")
 
@@ -644,13 +655,33 @@ class LibraryService:
                 walk(root)
         for uri, item in self._seed_metadata.items():
             previous = items.get(uri, {})
-            items[uri] = {**previous, **item, "trusted": bool(previous.get("trusted") or item.get("trusted"))}
+            items[uri] = music_features.merge(previous, item)
         for entry in self.model.get_kv("music_familiarity", {}).values():
             item = entry.get("item", {})
             uri = item.get("uri")
             if not uri: continue
             previous = items.get(uri, {})
-            items[uri] = {**item, **previous}
+            items[uri] = music_features.merge(item, previous)
+        for uri, metadata in self.model.get_kv('track_metadata', {}).items():
+            if uri in items:
+                items[uri] = music_features.merge(items[uri], metadata)
+        # A worker writes this sidecar atomically; the playback process does no DSP.
+        feature_path = Path(os.getenv('BS5C_AUDIO_FEATURES_FILE') or self.cfg.get('audio_features_file') or CACHE_LIBRARY.parent / 'audio_features.json')
+        try:
+            stat = feature_path.stat()
+            stamp = (str(feature_path), stat.st_mtime_ns, stat.st_size)
+            if stamp != getattr(self, '_audio_feature_stamp', None):
+                payload = json.loads(feature_path.read_text())
+                if payload.get('version') != 1 or not isinstance(payload.get('tracks'), dict):
+                    raise ValueError('Invalid audio feature sidecar')
+                self._audio_feature_cache = {uri: music_features.clean(entry.get('audio_features'))
+                    for uri, entry in payload['tracks'].items() if isinstance(entry, dict)}
+                self._audio_feature_stamp = stamp
+            for uri, features in self._audio_feature_cache.items():
+                if uri in items and features:
+                    items[uri]['audio_features'] = features
+        except (OSError, ValueError, TypeError, AttributeError):
+            pass
         return list(items.values())
 
     def _context_for_room(self, room: str) -> dict[str, Any]:
@@ -706,6 +737,55 @@ class LibraryService:
             except Exception:
                 log.warning("Familiarity sync unavailable; retaining cached evidence", exc_info=False)
             await asyncio.sleep(86400)
+
+    async def _metadata_loop(self) -> None:
+        # MA API only; never open its SQLite database or interrupt playback.
+        await asyncio.sleep(30)
+        while True:
+            try:
+                await self._refresh_track_metadata()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                log.warning('Track metadata enrichment unavailable; retaining cache')
+            await asyncio.sleep(900)
+
+    async def _refresh_track_metadata(self) -> None:
+        if not self.session:
+            return
+        configured = (os.getenv('MASS_WS_URL') or os.getenv('BS5C_MASS_WS_URL') or '').strip()
+        host = (os.getenv('PLAYER_IP') or cfg('player', 'ip', default='') or 'localhost').strip()
+        base = configured.replace('wss://', 'https://').replace('ws://', 'http://').removesuffix('/ws') if configured else f'http://{host}:8095'
+        token = os.getenv('MASS_TOKEN', '').strip()
+        headers = {'Authorization': 'Bearer '+token} if token else {}
+        cache = self.model.get_kv('track_metadata', {})
+        now = time.time()
+        batch = max(0, min(40, int(self.cfg.get('metadata_enrichment_batch', 24))))
+        candidates = [i for i in self._load_library() if i.get('uri') and
+                      now-float(cache.get(i['uri'], {}).get('_checked_at', 0)) >= 30*86400]
+        # Prioritize seeds, then missing descriptors. Rotate by last attempt.
+        candidates.sort(key=lambda i: (float(cache.get(i['uri'], {}).get('_checked_at', 0)),
+                                      not (i.get('trusted') or i.get('favorite'))))
+        for item in candidates[:batch]:
+            uri = item['uri']
+            try:
+                async with self.session.post(base.rstrip('/')+'/api', headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=4),
+                    json={'command':'music/item_by_uri', 'args':{'uri':uri, 'allow_update_metadata':False}}) as response:
+                    response.raise_for_status()
+                    detail = await response.json()
+                if not isinstance(detail, dict) or not detail.get('uri'):
+                    raise ValueError('Invalid MA track metadata')
+                cache[uri] = music_features.merge(cache.get(uri, {}), music_features.metadata(detail))
+                cache[uri]['_checked_at'] = now
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                # Retry failed reads next day, not every 15 minutes.
+                cache.setdefault(uri, {})['_checked_at'] = now-29*86400
+            await asyncio.sleep(.1)
+        if candidates[:batch]:
+            self.model.put_kv('track_metadata', cache)  # One local transaction per batch.
 
     async def _refresh_familiarity(self) -> None:
         if not self.session: return
@@ -770,9 +850,12 @@ class LibraryService:
         if selected:
             context["mood"] = selected
         if seed and seed.get("uri"):
+            cached_seed = next((c for c in candidates if c.get('uri') == seed['uri']), {})
+            seed = music_features.merge(cached_seed, seed)
             seed = dict(seed, trusted=True, media_type=seed.get("media_type") or "track")
             candidates = [seed] + [c for c in candidates if c.get("uri") != seed["uri"]]
             context["seed_artist"] = mix_policy.identity(seed)[0]
+            context['seed_features'] = seed
         candidates = [c for c in candidates if mix_policy.similar_length(c, seed or {})]
         policy = policy or {}
         excluded = set(policy.get("exclude", []))
@@ -798,7 +881,7 @@ class LibraryService:
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
-                    log.debug("Mood mix monitor: %s", exc)
+                    log.warning("Mood mix monitor: %s", str(exc)[:300])
             await asyncio.sleep(1)
 
     async def handle_mix(self, request):
@@ -820,6 +903,7 @@ class LibraryService:
                 raise ValueError("Unknown mix action")
             return web.json_response(result, headers={"Access-Control-Allow-Origin": "*"})
         except (ValueError, KeyError, TypeError) as exc:
+            log.warning('Mood mix request rejected: %s', str(exc)[:300])
             raise web.HTTPBadRequest(text=str(exc))
 
     def suggestion(self, room: str) -> dict[str, Any]:
@@ -1028,16 +1112,19 @@ class LibraryService:
         if "angle" in request.query or "radius" in request.query:
             try: mood = music_mood.selection(request.query["angle"], request.query["radius"])
             except (KeyError, TypeError, ValueError): raise web.HTTPBadRequest(text="Invalid mood coordinates")
+        mood = mood or self.pattern_mood(room)
         picks = await self.recommend_music(room, limit, mood)
         classified = sum(music_mood.profile(i, self.model.get_kv("mood_profiles", {})) is not None for i in picks)
         return web.json_response(
             {
-                "model": "trusted-baseline-v4",
+                "model": "mood-first-acoustic-v5",
                 "familiarity": {"max_boost": music_familiarity.MAX_BOOST, "status": self._familiarity_status},
                 "baseline": {"trusted_playlists": self.cfg.get("trusted_playlists", ["Trusted music", "All favorited tracks"]), "favourites": True, "most_played_playlist_prefix": "most played", "discovery_fraction": 0.1, "seed_required": True},
                 "context": self._context_for_room(room),
                 "mood": mood,
-                "mood_coverage": {"classified": classified, "total": len(picks), "notice": "Mood data limited; familiar mix" if mood and classified < len(picks) else ""},
+                "mood_coverage": {"classified": classified, "total": len(picks),
+                    "notice": "No mood-compatible tracks with sufficient metadata" if mood and not picks else "",
+                    "unknown_moods_excluded": bool(mood)},
                 "uris": [item["uri"] for item in picks],
                 "items": picks,
             },
