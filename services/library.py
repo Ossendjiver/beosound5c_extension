@@ -41,6 +41,7 @@ HERE = Path(__file__).resolve().parent
 
 from lib.config import cfg
 from lib.background_tasks import BackgroundTaskSet
+from lib import skip_policy
 from lib import music_mood
 from lib import music_familiarity
 from lib.mood_mix import MoodMixes
@@ -164,6 +165,7 @@ class LocalModel:
             );
             CREATE INDEX IF NOT EXISTS idx_listens_ts ON listens(ts);
             CREATE INDEX IF NOT EXISTS idx_listens_artist ON listens(artist);
+            CREATE TABLE IF NOT EXISTS feedback_receipts (event_id TEXT PRIMARY KEY, ts REAL NOT NULL);
             CREATE TABLE IF NOT EXISTS kv (
               key TEXT PRIMARY KEY,
               value TEXT NOT NULL
@@ -185,6 +187,8 @@ class LocalModel:
         for column in ("mood_energy", "mood_valence"):
             if column not in {row[1] for row in self.db.execute("PRAGMA table_info(listens)")}:
                 self.db.execute(f"ALTER TABLE listens ADD COLUMN {column} REAL")
+        if "end_reason" not in {row[1] for row in self.db.execute("PRAGMA table_info(listens)")}:
+            self.db.execute("ALTER TABLE listens ADD COLUMN end_reason TEXT NOT NULL DEFAULT 'unknown'")
         self.db.commit()
 
     def put_kv(self, key: str, value: Any) -> None:
@@ -203,7 +207,7 @@ class LocalModel:
         except Exception:
             return default
 
-    def record_listen(self, item: dict[str, Any], seconds: float, context: dict[str, Any]) -> None:
+    def record_listen(self, item: dict[str, Any], seconds: float, context: dict[str, Any], *, event_id=None, event_ts=None):
         if not _music_item(item):
             return
         title = str(item.get("title") or item.get("name") or "").strip()
@@ -216,29 +220,36 @@ class LocalModel:
         meaningful = seconds >= 90 or (duration > 0 and seconds >= duration * 0.45)
         if reason == "dislike":
             reward = -4.0
-        elif reason == "skip" and seconds < 25:
-            reward = -2.0
+        elif reason == "skip":
+            reward = -2.0 if seconds < 25 else -1.0
         elif meaningful:
             reward = 1.0 if origin == "manual" else 0.05 if origin == "automatic" else 0.15
         else:
             reward = 0.0  # Pauses, transfers, stops and buffering are not dislikes.
-        now = dt.datetime.now()
-        self.db.execute(
-            """INSERT INTO listens(ts,title,artist,album,uri,seconds,reward,hour,time_bucket,
-               weekpart,weather,temperature,room,origin,weekday,mood_energy,mood_valence) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (
-                time.time(), title, artist, str(item.get("album") or ""),
-                str(item.get("uri") or ""), float(seconds), reward, now.hour,
-                context.get("time_bucket", _time_bucket(now.hour)),
-                context.get("weekpart", _weekpart(now)),
-                context.get("weather", "unknown"), context.get("temperature"),
-                context.get("room", ""), origin, context.get("weekday", now.weekday()),
-                (item.get("listening_mood") or {}).get("energy"), (item.get("listening_mood") or {}).get("valence"),
-            ),
-        )
-        cutoff = time.time() - 180 * 86400
-        self.db.execute("DELETE FROM listens WHERE ts < ?", (cutoff,))
-        self.db.commit()
+        stamp = time.time() if event_ts is None else event_ts
+        now = dt.datetime.fromtimestamp(stamp)
+        with self.db:
+            if event_id:
+                cursor = self.db.execute("INSERT OR IGNORE INTO feedback_receipts VALUES (?,?)", (event_id,stamp))
+                if not cursor.rowcount:
+                    return False
+            self.db.execute(
+                """INSERT INTO listens(ts,title,artist,album,uri,seconds,reward,hour,time_bucket,
+                   weekpart,weather,temperature,room,origin,weekday,mood_energy,mood_valence,end_reason) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    stamp, title, artist, str(item.get("album") or ""),
+                    str(item.get("uri") or ""), float(seconds), reward, now.hour,
+                    context.get("time_bucket", _time_bucket(now.hour)),
+                    context.get("weekpart", _weekpart(now)),
+                    context.get("weather", "unknown"), context.get("temperature"),
+                    context.get("room", ""), origin, context.get("weekday", now.weekday()),
+                    (item.get("listening_mood") or {}).get("energy"), (item.get("listening_mood") or {}).get("valence"), reason,
+                ),
+            )
+            cutoff = time.time() - 180 * 86400
+            self.db.execute("DELETE FROM listens WHERE ts < ?", (cutoff,))
+            self.db.execute("DELETE FROM feedback_receipts WHERE ts < ?", (time.time()-30*86400,))
+        return True
 
     def record_prompt(self, prompt_id: str, kind: str, action: str, room: str) -> None:
         self.db.execute(
@@ -286,19 +297,24 @@ class LocalModel:
         mood = context.get("mood")
         mood_profiles = self.get_kv("mood_profiles", {})
         now_ts = time.time()
+        skip_history = list(self.db.execute(
+            "SELECT * FROM listens WHERE ts>=? AND origin!='legacy' AND (end_reason='skip' OR reward=-2)",
+            (now_ts-7*86400,)))
         familiar, discovery = [], []
         for item in candidates:
             if not _music_item(item) or not item.get("uri"):
                 continue
             key = self._candidate_key(item)
             identity = item["uri"]
+            blocked, skip_penalty = skip_policy.recent(item, skip_history, now_ts)
+            if blocked: continue
             if feedback.get(identity) == "dislike":
                 continue
             trusted = item.get("trusted") or item.get("favorite") or key in known or feedback.get(identity) == "like" or familiarity.baseline(item)
             if not trusted and key[0] not in seed_artists and not (mood and mood["discovery_fraction"] >= .1 and music_mood.profile(item, mood_profiles) and music_mood.adjustment(item, mood, mood_profiles) >= -2):
                 continue  # Discovery is constrained to artists already represented by seeds.
             score = 12.0 if item.get("favorite") else 10.0 if trusted else 0.0
-            score += familiarity.boost(item)
+            score += familiarity.boost(item) - skip_penalty
             if context.get("seed_artist") == key[0] and key[0]:
                 score += 3.5
             if mood:
@@ -359,7 +375,9 @@ class LibraryService:
         self._familiarity_status = self.model.get_kv("music_familiarity_status", {})
         self._automatic_keys: set[tuple[str, str]] = set()
         self._mood_sessions = {}
-        self.mixes = MoodMixes(self._mix_command, self._mix_recommend, self._mix_record)
+        self.mixes = MoodMixes(self._mix_command, self._mix_recommend, self._mix_record,
+            load=lambda: self.model.get_kv("mix_sessions_v1", {}),
+            save=lambda data: self.model.put_kv("mix_sessions_v1", data))
         self._manual_choices = {}
         self._background = BackgroundTaskSet(log, label="library")
 
@@ -796,7 +814,7 @@ class LibraryService:
             elif data.get("action") == "update":
                 result = await self.mixes.update(queue, data["angle"], data["radius"])
             elif data.get("action") == "stop":
-                self.mixes.sessions.pop(queue, None)
+                self.mixes.stop(queue)
                 result = self.mixes.public(queue)
             else:
                 raise ValueError("Unknown mix action")
@@ -1055,6 +1073,23 @@ class LibraryService:
     async def handle_event(self, request: web.Request) -> web.Response:
         payload = await request.json()
         event_type = str(payload.get("type") or "")
+        if event_type == "listen_feedback":
+            event_id = str(payload.get("event_id") or "")
+            try:
+                stamp = float(payload["timestamp_ms"])/1000
+                seconds = float(payload.get("seconds") or 0)
+                duration = float(payload.get("duration") or 0)
+                if not re.fullmatch(r"[A-Za-z0-9_-]{16,128}",event_id) or payload.get("reason") != "skip": raise ValueError()
+                if not math.isfinite(stamp) or not time.time()-30*86400 <= stamp <= time.time()+300: raise ValueError()
+                if not math.isfinite(seconds) or not math.isfinite(duration) or seconds < 0 or duration < 0: raise ValueError()
+                if not payload.get("title") or not _music_item(payload): raise ValueError()
+            except (KeyError,TypeError,ValueError): raise web.HTTPBadRequest(text="Invalid listening feedback")
+            item=dict(payload,end_reason="skip",selection_origin="reported")
+            accepted=self.model.record_listen(item,min(seconds,duration or 12*3600),
+                self._context_for_room(str(payload.get("room") or "phone")),event_id=event_id,event_ts=stamp)
+            if accepted and self._external_media and skip_policy.same(item,self._external_media):
+                self._external_media=None; self._external_started=0.0
+            return web.json_response({"status":"ok","duplicate":accepted is False},headers={"Access-Control-Allow-Origin":"*"})
         if event_type == "selection":
             if _music_item(payload) and str(payload.get("uri") or "").strip():
                 self._manual_choices[self.model._candidate_key(payload)] = time.time()

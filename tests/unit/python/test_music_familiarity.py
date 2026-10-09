@@ -216,7 +216,7 @@ async def test_mix_exclusions_are_applied_before_top_fifty(tmp_path,monkeypatch,
     items=[dict(uri=f'track://{i}',name=f'Track {i}',artist=f'Artist {i}',duration=200,trusted=True) for i in range(100)]
     service._load_library=lambda:items
     service._context_for_room=lambda room:{}
-    picks=await service._mix_recommend('lounge',50,None,{}, {'exclude':[i['uri'] for i in items[:70]]})
+    picks=await service._mix_recommend('lounge',50,None,{'duration':200}, {'exclude':[i['uri'] for i in items[:70]]})
     assert len(picks)==30
     assert not {i['uri'] for i in picks}&{i['uri'] for i in items[:70]}
     service.model.db.close()

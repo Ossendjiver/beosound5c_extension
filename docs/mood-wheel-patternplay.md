@@ -140,3 +140,13 @@ scan. It can discover new playlists for the shared baseline; MA count imports
 are a separate explicit one-time operation and are not repeated by that scan.
 Rank weights also feed the capped familiarity prior without training listening
 context or promoting items to favourites.
+
+## Durable sessions and explicit skip feedback
+
+Pattern Play and Mood Mix save the original root track, mood, queue ownership and recent recording identities in the BS5c library database. Writes happen on session edits and song transitions, not on each polling tick. After restart the session continues only while the actual queue still belongs to it; manual playback cancels it without changing the queue.
+
+Every generated track must have a known finite duration between one-third and three times the original root duration, inclusive. Steering the mood or advancing songs never changes that root. Normal songs and long mixes (20 minutes or longer) remain separate. Unknown root durations prevent automatic mix startup rather than guessing.
+
+Home Media captures Music Assistant's actual current queue item before an explicit Next command and records a durable UUID-tagged report only after the command succeeds. The phone outbox retries locally or through the authenticated HA bridge; server receipts prevent duplicate learning. Pauses, stops, seeks, transfers and natural song endings are not explicit skips. Android Auto and notification Next controls use the same reporting path. Remote feedback requires Home Media Bridge 0.1.1.
+
+One recent explicit skip excludes the recording for six hours; two within the past week exclude it for 48 hours; three or more exclude it for seven days. A decaying ranking penalty remains after the cooldown. Artist/title aliases carry this across providers, including uploads titled `Artist - Song` and remastered versions. The original skip timestamp is preserved through retries. These changes do not rewrite Music Assistant's library database or existing queue history.

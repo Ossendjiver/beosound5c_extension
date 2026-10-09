@@ -140,3 +140,35 @@ async def test_long_queue_snapshot_fetches_window_using_global_position():
     assert snap['current_index']==1200 and item_index(snap)==20
     assert current(snap)['uri']=='uri1200'
     assert calls==[('player_queues/items',{'queue_id':'holder','offset':1180,'limit':100})]
+
+@pytest.mark.asyncio
+async def test_root_and_session_survive_restart_and_steering_without_tick_writes():
+    q=FakeQueue();q.state['current_item']['duration']=300
+    stored={};writes=[]
+    def save(data):
+        stored.clear();stored.update(copy.deepcopy(data));writes.append(copy.deepcopy(data))
+    async def recommend(*args):
+        return [dict(uri=f'good{i}',name=f'Song {i}',artist=f'Artist {i}',duration=900) for i in range(6)]+[
+            dict(uri='too-long',duration=901),dict(uri='too-short',duration=99)]
+    mixes=MoodMixes(q.command,recommend,load=lambda:stored,save=save)
+    await mixes.begin('q','bedroom',mode='radio')
+    mixes=MoodMixes(q.command,recommend,load=lambda:stored,save=save)
+    assert mixes.sessions['q']['seed']['duration']==300
+    before=len(writes);await mixes.tick('q');assert len(writes)==before
+    q.state['current_item']=copy.deepcopy(q.state['items'][2]);q.state['current_item']['duration']=900
+    q.state['current_index']=2
+    await mixes.update('q',120,.8)
+    assert mixes.sessions['q']['seed']['duration']==300
+    assert all(i.get('media_item',{}).get('uri') not in ('too-long','too-short') for i in q.state['items'])
+    mixes.stop('q');assert stored['sessions']=={}
+
+@pytest.mark.asyncio
+async def test_invalid_session_storage_and_unknown_root_are_safe():
+    q=FakeQueue()
+    async def recommend(*args):return []
+    assert MoodMixes(q.command,recommend,load=lambda:{'version':1,'sessions':[]}).sessions=={}
+    q.state['current_item']['duration']=0
+    mixes=MoodMixes(q.command,recommend)
+    with pytest.raises(ValueError,match='known duration'):await mixes.begin('q','bedroom')
+    assert not mixes.sessions
+    assert all(cmd=='mood_snapshot' for cmd,_ in q.calls)
