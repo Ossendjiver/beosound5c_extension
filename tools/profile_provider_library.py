@@ -3,6 +3,7 @@
 import argparse
 import fcntl
 import io
+import http.client
 import ipaddress
 import json
 import os
@@ -279,7 +280,7 @@ def update(entries,payload,command,online,analyzer,local_aliases,*,max_items=500
                 record.update(metadata=music_features.merge(metadata,{'audio_features':features}),source='ma_preview',audio_source='ma_preview',status='sample_ready',analysis_fingerprint=analyzer.fingerprint)
                 counts['sampled']+=1
             record.pop('error',None)
-        except (OSError,ValueError,RuntimeError,TypeError,AttributeError,subprocess.SubprocessError) as exc:
+        except (OSError,http.client.HTTPException,ValueError,RuntimeError,TypeError,AttributeError,subprocess.SubprocessError) as exc:
             # Retain useful previous metadata/descriptors, and never persist signed URLs.
             record.update(error=type(exc).__name__,next_check=now+86400,status='retry_pending')
             if previous.get('metadata',{}).get('audio_features'):
@@ -354,9 +355,19 @@ def main():
         local=json.loads(args.audio_profile.read_text()) if args.audio_profile.exists() else {'version':1,'tracks':{}}
         aliases={u for u in local['tracks']}
         for record in local['tracks'].values():aliases.update(record.get('aliases',[]))
-        from music_audio_onnx import Analyzer
-        counts=update(entries,payload,command,online,Analyzer(args.models),aliases,max_items=args.max_items,max_samples=args.max_samples,max_seconds=args.max_seconds,
-            checkpoint=lambda value:(atomic_write(args.output,value),atomic_write(request_path,requests),atomic_write(args.output.with_suffix('.status.json'),progress_status(value,running=True))),base=base,token=token,full_sweep=args.full_sweep)
+        atomic_write(args.output.with_suffix('.status.json'),progress_status(payload,running=True))
+        try:
+            from music_audio_onnx import Analyzer
+            counts=update(entries,payload,command,online,Analyzer(args.models),aliases,max_items=args.max_items,max_samples=args.max_samples,max_seconds=args.max_seconds,
+                checkpoint=lambda value:(atomic_write(args.output,value),atomic_write(request_path,requests),atomic_write(args.output.with_suffix('.status.json'),progress_status(value,running=True))),base=base,token=token,full_sweep=args.full_sweep)
+        except Exception as exc:
+            # Preserve completed work and clear stale running state on fatal errors.
+            atomic_write(args.output,payload)
+            atomic_write(request_path,requests)
+            status=progress_status(payload,running=False)
+            status.update(checked_at=time.time(),failed_run=True,error=type(exc).__name__)
+            atomic_write(args.output.with_suffix('.status.json'),status)
+            print(json.dumps(status));return 1
         if args.full_sweep:
             payload['sweep']['complete']=payload['sweep']['visited']>=len(entries)
             payload['sweep']['pending_samples']=sum(r.get('status') in ('awaiting_sample','sampling_deferred_busy') for r in payload['tracks'].values())
@@ -366,7 +377,7 @@ def main():
             payload['sweep']['pending_samples']=sum(r.get('status') in ('awaiting_sample','sampling_deferred_busy') for r in payload['tracks'].values())
             payload['sweep']['errors']=sum(bool(r.get('error')) for r in payload['tracks'].values())
             atomic_write(args.output,payload)
-        status={**progress_status(payload,running=False),'checked_at':time.time(),'catalogue_entries':catalogue_entries,'sweep':payload.get('sweep'),'running':False,**counts,'ready':sum(profiles.useful(r.get('metadata',{})) or r.get('status')=='local_audio_available' for r in payload['tracks'].values())}
+        status={**progress_status(payload,running=False),'checked_at':time.time(),'catalogue_entries':catalogue_entries,'running':False,**counts,'ready':sum(profiles.useful(r.get('metadata',{})) or r.get('status')=='local_audio_available' for r in payload['tracks'].values())}
         atomic_write(args.output.with_suffix('.status.json'),status);print(json.dumps(status));return 0
 
 

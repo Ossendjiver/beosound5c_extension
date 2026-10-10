@@ -24,7 +24,7 @@ def run(entries=None,meta=None,players=None,payload=None,**kw):
     calls=[]
     def command(name,args):
         calls.append(name)
-        if name=='music/tracks/get':return detail(meta)
+        if name=='music/tracks/get':return {**detail(meta),'item_id':args['item_id']}
         if name=='players/all':return players if players is not None else []
         if name=='music/tracks/preview':return '/preview?token=private'
         raise AssertionError(name)
@@ -189,3 +189,16 @@ def test_progress_status_counts_successful_samples_and_pending_retries():
     assert status['sweep']['pending_samples']==2
     assert status['sweep']['errors']==1
     assert status['running'] is True
+
+def test_truncated_preview_is_retryable_and_next_track_continues():
+    import http.client
+    entries=[dict(ITEM),{**ITEM,'uri':'tidal--p://track/2'}]
+    attempts=[]
+    def preview(*args):
+        attempts.append(1)
+        if len(attempts)==1:raise http.client.IncompleteRead(b'')
+        return b'bytes'
+    state,counts,_=run(entries=entries,preview=preview)
+    assert state['tracks'][entries[0]['uri']]['status']=='retry_pending'
+    assert state['tracks'][entries[0]['uri']]['error']=='IncompleteRead'
+    assert counts['sampled']==1 and counts['failed']==1
