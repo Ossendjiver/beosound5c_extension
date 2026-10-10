@@ -332,12 +332,17 @@ class LocalModel:
         relation_root=context.get('relation_seed') or context.get('seed_features') or {}
         if not relation_root:
             relation_root=next((dict(r) for r in history if r['room']==context.get('room') and r['reward']>0),{})
+        radio_distances = {}
         familiar, discovery = [], []
         for item in candidates:
             if not _music_item(item) or not item.get("uri"):
                 continue
             if any(v['vote'] == -1 and mix_policy.same_recording(item, v['item']) for v in votes):
                 continue
+            if context.get('radio'):
+                distance = music_features.radio_distance(item, explicit_seed)
+                if distance is None:continue
+                radio_distances[item['uri']] = distance
             if mood and not music_mood.compatible(item, mood, mood_profiles):
                 continue  # Familiarity never admits an unknown or incompatible mood.
             key = self._candidate_key(item)
@@ -347,7 +352,7 @@ class LocalModel:
             if feedback.get(identity) == "dislike":
                 continue
             trusted = item.get("trusted") or item.get("favorite") or key in known or feedback.get(identity) == "like" or familiarity.baseline(item) or bool(selected_artist and key[0] == selected_artist)
-            if not trusted and key[0] not in seed_artists and not (mood and mood["discovery_fraction"] >= .1 and music_mood.profile(item, mood_profiles) and music_mood.adjustment(item, mood, mood_profiles) >= -2):
+            if not trusted and key[0] not in seed_artists and not context.get('radio') and not (mood and mood["discovery_fraction"] >= .1 and music_mood.profile(item, mood_profiles) and music_mood.adjustment(item, mood, mood_profiles) >= -2):
                 continue  # Discovery is constrained to artists already represented by seeds.
             score = 12.0 if item.get("favorite") else 10.0 if trusted else 0.0
             score += familiarity.boost(item) - skip_penalty
@@ -386,6 +391,9 @@ class LocalModel:
         def band(item):
             uri=item['uri']
             if uri not in bands:
+                if context.get('radio'):
+                    bands[uri]=int(radio_distances[uri]/.1)
+                    return bands[uri]
                 bands[uri]=int(music_mood.distance(item,mood,mood_profiles)/.05) if mood else 0
             return bands[uri]
         fraction = mood["discovery_fraction"] if mood else 0.1
@@ -963,7 +971,10 @@ class LibraryService:
     async def _mix_recommend(self, room, limit, mood, seed, policy=None):
         candidates = self._load_library()
         context = self._context_for_room(room)
-        selected = mood or self.pattern_mood(room)
+        policy = policy or {}
+        radio = policy.get('mode') == 'radio'
+        context['radio'] = radio
+        selected = mood if radio else mood or self.pattern_mood(room)
         if selected:
             context["mood"] = selected
         if seed and seed.get("uri"):

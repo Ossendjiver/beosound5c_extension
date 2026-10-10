@@ -154,3 +154,26 @@ async def test_feedback_api_preserves_current_item_and_marks_upcoming_refresh(tm
     assert snap['current_item']['queue_item_id']=='a'
     assert service.model.get_kv('music_feedback',{})=={}
     service.model.db.close()
+
+def test_song_radio_rejects_unrelated_favourites_and_missing_data():
+    root=track('seed',vector=[1.,0.,0.,0.,0.,0.,0.,0.])
+    close=track('close',artist='Other',vector=[.98,.1,0.,0.,0.,0.,0.,0.])
+    unrelated=track('unrelated',artist='Other',vector=[0.,1.,0.,0.,0.,0.,0.,0.])
+    unknown={'uri':'unknown','artist':'Other','favorite':True}
+    assert music_features.radio_distance(close,root) is not None
+    assert music_features.radio_distance(unrelated,root) is None
+    assert music_features.radio_distance(unknown,root) is None
+
+def test_song_radio_requires_compatible_energy_and_valence():
+    root={'audio_features':{'model':'test','energy':.2,'valence':.3}}
+    assert music_features.radio_distance({'audio_features':{'model':'test','energy':.25,'valence':.35}},root) is not None
+    assert music_features.radio_distance({'audio_features':{'model':'test','energy':.9,'valence':.8}},root) is None
+
+def test_radio_ranking_prefers_seed_sound_over_unrelated_favourites(tmp_path):
+    model=library.LocalModel(tmp_path/'radio.db')
+    root=track('seed',vector=[1.,0.,0.,0.,0.,0.,0.,0.])
+    near=track('near',artist='New artist',vector=[.99,.1,0.,0.,0.,0.,0.,0.])
+    far=track('far',artist='Familiar artist',vector=[0.,1.,0.,0.,0.,0.,0.,0.])
+    far['favorite']=True
+    picks=model.rank([far,near],{'radio':True,'seed_features':root},5)
+    assert near in picks and far not in picks

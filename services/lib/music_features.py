@@ -173,3 +173,28 @@ def calibrate(features, calibration):
         if low is not None and high is not None and high-low >= .1 and value is not None:
             result[key] = max(0., min(1., (value-low)/(high-low)))
     return result
+
+def radio_distance(item, root):
+    """Seed-anchored eligibility; no play counts and no predecessor drift."""
+    a,b=clean(item.get('audio_features')),clean(root.get('audio_features'))
+    distances=[]
+    if a.get('model') and a.get('model')==b.get('model') and all(k in a and k in b for k in ('energy','valence')):
+        d=math.hypot(a['energy']-b['energy'],a['valence']-b['valence'])
+        if d>.30:return None
+        distances.append(d/.30)
+    x,y=a.get('embedding'),b.get('embedding')
+    if x and y and len(x)==len(y) and a.get('embedding_model') and a['embedding_model']==b.get('embedding_model'):
+        cosine=sum(i*j for i,j in zip(x,y))/math.sqrt(sum(i*i for i in x)*sum(j*j for j in y))
+        if cosine<.65:return None
+        distances.append((1-min(1,cosine))/.35)
+    if distances:return sum(distances)/len(distances)
+    # Missing analysis must not admit the entire favourite catalogue.
+    def genres(v):
+        value=v.get('genres') or v.get('genre') or []
+        return {str(g).strip().casefold() for g in ([value] if isinstance(value,str) else value) if g}
+    shared=genres(item)&genres(root)
+    if shared:return .8
+    from lib import queue_spacing
+    artist=queue_spacing.artist(root)
+    if artist and artist==queue_spacing.artist(item):return .9
+    return None
