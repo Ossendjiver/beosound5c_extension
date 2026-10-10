@@ -30,6 +30,10 @@ def same(a,b):
                for aa,ta in aliases(a) for ab,tb in aliases(b))
 
 def titles_match(a,b):
+    # Work/movement/part numbers distinguish recordings even with near-identical
+    # titles. Fuzzy spelling must not collapse Symphony No 1 into Symphony No 2.
+    numbers_a=re.findall(r'\d+',a);numbers_b=re.findall(r'\d+',b)
+    if numbers_a and numbers_b and numbers_a!=numbers_b:return False
     if a==b or SequenceMatcher(None,a,b).ratio()>=.88:return True
     # Require matching ordered substantive words, not a loose substring match.
     framing={'and','i','was','a','an','the'}

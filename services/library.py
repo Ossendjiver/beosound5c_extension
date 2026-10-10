@@ -466,6 +466,7 @@ class LocalModel:
         slots=queue_spacing.slots(min(len(familiar),max(0,limit-discovery_count)), discovery_count)
         pools={'familiar':familiar,'discovery':discovery}
         chosen=[];anchor=relation_root
+        selected_recordings=mix_policy.RecordingIndex()
         recent_items = list(context.get('queue_previous', []))[-12:]
         if anchor and (not recent_items or recent_items[-1].get('uri') != anchor.get('uri')):
             recent_items.append(anchor)
@@ -478,7 +479,8 @@ class LocalModel:
                 planning_mood = trajectory[min(position, len(trajectory)-1)]
                 bands.clear()
             pool=pools[category]
-            eligible_pool = [p for p in pool if music_mood.compatible(p[1], planning_mood, mood_profiles)] if planning_mood else pool
+            eligible_pool = [p for p in pool if not selected_recordings.matches(p[1])
+                and (not planning_mood or music_mood.compatible(p[1], planning_mood, mood_profiles))]
             if not eligible_pool:
                 continue  # Never use an old bridge as unrelated final-mood filler.
             # Re-evaluate each immediate predecessor. A -> B aversion must not
@@ -488,11 +490,12 @@ class LocalModel:
             shortlist=heapq.nsmallest(64, queue_spacing.spaced(eligible_pool,recent,artist_names),
                 key=lambda pair:(band(pair[1]),-(pair[0]+relations.boost(anchor,pair[1]))))
             future_category = slots[position+1] if position+1 < len(slots) else category
-            future = heapq.nsmallest(12, pools[future_category], key=lambda pair:(band(pair[1]), -pair[0]))
+            future = heapq.nsmallest(12, [p for p in pools[future_category] if not selected_recordings.matches(p[1])], key=lambda pair:(band(pair[1]), -pair[0]))
             selected = planner.choose(shortlist, anchor, recent, recent_items, future)
             details[selected[1]['uri']]['transition_cost'] = round(sequence_plan.transition_cost(anchor, selected[1]), 4)
             details[selected[1]['uri']]['steering_step'] = min(position+1, len(trajectory)) if len(trajectory)>1 else None
             pool.remove(selected);chosen.append(selected[1]);anchor=selected[1]
+            selected_recordings.add(selected[1])
             recent_items = (recent_items+[selected[1]])[-12:]
             recent.append(queue_spacing.artist(selected[1]));recent=recent[-3:]
         selected = chosen[:max(1, limit)]
@@ -785,7 +788,8 @@ class LibraryService:
         paths = (CACHE_LIBRARY, Path('/home/thomas/beosound5c/web/json/mass_playlists.json'),
             Path(os.getenv('BS5C_AUDIO_FEATURES_FILE') or self.cfg.get('audio_features_file') or CACHE_LIBRARY.parent/'audio_features.json'),
             Path(os.getenv('BS5C_PROVIDER_PROFILES_FILE') or CACHE_LIBRARY.parent/'provider_profiles.json'),
-            Path(os.getenv('BS5C_TRACK_ENRICHMENT_FILE') or CACHE_LIBRARY.parent/'track_enrichment.json'))
+            Path(os.getenv('BS5C_TRACK_ENRICHMENT_FILE') or CACHE_LIBRARY.parent/'track_enrichment.json'),
+            Path(os.getenv('BS5C_GENRE_STYLE_FILE') or CACHE_LIBRARY.parent/'genre_style_profiles.json'))
         def stamp(path):
             try:
                 stat=path.stat()
@@ -914,6 +918,17 @@ class LibraryService:
                 if music_features.artist_name(items[uri]).strip():incoming.pop('artist',None)
                 items[uri]=music_features.merge(items[uri],incoming)
                 if metadata.get('genre_source')=='soundcloud-tags':items[uri]['genres']=metadata.get('genres',[])
+        except (OSError,ValueError,TypeError,AttributeError):
+            pass
+        # Precomputed, validated acoustic style evidence never replaces provider tags.
+        style_path=Path(os.getenv('BS5C_GENRE_STYLE_FILE') or CACHE_LIBRARY.parent/'genre_style_profiles.json')
+        try:
+            from lib import genre_style
+            payload=json.loads(style_path.read_text())
+            if payload.get('version')==1 and payload.get('report',{}).get('enabled') is True:
+                for uri,entry in payload.get('tracks',{}).items():
+                    if uri in items and genre_style.accepted(entry.get('genre_evidence')):
+                        items[uri].update(inferred_genres=entry.get('inferred_genres',[]),genre_evidence=entry['genre_evidence'])
         except (OSError,ValueError,TypeError,AttributeError):
             pass
         genre_index=track_enrichment.artist_genres(items.values())

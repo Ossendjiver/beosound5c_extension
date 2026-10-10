@@ -13,13 +13,13 @@ def test_repertoire_detection_requires_work_evidence():
 
 
 def test_rnb_subgenres_share_family():
-    assert radio_genres.fallback({'genres':['Alternative R&B']},{'genres':['Contemporary R&B']})==1.4
+    assert radio_genres.fallback({'genres':['Alternative R&B']},{'genres':['Contemporary R&B']})==1.32
 
 
 def test_specific_metadata_genre_precedes_general_family():
     root={'metadata':{'genres':['Deep House']}}
     assert radio_genres.fallback({'genres':'Deep-House; Electronic'},root)==1.1
-    assert radio_genres.fallback({'genres':['Techno']},root)==1.4
+    assert radio_genres.fallback({'genres':['Techno']},root)==1.32
 
 
 def test_pop_album_classical_tag_does_not_admit_crossover():

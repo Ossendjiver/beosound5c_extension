@@ -191,7 +191,7 @@ def test_radio_falls_back_from_audio_to_specific_then_broad_genre():
     broader={**far,'uri':'broad','genres':['Tech House']}
     unrelated={**far,'uri':'rock','genres':['Indie Rock']}
     assert music_features.radio_distance(far,root)==1.1
-    assert music_features.radio_distance(broader,root)==1.4
+    assert music_features.radio_distance(broader,root)==1.32
     assert music_features.radio_distance(unrelated,root) is None
 
 def test_solveig_radio_can_use_other_classical_repertoire_without_analysis():
@@ -207,3 +207,4 @@ def test_classical_fallback_does_not_admit_ambiguous_or_mixed_album_tags():
     root={'name':'Grieg: Peer Gynt Op. 23','artist':'Maisky'}
     assert music_features.radio_distance({'name':'All Night','artist':'Beyonce','genres':['Romantic','Soul']},root) is None
     assert music_features.radio_distance({'name':'Hybrid pop','artist':'Other','genres':['Classical','Pop','Electronic']},root) is None
+

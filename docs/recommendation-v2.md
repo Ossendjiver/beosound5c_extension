@@ -132,3 +132,34 @@ benchmark. No HA configuration change is needed for the existing API routes.
 
 Optional Essentia model weights have separate CC BY-NC-SA licensing; installing
 code does not bundle those weights. See `docs/mood-audio-analysis.md`.
+
+### Genre/style evidence and feedback (Home Media 0.7.51)
+
+Radio now distinguishes neighbouring specific styles from incompatible styles
+within a broad family: e.g. Deep House/Tech House is closer than generic
+Electronic; ambient and club tracks no longer qualify solely as Electronic.
+Mood play retains its wider genre flexibility and all acoustic/duration guards.
+
+`tools/build_genre_style_profiles.py` uses existing matched-model audio
+embeddings and explicit metadata, never play counts, titles or previous inferred
+tags. It excludes the query artist, limits artist training contributions, and
+separates short tracks from long mixes. Before emitting any evidence it tests
+400 artist-held-out queries, requires at least three trained families, and
+accepts each label only with at least ten validation predictions and >=85%
+metadata agreement. Predictions also require >=3 distinct supporting artists,
+>=0.9 cosine similarity and >=80% weighted agreement. This is cautious label
+transfer, not a calibrated universal genre classifier. Unvalidated specific
+styles remain unknown. Provider tags take precedence.
+
+The atomic SSD sidecar is `genre_style_profiles.json`; playback needs no NumPy.
+The optional `install/configs/beo-genre-style.{service,timer}` rebuilds it daily
+from newly profiled music with capped CPU/memory and single BLAS threads, without
+sampling, network access, player or queue commands. Install the units with the
+actual user/checkout/SSD Python paths for other hosts. Analysis Python needs the
+existing library dependencies plus NumPy. No library data is committed.
+
+Home Media taps refresh current session state before voting; long holds expose
+vote-scoped reasons. Home Media Bridge 0.1.3 passes these bounded reasons over HA.
+A stale song/session is rejected instead of voting for the next song. Overplayed
+and disliked-recording feedback excludes that recording for the session without
+incorrectly suppressing its entire style. Refreshes preserve the playing item.

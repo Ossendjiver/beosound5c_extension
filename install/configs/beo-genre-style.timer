@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily BS5c genre/style refresh from newly profiled tracks
+
+[Timer]
+OnCalendar=*-*-* 05:00:00
+RandomizedDelaySec=30m
+Persistent=true
+Unit=beo-genre-style.service
+
+[Install]
+WantedBy=timers.target

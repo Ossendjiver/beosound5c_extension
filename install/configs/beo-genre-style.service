@@ -1,0 +1,16 @@
+[Unit]
+Description=Refresh BS5c library acoustic genre evidence
+After=beo-library.service
+
+[Service]
+Type=oneshot
+User=thomas
+WorkingDirectory=/home/thomas/beosound5c
+EnvironmentFile=-/etc/beosound5c/secrets.env
+Environment=OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1
+ExecStart=/media/local/cache/audio-analysis/venv/bin/python tools/build_genre_style_profiles.py
+CPUQuota=25%
+MemoryMax=512M
+Nice=19
+IOSchedulingClass=idle
+TimeoutStartSec=1800
