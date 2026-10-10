@@ -177,3 +177,10 @@ def test_radio_ranking_prefers_seed_sound_over_unrelated_favourites(tmp_path):
     far['favorite']=True
     picks=model.rank([far,near],{'radio':True,'seed_features':root},5)
     assert near in picks and far not in picks
+
+def test_classical_work_radio_cannot_admit_pop_with_similar_embedding():
+    root=track('seed',title='Grieg: Peer Gynt, Op. 23: Solveig Song')
+    pop=track('pop',artist='Other',title='Borderline')
+    classical=track('other',artist='Other',title='Bach: Concerto in D Minor BWV 974')
+    assert music_features.radio_distance(pop,root) is None
+    assert music_features.radio_distance(classical,root) is not None

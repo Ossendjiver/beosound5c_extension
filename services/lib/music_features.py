@@ -1,5 +1,6 @@
 """Validated acoustic descriptors, independent of listening/familiarity counters."""
 import math
+import re
 
 
 def number(value, low, high):
@@ -177,16 +178,28 @@ def calibrate(features, calibration):
 def radio_distance(item, root):
     """Seed-anchored eligibility; no play counts and no predecessor drift."""
     a,b=clean(item.get('audio_features')),clean(root.get('audio_features'))
+    from lib import queue_spacing
+    same_artist=bool(queue_spacing.artist(root) and queue_spacing.artist(root)==queue_spacing.artist(item))
+    # Explicit work identifiers are repertoire evidence, not inferred mood.
+    def classical_work(v):
+        name=str(v.get('name') or v.get('title') or '')
+        return bool(re.search(r'\b(?:BWV\s*\d+|Op\.?\s*\d+|K\.\s*\d+|Concerto|Sonata|Symphony)\b',name,re.I))
+    if classical_work(root) and not same_artist and not classical_work(item) and 'classical' not in str(item.get('genres') or item.get('genre') or '').casefold():
+        return None
     distances=[]
+    for key,maximum in [('rms',1.75),('spectral_centroid_hz',1.8)]:
+        if a.get(key) and b.get(key):
+            ratio=max(a[key]/b[key],b[key]/a[key])
+            if ratio>maximum:return None
     if a.get('model') and a.get('model')==b.get('model') and all(k in a and k in b for k in ('energy','valence')):
         d=math.hypot(a['energy']-b['energy'],a['valence']-b['valence'])
-        if d>.30:return None
-        distances.append(d/.30)
+        if d>.20:return None
+        distances.append(d/.20)
     x,y=a.get('embedding'),b.get('embedding')
     if x and y and len(x)==len(y) and a.get('embedding_model') and a['embedding_model']==b.get('embedding_model'):
         cosine=sum(i*j for i,j in zip(x,y))/math.sqrt(sum(i*i for i in x)*sum(j*j for j in y))
-        if cosine<.65:return None
-        distances.append((1-min(1,cosine))/.35)
+        if cosine<.85:return None
+        distances.append((1-min(1,cosine))/.15)
     if distances:return sum(distances)/len(distances)
     # Missing analysis must not admit the entire favourite catalogue.
     def genres(v):
