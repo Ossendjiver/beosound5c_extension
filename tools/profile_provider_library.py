@@ -282,7 +282,7 @@ def update(entries,payload,command,online,analyzer,local_aliases,*,max_items=500
                 sample_url=command('music/tracks/preview',{'provider_instance_id_or_domain':provider,'item_id':identifier})
                 if not isinstance(sample_url,str):raise ValueError('Invalid preview response')
                 features=analyzer.analyze(decode(preview(sample_url,base,token)))
-                features.update(analysis='provider-preview-four-patches-v1')
+                features.update(analysis='provider-preview-four-patches-v2', coverage='preview_only')
                 record.update(metadata=music_features.merge(metadata,{'audio_features':features}),source='ma_preview',audio_source='ma_preview',status='sample_ready',analysis_fingerprint=analyzer.fingerprint)
                 counts['sampled']+=1
             record.pop('error',None)
@@ -311,12 +311,13 @@ def progress_status(payload, *, running):
             'ready':sum(profiles.useful(r.get('metadata',{})) or r.get('status')=='local_audio_available' for r in records)}
 
 
-def pending_entries(entries,payload,*,respect_retry_backoff=False):
+def pending_entries(entries,payload,*,respect_retry_backoff=False,upgrade_quality=False):
     selected=[]
     for entry in entries:
         record=payload['tracks'].get(entry['uri'],{})
         if respect_retry_backoff and record.get('status')=='retry_pending' and record.get('next_check',0)>time.time():continue
-        if record.get('status') in ('awaiting_sample','sampling_deferred_busy','retry_pending','metadata_ready') and not profiles.useful(record.get('metadata',{})):
+        outdated = upgrade_quality and record.get('status')=='sample_ready' and not (record.get('metadata',{}).get('audio_features') or {}).get('profile_quality_version')
+        if outdated or record.get('status') in ('awaiting_sample','sampling_deferred_busy','retry_pending','metadata_ready') and not profiles.useful(record.get('metadata',{})):
             record['next_check']=0
             selected.append(entry)
     return selected
@@ -329,6 +330,8 @@ def main():
     parser.add_argument('--models',type=Path,default=Path('/media/local/cache/audio-analysis/models'))
     parser.add_argument('--full-sweep',action='store_true',help='Visit all provider tracks once, resuming an interrupted sweep')
     parser.add_argument('--respect-retry-backoff',action='store_true',help='Retain failed-track retry delays during automatic recovery')
+    parser.add_argument('--priority-file',type=Path,help='Optional JSON URI-to-priority map for idle profiling')
+    parser.add_argument('--upgrade-quality',action='store_true',help='Also revisit preview profiles lacking coverage/confidence metadata')
     parser.add_argument('--retry-pending',action='store_true',help='After a completed sweep, retry only needed profiles while idle')
     parser.add_argument('--max-items',type=int,default=500);parser.add_argument('--max-samples',type=int,default=40);parser.add_argument('--max-seconds',type=int,default=3600)
     args=parser.parse_args()
@@ -351,9 +354,12 @@ def main():
         if args.retry_pending:
             if not payload.get('sweep',{}).get('complete') or not players_idle(command):
                 print(json.dumps({'skipped':True,'reason':'Sweep incomplete or playback not idle'}));return 0
-            entries=pending_entries(entries,payload,respect_retry_backoff=args.respect_retry_backoff)
+            entries=pending_entries(entries,payload,respect_retry_backoff=args.respect_retry_backoff,upgrade_quality=args.upgrade_quality)
             if not entries:
                 print(json.dumps({'skipped':True,'reason':'No profiles need sampling'}));return 0
+        from lib.profile_priorities import ordered
+        priorities=json.loads(args.priority_file.read_text()) if args.priority_file else {}
+        entries=ordered(entries,payload['tracks'],priorities)
         if args.full_sweep:
             fingerprint=hashlib.sha256(json.dumps(sorted((e['uri'],profiles.fingerprint(e)) for e in entries)).encode()).hexdigest()
             sweep=payload.get('sweep',{})

@@ -118,6 +118,22 @@ class Prior:
                 scores.append(score * .5 ** (age / (90 * 86400)))
         return min(MAX_BOOST, max(scores, default=0.0))
 
+    def describe(self, item: dict) -> dict:
+        """Expose novelty independently of trusted playlist membership."""
+        key, uris = identity(item), aliases(item)
+        local = set(self.local_keys.get(key, ()))
+        matched = set(self.keys.get(key, ()))
+        for uri in uris:
+            local.update(self.local_uris.get(uri, ()))
+            matched.update(self.uris.get(uri, ()))
+        signals = [s for uri in matched for s in self.cache[uri].get('signals', {}).values()
+                   if 0 <= self.now-number(s.get('observed_at')) <= RETENTION]
+        heard = bool(local or any(number(s.get('count')) or s.get('history') for s in signals))
+        provenance = sorted({source for uri in matched for source in self.cache[uri].get('signals', {})})
+        return {'recording_heard': heard, 'local_observations': len(local),
+                'strength': min(1., self.boost(item)/MAX_BOOST),
+                'sources': provenance[:8], 'imported_reference': any(s.startswith(('most-played:', 'reference-rank')) for s in provenance)}
+
 
 def boost(item: dict, cache: dict, local_history: list, now=None) -> float:
     return Prior(cache, local_history, now).boost(item)

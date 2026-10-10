@@ -6,10 +6,10 @@ from lib import music_mood as mood
 
 
 def test_wheel_axes_rings_and_invalid_coordinates():
-    assert mood.selection(0, 0)['valence'] == 1
-    assert mood.selection(90, .5)['energy'] == 1
-    assert mood.selection(180, 1)['valence'] == 0
-    assert mood.selection(270, .5)['energy'] == 0
+    assert mood.selection(0, 0)['valence'] == .8
+    assert mood.selection(90, .5)['energy'] == .8
+    assert mood.selection(180, 1)['valence'] == pytest.approx(.2)
+    assert mood.selection(270, .5)['energy'] == pytest.approx(.2)
     assert mood.selection(-90, 1)['angle'] == 270
     assert [mood.selection(0,r)['discovery_fraction'] for r in [0,.5,1]] == [0,.37,.9]
     for a,r in [(math.nan,.5),(0,math.inf),(0,-1),(0,2)]:

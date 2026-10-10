@@ -136,6 +136,8 @@ def test_batched_inference_preserves_section_coverage_and_rejects_silence():
         def run(self,outputs,inputs):
             return [np.tile(np.array([5,7],dtype=np.float32), (len(inputs['embeddings']),1))]
     analyzer=object.__new__(Analyzer)
+    from types import SimpleNamespace
+    analyzer.heads=SimpleNamespace(predict=lambda values: {})
     analyzer.embedding=Embedding();analyzer.mood=Mood()
     audio=np.sin(np.arange(30*16000,dtype=np.float32)*.04)*.1
     result=analyzer.analyze([audio]*3)

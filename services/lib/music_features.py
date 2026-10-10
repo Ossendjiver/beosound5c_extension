@@ -2,6 +2,7 @@
 import math
 import re
 from . import track_enrichment
+from . import profile_quality
 
 
 def number(value, low, high):
@@ -29,6 +30,31 @@ def clean(value):
         result.pop('valence', None)
     if value.get('model'):
         result['model'] = str(value['model'])[:200]
+    for key in ('profile_confidence', 'bpm_confidence'):
+        n = number(value.get(key), 0, 1)
+        if n is not None:
+            result[key] = n
+    for key in ('sample_seconds', 'sample_sections'):
+        n = number(value.get(key), 0, 86400)
+        if n is not None:
+            result[key] = n
+    for key in ('coverage', 'analysis', 'classifier_fingerprint'):
+        if isinstance(value.get(key), str):
+            result[key] = value[key][:100]
+    if value.get('profile_quality_version') == 1:
+        result['profile_quality_version'] = 1
+    patches = value.get('section_moods')
+    if isinstance(patches, list):
+        result['section_moods'] = [dict(energy=e, valence=v) for e, v in
+            ((number(x.get('energy'), 0, 1), number(x.get('valence'), 0, 1))
+             for x in patches[:32] if isinstance(x, dict)) if e is not None and v is not None]
+    tags = profile_quality.classifiers(value.get('classifiers'))
+    if tags:
+        result['classifiers'] = tags
+    variation = value.get('mood_variation')
+    if isinstance(variation, dict):
+        result['mood_variation'] = {k: number(v, 0, 1) for k, v in variation.items()
+                                    if k in ('energy', 'valence') and number(v, 0, 1) is not None}
     vector = value.get('embedding')
     if isinstance(vector, list) and 8 <= len(vector) <= 2048:
         values = [number(v, -1e6, 1e6) for v in vector]
@@ -188,38 +214,48 @@ def calibrate(features, calibration):
             result[key] = max(0., min(1., (value-low)/(high-low)))
     return result
 
-def _radio_audio_distance(item, root):
+def radio_audio_assessment(item, root, sound=None):
     """Seed-anchored eligibility; no play counts and no predecessor drift."""
-    a,b=clean(item.get('audio_features')),clean(root.get('audio_features'))
+    a,b=(sound.features(item),sound.features(root)) if sound else (clean(item.get('audio_features')),clean(root.get('audio_features')))
     from lib import queue_spacing
     same_artist=bool(queue_spacing.artist(root) and queue_spacing.artist(root)==queue_spacing.artist(item))
     from lib import radio_genres
     if radio_genres.classical_work(root) and not same_artist and not radio_genres.classical_work(item) and 'classical' not in radio_genres.labels(item):
-        return None
+        return {'status': 'incompatible', 'reason': 'classical_work', 'confidence': 1.}
     distances=[]
-    for key,maximum in [('rms',1.75),('spectral_centroid_hz',1.8)]:
+    certainty = min(profile_quality.confidence(a), profile_quality.confidence(b))
+    # RMS differs across mastering and provider normalization: it is not a veto.
+    for key,maximum in [('spectral_centroid_hz',1.8)]:
         if a.get(key) and b.get(key):
             ratio=max(a[key]/b[key],b[key]/a[key])
-            if ratio>maximum:return None
+            if ratio>maximum:return {'status': 'incompatible', 'reason': key, 'confidence': certainty}
     if a.get('model') and a.get('model')==b.get('model') and all(k in a and k in b for k in ('energy','valence')):
         d=math.hypot(a['energy']-b['energy'],a['valence']-b['valence'])
-        if d>.20:return None
+        if d>.20:return {'status': 'incompatible', 'reason': 'mood_distance', 'confidence': certainty}
         distances.append(d/.20)
     x,y=a.get('embedding'),b.get('embedding')
     if x and y and len(x)==len(y) and a.get('embedding_model') and a['embedding_model']==b.get('embedding_model'):
         cosine=sum(i*j for i,j in zip(x,y))/math.sqrt(sum(i*i for i in x)*sum(j*j for j in y))
-        if cosine<.85:return None
+        if cosine<.85:return {'status': 'incompatible', 'reason': 'embedding_distance', 'confidence': certainty}
         distances.append((1-min(1,cosine))/.15)
-    if distances:return sum(distances)/len(distances)
-    return None
+    if distances:
+        return {'status': 'compatible', 'distance': sum(distances)/len(distances), 'confidence': certainty}
+    return {'status': 'unknown', 'reason': 'missing_comparable_audio', 'confidence': 0.}
 
 
-def radio_distance(item, root):
+def _radio_audio_distance(item, root):
+    assessment = radio_audio_assessment(item, root)
+    return assessment.get('distance') if assessment['status'] == 'compatible' else None
+
+
+def radio_distance(item, root, sound=None):
     """Close audio, then specific genre, then broader family; never popularity."""
     from lib import radio_genres,queue_spacing
     if radio_genres.conflicting(item,root):return None
-    acoustic=_radio_audio_distance(item,root)
-    if acoustic is not None:return acoustic
+    assessment=radio_audio_assessment(item,root,sound)
+    if assessment['status']=='compatible':return assessment['distance']
+    if assessment['status']=='incompatible' and assessment['confidence'] >= .65:
+        return None  # A weaker tag must not override trustworthy contradictory audio.
     genre=radio_genres.fallback(item,root)
     if genre is not None:return genre
     artist=queue_spacing.artist(root)

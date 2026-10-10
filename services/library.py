@@ -48,7 +48,7 @@ from lib import music_familiarity
 from lib.mood_mix import MoodMixes
 from lib import mix_policy
 from lib import music_features, provider_profiles, music_relations
-from lib import session_intent
+from lib import session_intent, taste_profiles, sequence_plan, recommendation_audit, profile_quality
 from lib.session_feedback import SessionFeedback
 from lib.prompt_playback import Guard as PromptPlaybackGuard
 
@@ -181,6 +181,10 @@ class LocalModel:
             );
             CREATE INDEX IF NOT EXISTS idx_track_relations_source ON track_relations(source_key,ts);
             CREATE TABLE IF NOT EXISTS feedback_receipts (event_id TEXT PRIMARY KEY, ts REAL NOT NULL);
+            CREATE TABLE IF NOT EXISTS recommendation_runs (
+              id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL NOT NULL,
+              queue_id TEXT NOT NULL, payload TEXT NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS kv (
               key TEXT PRIMARY KEY,
               value TEXT NOT NULL
@@ -206,8 +210,12 @@ class LocalModel:
             self.db.execute("ALTER TABLE listens ADD COLUMN end_reason TEXT NOT NULL DEFAULT 'unknown'")
         self.db.commit()
         self.playlist_relations = music_relations.Playlists()
+        self.last_trace = {}
+        self._taste_cache = (None, [])
 
     def put_kv(self, key: str, value: Any) -> None:
+        if key in ('favorite_tracks', 'music_familiarity', 'track_metadata'):
+            self.catalogue_generation = getattr(self, 'catalogue_generation', 0)+1
         self.db.execute(
             "INSERT INTO kv(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
             (key, json.dumps(value)),
@@ -289,13 +297,23 @@ class LocalModel:
         )
 
     def rank(self, candidates: list[dict[str, Any]], context: dict[str, Any], limit: int) -> list[dict[str, Any]]:
+        context = dict(context)
+        if context.get('mood'):
+            context['mood'] = music_mood.resolve(context['mood'], self.get_kv('mood_calibration_v1', {}))
+        audit = recommendation_audit.Trace(context, len(candidates))
+        details = {}
         feedback = self.get_kv("music_feedback", {})
         rejected = {self._candidate_key(i) for i in candidates if feedback.get(i.get("uri")) == "dislike"}
+        for item in candidates:
+            if self._candidate_key(item) in rejected:
+                audit.reject('global_dislike', item)
         candidates = [i for i in candidates if self._candidate_key(i) not in rejected]
         deduplicated = {}
         for item in candidates:
             key = self._candidate_key(item)
             existing = deduplicated.get(key)
+            if existing is not None:
+                audit.reject('provider_duplicate', item)
             if existing is None or item.get("favorite") and not existing.get("favorite"):
                 deduplicated[key] = item
             elif item.get("trusted"):
@@ -304,6 +322,15 @@ class LocalModel:
         history = self._history()
         sound = music_features.Similarity()
         recent_intent = session_intent.accepted(history, context.get('intent_catalogue', candidates), context.get('room', ''), time.time())
+        catalogue = context.get('intent_catalogue', candidates)
+        revision = (max((r['id'] for r in history if r['origin']=='manual' and r['reward']>=1), default=0),
+                    len(catalogue), context.get('catalogue_revision'))
+        if revision != self._taste_cache[0]:
+            self._taste_cache = (revision, taste_profiles.fit(history, catalogue, time.time()))
+        tastes = taste_profiles.select(self._taste_cache[1], context, recent_intent, time.time())
+        history_by_artist = {}
+        for row in history:
+            history_by_artist.setdefault(row['artist'].casefold(), []).append(row)
         votes = context.get('session_votes') or []
         familiarity = music_familiarity.Prior(self.get_kv("music_familiarity", {}), history)
         feedback = self.get_kv("music_feedback", {})
@@ -321,9 +348,13 @@ class LocalModel:
             selected_artist = self._candidate_key(explicit_seed)[0]
         seed_artists = {self._candidate_key(i)[0] for i in seeds if self._candidate_key(i)[0]}
         if not seeds:
+            audit.reject('no_deliberate_baseline', {})
+            self.last_trace = audit.finish([], details)
             return []  # Never substitute random catalogue entries for an empty baseline.
         mood = context.get("mood")
         mood_profiles = self.get_kv("mood_profiles", {})
+        trajectory = music_mood.trajectory(mood, context.get('steering_from')) if not context.get('radio') else [mood]
+        planning_mood = mood
         now_ts = time.time()
         skip_history = list(self.db.execute(
             "SELECT * FROM listens WHERE ts>=? AND origin!='legacy' AND (end_reason='skip' OR reward=-2)",
@@ -338,35 +369,48 @@ class LocalModel:
         familiar, discovery = [], []
         for item in candidates:
             if not _music_item(item) or not item.get("uri"):
+                audit.reject('not_playable_music', item)
                 continue
             if any(v['vote'] == -1 and mix_policy.same_recording(item, v['item']) for v in votes):
+                audit.reject('session_feedback', item)
                 continue
             if context.get('radio'):
-                distance = music_features.radio_distance(item, explicit_seed)
-                if distance is None:continue
+                distance = music_features.radio_distance(item, explicit_seed, sound)
+                if distance is None:
+                    audit.reject('radio_incompatible_or_unknown', item)
+                    continue
                 radio_distances[item['uri']] = distance
-            if mood and not music_mood.compatible(item, mood, mood_profiles):
+            if mood and not any(music_mood.compatible(item, target, mood_profiles) for target in trajectory):
+                audit.reject('mood_incompatible_or_uncertain', item)
                 continue  # Familiarity never admits an unknown or incompatible mood.
             key = self._candidate_key(item)
             identity = item["uri"]
             blocked, skip_penalty = skip_policy.recent(item, skip_history, now_ts)
-            if blocked: continue
+            if blocked:
+                audit.reject('recent_skip_cooldown', item)
+                continue
             if feedback.get(identity) == "dislike":
+                audit.reject('global_dislike', item)
                 continue
             trusted = item.get("trusted") or item.get("favorite") or key in known or feedback.get(identity) == "like" or familiarity.baseline(item) or bool(selected_artist and key[0] == selected_artist)
             if not trusted and key[0] not in seed_artists and not context.get('radio') and not (mood and mood["discovery_fraction"] >= .1 and music_mood.profile(item, mood_profiles) and music_mood.adjustment(item, mood, mood_profiles) >= -2):
+                audit.reject('insufficient_preference_evidence', item)
                 continue  # Discovery is constrained to artists already represented by seeds.
-            score = 12.0 if item.get("favorite") else 10.0 if trusted else 0.0
-            score += familiarity.boost(item) - skip_penalty
+            direct = bool(item.get('trusted') or key in known or feedback.get(identity)=='like')
+            score = 12.0 if item.get("favorite") else 10.0 if direct else 3.0 if trusted else 0.0
+            familiar_boost = familiarity.boost(item)
+            score += familiar_boost - skip_penalty
             if context.get("seed_artist") == key[0] and key[0]:
                 score += 3.5
             if mood:
                 score += music_mood.adjustment(item, mood, mood_profiles)
             score += .5 * sound(item, explicit_seed)
             score += session_intent.bonus(item, recent_intent, votes, {}, similarity=sound)
-            for row in history:
-                if row["artist"].casefold() != key[0] or not key[0]:
-                    continue
+            taste_bonus = taste_profiles.bonus(item, tastes, sound) if not context.get('radio') else 0.
+            score += taste_bonus
+            graph_bonus = relations.boost(relation_root, item)
+            score += .5*max(0., min(1., graph_bonus))
+            for row in history_by_artist.get(key[0], ()) if key[0] else ():
                 same_track = row["title"].casefold() == key[1]
                 reward = float(row["reward"])
                 if row["origin"] == "legacy":
@@ -388,6 +432,17 @@ class LocalModel:
                 if same_track and now_ts - row["ts"] < 2 * 3600:
                     score -= 1.5  # Modest temporary suppression; favourites remain eligible.
             score += random.Random(f"{identity}:{int(now_ts // 3600)}").uniform(-0.1, 0.1)
+            evidence = familiarity.describe(item)
+            p = music_mood.profile(item, mood_profiles)
+            item['_selection_category'] = 'familiar' if trusted or context.get('radio') else 'discovery'
+            details[identity] = {'score': round(score, 4), 'category': item['_selection_category'],
+                'recording_novelty': 'heard' if evidence['recording_heard'] else 'unheard',
+                'familiarity': evidence, 'familiarity_boost': round(familiar_boost, 4),
+                'skip_penalty': round(skip_penalty, 4), 'taste_bonus': round(taste_bonus, 4),
+                'root_relationship': round(graph_bonus, 4), 'mood_source': p.get('source') if p else None,
+                'profile_confidence': profile_quality.confidence(item.get('audio_features') or {}),
+                'mood_distance': round(music_mood.distance(item, mood, mood_profiles), 4) if mood and p else None,
+                'radio_distance': radio_distances.get(identity)}
             (familiar if trusted or context.get('radio') else discovery).append((score, item))
         bands={}
         def band(item):
@@ -396,30 +451,55 @@ class LocalModel:
                 if context.get('radio'):
                     bands[uri]=int(radio_distances[uri]/.1)
                     return bands[uri]
-                bands[uri]=int(music_mood.distance(item,mood,mood_profiles)/.05) if mood else 0
+                bands[uri]=int(music_mood.distance(item,planning_mood,mood_profiles)/.05) if planning_mood else 0
             return bands[uri]
         fraction = mood["discovery_fraction"] if mood else 0.1
-        discovery_count = min(int(math.floor(limit * fraction + .5)), len(discovery), int(len(familiar) * fraction / (1 - fraction)))
+        balance = context.get('discovery_balance') or {}
+        prior_total = max(0, int(balance.get('total', 0)))
+        prior_discovery = max(0, int(balance.get('discovery', 0)))
+        requested = max(0, min(limit, int(math.floor((limit+prior_total)*fraction-prior_discovery+.5))))
+        # Do not exceed the session quota simply because familiar candidates ran out.
+        capacity = max(0, int(math.floor((fraction*(len(familiar)+prior_total)-prior_discovery)/(1-fraction)+1e-9)))
+        discovery_count = min(requested, len(discovery), capacity)
         from lib import queue_spacing
         artist_names = {item['uri']: queue_spacing.artist(item) for _,item in familiar+discovery}
         slots=queue_spacing.slots(min(len(familiar),max(0,limit-discovery_count)), discovery_count)
         pools={'familiar':familiar,'discovery':discovery}
         chosen=[];anchor=relation_root
+        recent_items = list(context.get('queue_previous', []))[-12:]
+        if anchor and (not recent_items or recent_items[-1].get('uri') != anchor.get('uri')):
+            recent_items.append(anchor)
+        planner = sequence_plan.Planner(sound, relations, band, artist_names, mood, mood_profiles)
         recent=[queue_spacing.artist(i) for i in context.get('queue_previous', [])][-3:]
         root_artist=queue_spacing.artist(context.get('relation_seed') or context.get('seed_features') or {})
         if root_artist and (not recent or recent[-1]!=root_artist):recent.append(root_artist)
-        for category in slots:
+        for position, category in enumerate(slots):
+            if mood:
+                planning_mood = trajectory[min(position, len(trajectory)-1)]
+                bands.clear()
             pool=pools[category]
+            eligible_pool = [p for p in pool if music_mood.compatible(p[1], planning_mood, mood_profiles)] if planning_mood else pool
+            if not eligible_pool:
+                continue  # Never use an old bridge as unrelated final-mood filler.
             # Re-evaluate each immediate predecessor. A -> B aversion must not
             # suppress B globally after choosing C; neither signal crosses a mood band.
             # Refine a bounded shortlist acoustically, rather than comparing
             # every library embedding with every upcoming track on the device.
-            shortlist=heapq.nsmallest(64, queue_spacing.spaced(pool,recent,artist_names),
+            shortlist=heapq.nsmallest(64, queue_spacing.spaced(eligible_pool,recent,artist_names),
                 key=lambda pair:(band(pair[1]),-(pair[0]+relations.boost(anchor,pair[1]))))
-            selected=min(shortlist,key=lambda pair:(band(pair[1]),-(pair[0]+relations.boost(anchor,pair[1])+.7*sound(pair[1],anchor))))
+            future_category = slots[position+1] if position+1 < len(slots) else category
+            future = heapq.nsmallest(12, pools[future_category], key=lambda pair:(band(pair[1]), -pair[0]))
+            selected = planner.choose(shortlist, anchor, recent, recent_items, future)
+            details[selected[1]['uri']]['transition_cost'] = round(sequence_plan.transition_cost(anchor, selected[1]), 4)
+            details[selected[1]['uri']]['steering_step'] = min(position+1, len(trajectory)) if len(trajectory)>1 else None
             pool.remove(selected);chosen.append(selected[1]);anchor=selected[1]
+            recent_items = (recent_items+[selected[1]])[-12:]
             recent.append(queue_spacing.artist(selected[1]));recent=recent[-3:]
-        return chosen[:max(1, limit)]
+        selected = chosen[:max(1, limit)]
+        self.last_trace = audit.finish(selected, details)
+        self.last_trace.update(taste_profiles=len(tastes), requested_discovery_fraction=fraction,
+                               eligible_count=len(details), planner_paths=planner.steps, steering_steps=len(trajectory))
+        return selected
 
 
 
@@ -699,6 +779,24 @@ class LibraryService:
             await asyncio.sleep(12)
 
     def _load_library(self) -> list[dict[str, Any]]:
+        # Invalidate on atomic sidecar replacement, relevant KV changes or seed refresh.
+        # A short TTL also covers edits made outside this service. Return new top-level
+        # dictionaries so ranking annotations cannot mutate the cached catalogue.
+        paths = (CACHE_LIBRARY, Path('/home/thomas/beosound5c/web/json/mass_playlists.json'),
+            Path(os.getenv('BS5C_AUDIO_FEATURES_FILE') or self.cfg.get('audio_features_file') or CACHE_LIBRARY.parent/'audio_features.json'),
+            Path(os.getenv('BS5C_PROVIDER_PROFILES_FILE') or CACHE_LIBRARY.parent/'provider_profiles.json'),
+            Path(os.getenv('BS5C_TRACK_ENRICHMENT_FILE') or CACHE_LIBRARY.parent/'track_enrichment.json'))
+        def stamp(path):
+            try:
+                stat=path.stat()
+                return (str(path), stat.st_mtime_ns, stat.st_size, stat.st_ino)
+            except OSError:
+                return (str(path), None)
+        signature = (tuple(stamp(p) for p in paths), getattr(self.model,'catalogue_generation',0),
+                     id(self._seed_metadata), len(self._seed_metadata), tuple(self.cfg.get('trusted_playlists', [])))
+        cached = getattr(self, '_loaded_catalogue', None)
+        if cached and cached[0]==signature and time.monotonic()-cached[1]<60:
+            return [dict(item) for item in cached[2]]
         raw: Any = None
         for path in (CACHE_LIBRARY, Path("/home/thomas/beosound5c/web/json/mass_playlists.json")):
             try:
@@ -830,7 +928,9 @@ class LibraryService:
             with self.model.db:
                 music_relations.backfill(self.model.db,self.model.playlist_relations.identity)
                 self.model.db.execute("INSERT INTO kv(key,value) VALUES('track_relations_backfill_v1','true') ON CONFLICT(key) DO UPDATE SET value=excluded.value")
-        return list(items.values())
+        result = list(items.values())
+        self._loaded_catalogue = (signature, time.monotonic(), result)
+        return [dict(item) for item in result]
 
     def _context_for_room(self, room: str) -> dict[str, Any]:
         value = dict(self.context)
@@ -978,11 +1078,13 @@ class LibraryService:
     async def recommend_music(self, room: str, limit: int, mood: dict | None = None) -> list[dict[str, Any]]:
         candidates = self._load_library()
         context = self._context_for_room(room)
+        context['catalogue_revision'] = (getattr(self, '_audio_feature_stamp', None), getattr(self, '_provider_profile_stamp', None))
         if mood or self.pattern_mood(room): context["mood"] = mood or self.pattern_mood(room)
         playing=self._external_media if self._external_media and self._external_media.get('room')==room else self._current_media
         if playing and str(playing.get('room') or 'lounge')==room:
             context['relation_seed'] = music_features.merge(next((c for c in candidates if mix_policy.same_recording(c, playing)), {}), playing)
         picks = self.model.rank(candidates, context, max(1, min(limit, 50)))
+        recommendation_audit.store(self.model.db, self.model.last_trace)
         self._automatic_keys = {self.model._candidate_key(item) for item in picks}
         return picks
 
@@ -1000,6 +1102,9 @@ class LibraryService:
         policy = policy or {}
         radio = policy.get('mode') == 'radio'
         context['radio'] = radio
+        context['queue_id'] = policy.get('queue_id', '')
+        context['discovery_balance'] = policy.get('discovery_balance') or {}
+        context['catalogue_revision'] = (getattr(self, '_audio_feature_stamp', None), getattr(self, '_provider_profile_stamp', None))
         selected = mood if radio else mood or self.pattern_mood(room)
         if selected:
             context["mood"] = selected
@@ -1024,6 +1129,8 @@ class LibraryService:
         policy = policy or {}
         current = policy.get('relation_seed') or seed or {}
         context['relation_seed'] = music_features.merge(next((c for c in candidates if c.get('uri') == current.get('uri')), {}), current)
+        if policy.get('steering') and selected and not radio:
+            context['steering_from'] = music_mood.profile(context['relation_seed'], self.model.get_kv('mood_profiles', {})) or policy.get('previous_mood')
         context['session_votes'] = [dict(v, item=music_features.merge(next((c for c in candidates if mix_policy.same_recording(c, v['item'])), {}), v['item']))
             for v in self.session_feedback.votes(policy.get('queue_id', ''),
                 (self.mixes.sessions.get(policy.get('queue_id', '')) or {}).get('session_id'))]
@@ -1038,6 +1145,9 @@ class LibraryService:
                       and not previous_index.matches(c)
                       and not version_index.matches(c, alternate_only=True)]
         picks = self.model.rank(candidates, context, limit)
+        self.model.last_trace['prefilter'] = {'excluded_uris': len(excluded), 'previous_recordings': len(previous),
+                                             'version_history': len(versions)}
+        recommendation_audit.store(self.model.db, self.model.last_trace)
         self._automatic_keys.update(self.model._candidate_key(item) for item in picks)
         return picks
 
@@ -1081,7 +1191,7 @@ class LibraryService:
                     snapshot = await self.mixes.snapshot(queue)
                     session = self.mixes.sessions.get(queue) or {}
                     state = self.session_feedback.state(queue, snapshot, session.get('session_id'))
-                    voted = self.session_feedback.vote(queue, state, data.get('session_id'), data.get('current_item_id'), data.get('vote'))
+                    voted = self.session_feedback.vote(queue, state, data.get('session_id'), data.get('current_item_id'), data.get('vote'), data.get('reason'))
                     if session and not session['awaiting_choice']:
                         session['generation'] += 1
                         session.update(pending_refresh=True, refresh_status='pending')
@@ -1309,7 +1419,8 @@ class LibraryService:
         classified = sum(music_mood.profile(i, self.model.get_kv("mood_profiles", {})) is not None for i in picks)
         return web.json_response(
             {
-                "model": "mood-first-acoustic-v5",
+                "model": recommendation_audit.VERSION,
+                "explanation": self.model.last_trace if request.query.get('explain')=='1' else None,
                 "familiarity": {"max_boost": music_familiarity.MAX_BOOST, "status": self._familiarity_status},
                 "baseline": {"trusted_playlists": self.cfg.get("trusted_playlists", ["Trusted music", "All favorited tracks"]), "favourites": True, "most_played_playlist_prefix": "most played", "discovery_fraction": 0.1, "seed_required": True},
                 "context": self._context_for_room(room),
@@ -1322,6 +1433,18 @@ class LibraryService:
             },
             headers={"Access-Control-Allow-Origin": "*"},
         )
+
+    async def handle_recommend_diagnostics(self, request: web.Request) -> web.Response:
+        try:
+            limit = max(1, min(20, int(request.query.get('limit', '5'))))
+        except ValueError:
+            raise web.HTTPBadRequest(text='Invalid diagnostics limit')
+        queue = request.query.get('queue_id')
+        if queue:
+            rows = self.model.db.execute('SELECT payload FROM recommendation_runs WHERE queue_id=? ORDER BY id DESC LIMIT ?', (queue, limit))
+        else:
+            rows = self.model.db.execute('SELECT payload FROM recommendation_runs ORDER BY id DESC LIMIT ?', (limit,))
+        return web.json_response({'model': recommendation_audit.VERSION, 'runs': [json.loads(r[0]) for r in rows]})
 
     async def handle_suggestions(self, request: web.Request) -> web.Response:
         room = request.query.get("room", "")
@@ -1411,6 +1534,24 @@ class LibraryService:
             profiles[uri] = {"energy": mood["energy"], "valence": mood["valence"]}
             self.model.put_kv("mood_profiles", profiles)
             return web.json_response({"status": "ok"}, headers={"Access-Control-Allow-Origin": "*"})
+        if event_type == 'mood_calibration':
+            uri = str(payload.get('uri') or '').strip()
+            try:
+                angle = float(payload['angle']) % 360
+                if not math.isfinite(angle) or not uri or len(uri)>1024:
+                    raise ValueError()
+                item = next((i for i in self._load_library() if i.get('uri')==uri), {})
+                profile = music_mood.profile(item, self.model.get_kv('mood_profiles', {}))
+                if not profile or profile['source']=='tag_hint':
+                    raise ValueError()
+            except (ValueError, KeyError, TypeError):
+                raise web.HTTPBadRequest(text='Calibration needs a library track with measured or manual mood and a valid angle')
+            calibration = self.model.get_kv('mood_calibration_v1', {})
+            anchors = [a for a in calibration.get('anchors', []) if a.get('uri')!=uri]
+            anchors.append({'uri':uri, 'angle':angle, 'energy':profile['energy'], 'valence':profile['valence']})
+            calibration = {'version':1, 'revision':int(calibration.get('revision', 0))+1, 'anchors':anchors[-256:]}
+            self.model.put_kv('mood_calibration_v1', calibration)
+            return web.json_response({'status':'ok', 'revision':calibration['revision']}, headers={'Access-Control-Allow-Origin':'*'})
         if event_type == "feedback":
             uri = str(payload.get("uri") or "").strip()
             action = str(payload.get("action") or "")
@@ -1528,6 +1669,7 @@ def create_app() -> web.Application:
     app.router.add_get("/library/context", service.handle_context)
     app.router.add_get("/library/status", service.handle_status)
     app.router.add_get("/library/recommend/music", service.handle_recommend)
+    app.router.add_get("/library/recommend/diagnostics", service.handle_recommend_diagnostics)
     app.router.add_get("/library/suggestions", service.handle_suggestions)
     app.router.add_post("/library/event", service.handle_event)
     app.router.add_post("/library/action", service.handle_action)

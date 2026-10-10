@@ -44,9 +44,9 @@ def test_high_history_cannot_admit_wrong_or_unknown_mood(tmp_path):
 def test_mood_distance_precedes_familiarity_within_eligible_pool(tmp_path):
     model = lib.LocalModel(tmp_path/'db')
     songs = [dict(uri='fav',name='Familiar',artist='Known',favorite=True,
-                  mood_profile={'energy':.25,'valence':.5}),
+                  mood_profile={'energy':.4,'valence':.5}),
              dict(uri='fit',name='Fit',artist='Known',trusted=True,
-                  audio_features={'model':'emomusic','energy':0,'valence':.5})]
+                  audio_features={'model':'emomusic','energy':.2,'valence':.5})]
     assert model.rank(songs, {'mood':mood.selection(270,0)},20)[0]['uri'] == 'fit'
     model.db.close()
 

@@ -39,22 +39,27 @@ class SessionFeedback:
             # Bound storage and writes; polling alone never writes to disk.
             self.sessions = {q:v for q,v in self.sessions.items() if now-v.get('updated', 0) <= 86400}
             self.save(self.sessions)
-        vote = next((v['vote'] for v in s['votes'] if mix_policy.same_recording(media, v['item'])), 0)
+        voted = next((v for v in s['votes'] if mix_policy.same_recording(media, v['item'])), {})
+        vote = voted.get('vote', 0)
         return {'queue_id': queue, 'session_id': s['id'], 'current_item_id': playing['id'],
-                'vote': vote, 'available': bool(playing['id'] and playing['uri'] and snapshot.get('state') in ('playing', 'paused', 'buffering'))}
+                'vote': vote, 'reason': voted.get('reason'), 'available': bool(playing['id'] and playing['uri'] and snapshot.get('state') in ('playing', 'paused', 'buffering'))}
 
-    def vote(self, queue, state, session_id, item_id, vote):
+    def vote(self, queue, state, session_id, item_id, vote, reason=None):
         if type(vote) is not int or vote not in (-1, 0, 1):
             raise ValueError('Vote must be -1, 0 or 1')
+        if reason not in (None, '', 'wrong_mood', 'overplayed', 'dislike_recording', 'more_like_this'):
+            raise ValueError('Unknown feedback reason')
+        if reason and ((vote == 1 and reason != 'more_like_this') or (vote == -1 and reason == 'more_like_this') or vote == 0):
+            raise ValueError('Feedback reason does not match vote')
         if not state['available'] or session_id != state['session_id'] or item_id != state['current_item_id']:
             raise ValueError('The playing song or session changed; refresh the queue')
         s = self.sessions[queue]
         s['votes'] = [v for v in s['votes'] if not mix_policy.same_recording(s['item'], v['item'])]
         if vote:
-            s['votes'].append({'item': s['item'], 'vote': vote})
+            s['votes'].append({'item': s['item'], 'vote': vote, 'reason': reason or None, 'ts': time.time()})
         s['votes'] = s['votes'][-200:]
         self.save(self.sessions)
-        return dict(state, vote=vote)
+        return dict(state, vote=vote, reason=reason or None)
 
     def votes(self, queue, mix_id=None):
         s = self.sessions.get(queue) or {}

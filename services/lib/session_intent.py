@@ -31,7 +31,7 @@ def bonus(item, recent, votes, predecessor, similarity=music_features.similarity
                           for w, other in zip(weights, recent))/sum(weights)
     # A vote changes this session's direction, not catalogue favourites or counts.
     for vote, strength in ((1, .8), (-1, -1.2)):
-        examples = [v['item'] for v in votes if v['vote'] == vote][-8:][::-1]
+        examples = [v['item'] for v in votes if v['vote'] == vote and v.get('reason') not in ('overplayed', 'dislike_recording')][-8:][::-1]
         weights = [2 ** (-i/3) for i in range(len(examples))]
         if weights:
             score += strength * sum(w*similarity(item, other)
@@ -40,11 +40,13 @@ def bonus(item, recent, votes, predecessor, similarity=music_features.similarity
 
 
 def reward(seconds, duration, origin, reason, replay=False):
+    if reason in ('error', 'network_error', 'transport_error', 'disconnect', 'route_change', 'transfer', 'buffering', 'pause'):
+        return 0.  # Technical events and pauses are not taste observations.
     if reason == 'dislike':
         return -4.
     if reason == 'skip':
         return -2. if seconds < 25 else -1.
-    meaningful = seconds >= 90 or duration > 0 and seconds >= duration*.45
+    meaningful = seconds >= (min(900, duration*.20) if duration >= 1200 else 90) or duration > 0 and seconds >= duration*.45
     if not meaningful:
         return 0.
     # Autoplay completion is weak acceptance, never equivalent to choosing a song.

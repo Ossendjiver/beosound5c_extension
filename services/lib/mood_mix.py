@@ -43,6 +43,8 @@ class MoodMixes:
         self.locks = {}
         for session in self.sessions.values():
             session.setdefault('session_id', uuid.uuid4().hex)
+            session.setdefault('discovery_ledger', {'total': 0, 'discovery': 0})
+            session.setdefault('owned_categories', {})
 
     def persist(self):
         if self.save:
@@ -79,6 +81,7 @@ class MoodMixes:
                        'awaiting_choice': mode == 'mood', 'mood': None,
                        'current_id': playing['id'], 'current_uri': playing['uri'], 'seen': [], 'owned': [playing['uri']],
                        'recordings': [seed], 'versions': [seed], 'title': playing['title'], 'updated': time.time(), 'generation': 0}
+            session.update(discovery_ledger={'total': 0, 'discovery': 0}, owned_categories={})
             self.sessions[queue] = session
             if mode == 'radio':
                 await self.fill(queue, snap)
@@ -98,7 +101,8 @@ class MoodMixes:
             return {'active': False, 'queue_id': queue}
         return {key: s[key] for key in ('queue_id', 'room', 'mode', 'awaiting_choice', 'mood', 'title', 'updated')} | {
             'active': True, 'pending_refresh': bool(s.get('pending_refresh')),
-            'refresh_status': s.get('refresh_status', 'ready'), 'applied_mood': s.get('applied_mood')}
+            'refresh_status': s.get('refresh_status', 'ready'), 'applied_mood': s.get('applied_mood'),
+            'discovery_ledger': dict(s.get('discovery_ledger') or {})}
 
     async def update(self, queue, angle, radius):
         mood = music_mood.selection(angle, radius)
@@ -145,6 +149,11 @@ class MoodMixes:
         current_media=(snap.get('current_item') or {}).get('media_item') or snap.get('current_item') or {}
         relation_seed=existing[-1] if append and existing else current_media
         policy = {'mode': s.get('mode', 'mood'), 'queue_id': queue, 'exclude': list(exclude), 'previous': previous, 'versions': versions, 'relation_seed':relation_seed}
+        balance = dict(s.get('discovery_ledger') or {'total': 0, 'discovery': 0})
+        balance['total'] += len(upcoming)
+        balance['discovery'] += sum(s.get('owned_categories', {}).get(u)=='discovery' for u in upcoming)
+        policy.update(discovery_balance=balance, steering=not append and bool(s.get('mood')),
+                      previous_mood=s.get('applied_mood'))
         picks = await self.recommend(s['room'], 50, s['mood'], s['seed'], policy)
         def eligible(items, blocked, recordings):
             unique = {p['uri']: p for p in items if p.get('uri') and p['uri'] not in blocked
@@ -158,6 +167,7 @@ class MoodMixes:
             blocked = {playing['uri']} | set(upcoming)
             current_media = (snap.get('current_item') or {}).get('media_item') or snap.get('current_item') or {}
             repeat_policy = {'mode': s.get('mode', 'mood'), 'queue_id': queue, 'exclude': list(blocked), 'previous': [current_media] + existing, 'versions': versions, 'relation_seed':relation_seed}
+            repeat_policy.update(discovery_balance=balance, steering=policy.get('steering'), previous_mood=policy.get('previous_mood'))
             candidates = await self.recommend(s['room'], 50, s['mood'], s['seed'], repeat_policy)
             last_played = {p.get('uri'): i for i,p in enumerate(s.get('recordings', []))}
             candidates = sorted(candidates, key=lambda p: last_played.get(p.get('uri'), -1))
@@ -200,6 +210,10 @@ class MoodMixes:
             s['pending_refresh'] = True
             raise ValueError(result.get('reason', 'Queue refresh rejected'))
         s['owned'] = [playing['uri']] + upcoming + [p['uri'] for p in picks]
+        categories = s.setdefault('owned_categories', {})
+        for pick in picks:
+            categories[pick['uri']] = pick.get('_selection_category', 'familiar')
+        s['owned_categories'] = {u: categories.get(u, 'familiar') for u in s['owned']}
         s['updated'] = time.time()
         s['pending_refresh'] = False
         s['refresh_status'] = 'ready'
@@ -229,6 +243,9 @@ class MoodMixes:
                 s.pop('next_refill', None)  # A real track transition warrants an immediate check.
                 old_uri = s.get('current_uri') or s['seed'].get('uri')
                 if old_uri:
+                    ledger = s.setdefault('discovery_ledger', {'total': 0, 'discovery': 0})
+                    ledger['total'] += 1
+                    ledger['discovery'] += int(s.get('owned_categories', {}).get(old_uri)=='discovery')
                     s['seen'] = (s['seen'] + [old_uri])[-200:]
                 s['current_id'] = playing['id']
                 media = (snap.get('current_item') or {}).get('media_item') or snap.get('current_item') or {}

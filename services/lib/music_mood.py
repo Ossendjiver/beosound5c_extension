@@ -19,10 +19,40 @@ def selection(angle, radius):
     angle %= 360
     theta = math.radians(angle)
     return {"angle": angle, "radius": radius,
-            "energy": (math.sin(theta) + 1) / 2, "valence": (math.cos(theta) + 1) / 2,
+            "energy": .5 + .30*math.sin(theta), "valence": .5 + .30*math.cos(theta),
+            "target_version": 2,
             "ring": "familiar" if radius <= CENTRE_RADIUS else "discover",
             "discovery_percent": discovery_percent(radius),
             "discovery_fraction": discovery_percent(radius) / 100}
+
+
+def resolve(mood, calibration=None):
+    """Upgrade persisted targets and interpolate personally annotated sectors.
+
+    Angle still chooses mood and radius still chooses discovery. Calibration
+    uses explicit annotations only, never counts or automatically queued tracks.
+    """
+    if not mood or 'angle' not in mood:
+        return mood
+    result = selection(mood['angle'], mood.get('radius', .25))
+    anchors = (calibration or {}).get('anchors', [])
+    nearby = []
+    for anchor in anchors if isinstance(anchors, list) else []:
+        try:
+            delta = abs((float(anchor['angle'])-result['angle']+180)%360-180)
+            e, v = float(anchor['energy']), float(anchor['valence'])
+            if delta <= 60 and all(math.isfinite(n) and 0 <= n <= 1 for n in (e, v)):
+                nearby.append((max(.01, 1-delta/60), e, v))
+        except (ValueError, KeyError, TypeError):
+            continue
+    if nearby:
+        total = sum(w for w, _, _ in nearby)
+        # Sparse personal annotation refines, rather than replaces, the default.
+        strength = min(.85, total/(total+3))
+        for key, index in [('energy', 1), ('valence', 2)]:
+            result[key] = (1-strength)*result[key]+strength*sum(p[0]*p[index] for p in nearby)/total
+        result['calibration_revision'] = (calibration or {}).get('revision', 0)
+    return result
 
 
 TAG_HINTS = {
@@ -75,7 +105,10 @@ def compatible(item, mood, learned):
         return False
     # Tags are coarse hints, so do not stretch them to far-away wheel positions.
     maximum = .28 if p['source'] == 'tag_hint' else .35
-    return distance(item, mood, learned) <= maximum
+    from .profile_quality import confidence
+    if p['source'] == 'audio_model' and confidence(item.get('audio_features') or {}) < .35:
+        return False  # An unstable sample cannot prove a mood match.
+    return distance(item, mood, learned) <= maximum + 1e-9
 
 
 def adjustment(item, mood, learned):
@@ -84,3 +117,19 @@ def adjustment(item, mood, learned):
         return -4.0
     distance = math.hypot(p["energy"]-mood["energy"], p["valence"]-mood["valence"])
     return 4.0 - 10.0 * distance
+
+
+def trajectory(mood, previous, steps=3):
+    """Bridge a deliberate steering change; keep discovery independent."""
+    if not mood or not isinstance(previous, dict):
+        return [mood] if mood else []
+    try:
+        start = [float(previous[k]) for k in ('energy', 'valence')]
+        if not all(math.isfinite(n) and 0 <= n <= 1 for n in start):
+            return [mood]
+    except (KeyError, TypeError, ValueError):
+        return [mood]
+    if math.hypot(start[0]-mood['energy'], start[1]-mood['valence']) < .25:
+        return [mood]
+    return [dict(mood, energy=start[0]+(mood['energy']-start[0])*i/steps,
+                 valence=start[1]+(mood['valence']-start[1])*i/steps) for i in range(1, steps+1)]

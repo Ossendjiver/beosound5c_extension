@@ -10,6 +10,10 @@ from pathlib import Path
 import numpy as np
 
 from analyze_music_audio import normalize_predictions, rounded_embedding
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]/'services'))
+from lib import profile_quality
+from music_classifiers import Heads
 
 RATE = 16000
 EMBEDDING = 'msd-musicnn-1'
@@ -61,15 +65,16 @@ class Analyzer:
         import onnxruntime as ort
         models = Path(models)
         paths = [models/(EMBEDDING+'.onnx'), models/(MODEL+'.onnx')]
-        self.fingerprint = hashlib.sha256(b'bs5c-onnx-frontend-v2-four-patches'+b''.join(p.read_bytes() for p in paths)).hexdigest()
         options = ort.SessionOptions()
         options.intra_op_num_threads = 1
         options.inter_op_num_threads = 1
+        self.heads = Heads(models, options=options)
+        self.fingerprint = hashlib.sha256(b'bs5c-onnx-frontend-v3-profile-quality'+b''.join(p.read_bytes() for p in paths)+self.heads.fingerprint.encode()).hexdigest()
         self.embedding = ort.InferenceSession(str(paths[0]), options, providers=['CPUExecutionProvider'])
         self.mood = ort.InferenceSession(str(paths[1]), options, providers=['CPUExecutionProvider'])
 
     def analyze(self, samples):
-        tempos, levels, centroids, windows_per_section = [], [], [], []
+        tempos, tempo_confidences, levels, centroids, windows_per_section = [], [], [], [], []
         seconds = 0
         for audio in samples:
             audio = np.asarray(audio, dtype=np.float32)
@@ -85,6 +90,7 @@ class Analyzer:
             pulse = tempo(mels)
             if pulse:
                 tempos.append(pulse[0])
+                tempo_confidences.append(pulse[1])
             seconds += len(audio)/RATE
             levels.append(float(np.sqrt(np.mean(audio*audio))))
             frames = audio[:len(audio)//1024*1024].reshape(-1, 1024)
@@ -98,10 +104,15 @@ class Analyzer:
         vectors = self.embedding.run(['embeddings'], {'melspectrogram': np.concatenate(windows_per_section)})[0]
         predictions = self.mood.run(['activations'], {'embeddings': vectors})[0]
         result = normalize_predictions(predictions)
+        result.update(profile_quality.summary([normalize_predictions([p]) for p in predictions],
+            len(windows_per_section), seconds, tempo_confidences))
+        classifiers = self.heads.predict(vectors)
+        if classifiers:
+            result.update(classifiers=classifiers, classifier_fingerprint=self.heads.fingerprint)
         result.update(model=MODEL, embedding_model=EMBEDDING,
                       embedding=rounded_embedding(vectors),
                       rms=float(np.mean(levels)), sample_seconds=seconds,
-                      analysis='onnx-three-section-four-patches-v2', inference_patches=len(predictions))
+                      analysis='onnx-multi-section-four-patches-v3', inference_patches=len(predictions))
         if tempos:
             result.update(bpm=float(np.median(tempos)), bpm_method='spectral-flux-autocorrelation')
         if centroids:

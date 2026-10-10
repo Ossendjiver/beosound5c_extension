@@ -170,7 +170,9 @@ def test_audio_provenance_retained_when_online_tags_refresh_preview():
     old={'metadata':{'audio_features':FEATURES},'source':'ma_preview','analysis_fingerprint':Analyzer.fingerprint,'input_fingerprint':p.fingerprint(ITEM)}
     state,counts,calls=run(meta={'genres':['ambient']},payload={'version':1,'tracks':{ITEM['uri']:old}})
     metadata,source=p.load(state)[ITEM['uri']]
-    assert source=='ma_preview' and metadata['audio_features']==FEATURES
+    assert source=='ma_preview'
+    assert all(metadata['audio_features'][key]==value for key,value in FEATURES.items())
+    assert metadata['audio_features']['coverage']=='preview_only'
 def test_pending_retry_keeps_ready_profiles_and_bypasses_only_needed_ttls():
     from profile_provider_library import pending_entries
     entries=[{'uri':str(n)} for n in range(4)]

@@ -79,8 +79,10 @@ def analyze(path, embedding_model, mood_model):
     import numpy as np
     import essentia.standard as es
     predictions, vectors, tempos, centroids, levels = [], [], [], [], []
+    section_count = 0
     sample_seconds = 0
     for audio in segments(path):
+        section_count += 1
         sample_seconds += len(audio)/16000
         embeddings = embedding_model(audio)
         predictions.extend(mood_model(embeddings))
@@ -98,6 +100,10 @@ def analyze(path, embedding_model, mood_model):
         if valid.any():
             centroids.append(float(np.mean((spectrum[valid]*np.fft.rfftfreq(1024,1/16000)).sum(axis=1)/mass[valid])))
     result = normalize_predictions(predictions)
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]/'services'))
+    from lib import profile_quality
+    result.update(profile_quality.summary([normalize_predictions([p]) for p in predictions], section_count, sample_seconds))
     result.update(model=MODEL, embedding_model=EMBEDDING,
                   embedding=rounded_embedding(vectors),
                   rms=float(np.mean(levels)), sample_seconds=sample_seconds)
@@ -116,7 +122,7 @@ def main():
     args = parser.parse_args()
     import essentia.standard as es
     embedding_path, mood_path = args.models/(EMBEDDING+'.pb'), args.models/(MODEL+'.pb')
-    fingerprint = hashlib.sha256(embedding_path.read_bytes()+mood_path.read_bytes()).hexdigest()
+    fingerprint = hashlib.sha256(b'profile-quality-v1'+embedding_path.read_bytes()+mood_path.read_bytes()).hexdigest()
     embedding_model = es.TensorflowPredictMusiCNN(graphFilename=str(embedding_path), output='model/dense/BiasAdd')
     mood_model = es.TensorflowPredict2D(graphFilename=str(mood_path), output='model/Identity')
     payload = json.loads(args.output.read_text()) if args.output.exists() else {'version':1, 'tracks':{}}
