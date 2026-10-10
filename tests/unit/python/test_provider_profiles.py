@@ -181,3 +181,11 @@ def test_pending_retry_keeps_ready_profiles_and_bypasses_only_needed_ttls():
     assert pending_entries(entries,payload)==entries[:2]
     assert payload['tracks']['0']['next_check']==0
     assert payload['tracks']['2']['next_check']==999
+
+def test_progress_status_counts_successful_samples_and_pending_retries():
+    payload={'tracks':{'a':{'status':'sample_ready'},'b':{'status':'metadata_ready'},'c':{'status':'retry_pending','error':'Timeout'},'d':{'status':'sampling_deferred_busy'}}}
+    status=worker.progress_status(payload,running=True)
+    assert status['successful_samples']==1
+    assert status['sweep']['pending_samples']==2
+    assert status['sweep']['errors']==1
+    assert status['running'] is True

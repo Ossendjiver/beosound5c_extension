@@ -1476,6 +1476,7 @@
                     return '<div class="subcard-body">' + row('Sweep', data.running ? 'Running' : sweep.complete ? 'Complete' : 'Idle', data.running ? 'warn' : '') +
                         row('Checked', `${visited} / ${total}`) +
                         row('Progress', total ? Math.round(visited * 100 / total) + '%' : '—') +
+                        row('Successful Samples', data.successful_samples == null ? 'Available at next checkpoint' : Number(data.successful_samples)) +
                         row('Ready Profiles', data.ready == null ? 'Available after sweep' : Number(data.ready)) +
                         row('Pending Samples', sweep.pending_samples == null ? 'Available after sweep' : Number(sweep.pending_samples)) +
                         row('Errors', Number(sweep.errors || data.failed) || 0) + '</div>';

@@ -20,5 +20,6 @@ test('provider card renders progress, completion and absent cache',async()=>{
     assert.equal((await c.fetch()).running,true);
     assert.match(c.render({running:true,sweep:{visited:25,total:100}}),/25%/);
     assert.match(c.render({sweep:{complete:true,total:100,visited:100}}),/Complete/);
+    assert.match(c.render({successful_samples:111}),/Successful Samples: 111/);
     assert.match(c.render({}),/Not profiled yet/);
 });
