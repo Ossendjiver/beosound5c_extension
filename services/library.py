@@ -979,6 +979,13 @@ class LibraryService:
             context["mood"] = selected
         if seed and seed.get("uri"):
             cached_seed = next((c for c in candidates if c.get('uri') == seed['uri']), {})
+            # A manually chosen library item need not be in the playlist catalogue.
+            profile = getattr(self, '_provider_profile_cache', {}).get(seed['uri'])
+            if profile:
+                cached_seed = music_features.merge(cached_seed, profile[0])
+            features = getattr(self, '_audio_feature_cache', {}).get(seed['uri'])
+            if features:
+                cached_seed = music_features.merge(cached_seed, {'audio_features': features})
             seed = music_features.merge(cached_seed, seed)
             seed = dict(seed, trusted=True, media_type=seed.get("media_type") or "track")
             candidates = [seed] + [c for c in candidates if c.get("uri") != seed["uri"]]
