@@ -54,7 +54,7 @@ def test_archive_coordinates_require_consistent_duration_and_confident_classifie
     d=acoustic();d['metadata']['tags']={'musicbrainz_recordingid':['different']};assert not p.acoustic_metadata(ITEM,d,RECORD['id'])
 
 def test_online_metadata_prevents_any_preview():
-    state,counts,calls=run(meta={'mood':'relaxed','style':'Ambient','bpm':80})
+    state,counts,calls=run(meta={'mood':'relaxed','style':'Ambient','bpm':80,'audio_features':FEATURES})
     assert counts['metadata']==1 and 'music/tracks/preview' not in calls
     assert state['tracks'][ITEM['uri']]['metadata']['audio_features']['bpm']==80
 
@@ -153,7 +153,7 @@ def test_canonical_ma_response_requires_exact_requested_provider_mapping():
 def test_full_sweep_ignores_ttl_and_resumes_completed_entries_without_repeat():
     old={'metadata':{'genres':['ambient']},'next_check':500,'input_fingerprint':p.fingerprint(ITEM)}
     payload={'version':1,'tracks':{ITEM['uri']:old},'sweep':{'id':'sweep','total':1,'visited':0}}
-    state,counts,calls=run(meta={'genres':['ambient']},payload=payload,full_sweep=True)
+    state,counts,calls=run(meta={'genres':['ambient'],'audio_features':FEATURES},payload=payload,full_sweep=True)
     assert counts['metadata']==1 and calls and state['sweep']['visited']==1
     state,counts,calls=run(meta={'genres':['ambient']},payload=state,full_sweep=True)
     assert counts['unchanged']==1 and not calls
@@ -177,7 +177,7 @@ def test_pending_retry_keeps_ready_profiles_and_bypasses_only_needed_ttls():
     payload={'tracks':{'0':{'status':'sampling_deferred_busy','next_check':999},
                        '1':{'status':'awaiting_sample','next_check':999},
                        '2':{'status':'sample_ready','next_check':999},
-                       '3':{'status':'metadata_ready','next_check':999}}}
+                       '3':{'status':'metadata_ready','next_check':999,'metadata':{'audio_features':FEATURES}}}}
     assert pending_entries(entries,payload)==entries[:2]
     assert payload['tracks']['0']['next_check']==0
     assert payload['tracks']['2']['next_check']==999
@@ -186,7 +186,7 @@ def test_progress_status_counts_successful_samples_and_pending_retries():
     payload={'tracks':{'a':{'status':'sample_ready'},'b':{'status':'metadata_ready'},'c':{'status':'retry_pending','error':'Timeout'},'d':{'status':'sampling_deferred_busy'}}}
     status=worker.progress_status(payload,running=True)
     assert status['successful_samples']==1
-    assert status['sweep']['pending_samples']==2
+    assert status['sweep']['pending_samples']==3
     assert status['sweep']['errors']==1
     assert status['running'] is True
 
@@ -209,3 +209,11 @@ def test_automatic_resume_respects_failed_track_backoff():
     payload={'tracks':{'a':{'status':'retry_pending','next_check':time.time()+86400},'b':{'status':'sampling_deferred_busy','next_check':time.time()+86400}}}
     assert worker.pending_entries(entries,payload,respect_retry_backoff=True)==[entries[1]]
     assert payload['tracks']['a']['next_check']>time.time()
+
+def test_genre_hints_do_not_suppress_needed_audio_sampling():
+    state,counts,_=run(meta={'genres':['Classical']})
+    assert counts['sampled']==1
+    assert state['tracks'][ITEM['uri']]['metadata']['genres']==['Classical']
+    assert not p.useful({'genres':['Classical']})
+    payload={'tracks':{'a':{'status':'metadata_ready','metadata':{'genres':['Jazz']},'next_check':999}}}
+    assert worker.pending_entries([{'uri':'a'}],payload)==[{'uri':'a'}]

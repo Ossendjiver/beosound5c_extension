@@ -282,7 +282,7 @@ class LocalModel:
     @staticmethod
     def _candidate_key(item: dict[str, Any]) -> tuple[str, str]:
         return (
-            str(item.get("artist") or "").strip().casefold(),
+            music_features.artist_name(item).strip().casefold(),
             str(item.get("name") or item.get("title") or "").strip().casefold(),
         )
 
@@ -713,7 +713,7 @@ class LibraryService:
         trusted_names = {str(n).casefold() for n in self.cfg.get("trusted_playlists", ["Trusted music", "All favorited tracks"])}
         def walk(node: Any, inherited_artist: str = "", trusted: bool = False, playlist_tags: str = "", playlist_mode: bool = False) -> None:
             if not isinstance(node, dict): return
-            artist = str(node.get("artist") or inherited_artist or "")
+            artist = music_features.artist_name(node) or inherited_artist
             playlist_mode = playlist_mode or node.get("id") == "playlists"
             if playlist_mode and isinstance(node.get("tracks"), list) and node.get("id") != "playlists":
                 playlist_tags = playlist_tags + " " + str(node.get("name") or "")
@@ -724,13 +724,15 @@ class LibraryService:
                 previous = items.get(uri, {})
                 items[uri] = {
                     "name": str(node.get("name") or "Unknown"), "title": str(node.get("name") or "Unknown"),
-                    "artist": artist, "album": str(node.get("album") or ""), "uri": uri,
+                    "artist": artist or previous.get("artist", ""), "artists": node.get("artists") or previous.get("artists", []), "album": str(node.get("album") or ""), "uri": uri,
                     "version": str(node.get("version") or previous.get("version") or ""),
                     "duration": _safe_float(node.get("duration")) or previous.get("duration", 0),
                     "image": str(node.get("image") or ""), "media_type": str(node.get("media_type") or "track"),
                     "trusted": trusted or previous.get("trusted", False),
                     "favorite": bool(node.get("favorite") or previous.get("favorite", False)),
-                    "genres": node.get("genres") or node.get("genre") or previous.get("genres", ""),
+                    "genres": music_features.metadata(node).get("genres") or music_features.metadata(node).get("genre") or previous.get("genres", ""),
+                    "isrc": node.get("isrc") or previous.get("isrc", ""),
+                    "external_ids": node.get("external_ids") or previous.get("external_ids", []),
                     "playlist_tags": (str(previous.get("playlist_tags") or "") + " " + playlist_tags).strip(),
                 }
             if isinstance(children, list):

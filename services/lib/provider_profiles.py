@@ -72,7 +72,8 @@ def fingerprint(item):
 
 
 def useful(metadata):
-    return music_mood.profile(metadata, {}) is not None
+    profile=music_mood.profile(metadata,{})
+    return bool(profile and profile.get('source') in ('audio_model','manual'))
 
 
 def acoustic_metadata(item, document, mbid):

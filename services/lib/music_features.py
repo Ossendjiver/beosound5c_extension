@@ -59,6 +59,14 @@ def merge(existing, incoming):
     return result
 
 
+def artist_name(item):
+    value=item.get('artist') or item.get('artists') or ''
+    if isinstance(value,list):
+        return ', '.join(str(v.get('name') or '') if isinstance(v,dict) else str(v) for v in value if v)
+    if isinstance(value,dict):return str(value.get('name') or '')
+    return str(value)
+
+
 def metadata(item):
     """Use provider descriptors when actually supplied, never infer from titles."""
     meta = item.get('metadata') if isinstance(item.get('metadata'), dict) else {}
@@ -180,11 +188,8 @@ def _radio_audio_distance(item, root):
     a,b=clean(item.get('audio_features')),clean(root.get('audio_features'))
     from lib import queue_spacing
     same_artist=bool(queue_spacing.artist(root) and queue_spacing.artist(root)==queue_spacing.artist(item))
-    # Explicit work identifiers are repertoire evidence, not inferred mood.
-    def classical_work(v):
-        name=str(v.get('name') or v.get('title') or '')
-        return bool(re.search(r'\b(?:BWV\s*\d+|Op\.?\s*\d+|K\.\s*\d+|Concerto|Sonata|Symphony)\b',name,re.I))
-    if classical_work(root) and not same_artist and not classical_work(item) and 'classical' not in str(item.get('genres') or item.get('genre') or '').casefold():
+    from lib import radio_genres
+    if radio_genres.classical_work(root) and not same_artist and not radio_genres.classical_work(item) and 'classical' not in radio_genres.labels(item):
         return None
     distances=[]
     for key,maximum in [('rms',1.75),('spectral_centroid_hz',1.8)]:

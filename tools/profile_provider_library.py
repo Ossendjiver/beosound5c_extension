@@ -298,7 +298,7 @@ def update(entries,payload,command,online,analyzer,local_aliases,*,max_items=500
 def progress_status(payload, *, running):
     records=list(payload.get('tracks',{}).values())
     sweep=dict(payload.get('sweep') or {})
-    sweep['pending_samples']=sum(r.get('status') in ('awaiting_sample','sampling_deferred_busy','retry_pending') for r in records)
+    sweep['pending_samples']=sum(r.get('status') in ('awaiting_sample','sampling_deferred_busy','retry_pending') or (r.get('status')=='metadata_ready' and not profiles.useful(r.get('metadata',{}))) for r in records)
     sweep['errors']=sum(bool(r.get('error')) for r in records)
     return {'running':running,'sweep':sweep,'updated_at':time.time(),
             'successful_samples':sum(r.get('status')=='sample_ready' for r in records),
@@ -310,7 +310,7 @@ def pending_entries(entries,payload,*,respect_retry_backoff=False):
     for entry in entries:
         record=payload['tracks'].get(entry['uri'],{})
         if respect_retry_backoff and record.get('status')=='retry_pending' and record.get('next_check',0)>time.time():continue
-        if record.get('status') in ('awaiting_sample','sampling_deferred_busy','retry_pending') and not profiles.useful(record.get('metadata',{})):
+        if record.get('status') in ('awaiting_sample','sampling_deferred_busy','retry_pending','metadata_ready') and not profiles.useful(record.get('metadata',{})):
             record['next_check']=0
             selected.append(entry)
     return selected
