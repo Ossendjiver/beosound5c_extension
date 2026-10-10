@@ -1,0 +1,11 @@
+[Unit]
+Description=Resume interrupted provider sampling when idle
+
+[Timer]
+OnCalendar=*-*-* *:00,30:00
+Persistent=true
+RandomizedDelaySec=2min
+Unit=beo-provider-resume.service
+
+[Install]
+WantedBy=timers.target

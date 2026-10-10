@@ -202,3 +202,10 @@ def test_truncated_preview_is_retryable_and_next_track_continues():
     assert state['tracks'][entries[0]['uri']]['status']=='retry_pending'
     assert state['tracks'][entries[0]['uri']]['error']=='IncompleteRead'
     assert counts['sampled']==1 and counts['failed']==1
+
+def test_automatic_resume_respects_failed_track_backoff():
+    import time
+    entries=[{'uri':'a'},{'uri':'b'}]
+    payload={'tracks':{'a':{'status':'retry_pending','next_check':time.time()+86400},'b':{'status':'sampling_deferred_busy','next_check':time.time()+86400}}}
+    assert worker.pending_entries(entries,payload,respect_retry_backoff=True)==[entries[1]]
+    assert payload['tracks']['a']['next_check']>time.time()

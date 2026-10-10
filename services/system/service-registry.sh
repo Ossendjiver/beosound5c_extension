@@ -26,6 +26,8 @@ ALL_SERVICES=(
     "beo-source-radio.service"
     "beo-source-kodi.service"
     "beo-source-mass.service"
+    "beo-provider-resume.service"
+    "beo-provider-resume.timer"
     "beo-library.service"
     "beo-ui.service"
     "beo-notify-failure@.service"

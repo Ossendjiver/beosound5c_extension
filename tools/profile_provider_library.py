@@ -305,10 +305,11 @@ def progress_status(payload, *, running):
             'ready':sum(profiles.useful(r.get('metadata',{})) or r.get('status')=='local_audio_available' for r in records)}
 
 
-def pending_entries(entries,payload):
+def pending_entries(entries,payload,*,respect_retry_backoff=False):
     selected=[]
     for entry in entries:
         record=payload['tracks'].get(entry['uri'],{})
+        if respect_retry_backoff and record.get('status')=='retry_pending' and record.get('next_check',0)>time.time():continue
         if record.get('status') in ('awaiting_sample','sampling_deferred_busy','retry_pending') and not profiles.useful(record.get('metadata',{})):
             record['next_check']=0
             selected.append(entry)
@@ -321,6 +322,7 @@ def main():
     parser.add_argument('--audio-profile',type=Path,default=Path('/media/local/cache/audio_features.json'))
     parser.add_argument('--models',type=Path,default=Path('/media/local/cache/audio-analysis/models'))
     parser.add_argument('--full-sweep',action='store_true',help='Visit all provider tracks once, resuming an interrupted sweep')
+    parser.add_argument('--respect-retry-backoff',action='store_true',help='Retain failed-track retry delays during automatic recovery')
     parser.add_argument('--retry-pending',action='store_true',help='After a completed sweep, retry only needed profiles while idle')
     parser.add_argument('--max-items',type=int,default=500);parser.add_argument('--max-samples',type=int,default=40);parser.add_argument('--max-seconds',type=int,default=3600)
     args=parser.parse_args()
@@ -341,7 +343,7 @@ def main():
         if args.retry_pending:
             if not payload.get('sweep',{}).get('complete') or not players_idle(command):
                 print(json.dumps({'skipped':True,'reason':'Sweep incomplete or playback not idle'}));return 0
-            entries=pending_entries(entries,payload)
+            entries=pending_entries(entries,payload,respect_retry_backoff=args.respect_retry_backoff)
             if not entries:
                 print(json.dumps({'skipped':True,'reason':'No profiles need sampling'}));return 0
         if args.full_sweep:
