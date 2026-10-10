@@ -175,7 +175,7 @@ def calibrate(features, calibration):
             result[key] = max(0., min(1., (value-low)/(high-low)))
     return result
 
-def radio_distance(item, root):
+def _radio_audio_distance(item, root):
     """Seed-anchored eligibility; no play counts and no predecessor drift."""
     a,b=clean(item.get('audio_features')),clean(root.get('audio_features'))
     from lib import queue_spacing
@@ -201,13 +201,17 @@ def radio_distance(item, root):
         if cosine<.85:return None
         distances.append((1-min(1,cosine))/.15)
     if distances:return sum(distances)/len(distances)
-    # Missing analysis must not admit the entire favourite catalogue.
-    def genres(v):
-        value=v.get('genres') or v.get('genre') or []
-        return {str(g).strip().casefold() for g in ([value] if isinstance(value,str) else value) if g}
-    shared=genres(item)&genres(root)
-    if shared:return .8
-    from lib import queue_spacing
+    return None
+
+
+def radio_distance(item, root):
+    """Close audio, then specific genre, then broader family; never popularity."""
+    from lib import radio_genres,queue_spacing
+    if radio_genres.conflicting(item,root):return None
+    acoustic=_radio_audio_distance(item,root)
+    if acoustic is not None:return acoustic
+    genre=radio_genres.fallback(item,root)
+    if genre is not None:return genre
     artist=queue_spacing.artist(root)
-    if artist and artist==queue_spacing.artist(item):return .9
+    if artist and artist==queue_spacing.artist(item):return 1.6
     return None

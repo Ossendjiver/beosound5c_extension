@@ -184,3 +184,26 @@ def test_classical_work_radio_cannot_admit_pop_with_similar_embedding():
     classical=track('other',artist='Other',title='Bach: Concerto in D Minor BWV 974')
     assert music_features.radio_distance(pop,root) is None
     assert music_features.radio_distance(classical,root) is not None
+
+def test_radio_falls_back_from_audio_to_specific_then_broad_genre():
+    root={**track('seed',vector=[1.,0.,0.,0.,0.,0.,0.,0.]),'genres':['Deep House']}
+    far={**track('same',artist='Other',vector=[0.,1.,0.,0.,0.,0.,0.,0.]),'genres':['deep-house']}
+    broader={**far,'uri':'broad','genres':['Tech House']}
+    unrelated={**far,'uri':'rock','genres':['Indie Rock']}
+    assert music_features.radio_distance(far,root)==1.1
+    assert music_features.radio_distance(broader,root)==1.4
+    assert music_features.radio_distance(unrelated,root) is None
+
+def test_solveig_radio_can_use_other_classical_repertoire_without_analysis():
+    root={'name':"Grieg: Peer Gynt, Op. 23: Solveig's Song (Arr. for Cello and Piano)",'artist':'Maisky'}
+    specific={'name':'Sonata for Cello and Piano','artist':'Another'}
+    broad={'name':'Symphony No. 5','artist':'Orchestra'}
+    pop={'name':'Borderline','artist':'Other','genres':['Indie Pop']}
+    assert music_features.radio_distance(specific,root)==1.1
+    assert music_features.radio_distance(broad,root)==1.4
+    assert music_features.radio_distance(pop,root) is None
+
+def test_classical_fallback_does_not_admit_ambiguous_or_mixed_album_tags():
+    root={'name':'Grieg: Peer Gynt Op. 23','artist':'Maisky'}
+    assert music_features.radio_distance({'name':'All Night','artist':'Beyonce','genres':['Romantic','Soul']},root) is None
+    assert music_features.radio_distance({'name':'Hybrid pop','artist':'Other','genres':['Classical','Pop','Electronic']},root) is None

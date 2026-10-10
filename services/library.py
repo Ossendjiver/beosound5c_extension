@@ -386,7 +386,7 @@ class LocalModel:
                 if same_track and now_ts - row["ts"] < 2 * 3600:
                     score -= 1.5  # Modest temporary suppression; favourites remain eligible.
             score += random.Random(f"{identity}:{int(now_ts // 3600)}").uniform(-0.1, 0.1)
-            (familiar if trusted else discovery).append((score, item))
+            (familiar if trusted or context.get('radio') else discovery).append((score, item))
         bands={}
         def band(item):
             uri=item['uri']
