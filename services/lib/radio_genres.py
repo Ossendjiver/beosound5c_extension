@@ -34,6 +34,10 @@ def labels(item):
         for key in ('genres','genre','style'):
             value=source.get(key) or []
             values.extend(re.split(r'[,;]',value) if isinstance(value,str) else value if isinstance(value,list) else [])
+    evidence=item.get('genre_evidence') or metadata.get('genre_evidence') or {}
+    if isinstance(evidence,dict) and evidence.get('source') in ('soundcloud-style-library-consensus','uploader-library-recordings') and isinstance(evidence.get('confidence'),(int,float)) and .75<=evidence['confidence']<=1 and isinstance(evidence.get('matched_artists') if evidence.get('source')=='soundcloud-style-library-consensus' else evidence.get('matched_recordings'),int) and (evidence.get('matched_artists',0) if evidence.get('source')=='soundcloud-style-library-consensus' else evidence.get('matched_recordings',0))>=3:
+        inferred=item.get('inferred_genres') or metadata.get('inferred_genres') or []
+        if isinstance(inferred,list):values.extend(inferred)
     result={normalize(v) for v in values if isinstance(v,str) and v.strip()}
     if 'conscious' in result and ('hip hop' in result or 'rap' in result):result.add('conscious hip hop')
     name=str(item.get('name') or item.get('title') or '')

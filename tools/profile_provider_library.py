@@ -19,7 +19,7 @@ import urllib.parse
 import urllib.request
 import urllib.error
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]/'services'))
-from lib import music_features, music_mood, provider_profiles as profiles
+from lib import music_features, music_mood, provider_profiles as profiles, track_enrichment
 from analyze_music_audio import atomic_write
 from profile_music_library import api_client, catalogue
 
@@ -256,10 +256,16 @@ def update(entries,payload,command,online,analyzer,local_aliases,*,max_items=500
             # Provider may resolve aliases; accept no unexpected track identifier.
             if not profiles.provider_identity(detail,provider,identifier):raise ValueError('Provider track identity mismatch')
             metadata,sources,mbid=online_metadata(detail,online)
+            mix=track_enrichment.mix_metadata({**detail,**metadata},getattr(online,'artist_genre_index',{}))
+            if mix:
+                metadata.update(mix)
+                if mix.get('genre_evidence'):sources.append(mix['genre_evidence']['source'])
             acoustic=metadata.get('audio_features',{})
             audio_source='online_metadata' if acoustic.get('model') and 'energy' in acoustic and 'valence' in acoustic else (previous.get('audio_source') or previous.get('source'))
             record['audio_source']=audio_source
             record.update(metadata=music_features.merge(previous.get('metadata',{}),metadata),sources=sources,matched_recording=mbid,next_check=now+30*86400,source='online_metadata')
+            if metadata.get('genre_source')=='soundcloud-tags':
+                record['metadata']['genres']=metadata.get('genres',[])
             if profiles.useful(metadata):
                 counts['metadata']+=1;record['status']='metadata_ready'
             elif any(alias in local_aliases for alias in entry['aliases']):
@@ -339,6 +345,8 @@ def main():
         entries=profiles.inventory(canonical,cached)
         payload=json.loads(args.output.read_text()) if args.output.exists() else {'version':1,'tracks':{}}
         if payload.get('version')!=1 or not isinstance(payload.get('tracks'),dict):raise ValueError('Invalid provider cache')
+        cached_metadata=profiles.load(payload)
+        genre_index=track_enrichment.artist_genres(music_features.merge(i,cached_metadata.get(i['uri'],({},''))[0]) for i in canonical)
         catalogue_entries=len(entries)
         if args.retry_pending:
             if not payload.get('sweep',{}).get('complete') or not players_idle(command):
@@ -354,6 +362,7 @@ def main():
         request_path=args.output.with_name('provider_metadata_requests.json')
         requests=json.loads(request_path.read_text()) if request_path.exists() else {}
         online=Online(requests,os.getenv('BS5C_DISCOGS_TOKEN',''))
+        online.artist_genre_index=genre_index
         local=json.loads(args.audio_profile.read_text()) if args.audio_profile.exists() else {'version':1,'tracks':{}}
         aliases={u for u in local['tracks']}
         for record in local['tracks'].values():aliases.update(record.get('aliases',[]))

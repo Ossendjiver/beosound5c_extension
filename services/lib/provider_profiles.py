@@ -67,7 +67,7 @@ def external_ids(item):
 
 
 def fingerprint(item):
-    data = [VERSION, item.get('uri'), title(item), artists(item), item.get('duration'), external_ids(item)]
+    data = [VERSION, 'performer-mix-tags-v2', item.get('uri'), title(item), artists(item), item.get('duration'), external_ids(item), music_features.metadata(item)]
     return hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()
 
 
@@ -112,7 +112,7 @@ def cached_items(tree):
         if isinstance(node, list):
             for value in node: walk(value, artist, trusted)
         elif isinstance(node, dict):
-            artist = node.get('artist') or artist
+            artist = music_features.artist_name(node).strip() or artist
             trusted = trusted or str(node.get('name', '')).casefold().startswith('most played') or node.get('favorite', False)
             uri = str(node.get('uri') or node.get('url') or '')
             if '://track/' in uri and uri.split('://')[0].split('--')[0] in PROVIDERS:

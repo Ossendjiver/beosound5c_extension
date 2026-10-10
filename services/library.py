@@ -61,6 +61,8 @@ ROUTER_EVENT = "http://127.0.0.1:8770/router/event"
 ROUTER_BROADCAST = "http://127.0.0.1:8770/router/broadcast"
 MASS_COMMAND = "http://127.0.0.1:8783/command"
 MASS_LIBRARY = "http://127.0.0.1:8783/playlists"
+from lib import track_enrichment
+
 CACHE_LIBRARY = Path("/media/local/cache/mass_playlists.json")
 DB_PATH = Path(os.getenv("BS5C_LIBRARY_DB", "/media/local/cache/library_recommender.sqlite3"))
 
@@ -724,7 +726,7 @@ class LibraryService:
                 previous = items.get(uri, {})
                 items[uri] = {
                     "name": str(node.get("name") or "Unknown"), "title": str(node.get("name") or "Unknown"),
-                    "artist": artist or previous.get("artist", ""), "artists": node.get("artists") or previous.get("artists", []), "album": str(node.get("album") or ""), "uri": uri,
+                    "artist": artist.strip() or previous.get("artist", ""), "artists": node.get("artists") or previous.get("artists", []), "album": str(node.get("album") or ""), "uri": uri,
                     "version": str(node.get("version") or previous.get("version") or ""),
                     "duration": _safe_float(node.get("duration")) or previous.get("duration", 0),
                     "image": str(node.get("image") or ""), "media_type": str(node.get("media_type") or "track"),
@@ -740,6 +742,9 @@ class LibraryService:
         for root in raw:
             if isinstance(root, dict) and str(root.get("id") or "") in {"songs", "playlists"}:
                 walk(root)
+        for uri, credit in track_enrichment.cached_performers(raw).items():
+            if uri in items and not music_features.artist_name(items[uri]).strip():
+                items[uri].update(credit)
         for uri, item in self._seed_metadata.items():
             previous = items.get(uri, {})
             items[uri] = music_features.merge(previous, item)
@@ -751,7 +756,9 @@ class LibraryService:
             items[uri] = music_features.merge(item, previous)
         for uri, metadata in self.model.get_kv('track_metadata', {}).items():
             if uri in items:
-                items[uri] = music_features.merge(items[uri], metadata)
+                incoming=dict(metadata)
+                if music_features.artist_name(items[uri]).strip():incoming.pop('artist',None)
+                items[uri] = music_features.merge(items[uri], incoming)
         # A worker writes this sidecar atomically; the playback process does no DSP.
         feature_path = Path(os.getenv('BS5C_AUDIO_FEATURES_FILE') or self.cfg.get('audio_features_file') or CACHE_LIBRARY.parent / 'audio_features.json')
         try:
@@ -795,9 +802,26 @@ class LibraryService:
                     # A short provider preview never replaces the richer local profile.
                     if source == 'ma_preview' and items[uri].get('audio_features'):
                         incoming.pop('audio_features', None)
+                    if music_features.artist_name(items[uri]).strip():incoming.pop('artist',None)
                     items[uri] = music_features.merge(items[uri], incoming)
+                    if metadata.get('genre_source')=='soundcloud-tags':items[uri]['genres']=metadata.get('genres',[])
         except (OSError, ValueError, TypeError, AttributeError):
             pass
+        enrichment_path=Path(os.getenv('BS5C_TRACK_ENRICHMENT_FILE') or CACHE_LIBRARY.parent/'track_enrichment.json')
+        try:
+            enriched=provider_profiles.load(json.loads(enrichment_path.read_text()))
+            for uri,(metadata,source) in enriched.items():
+                if uri not in items:continue
+                incoming=dict(metadata)
+                if music_features.artist_name(items[uri]).strip():incoming.pop('artist',None)
+                items[uri]=music_features.merge(items[uri],incoming)
+                if metadata.get('genre_source')=='soundcloud-tags':items[uri]['genres']=metadata.get('genres',[])
+        except (OSError,ValueError,TypeError,AttributeError):
+            pass
+        genre_index=track_enrichment.artist_genres(items.values())
+        for uri,item in items.items():
+            extra=track_enrichment.mix_metadata(item,genre_index)
+            if extra:item.update(extra)
         playlist_stamp=(str(path),path.stat().st_mtime_ns,path.stat().st_size) if path.exists() else None
         if playlist_stamp != getattr(self,'_playlist_relation_stamp',None):
             self.model.playlist_relations=music_relations.Playlists(raw,list(items.values()))

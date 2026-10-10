@@ -1,6 +1,7 @@
 """Validated acoustic descriptors, independent of listening/familiarity counters."""
 import math
 import re
+from . import track_enrichment
 
 
 def number(value, low, high):
@@ -71,7 +72,7 @@ def metadata(item):
     """Use provider descriptors when actually supplied, never infer from titles."""
     meta = item.get('metadata') if isinstance(item.get('metadata'), dict) else {}
     result = {key: item.get(key) or meta.get(key) for key in
-              ('genres', 'genre', 'mood_tags', 'mood_profile', 'isrc')}
+              ('genres', 'genre', 'mood_tags', 'mood_profile', 'isrc', 'artist_source', 'performers', 'inferred_genres', 'genre_evidence', 'genre_source', 'soundcloud_style_tags')}
     styles = item.get('style') or meta.get('style')
     if styles:
         result['genres'] = ([result['genres']] if isinstance(result.get('genres'), str) else list(result.get('genres') or [])) + ([styles] if isinstance(styles, str) else list(styles))
@@ -83,7 +84,11 @@ def metadata(item):
         features['bpm'] = bpm
     if features:
         result['audio_features'] = features
-    return {k: v for k, v in result.items() if v}
+    result.update(track_enrichment.performer_metadata(item))
+    if track_enrichment.soundcloud(item):
+        result.update(track_enrichment.genre_metadata(item))
+        result.pop('genre', None)
+    return {k: v for k, v in result.items() if v or k == 'genres' and track_enrichment.soundcloud(item)}
 
 
 def similarity(item, root):
