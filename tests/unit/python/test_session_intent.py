@@ -208,3 +208,55 @@ def test_classical_fallback_does_not_admit_ambiguous_or_mixed_album_tags():
     assert music_features.radio_distance({'name':'All Night','artist':'Beyonce','genres':['Romantic','Soul']},root) is None
     assert music_features.radio_distance({'name':'Hybrid pop','artist':'Other','genres':['Classical','Pop','Electronic']},root) is None
 
+
+@pytest.mark.parametrize('vote', [-1, 1])
+@pytest.mark.parametrize('reason', ['track_match', 'genre_match', 'mood_match', 'tempo_match'])
+def test_matching_dimensions_accept_both_polarities_and_persist(vote, reason):
+    f=SessionFeedback(lambda:{}, lambda _:None)
+    s=f.state('q',snapshot(track('a')),'mix')
+    result=f.vote('q',s,s['session_id'],'a',vote,reason)
+    assert result['reason']==reason and result['vote']==vote
+    assert f.state('q',snapshot(track('a')),'mix')['reason']==reason
+    with pytest.raises(ValueError):f.vote('q',s,s['session_id'],'a',0,reason)
+
+
+def test_reason_scoring_is_dimension_specific_and_signed():
+    a=track('a', title='First'); a.update(genres=['Deep House'])
+    same_genre=track('b', title='Second');same_genre.update(genres=['Deep House'])
+    other_genre=track('c', title='Third');other_genre.update(genres=['Folk'])
+    for vote in [-1,1]:
+        votes=[{'item':a,'vote':vote,'reason':'genre_match'}]
+        score=lambda item: session_intent.bonus(item,[],votes,{})
+        assert vote*score(same_genre)>vote*score(other_genre)
+    assert session_intent.feedback_similarity(same_genre,a,'track_match')==0
+    assert session_intent.feedback_similarity(dict(a,uri='other-provider'),a,'track_match')==1
+    # The same sound is not genre evidence, and unknown metadata is neutral.
+    assert session_intent.feedback_similarity(track('unknown'),a,'genre_match')==0
+    assert session_intent.feedback_similarity({'genres':['Ambient']},a,'genre_match')==0
+
+
+def test_mood_and_tempo_reasons_do_not_borrow_genre_or_unsupported_profiles():
+    a={'genres':['Deep House'],'audio_features':{'model':'test','energy':.2,'valence':.3,'bpm':120,'bpm_confidence':.8}}
+    b={'genres':['Folk'],'audio_features':{'model':'test','energy':.2,'valence':.3,'bpm':60,'bpm_confidence':.8}}
+    distant={'genres':['Deep House'],'audio_features':{'model':'test','energy':.9,'valence':.9,'bpm':165,'bpm_confidence':.8}}
+    assert session_intent.feedback_similarity(b,a,'mood_match')==1
+    assert session_intent.feedback_similarity(distant,a,'mood_match')==0
+    assert session_intent.feedback_similarity(b,a,'tempo_match')==1
+    assert session_intent.feedback_similarity(distant,a,'tempo_match')==0
+    for reason in ['mood_match','tempo_match']:
+        assert session_intent.feedback_similarity({},a,reason)==0
+    assert session_intent.feedback_similarity({'audio_features':dict(b['audio_features'], profile_confidence=.1)},a,'mood_match')==0
+    assert session_intent.feedback_similarity({'audio_features':dict(b['audio_features'], bpm_confidence=.1)},a,'tempo_match')==0
+
+
+def test_dimension_positive_feedback_cannot_override_hard_mood_or_length_gates(tmp_path):
+    model=library.LocalModel(tmp_path/'gate.db')
+    root=track('root');root['audio_features'].update(model='test',energy=.5,valence=.5)
+    wrong=track('wrong');wrong['audio_features'].update(model='test',energy=0.,valence=0.)
+    long=track('long');long['duration']=1000
+    for reason in ['track_match','genre_match','mood_match','tempo_match']:
+        context={'mood':music_mood.selection(90,.1),'seed_features':root,
+                 'session_votes':[{'item':wrong,'vote':1,'reason':reason},{'item':long,'vote':1,'reason':reason}]}
+        assert wrong not in model.rank([root,wrong,long],context,3)
+        assert long not in model.rank([root,wrong,long],context,3)
+    model.db.close()

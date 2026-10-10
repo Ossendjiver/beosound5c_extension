@@ -31,9 +31,18 @@ Feedback is persisted on the recommender's existing SSD SQLite KV store. Active
 mix votes survive phone disconnection and backend restart; explicit new mixes
 get new identities. Ordinary queue sessions reset on unrelated queue replacement
 or after prolonged inactivity. Polling unchanged state does not write to disk.
-Positive votes provide bounded acoustic intent; negative votes exclude that
-recording throughout the session and mildly penalise similar audio. Recent votes
-are averaged so a long session cannot saturate every candidate's score.
+Each long-press thumb menu offers Track match, Genre match, Mood match and
+Tempo match. The thumb determines positive or negative polarity. Negative feedback
+also offers Heard it too often. A reason refines only its intended dimension:
+recording identity, specific style/broad genre evidence, validated energy/valence,
+or reliable tempo (allowing half/double beat-tracker estimates). Missing data is
+neutral. Negative votes exclude the voted recording for this session; matching
+reason signals modestly steer other eligible tracks. Overplayed only excludes the
+recording, without penalising its entire genre or mood. Unqualified thumb taps
+retain bounded acoustic intent. Older stored reason keys remain accepted.
+All refinements occur after hard radio, mood and length eligibility checks and
+never update permanent favourites or counts. Recent votes are averaged so a long
+session cannot saturate every candidate's score.
 
 For active mixes, a changed vote marks the future queue for guarded replacement
 through the existing mix monitor, keeping the playing song and its position.
@@ -42,11 +51,12 @@ tracks. Regular manually assembled queues record feedback without automatically
 rebuilding their contents.
 
 Home Media exposes highlighted reversible thumbs in the collapsed-by-default
-queue controls drawer, with current-item/owner/revision checks. Local and remote
-connections use the same payload. Remote access needs Home Media Bridge 0.1.2
-through HACS; its closed command boundary explicitly validates this action.
-Older backends leave the thumbs disabled.
+queue controls drawer, with current-item/owner/revision checks. Long press opens
+the reason submenu; selecting another reason updates rather than clears the vote.
+The app resolves a fresh feedback snapshot when tapped. Local and remote
+connections use the same payload. Remote reasons need Home Media Bridge 0.1.4
+through HACS, with its existing closed command boundary. Stale item/session IDs,
+unknown reasons and reasons attached to a cleared vote are rejected.
 
-This change is committed only; deployment remains subject to the scheduled
-idle/sweep checks. No playback commands or live database changes were used to test
-it, and no APK was built.
+Validation uses offline protocol, ranking and signal-isolation tests; no test
+issues playback commands or modifies the live queue.

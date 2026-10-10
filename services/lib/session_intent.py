@@ -1,5 +1,6 @@
 """Bounded, short-lived listening intent, separate from permanent preferences."""
-from . import mix_policy, music_features
+import math
+from . import mix_policy, music_features, music_mood, profile_quality, radio_genres
 
 
 def accepted(history, candidates, room, now):
@@ -22,6 +23,37 @@ def accepted(history, candidates, room, now):
     return recent
 
 
+def feedback_similarity(item, other, reason, similarity=music_features.similarity):
+    """One feedback dimension; unknown descriptors never invent a match."""
+    if reason in ('track_match', 'overplayed', 'dislike_recording'):
+        return float(mix_policy.same_recording(item, other))
+    if reason == 'genre_match':
+        a, b = radio_genres.labels(item), radio_genres.labels(other)
+        if not a or not b:
+            return 0.
+        if radio_genres.specific(a) & radio_genres.specific(b):
+            return 1.
+        if radio_genres.style_distance(a, b) == 3:
+            return 0.
+        return .5 if radio_genres.dominant(a) & radio_genres.dominant(b) else 0.
+    if reason in ('mood_match', 'wrong_mood'):
+        a, b = music_mood.profile(item, {}), music_mood.profile(other, {})
+        if not a or not b:
+            return 0.
+        for record, profile in ((item, a), (other, b)):
+            if profile['source'] == 'audio_model' and profile_quality.confidence(record.get('audio_features') or {}) < .35:
+                return 0.
+        return max(0., 1-math.hypot(a['energy']-b['energy'], a['valence']-b['valence'])/.35)
+    if reason == 'tempo_match':
+        a = music_features.clean(item.get('audio_features'))
+        b = music_features.clean(other.get('audio_features'))
+        if not a.get('bpm') or not b.get('bpm') or min(a.get('bpm_confidence', .6), b.get('bpm_confidence', .6)) < .35:
+            return 0.
+        delta = min(abs(math.log2(a['bpm']*ratio/b['bpm'])) for ratio in (.5, 1, 2))
+        return max(0., 1-delta/.25)
+    return similarity(item, other)  # Unqualified and legacy positive votes.
+
+
 def bonus(item, recent, votes, predecessor, similarity=music_features.similarity):
     """Refine eligible mood/length choices; missing analysis contributes nothing."""
     score = .7 * similarity(item, predecessor or {}) if predecessor else 0.
@@ -31,11 +63,11 @@ def bonus(item, recent, votes, predecessor, similarity=music_features.similarity
                           for w, other in zip(weights, recent))/sum(weights)
     # A vote changes this session's direction, not catalogue favourites or counts.
     for vote, strength in ((1, .8), (-1, -1.2)):
-        examples = [v['item'] for v in votes if v['vote'] == vote and v.get('reason') not in ('overplayed', 'dislike_recording')][-8:][::-1]
+        examples = [v for v in votes if v['vote'] == vote and v.get('reason') not in ('overplayed', 'dislike_recording')][-8:][::-1]
         weights = [2 ** (-i/3) for i in range(len(examples))]
         if weights:
-            score += strength * sum(w*similarity(item, other)
-                                    for w, other in zip(weights, examples))/sum(weights)
+            score += strength * sum(w*feedback_similarity(item, example['item'], example.get('reason'), similarity)
+                                    for w, example in zip(weights, examples))/sum(weights)
     return max(-3., min(3., score))
 
 

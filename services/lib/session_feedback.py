@@ -47,9 +47,9 @@ class SessionFeedback:
     def vote(self, queue, state, session_id, item_id, vote, reason=None):
         if type(vote) is not int or vote not in (-1, 0, 1):
             raise ValueError('Vote must be -1, 0 or 1')
-        if reason not in (None, '', 'wrong_mood', 'overplayed', 'dislike_recording', 'more_like_this'):
+        if reason not in (None, '', 'track_match', 'genre_match', 'mood_match', 'tempo_match', 'wrong_mood', 'overplayed', 'dislike_recording', 'more_like_this'):
             raise ValueError('Unknown feedback reason')
-        if reason and ((vote == 1 and reason != 'more_like_this') or (vote == -1 and reason == 'more_like_this') or vote == 0):
+        if reason and (reason in ('wrong_mood', 'overplayed', 'dislike_recording') and vote != -1 or reason == 'more_like_this' and vote != 1 or vote == 0):
             raise ValueError('Feedback reason does not match vote')
         if not state['available'] or session_id != state['session_id'] or item_id != state['current_item_id']:
             raise ValueError('The playing song or session changed; refresh the queue')
