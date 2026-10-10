@@ -31,6 +31,7 @@ from aiohttp import web
 # Ensure services/ is on the path for sibling imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from lib.config import cfg
+from lib.frame_standby import frame_art_standby
 from lib.correlation import (
     install_logging, correlation_middleware as cid_middleware,
     correlation_headers, set_id, new_id,
@@ -647,6 +648,7 @@ class EventRouter:
             self._spawn(self._screen_off(), name="off_screen")
             if action == "alloff":
                 self._spawn(self._ml_all_standby(), name="alloff_ml")
+                self._spawn(frame_art_standby(self._session), name="alloff_frame_art")
 
         # 4d. BLUE → JOIN — returns only if JOIN is configured locally; otherwise
         # intentional fallthrough to HA so HA can handle the BLUE button.

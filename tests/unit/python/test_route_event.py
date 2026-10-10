@@ -270,6 +270,7 @@ class TestVolumeBalance:
         _run(r.route_event({"action": "alloff", "device_type": "All"}))
         assert "off_source_stop" in r._spawned_names
         assert "alloff_ml" in r._spawned_names
+        assert "alloff_frame_art" in r._spawned_names
         r._forward_to_source.assert_called_once()
         assert r._forward_to_source.call_args.args[1]["action"] == "stop"
 
@@ -278,6 +279,7 @@ class TestVolumeBalance:
         _run(r.route_event({"action": "off", "device_type": "Audio"}))
         assert "off_stop" in r._spawned_names
         assert "off_source_stop" not in r._spawned_names
+        assert "alloff_frame_art" not in r._spawned_names
         r._forward_to_source.assert_not_called()
 
     def test_off_active_source_without_stop_handle_skipped(self):
