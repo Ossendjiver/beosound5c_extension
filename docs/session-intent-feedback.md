@@ -34,7 +34,8 @@ or after prolonged inactivity. Polling unchanged state does not write to disk.
 Each long-press thumb menu offers Track match, Genre match, Mood match and
 Tempo match. The thumb determines positive or negative polarity. Negative feedback
 also offers Heard it too often. A reason refines only its intended dimension:
-recording identity, specific style/broad genre evidence, validated energy/valence,
+recording identity and compatible audio embeddings, specific style/broad genre
+evidence, validated energy/valence,
 or reliable tempo (allowing half/double beat-tracker estimates). Missing data is
 neutral. Negative votes exclude the voted recording for this session; matching
 reason signals modestly steer other eligible tracks. Overplayed only excludes the

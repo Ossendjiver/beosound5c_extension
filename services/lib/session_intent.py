@@ -25,8 +25,19 @@ def accepted(history, candidates, room, now):
 
 def feedback_similarity(item, other, reason, similarity=music_features.similarity):
     """One feedback dimension; unknown descriptors never invent a match."""
-    if reason in ('track_match', 'overplayed', 'dislike_recording'):
+    if reason in ('overplayed', 'dislike_recording'):
         return float(mix_policy.same_recording(item, other))
+    if reason == 'track_match':
+        if mix_policy.same_recording(item, other):
+            return 1.
+        features = getattr(similarity, 'features', None)
+        a = features(item) if features else music_features.clean(item.get('audio_features'))
+        b = features(other) if features else music_features.clean(other.get('audio_features'))
+        x, y = a.get('embedding'), b.get('embedding')
+        if not x or not y or len(x) != len(y) or not a.get('embedding_model') or a['embedding_model'] != b.get('embedding_model'):
+            return 0.
+        cosine = sum(i*j for i,j in zip(x,y))/math.sqrt(sum(i*i for i in x)*sum(j*j for j in y))
+        return max(0., min(1., cosine))
     if reason == 'genre_match':
         a, b = radio_genres.labels(item), radio_genres.labels(other)
         if not a or not b:

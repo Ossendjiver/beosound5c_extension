@@ -228,7 +228,10 @@ def test_reason_scoring_is_dimension_specific_and_signed():
         votes=[{'item':a,'vote':vote,'reason':'genre_match'}]
         score=lambda item: session_intent.bonus(item,[],votes,{})
         assert vote*score(same_genre)>vote*score(other_genre)
-    assert session_intent.feedback_similarity(same_genre,a,'track_match')==0
+    assert session_intent.feedback_similarity(same_genre,a,'track_match')==1
+    assert session_intent.feedback_similarity(dict(same_genre,audio_features={'embedding_model':'test','embedding':[-1.]*8}),a,'track_match')==0
+    assert session_intent.feedback_similarity({'uri':'missing'},a,'track_match')==0
+    assert session_intent.feedback_similarity(dict(same_genre,audio_features={'embedding_model':'other','embedding':[1.]*8}),a,'track_match')==0
     assert session_intent.feedback_similarity(dict(a,uri='other-provider'),a,'track_match')==1
     # The same sound is not genre evidence, and unknown metadata is neutral.
     assert session_intent.feedback_similarity(track('unknown'),a,'genre_match')==0
