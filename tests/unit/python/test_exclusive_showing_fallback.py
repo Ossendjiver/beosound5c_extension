@@ -54,16 +54,52 @@ async def test_metadata_does_not_search_other_queues_when_selected_target_is_idl
     assert [call.args[0] for call in source._build_now_playing_payload.await_args_list] == ['lounge-queue', 'lounge-wiim']
 
 @pytest.mark.asyncio
-async def test_idle_source_resync_does_not_adopt_external_room(mock_config):
+@pytest.mark.parametrize('selected', [False, None])
+async def test_idle_source_resync_does_not_adopt_external_room(mock_config, selected):
     mock_config({'showing': {'exclusive_playing_fallback': True}})
     source = make_source()
     source._registered_state = 'available'
-    source._router_selected_mass = AsyncMock(return_value=False)
+    source._router_selected_mass = AsyncMock(return_value=selected)
+    source.register = AsyncMock()
     source._resolve_metadata_queue_candidates = AsyncMock(return_value=['bedroom'])
     source._publish_now_playing = AsyncMock()
-    assert not (await source.handle_resync())['resynced']
+    result = await source.handle_resync()
+    assert not result['resynced']
+    assert result['registered'] and result['state'] == 'available'
+    source.register.assert_awaited_once_with('available')
     source._resolve_metadata_queue_candidates.assert_not_awaited()
     source._publish_now_playing.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('state', ['playing', 'paused'])
+async def test_unreadable_router_does_not_demote_existing_direct_source(mock_config, state):
+    mock_config({'showing': {'exclusive_playing_fallback': True}})
+    source = make_source()
+    source._registered_state = state
+    source._router_selected_mass = AsyncMock(return_value=None)
+    source.register = AsyncMock()
+    source._resolve_metadata_queue_candidates = AsyncMock()
+    assert not (await source.handle_resync())['resynced']
+    source.register.assert_not_awaited()
+    source._resolve_metadata_queue_candidates.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('local', [False, True])
+@pytest.mark.parametrize('reason, powers_on', [('resync', False), ('track_change', True)])
+async def test_metadata_resync_never_requests_power_on(mock_config, local, reason, powers_on):
+    source = make_source()
+    source.register = AsyncMock()
+    source.post_media_update = AsyncMock()
+    payload = {'state': 'playing', 'uri': 'track://direct', 'title': 'Direct playback'}
+    if local:
+        await source._publish_local_entry(payload, reason=reason)
+    else:
+        source._build_now_playing_payload = AsyncMock(return_value=payload)
+        await source._publish_now_playing('chosen-queue', reason=reason)
+    source.register.assert_awaited_once_with('playing', auto_power=powers_on)
+    source.post_media_update.assert_awaited_once()
 
 @pytest.mark.asyncio
 async def test_existing_direct_remote_source_resync_survives_router_restart(mock_config):

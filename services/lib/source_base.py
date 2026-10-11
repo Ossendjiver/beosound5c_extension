@@ -128,6 +128,8 @@ class SourceBase:
                 async with self._http_session.post(
                     ROUTER_SOURCE_URL, json=payload, timeout=5
                 ) as resp:
+                    if not 200 <= resp.status < 300:
+                        raise RuntimeError(f"Router registration returned HTTP {resp.status}")
                     log.info("Router source -> %s (HTTP %d)", state, resp.status)
                     return
             except Exception as e:

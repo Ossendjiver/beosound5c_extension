@@ -3193,7 +3193,7 @@ class MassSource(SourceBase):
         if register_state == "paused":
             await self.register("paused")
         else:
-            await self.register("playing", auto_power=True)
+            await self.register("playing", auto_power=reason != "resync")
         await self.post_media_update(
             title=str(entry.get("title") or "Music Assistant").strip(),
             artist=str(entry.get("artist") or "").strip(),
@@ -3568,7 +3568,7 @@ class MassSource(SourceBase):
             await self.register("paused")
         else:
             register_state = "playing"
-            await self.register("playing", auto_power=True)
+            await self.register("playing", auto_power=reason != "resync")
 
         await self.post_media_update(
             title=str(payload.get("title") or "").strip(),
@@ -3597,7 +3597,16 @@ class MassSource(SourceBase):
         if cfg("showing", "exclusive_playing_fallback", default=False):
             selected = await self._router_selected_mass()
             if selected is None or (not selected and self._registered_state not in {"playing", "paused"}):
-                return {"status": "ok", "resynced": False}
+                if self._registered_state in {"playing", "paused"}:
+                    # An unreadable status endpoint is not evidence that an
+                    # already active source should be demoted to available.
+                    return {"status": "ok", "resynced": False}
+                # Availability and PLAYING authority are separate. The router
+                # loses its registry on restart; hiding unrelated room metadata
+                # must not also hide this healthy source's cached music menu.
+                await self.register("available")
+                return {"status": "ok", "resynced": False, "registered": True,
+                        "state": "available"}
         for queue_id in await self._resolve_metadata_queue_candidates():
             payload = await self._build_now_playing_payload(queue_id)
             if not isinstance(payload, dict):

@@ -200,6 +200,27 @@ class TestRegisterRetry:
         _run(src.register("available", _retries=5))
         assert len(sess.post_calls) == 3  # stopped retrying after success
 
+    @pytest.mark.parametrize('status', [400, 401, 500, 503])
+    def test_http_failure_is_not_acknowledged_as_registration(self, monkeypatch, status):
+        src = _FakeSource()
+        sess = _RecordingSession()
+        src._http_session = sess
+        replies = iter([status, 200])
+        original_post = sess.post
+
+        def post(*args, **kwargs):
+            original_post(*args, **kwargs)
+            return _FakeResponse(next(replies))
+
+        sess.post = post
+
+        async def no_sleep(_):
+            pass
+
+        monkeypatch.setattr('lib.source_base.asyncio.sleep', no_sleep)
+        _run(src.register('available', _retries=2))
+        assert len(sess.post_calls) == 2
+
 
 # ── _resync_media decision tree ─────────────────────────────────────
 
