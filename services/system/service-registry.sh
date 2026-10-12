@@ -5,6 +5,8 @@
 
 # All service unit files (for install / copy / final status)
 ALL_SERVICES=(
+    "beo-ipod-sync.service"
+    "beo-ipod-sync.timer"
     "beo-http.service"
     "beo-player-sonos.service"
     "beo-player-bluesound.service"
@@ -62,7 +64,7 @@ STATUS_SERVICES=(
 )
 
 # Service descriptions (for status display)
-STATUS_SERVICES+=("beo-library.service" "beo-provider-profile.service" "beo-provider-sweep.service")
+STATUS_SERVICES+=("beo-ipod-sync.service" "beo-library.service" "beo-provider-profile.service" "beo-provider-sweep.service")
 declare -A SERVICE_DESC
 SERVICE_DESC["beo-http.service"]="HTTP Web Server (Port 8000)"
 SERVICE_DESC["beo-player-sonos.service"]="Sonos Player (Port 8766)"
@@ -104,3 +106,5 @@ OPTIONAL_SOURCES=(
     "KODI|beo-source-kodi.service|🎬|Kodi source"
     "MUSIC|beo-source-mass.service|🎵|Music Assistant source"
 )
+
+SERVICE_DESC["beo-ipod-sync.service"]="Rockbox iPod Automatic Sync"

@@ -1088,7 +1088,7 @@
             </div>
             <div class="section-hint">
                 <span class="key">UP/DOWN</span> Navigate &nbsp;
-                <span class="key">GO</span> Restart service
+                <span id="service-action-hint"><span class="key">GO</span> Restart service</span>
             </div>
         </div>
 
@@ -1212,6 +1212,10 @@
         const HISTORY_MAX = 30;  // ~2.5 min at 5s refresh
 
         // ── Subcard definitions ──
+        // Reboot card state: 'idle' → GO → 'armed' (6s window) → GO → 'rebooting'
+        let rebootState = 'idle';
+        let rebootDisarmTimer = null;
+
         const SUBCARDS = [
             {
                 id: 'system',
@@ -1438,6 +1442,64 @@
                 },
             },
             {
+                id: 'library',
+                title: 'LIBRARY',
+                service: 'beo-library',
+                fetch: async () => {
+                    const resp = await fetch('http://' + location.hostname + ':8788/library/status');
+                    if (!resp.ok) throw new Error('offline');
+                    return (await resp.json()).library;
+                },
+                render: (data) => {
+                    if (!data) return '<div class="subcard-body">' + row('Status', 'No data', 'dim') + '</div>';
+                    return '<div class="subcard-body">' + row('Service', 'Running', 'ok') +
+                        row('Mix Sessions', Number(data.mix_sessions) || 0) +
+                        row('Listening Events', Number(data.listens) || 0) +
+                        row('Relationships', Number(data.relationships) || 0) +
+                        row('Music Prompts', data.music_prompts_suppressed ? 'Suppressed by playback' : 'Available') + '</div>';
+                },
+            },
+            {
+                id: 'ipod', title: 'IPOD SYNC', service: null,
+                fetch: async () => {
+                    const response = await fetch('/json/ipod_sync_status.json');
+                    if (!response.ok) throw new Error('offline');
+                    return await response.json();
+                },
+                render: (data) => '<div class="subcard-body">' +
+                    row('Status', data.state || 'waiting', data.state === 'error' ? 'error' : 'ok') +
+                    row('Device', data.device || 'iPod Video · Rockbox') +
+                    row('Progress', (Number(data.copied) || 0) + ' / ' + (Number(data.total) || 0)) +
+                    row('Imported Listens', Number(data.imported_total) || 0) +
+                    row('Unmatched', Number(data.unmatched) || 0) +
+                    row('Streaming Only', Number(data.provider_only_skipped) || 0) +
+                    row('Last Sync', data.last_sync ? new Date(data.last_sync * 1000).toLocaleString() : 'Not yet synced') +
+                    row('Details', String(data.message || 'Dock to sync and safely eject').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))) + '</div>',
+            },
+            {
+                id: 'provider',
+                title: 'PROVIDER',
+                service: 'beo-provider-profile',
+                fetch: async () => {
+                    const resp = await fetch('http://' + location.hostname + ':8788/library/status');
+                    if (!resp.ok) throw new Error('offline');
+                    return (await resp.json()).provider;
+                },
+                render: (data) => {
+                    if (!data || !Object.keys(data).length) return '<div class="subcard-body">' + row('Status', 'Not profiled yet', 'dim') + '</div>';
+                    const sweep = data.sweep || {};
+                    const total = Number(sweep.total || data.catalogue_entries) || 0;
+                    const visited = Number(sweep.visited) || 0;
+                    return '<div class="subcard-body">' + row('Sweep', data.running ? 'Running' : sweep.complete ? 'Complete' : 'Idle', data.running ? 'warn' : '') +
+                        row('Checked', `${visited} / ${total}`) +
+                        row('Progress', total ? Math.round(visited * 100 / total) + '%' : '—') +
+                        row('Successful Samples', data.successful_samples == null ? 'Available at next checkpoint' : Number(data.successful_samples)) +
+                        row('Ready Profiles', data.ready == null ? 'Available after sweep' : Number(data.ready)) +
+                        row('Pending Samples', sweep.pending_samples == null ? 'Available after sweep' : Number(sweep.pending_samples)) +
+                        row('Errors', Number(sweep.errors || data.failed) || 0) + '</div>';
+                },
+            },
+            {
                 id: 'kodi',
                 title: 'KODI',
                 service: 'beo-source-kodi',
@@ -1576,6 +1638,27 @@
                     // Artwork
                     if (data.metadata?.artwork) {
                         html += `<img class="cd-artwork" src="${data.metadata.artwork}" alt="Album art">`;
+                    }
+                    return html;
+                },
+            },
+            {
+                id: 'reboot',
+                title: 'RESTART',
+                service: null,
+                fetch: async () => ({}),
+                render: () => {
+                    let html = '<div class="subcard-body">';
+                    html += row('Action', 'Reboot the system');
+                    html += row('Effect', 'Full restart of all services and display');
+                    html += row('Duration', '~1 minute');
+                    html += '</div>';
+                    if (rebootState === 'rebooting') {
+                        html += '<div style="margin-top:18px;text-align:center;font-size:14px;color:#4a4;">Rebooting&hellip;</div>';
+                    } else if (rebootState === 'armed') {
+                        html += '<div style="margin-top:18px;text-align:center;font-size:14px;color:#fa0;">Press GO again to reboot</div>';
+                    } else {
+                        html += '<div style="margin-top:18px;text-align:center;font-size:13px;color:#666;">Press GO to reboot</div>';
                     }
                     return html;
                 },
@@ -1805,10 +1888,26 @@
                 this.fetchPeople();
                 this.fetchBTRemotes();
                 this.checkUpdate();
+                this.maybeOpenConfigTab();
 
                 this._intervals = [
                     setInterval(() => this.fetchPeople(), 30000),
                 ];
+            }
+
+            async maybeOpenConfigTab() {
+                try {
+                    const resp = await fetch('../json/config.json', { cache: 'no-store' });
+                    if (!resp.ok) return;
+                    const cfg = await resp.json();
+                    if (cfg.setup_complete === false) {
+                        const idx = this.sections.indexOf('config');
+                        if (idx >= 0) {
+                            this.currentSection = idx;
+                            this.updateSection();
+                        }
+                    }
+                } catch (e) { /* offline — leave on default tab */ }
             }
 
             // ── Subcards ──
@@ -1829,6 +1928,7 @@
 
             renderCurrentSubcard() {
                 const card = SUBCARDS[this.currentSubcard];
+                document.getElementById('service-action-hint').hidden = card.id === 'ipod';
                 const data = this.subcardData[card.id];
                 const online = this.subcardOnline[card.id] !== false;
 
@@ -1991,6 +2091,11 @@
                     } else if (direction === 'clock') {
                         this.currentSubcard = (this.currentSubcard + 1) % SUBCARDS.length;
                     }
+                    // Leaving the card disarms a pending reboot confirm
+                    if (rebootState === 'armed') {
+                        rebootState = 'idle';
+                        clearTimeout(rebootDisarmTimer);
+                    }
                     this.startSubcardRefresh();
                 } else if (section === 'remotes') {
                     if (this.remoteItems.length > 0) {
@@ -2041,6 +2146,12 @@
                 // Fetch remotes when entering remotes section
                 if (section === 'remotes') {
                     this.fetchBTRemotes();
+                    // Clear any existing poller first — updateSection() runs on
+                    // every tab click, including re-clicks of the active tab,
+                    // and stacked intervals would leak until iframe teardown.
+                    if (this.remotesRefreshInterval) {
+                        clearInterval(this.remotesRefreshInterval);
+                    }
                     this.remotesRefreshInterval = setInterval(() => this.fetchBTRemotes(), 10000);
                 } else {
                     if (this.remotesRefreshInterval) {
@@ -2381,6 +2492,31 @@
 
             restartSubcardService() {
                 const card = SUBCARDS[this.currentSubcard];
+                if (card.id === 'ipod') return; // Dock sync runs automatically; never restart playback services here.
+                if (card.id === 'reboot') {
+                    // Two-press confirm: arm on first GO, reboot on second.
+                    if (rebootState === 'rebooting') return;
+                    if (rebootState !== 'armed') {
+                        rebootState = 'armed';
+                        clearTimeout(rebootDisarmTimer);
+                        rebootDisarmTimer = setTimeout(() => {
+                            rebootState = 'idle';
+                            if (SUBCARDS[this.currentSubcard].id === 'reboot') this.renderCurrentSubcard();
+                        }, 6000);
+                        this.renderCurrentSubcard();
+                        return;
+                    }
+                    clearTimeout(rebootDisarmTimer);
+                    rebootState = 'rebooting';
+                    this.renderCurrentSubcard();
+                    if (this.inputWs && this.inputWs.readyState === WebSocket.OPEN) {
+                        this.inputWs.send(JSON.stringify({
+                            type: 'command', command: 'restart_service',
+                            params: { action: 'reboot' }
+                        }));
+                    }
+                    return;
+                }
                 if (!card.service) {
                     // SYSTEM card — restart all
                     if (this.inputWs && this.inputWs.readyState === WebSocket.OPEN) {

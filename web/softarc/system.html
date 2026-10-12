@@ -1088,7 +1088,7 @@
             </div>
             <div class="section-hint">
                 <span class="key">UP/DOWN</span> Navigate &nbsp;
-                <span class="key">GO</span> Restart service
+                <span id="service-action-hint"><span class="key">GO</span> Restart service</span>
             </div>
         </div>
 
@@ -1458,6 +1458,23 @@
                         row('Relationships', Number(data.relationships) || 0) +
                         row('Music Prompts', data.music_prompts_suppressed ? 'Suppressed by playback' : 'Available') + '</div>';
                 },
+            },
+            {
+                id: 'ipod', title: 'IPOD SYNC', service: null,
+                fetch: async () => {
+                    const response = await fetch('/json/ipod_sync_status.json');
+                    if (!response.ok) throw new Error('offline');
+                    return await response.json();
+                },
+                render: (data) => '<div class="subcard-body">' +
+                    row('Status', data.state || 'waiting', data.state === 'error' ? 'error' : 'ok') +
+                    row('Device', data.device || 'iPod Video · Rockbox') +
+                    row('Progress', (Number(data.copied) || 0) + ' / ' + (Number(data.total) || 0)) +
+                    row('Imported Listens', Number(data.imported_total) || 0) +
+                    row('Unmatched', Number(data.unmatched) || 0) +
+                    row('Streaming Only', Number(data.provider_only_skipped) || 0) +
+                    row('Last Sync', data.last_sync ? new Date(data.last_sync * 1000).toLocaleString() : 'Not yet synced') +
+                    row('Details', String(data.message || 'Dock to sync and safely eject').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))) + '</div>',
             },
             {
                 id: 'provider',
@@ -1911,6 +1928,7 @@
 
             renderCurrentSubcard() {
                 const card = SUBCARDS[this.currentSubcard];
+                document.getElementById('service-action-hint').hidden = card.id === 'ipod';
                 const data = this.subcardData[card.id];
                 const online = this.subcardOnline[card.id] !== false;
 
@@ -2474,6 +2492,7 @@
 
             restartSubcardService() {
                 const card = SUBCARDS[this.currentSubcard];
+                if (card.id === 'ipod') return; // Dock sync runs automatically; never restart playback services here.
                 if (card.id === 'reboot') {
                     // Two-press confirm: arm on first GO, reboot on second.
                     if (rebootState === 'rebooting') return;

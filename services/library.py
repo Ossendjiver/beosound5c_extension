@@ -42,6 +42,7 @@ HERE = Path(__file__).resolve().parent
 
 from lib.config import cfg
 from lib.background_tasks import BackgroundTaskSet
+from lib import ipod_library
 from lib import skip_policy
 from lib import music_mood
 from lib import music_familiarity
@@ -181,6 +182,7 @@ class LocalModel:
             );
             CREATE INDEX IF NOT EXISTS idx_track_relations_source ON track_relations(source_key,ts);
             CREATE TABLE IF NOT EXISTS feedback_receipts (event_id TEXT PRIMARY KEY, ts REAL NOT NULL);
+            CREATE TABLE IF NOT EXISTS ipod_listen_receipts (event_id TEXT PRIMARY KEY, ts REAL NOT NULL);
             CREATE TABLE IF NOT EXISTS recommendation_runs (
               id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL NOT NULL,
               queue_id TEXT NOT NULL, payload TEXT NOT NULL
@@ -249,7 +251,8 @@ class LocalModel:
         now = dt.datetime.fromtimestamp(stamp)
         with self.db:
             if event_id:
-                cursor = self.db.execute("INSERT OR IGNORE INTO feedback_receipts VALUES (?,?)", (event_id,stamp))
+                table = "ipod_listen_receipts" if str(event_id).startswith("ipod_") else "feedback_receipts"
+                cursor = self.db.execute(f"INSERT OR IGNORE INTO {table} VALUES (?,?)", (event_id,stamp))
                 if not cursor.rowcount:
                     return False
             cursor=self.db.execute(
@@ -1375,8 +1378,7 @@ class LibraryService:
                 "Files.GetDirectory",
                 {
                     "directory": directory,
-                    "media": "video",
-                    "properties": ["title", "file"],
+                    "media": "files",
                 },
             )
             files = result.get("files", []) if isinstance(result, dict) else []
@@ -1467,6 +1469,19 @@ class LibraryService:
             {"primary": self.suggestion(room), "context": self._context_for_room(room)},
             headers={"Access-Control-Allow-Origin": "*"},
         )
+
+    async def handle_ipod_catalogue(self, request):
+        ipod_library.local_only(request)
+        try:
+            names = json.loads(request.query.get('playlists', '[]'))
+            if not isinstance(names, list) or len(names)>100 or not all(isinstance(n,str) and len(n)<=200 for n in names): raise ValueError()
+            return web.json_response(await ipod_library.catalogue(self, int(request.query.get('limit',10000)), names))
+        except (ValueError, TypeError): raise web.HTTPBadRequest(text='Invalid iPod selection')
+
+    async def handle_ipod_history(self, request):
+        ipod_library.local_only(request)
+        try: return web.json_response(ipod_library.record_history(self, (await request.json()).get('events')))
+        except (KeyError, ValueError, TypeError): raise web.HTTPBadRequest(text='Invalid iPod history')
 
     async def handle_status(self, request: web.Request) -> web.Response:
         path = Path(os.getenv('BS5C_PROVIDER_PROFILES_FILE') or CACHE_LIBRARY.parent / 'provider_profiles.json').with_suffix('.status.json')
@@ -1683,6 +1698,8 @@ def create_app() -> web.Application:
     app.router.add_get("/library/mood", service.handle_mood)
     app.router.add_get("/library/context", service.handle_context)
     app.router.add_get("/library/status", service.handle_status)
+    app.router.add_get("/library/ipod/catalogue", service.handle_ipod_catalogue)
+    app.router.add_post("/library/ipod/history", service.handle_ipod_history)
     app.router.add_get("/library/recommend/music", service.handle_recommend)
     app.router.add_get("/library/recommend/diagnostics", service.handle_recommend_diagnostics)
     app.router.add_get("/library/suggestions", service.handle_suggestions)

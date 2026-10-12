@@ -1,0 +1,25 @@
+[Unit]
+Description=Rockbox iPod Video dock sync
+After=network-online.target beo-library.service
+ConditionPathIsMountPoint=/media/local
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=__HOME__/beosound5c/services
+EnvironmentFile=-/etc/beosound5c/secrets.env
+ExecStart=/usr/bin/python3 __HOME__/beosound5c/services/ipod_sync.py
+Nice=19
+CPUQuota=20%
+MemoryMax=512M
+IOSchedulingClass=idle
+TimeoutStartSec=infinity
+UMask=0022
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=read-only
+ProtectSystem=full
+ReadWritePaths=/etc/beosound5c /media __HOME__/beosound5c/web/json
+
+[Install]
+WantedBy=multi-user.target

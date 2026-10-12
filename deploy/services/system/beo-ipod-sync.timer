@@ -1,0 +1,11 @@
+[Unit]
+Description=Watch for a docked Rockbox iPod Video
+
+[Timer]
+OnBootSec=45
+OnUnitInactiveSec=30
+AccuracySec=5
+Unit=beo-ipod-sync.service
+
+[Install]
+WantedBy=timers.target
