@@ -34,7 +34,7 @@ def score(item,evidence):
     aliases=[item.get('uri','')]+[f"{p}://track/{m.get('item_id')}" for m in item.get('provider_mappings',[]) for p in (m.get('provider_domain'),m.get('provider_instance')) if p]
     return max([finite(item.get('play_count'))]+[finite(evidence.get(a)) for a in aliases])+(.01 if item.get('favorite') else 0)
 
-def select(tracks,evidence,track_limit=1000,album_limit=20):
+def select(tracks,evidence,track_limit=250,album_limit=20):
     eligible=[t for t in tracks if tidal_mapping(t) and explicit(t)]
     eligible.sort(key=lambda t:(-score(t,evidence),str(t.get('name','')),str(t.get('uri',''))))
     chosen=[];seen=set();albums={}
@@ -57,7 +57,7 @@ def cached_source(index,item):
         if aliases.intersection(record.get('uris',[])):
             from pathlib import Path
             path=Path(record['path']).resolve()
-            root=Path('/media/local/music/HomeMedia-Tidal').resolve()
+            root=Path('/media/local/music').resolve()
             if path.is_relative_to(root) and path.is_file() and path.stat().st_size==record.get('size'):return path
     return None
 

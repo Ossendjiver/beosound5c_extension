@@ -1464,7 +1464,12 @@
                 fetch: async () => {
                     const response = await fetch('/json/tidal_download_status.json');
                     if (!response.ok) throw new Error('offline');
-                    return await response.json();
+                    const data = await response.json();
+                    const settings = await fetch('http://' + location.hostname + ':8789/settings', {cache: 'no-store'});
+                    if (!settings.ok) throw new Error('settings offline');
+                    data.settings = await settings.json();
+                    try { data.organisation = await (await fetch('/json/tidal_tidy_status.json')).json(); } catch (_) {}
+                    return data;
                 },
                 render: (data) => '<div class="subcard-body">' +
                     row('Status', data.state || 'waiting', data.state === 'error' ? 'error' : 'ok') +
@@ -1473,7 +1478,9 @@
                     row('Already Stored', Number(data.retained) || 0) +
                     row('Protected / Unsupported', Number(data.protected) || 0) +
                     row('Errors', Number(data.errors) || 0) +
-                    row('Selection', 'Top 1,000 tracks + top 20 albums') +
+                    row('Selection', 'Top ' + Number(data.settings?.tracks || 250).toLocaleString() + ' tracks + top 20 albums') +
+                    '<div class="subcard-row"><span class="subcard-label">Track limit</span><span class="subcard-value"><button data-tidal-step="-50" style="padding:8px 18px">−</button> &nbsp;' + Number(data.settings?.tracks || 250) + '&nbsp; <button data-tidal-step="50" style="padding:8px 18px">+</button> <button data-tidal-save style="padding:8px 18px">Save</button></span></div>' +
+                    row('Library folders', ({waiting_for_download:'After current pass',waiting_for_completed_pass:'After current pass',waiting_for_idle:'Waiting for idle playback',organising:'Organising',complete:'Integrated',needs_attention:'Some files need attention'})[data.organisation?.state] || 'Pending') +
                     row('Quality', 'Maximum available lossless') +
                     row('Versions', 'Confirmed explicit only') +
                     row('Last Update', data.last_completed ? new Date(data.last_completed * 1000).toLocaleString() : 'Pending') + '</div>',
@@ -1842,6 +1849,9 @@
 
                 // Service subcards
                 this.currentSubcard = 0;
+                this.tidalTrackEditing = false;
+                this.tidalTrackDraft = null;
+                this.tidalSaving = false;
                 this.subcardData = {};    // id -> last fetched data
                 this.subcardOnline = {};  // id -> bool
                 this.subcardRefreshTimer = null;
@@ -1947,8 +1957,11 @@
 
             renderCurrentSubcard() {
                 const card = SUBCARDS[this.currentSubcard];
-                document.getElementById('service-action-hint').hidden = ['ipod', 'tidal-download'].includes(card.id);
-                const data = this.subcardData[card.id];
+                const hint = document.getElementById('service-action-hint');
+                hint.hidden = card.id === 'ipod';
+                hint.innerHTML = '<span class="key">GO</span> ' + (card.id === 'tidal-download' ? (this.tidalTrackEditing ? 'Save count · wheel changes by 50' : 'Edit track count') : 'Restart service');
+                let data = this.subcardData[card.id];
+                if (card.id === 'tidal-download' && this.tidalTrackEditing && data) data = {...data, settings: {...data.settings, tracks: this.tidalTrackDraft}};
                 const online = this.subcardOnline[card.id] !== false;
 
                 const container = document.getElementById('subcard-container');
@@ -1971,6 +1984,9 @@
                 }
 
                 container.innerHTML = html;
+                container.querySelectorAll('[data-tidal-step]').forEach(button => button.onclick = () => this.adjustTidalCount(Number(button.dataset.tidalStep)));
+                const save = container.querySelector('[data-tidal-save]');
+                if (save) { save.disabled = this.tidalSaving; save.onclick = () => this.saveTidalCount(); }
 
                 // Update git tag from system data (overview and system both fetch it)
                 const tag = data?.input?.git_tag;
@@ -2105,6 +2121,10 @@
                 const section = this.sections[this.currentSection];
 
                 if (section === 'services') {
+                    if (SUBCARDS[this.currentSubcard].id === 'tidal-download' && this.tidalTrackEditing) {
+                        this.adjustTidalCount(direction === 'clock' ? 50 : -50);
+                        return;
+                    }
                     if (direction === 'counter') {
                         this.currentSubcard = (this.currentSubcard - 1 + SUBCARDS.length) % SUBCARDS.length;
                     } else if (direction === 'clock') {
@@ -2160,6 +2180,7 @@
                     this.startSubcardRefresh();
                 } else {
                     this.stopSubcardRefresh();
+                    this.tidalTrackEditing = false; this.tidalTrackDraft = null;
                 }
 
                 // Fetch remotes when entering remotes section
@@ -2507,11 +2528,38 @@
                 setTimeout(poll, 2000);
             }
 
+            adjustTidalCount(delta) {
+                if (this.tidalSaving) return;
+                const count = this.tidalTrackEditing ? this.tidalTrackDraft : (this.subcardData['tidal-download']?.settings?.tracks || 250);
+                this.tidalTrackEditing = true;
+                this.tidalTrackDraft = Math.max(50, Math.min(10000, count + delta));
+                this.renderCurrentSubcard();
+            }
+
+            async saveTidalCount() {
+                if (this.tidalSaving) return;
+                const tracks = this.tidalTrackEditing ? this.tidalTrackDraft : this.subcardData['tidal-download']?.settings?.tracks;
+                if (!tracks) return;
+                this.tidalSaving = true; this.renderCurrentSubcard();
+                try {
+                    const response = await fetch('http://' + location.hostname + ':8789/settings', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({tracks})});
+                    if (!response.ok) throw new Error('Save failed');
+                    this.subcardData['tidal-download'].settings = await response.json();
+                    this.tidalTrackEditing = false; this.tidalTrackDraft = null;
+                } catch (_) { alert('Could not save the track limit. Please try again.'); }
+                finally { this.tidalSaving = false; this.renderCurrentSubcard(); }
+            }
+
             // ── Service restart ──
 
             restartSubcardService() {
                 const card = SUBCARDS[this.currentSubcard];
-                if (['ipod', 'tidal-download'].includes(card.id)) return; // Dock sync runs automatically; never restart playback services here.
+                if (card.id === 'tidal-download') {
+                    if (this.tidalTrackEditing) this.saveTidalCount();
+                    else { this.tidalTrackEditing = true; this.tidalTrackDraft = this.subcardData[card.id]?.settings?.tracks || 250; this.renderCurrentSubcard(); }
+                    return;
+                }
+                if (card.id === 'ipod') return; // Dock sync runs automatically; never restart playback services here.
                 if (card.id === 'reboot') {
                     // Two-press confirm: arm on first GO, reboot on second.
                     if (rebootState === 'rebooting') return;

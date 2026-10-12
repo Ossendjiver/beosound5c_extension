@@ -1,0 +1,10 @@
+[Unit]
+Description=Organise Tidal downloads after completed idle passes
+
+[Timer]
+OnBootSec=2min
+OnUnitInactiveSec=5min
+Unit=beo-tidal-organise.service
+
+[Install]
+WantedBy=timers.target

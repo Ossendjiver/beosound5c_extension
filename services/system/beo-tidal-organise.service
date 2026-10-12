@@ -1,0 +1,21 @@
+[Unit]
+Description=Integrate completed Tidal downloads into existing music folders
+After=network-online.target
+ConditionPathIsMountPoint=/media/local
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=__HOME__/beosound5c/services
+EnvironmentFile=/etc/beosound5c/secrets.env
+ExecStart=/usr/bin/python3 __HOME__/beosound5c/services/tidal_organise.py
+Nice=19
+CPUQuota=20%
+MemoryMax=128M
+IOSchedulingClass=idle
+NoNewPrivileges=true
+ProtectHome=read-only
+ProtectSystem=strict
+PrivateTmp=true
+ReadWritePaths=/media/local/music /media/local/cache/tidal-download __HOME__/beosound5c/web/json
+TimeoutStartSec=2h

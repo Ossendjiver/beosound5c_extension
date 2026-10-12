@@ -1,0 +1,21 @@
+[Unit]
+Description=BS5c Tidal download count settings
+After=network-online.target
+ConditionPathIsMountPoint=/media/local
+
+[Service]
+Type=simple
+User=__USER__
+WorkingDirectory=__HOME__/beosound5c/services
+ExecStart=/usr/bin/python3 __HOME__/beosound5c/services/tidal_settings.py
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+ProtectHome=read-only
+ProtectSystem=strict
+PrivateTmp=true
+ReadWritePaths=/media/local/cache/tidal-download
+MemoryMax=64M
+
+[Install]
+WantedBy=multi-user.target
