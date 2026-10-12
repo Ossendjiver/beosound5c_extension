@@ -135,18 +135,18 @@ def transfer(asset,dest,reserve,item):
 
 def main():
     if subprocess.check_output(['findmnt','-n','-o','TARGET','/media/local'],text=True).strip()!='/media/local':raise ValueError('SSD missing')
-    config=read(CONFIG,{'enabled':True,'tracks':250,'albums':20,'reserve_bytes':10*1024**3})
+    config=read(CONFIG,{'enabled':True,'tracks':1000,'albums':20,'reserve_bytes':10*1024**3})
     if not config.get('enabled'):publish('disabled');return
     CACHE.mkdir(parents=True,exist_ok=True);ROOT.mkdir(parents=True,exist_ok=True)
     with (CACHE/'worker.lock').open('a') as lock:
         try:fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
         except BlockingIOError:return
         state=read(CACHE/'index.json',{'version':1,'tracks':{}})
-        selection_key=[int(config.get('tracks',250)),int(config.get('albums',20))]
+        selection_key=[int(config.get('tracks',1000)),int(config.get('albums',20))]
         if state.get('quality_policy')==2 and state.get('selection_key')==selection_key and time.time()-state.get('last_completed',0)<86400:return
         require_idle();publish('selecting',message='Ranking personal listening history')
         evidence=request('http://127.0.0.1:8788/library/tidal-download/ranking')
-        tracks,albums=select(all_tracks(),evidence,int(config.get('tracks',250)),int(config.get('albums',20)))
+        tracks,albums=select(all_tracks(),evidence,int(config.get('tracks',1000)),int(config.get('albums',20)))
         selected=list(tracks)
         for album in albums:
             require_idle()

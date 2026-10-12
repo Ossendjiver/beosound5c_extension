@@ -5,7 +5,7 @@ once per 24 hours. The job only runs when all available MA players are verified
 idle/off/stopped; paused, buffering and unknown states defer it. It rechecks during
 transfers. It never sends player, queue or power commands.
 
-Selection: 250 Tidal-mapped library tracks ranked by personal MA/provider counts
+Selection: 1,000 Tidal-mapped library tracks ranked by personal MA/provider counts
 and BS5c listening history, plus explicit Tidal tracks from the 20 highest-ranked albums
 (sum of those track scores). Existing most-played playlist credits count through
 MA counts. This is personal ranking, not Tidal's public charts. Favourites break
@@ -30,7 +30,7 @@ is never deleted or overwritten. SSD JSON state is atomic; no new SQLite databas
 is introduced. Free space reserve defaults to 10 GiB. Only unfinished `.part`
 files belonging to the current transfer are cleaned up.
 
-`/etc/beosound5c/tidal-download.json`: `enabled`, `tracks` (250), `albums` (20),
+`/etc/beosound5c/tidal-download.json`: `enabled`, `tracks` (1000), `albums` (20),
 `reserve_bytes` (10737418240). Changes are read at the next check.
 System → Services → TIDAL DOWNLOADS displays progress. This read-only card does not
 restart unrelated services. Rockbox docking sync resolves exact MA/Tidal identities
