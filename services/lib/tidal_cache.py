@@ -35,7 +35,7 @@ def score(item,evidence):
     return max([finite(item.get('play_count'))]+[finite(evidence.get(a)) for a in aliases])+(.01 if item.get('favorite') else 0)
 
 def select(tracks,evidence,track_limit=250,album_limit=20):
-    eligible=[t for t in tracks if tidal_mapping(t)]
+    eligible=[t for t in tracks if tidal_mapping(t) and explicit(t)]
     eligible.sort(key=lambda t:(-score(t,evidence),str(t.get('name','')),str(t.get('uri',''))))
     chosen=[];seen=set();albums={}
     for t in eligible:
@@ -60,3 +60,53 @@ def cached_source(index,item):
             root=Path('/media/local/music/HomeMedia-Tidal').resolve()
             if path.is_relative_to(root) and path.is_file() and path.stat().st_size==record.get('size'):return path
     return None
+
+def explicit(item):
+    return (item.get('metadata') or {}).get('explicit') is True and not re.search(r'\b(clean|censored|non[- ]explicit)\b',str(item.get('version','')),re.I)
+
+def maximum_asset(info):
+    """Resolve only unprotected lossless assets; download segments ourselves."""
+    import xml.etree.ElementTree as ET
+    if info.get('manifestMimeType')!='application/dash+xml':
+        return {'kind':'direct','urls':[direct_flac(info)],'bits':int(info.get('bitDepth') or 16),'sample_rate':int(info.get('sampleRate') or 44100)}
+    if str(info.get('audioQuality','')).upper() not in ('LOSSLESS','HI_RES_LOSSLESS'):raise ValueError('Lossless unavailable')
+    raw=base64.b64decode(info['manifest'],validate=True)
+    if len(raw)>1024**2 or b'<!doctype' in raw.lower() or b'<!entity' in raw.lower():raise ValueError('Unsafe manifest')
+    root=ET.fromstring(raw)
+    tag=lambda n:n.tag.split('}')[-1]
+    if any(tag(n)=='ContentProtection' for n in root.iter()):raise ProtectedAudio('Protected DASH')
+    if root.get('type','static')!='static':raise ValueError('Dynamic manifest unsupported')
+    reps=[n for n in root.iter() if tag(n)=='Representation' and 'flac' in n.get('codecs','').lower()]
+    if not reps:raise ValueError('No FLAC representation')
+    rep=max(reps,key=lambda n:(int(n.get('audioSamplingRate','0')),int(n.get('bandwidth','0'))))
+    parents={c:p for p in root.iter() for c in p};node=rep;template=None
+    while node is not None:
+        template=next((n for n in node if tag(n)=='SegmentTemplate'),None)
+        if template is not None:break
+        node=parents.get(node)
+    if template is None:raise ValueError('Unsupported DASH segment layout')
+    timeline=next((n for n in template if tag(n)=='SegmentTimeline'),None)
+    if timeline is None:raise ValueError('Missing finite DASH timeline')
+    scale=int(template.get('timescale','1'));number=int(template.get('startNumber','1'));elapsed=0
+    if scale<=0 or number<0:raise ValueError('Invalid segment time')
+    duration=re.fullmatch(r'PT(?:(\d+(?:\.\d+)?)H)?(?:(\d+(?:\.\d+)?)M)?(?:(\d+(?:\.\d+)?)S)?',root.get('mediaPresentationDuration',''))
+    end=scale*sum(float(v or 0)*factor for v,factor in zip(duration.groups(),(3600,60,1))) if duration else None
+    def expand(value,number,elapsed):
+        if not value:raise ValueError('Missing segment URL')
+        value=value.replace('$RepresentationID$',rep.get('id','')).replace('$Bandwidth$',rep.get('bandwidth',''))
+        value=re.sub(r'\$(Number|Time)(?:%0(\d+)d)?\$',lambda m:format(number if m[1]=='Number' else elapsed,'0'+str(int(m[2]))+'d') if m[2] else str(number if m[1]=='Number' else elapsed),value)
+        if '$' in value:raise ValueError('Unsupported URL template')
+        validate_url(value,resolve=False);return value
+    urls=[expand(template.get('initialization'),number,elapsed)]
+    for seg in timeline:
+        if tag(seg)!='S':raise ValueError('Unexpected segment timeline')
+        d=int(seg.get('d','0'));repeat=int(seg.get('r','0'));elapsed=int(seg.get('t',elapsed))
+        if d<=0 or repeat < -1:raise ValueError('Invalid segment repeat')
+        if repeat==-1:
+            if not end or end<=elapsed:raise ValueError('Unbounded timeline')
+            repeat=math.ceil((end-elapsed)/d)-1
+        if len(urls)+repeat+1>20000:raise ValueError('Too many segments')
+        for _ in range(repeat+1):
+            urls.append(expand(template.get('media'),number,elapsed));number+=1;elapsed+=d
+    if len(urls)<2:raise ValueError('Empty manifest')
+    return {'kind':'dash','urls':urls,'bits':int(info.get('bitDepth') or 24),'sample_rate':int(rep.get('audioSamplingRate') or info.get('sampleRate') or 0)}
