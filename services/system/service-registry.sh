@@ -7,6 +7,8 @@
 ALL_SERVICES=(
     "beo-ipod-sync.service"
     "beo-ipod-sync.timer"
+    "beo-tidal-download.service"
+    "beo-tidal-download.timer"
     "beo-http.service"
     "beo-player-sonos.service"
     "beo-player-bluesound.service"
@@ -108,3 +110,6 @@ OPTIONAL_SOURCES=(
 )
 
 SERVICE_DESC["beo-ipod-sync.service"]="Rockbox iPod Automatic Sync"
+
+STATUS_SERVICES+=("beo-tidal-download.service")
+SERVICE_DESC["beo-tidal-download.service"]="Personal Tidal add-only offline cache"

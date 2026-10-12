@@ -1478,6 +1478,18 @@ class LibraryService:
             return web.json_response(await ipod_library.catalogue(self, int(request.query.get('limit',10000)), names))
         except (ValueError, TypeError): raise web.HTTPBadRequest(text='Invalid iPod selection')
 
+    async def handle_tidal_download_ranking(self, request):
+        ipod_library.local_only(request)
+        weights = {}
+        for uri, entry in self.model.get_kv('music_familiarity', {}).items():
+            signals = entry.get('signals', {}).values()
+            value = max([0.0] + [music_familiarity.number(v.get('count')) for v in signals])
+            for alias in music_familiarity.aliases(entry.get('item', {})) | {uri}:
+                weights[alias] = max(weights.get(alias, 0), value)
+        for row in self.model.db.execute('SELECT uri,COUNT(*) total FROM listens WHERE seconds>=90 GROUP BY uri'):
+            weights[row['uri']] = weights.get(row['uri'], 0) + row['total']
+        return web.json_response(weights)
+
     async def handle_ipod_history(self, request):
         ipod_library.local_only(request)
         try: return web.json_response(ipod_library.record_history(self, (await request.json()).get('events')))
@@ -1698,6 +1710,7 @@ def create_app() -> web.Application:
     app.router.add_get("/library/mood", service.handle_mood)
     app.router.add_get("/library/context", service.handle_context)
     app.router.add_get("/library/status", service.handle_status)
+    app.router.add_get("/library/tidal-download/ranking", service.handle_tidal_download_ranking)
     app.router.add_get("/library/ipod/catalogue", service.handle_ipod_catalogue)
     app.router.add_post("/library/ipod/history", service.handle_ipod_history)
     app.router.add_get("/library/recommend/music", service.handle_recommend)

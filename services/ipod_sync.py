@@ -80,7 +80,8 @@ def sync(disk,part,ident,config):
         if isinstance(path,dict):path=path.get('value')
         if path and Path(path).resolve().is_relative_to('/media'):
             allowed.append(Path(path).resolve())
-    # Resolve only real local files. Streaming subscriptions are not offline downloads.
+    tidal_cache=load(Path("/media/local/cache/tidal-download/index.json"),{})
+    # Resolve local files and exact identities in the authenticated offline cache.
     for item in plan['items']:
         if budget<=0:break
         try:
@@ -93,6 +94,8 @@ def sync(disk,part,ident,config):
                     candidate=(root/relative).resolve()
                     if candidate.is_relative_to(root) and candidate.is_file():source=candidate;break
                 if source:break
+            if not source:
+                source=__import__('lib.tidal_cache',fromlist=['cached_source']).cached_source(tidal_cache,full)
             if not source or source.suffix.lower() not in ('.flac','.mp3','.m4a','.aac','.ogg','.opus','.wav','.aiff','.wma'):
                 skipped+=1;continue
             size=source.stat().st_size

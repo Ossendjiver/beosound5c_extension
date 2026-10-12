@@ -1,0 +1,11 @@
+[Unit]
+Description=Check personal Tidal download refresh every 30 minutes
+
+[Timer]
+OnBootSec=5min
+OnUnitInactiveSec=30min
+RandomizedDelaySec=60
+Unit=beo-tidal-download.service
+
+[Install]
+WantedBy=timers.target

@@ -1460,6 +1460,23 @@
                 },
             },
             {
+                id: 'tidal-download', title: 'TIDAL DOWNLOADS', service: null,
+                fetch: async () => {
+                    const response = await fetch('/json/tidal_download_status.json');
+                    if (!response.ok) throw new Error('offline');
+                    return await response.json();
+                },
+                render: (data) => '<div class="subcard-body">' +
+                    row('Status', data.state || 'waiting', data.state === 'error' ? 'error' : 'ok') +
+                    row('Cached Tracks', Number(data.cached) || 0) +
+                    row('Added This Run', Number(data.downloaded) || 0) +
+                    row('Already Stored', Number(data.retained) || 0) +
+                    row('Protected / Unsupported', Number(data.protected) || 0) +
+                    row('Errors', Number(data.errors) || 0) +
+                    row('Selection', 'Top 250 tracks + top 20 albums') +
+                    row('Last Update', data.last_completed ? new Date(data.last_completed * 1000).toLocaleString() : 'Pending') + '</div>',
+            },
+            {
                 id: 'ipod', title: 'IPOD SYNC', service: null,
                 fetch: async () => {
                     const response = await fetch('/json/ipod_sync_status.json');
@@ -1928,7 +1945,7 @@
 
             renderCurrentSubcard() {
                 const card = SUBCARDS[this.currentSubcard];
-                document.getElementById('service-action-hint').hidden = card.id === 'ipod';
+                document.getElementById('service-action-hint').hidden = ['ipod', 'tidal-download'].includes(card.id);
                 const data = this.subcardData[card.id];
                 const online = this.subcardOnline[card.id] !== false;
 
@@ -2492,7 +2509,7 @@
 
             restartSubcardService() {
                 const card = SUBCARDS[this.currentSubcard];
-                if (card.id === 'ipod') return; // Dock sync runs automatically; never restart playback services here.
+                if (['ipod', 'tidal-download'].includes(card.id)) return; // Dock sync runs automatically; never restart playback services here.
                 if (card.id === 'reboot') {
                     // Two-press confirm: arm on first GO, reboot on second.
                     if (rebootState === 'rebooting') return;

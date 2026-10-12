@@ -1,0 +1,22 @@
+[Unit]
+Description=Personal Tidal add-only lossless cache
+After=network-online.target beo-library.service docker.service
+ConditionPathIsMountPoint=/media/local
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=__HOME__/beosound5c/services
+EnvironmentFile=/etc/beosound5c/secrets.env
+ExecStart=/usr/bin/python3 __HOME__/beosound5c/services/tidal_download.py
+Nice=19
+CPUQuota=20%
+MemoryMax=384M
+IOSchedulingClass=idle
+TimeoutStartSec=5h
+UMask=0022
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=read-only
+ProtectSystem=strict
+ReadWritePaths=/media/local/music/HomeMedia-Tidal /media/local/cache/tidal-download __HOME__/beosound5c/web/json
