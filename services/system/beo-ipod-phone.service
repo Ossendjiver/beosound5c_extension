@@ -17,7 +17,7 @@ MemoryMax=384M
 IOSchedulingClass=idle
 NoNewPrivileges=true
 ProtectSystem=strict
-ReadWritePaths=/etc/beosound5c
+ReadWritePaths=/etc/beosound5c /media/local/cache/ipod-external
 ProtectHome=read-only
 PrivateTmp=true
 [Install]
