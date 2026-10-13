@@ -44,6 +44,22 @@ class PhoneBridgeTests(unittest.TestCase):
      with self.assertRaises(urllib.error.HTTPError) as e:request('/file/../../private')
      self.assertEqual(404,e.exception.code)
     finally:server.shutdown();server.server_close();thread.join()
+ def test_first_phone_pairing_is_durable_and_cannot_change_device(self):
+  with tempfile.TemporaryDirectory() as d:
+   auth=Path(d)/'auth.json';auth.write_text('{"token":"scoped-ipod-token-1234"}')
+   config=Path(d)/'sync.json';config.write_text('{"enabled":true}')
+   with patch.object(phone,'CONFIG',auth),patch.object(phone,'SYNC_CONFIG',config):
+    server=phone.ThreadingHTTPServer(('127.0.0.1',0),phone.Handler);thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
+    def pair(ident):
+     req=urllib.request.Request('http://127.0.0.1:'+str(server.server_port)+'/pair',data=json.dumps({'device_id':ident}).encode(),headers={'Authorization':'Bearer scoped-ipod-token-1234'})
+     return urllib.request.urlopen(req)
+    try:
+     with pair('uuid:ABCD-1234') as response:self.assertEqual('uuid:ABCD-1234',json.load(response)['device_id'])
+     self.assertEqual('uuid:ABCD-1234',json.loads(config.read_text())['phone_device_id'])
+     self.assertTrue(json.loads(config.read_text())['enabled'])
+     with self.assertRaises(urllib.error.HTTPError) as e:pair('uuid:DEAD-5678')
+     self.assertEqual(409,e.exception.code)
+    finally:server.shutdown();server.server_close();thread.join()
  def test_history_receipts_invalidate_cached_plan(self):
   with tempfile.TemporaryDirectory() as d:
    config=Path(d)/'config.json';config.write_text('{"token":"scoped-ipod-token-1234"}')

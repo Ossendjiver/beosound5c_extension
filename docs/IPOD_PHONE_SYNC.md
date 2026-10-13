@@ -4,7 +4,7 @@ Home Media Settings → iPod sync: enter the scoped transfer token shown on the 
 
 The private phone bridge on port 8790 exposes identity, predicted offline selection, acknowledged listening history and opaque selected-file downloads. It accepts only RFC1918/loopback clients with a separate token; it exposes neither arbitrary filesystem paths nor provider credentials, and issues no player/queue commands. Pairing token retrieval is device-local only with origin checking.
 
-Deploy `beo-ipod-phone.service` with the existing secrets environment. Before enabling, create root-private `/etc/beosound5c/ipod-phone.json` with a random token of at least 16 characters (for example `secrets.token_urlsafe(12)`) and mode 0600. Preserve it on subsequent deployments. The iPod must first have docked to BS5c so its identity is paired.
+Deploy `beo-ipod-phone.service` with the existing secrets environment. Before enabling, create root-private `/etc/beosound5c/ipod-phone.json` with a random token of at least 16 characters (for example `secrets.token_urlsafe(12)`) and mode 0600. Preserve it on subsequent deployments. An existing dock pairing is reused. Otherwise the first verified phone sync pairs the USB volume UUID, and dock sync uses this same history identity thereafter.
 
 Listening receipts use the same recording/start/device hash as dock sync and are uploaded before selecting or copying anything. Modern Rockbox playback and rotated logs are retained, merged and matched only through the shared HomeMedia manifest. Unmatched logs are preserved. Legacy .scrobbler.log import remains available through dock sync.
 

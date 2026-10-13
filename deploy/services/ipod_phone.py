@@ -3,7 +3,7 @@
 import hashlib,hmac,ipaddress,json,os,re,threading,time,urllib.parse,urllib.request
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer
-from lib.ipod_sync import destination,key
+from lib.ipod_sync import destination,key,atomic_json
 from lib.tidal_cache import cached_source
 CONFIG=Path('/etc/beosound5c/ipod-phone.json')
 SYNC_CONFIG=Path('/etc/beosound5c/ipod-sync.json')
@@ -75,7 +75,7 @@ def build_plan(token):
             items.append(public)
         if not items:raise ValueError('No local recordings available')
         with LOCK:
-            FILES=files;PLAN=dict(state='ready',created=time.time(),items=items,groups=selection.get('groups',{}),skipped=skipped,device_id=cfg.get('device_id',''),reserve_bytes=max(1024**3,int(cfg.get('reserve_bytes',1024**3))))
+            FILES=files;PLAN=dict(state='ready',created=time.time(),items=items,groups=selection.get('groups',{}),skipped=skipped,device_id=cfg.get('phone_device_id') or cfg.get('device_id',''),reserve_bytes=max(1024**3,int(cfg.get('reserve_bytes',1024**3))))
     except Exception:
         with LOCK:PLAN={'state':'error','message':'Selection unavailable; retry when BS5c and Music Assistant are connected'}
 
@@ -95,7 +95,7 @@ class Handler(BaseHTTPRequestHandler):
             self.reply(200,{'token':self.token()});return
         if not self.authorised():self.reply(401,{});return
         if self.path=='/identity':
-            self.reply(200,{'device_id':read(SYNC_CONFIG,{}).get('device_id','')});return
+            self.reply(200,{'device_id':(read(SYNC_CONFIG,{}).get('phone_device_id') or read(SYNC_CONFIG,{}).get('device_id',''))});return
         if self.path=='/plan':
             with LOCK:plan=dict(PLAN)
             self.reply(200,plan);return
@@ -121,6 +121,20 @@ class Handler(BaseHTTPRequestHandler):
             else:self.close_connection=True
     def do_POST(self):
         if not self.authorised():self.reply(401,{});return
+        if self.path=='/pair':
+            try:
+                self.connection.settimeout(5);length=int(self.headers.get('Content-Length','0'))
+                if not 0<length<=256:raise ValueError()
+                payload=json.loads(self.rfile.read(length));ident=payload['device_id']
+                if set(payload)!={'device_id'} or not re.fullmatch(r'uuid:[A-Fa-f0-9-]{4,64}',ident):raise ValueError()
+                with LOCK:
+                    cfg=read(SYNC_CONFIG,{})
+                    current=cfg.get('phone_device_id') or cfg.get('device_id')
+                    if current and current!=ident:self.reply(409,{'error':'Another iPod is paired'});return
+                    if not current:
+                        cfg['phone_device_id']=ident;atomic_json(SYNC_CONFIG,cfg)
+                self.reply(200,{'device_id':ident});return
+            except (ValueError,KeyError,TypeError):self.reply(400,{});return
         if self.path=='/plan':
             with LOCK:
                 if PLAN['state']=='ready' and time.time()-PLAN.get('created',0)<3600:self.reply(200,{'state':'ready'});return

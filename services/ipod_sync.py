@@ -58,7 +58,7 @@ def sync(disk,part,ident,config):
     statepath=CACHE/(key({'uri':ident})+'.json');state=load(statepath,{'manifest':{},'receipts':[]})
     if not state['manifest']:
         state['manifest']=load(safe_path(mount,'HomeMedia/manifest.json'),{})
-    old=state['manifest'];receipts=set(state.get('receipts',[]));events,unmatched=history(mount,old,ident)
+    old=state['manifest'];receipts=set(state.get('receipts',[]));events,unmatched=history(mount,old,config.get('phone_device_id') or ident)
     publish('importing',device='iPod Video',device_id=ident,unmatched=unmatched,message='Importing listening history')
     # Every batch is durably acknowledged before any music is removed or replaced.
     pending=[e for e in events if e['event_id'] not in receipts]

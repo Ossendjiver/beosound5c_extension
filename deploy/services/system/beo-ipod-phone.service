@@ -17,6 +17,7 @@ MemoryMax=384M
 IOSchedulingClass=idle
 NoNewPrivileges=true
 ProtectSystem=strict
+ReadWritePaths=/etc/beosound5c
 ProtectHome=read-only
 PrivateTmp=true
 [Install]
