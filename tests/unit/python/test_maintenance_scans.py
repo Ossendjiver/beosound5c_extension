@@ -58,3 +58,8 @@ def test_timeout_not_replayed(command):
     command.side_effect=asyncio.TimeoutError
     assert run('provider')['status']=='error'
     assert command.await_count==1
+
+def test_optional_full_sweep_unit_may_be_absent(command):
+    command.side_effect=[(0,'LoadState=loaded\nActiveState=inactive'),(0,'LoadState=not-found\nActiveState=inactive'),(0,'LoadState=loaded\nActiveState=inactive'),(0,'')]
+    assert run('provider')['status']=='accepted'
+    assert command.await_args.args[4]=='beo-provider-resume.service'

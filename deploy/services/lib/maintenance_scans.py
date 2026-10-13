@@ -2,6 +2,8 @@
 import asyncio
 import fcntl
 from pathlib import Path
+import time
+from .tidal_rate_limit import RateLimit,Cooldown
 
 SCANS = {
     'tidal-download': ('beo-tidal-download.service',),
@@ -46,10 +48,17 @@ async def start_scan(scan):
         return {'status': 'error', 'message': 'Unknown scan'}
     async with _start_lock:
         try:
+            if scan == 'tidal-download':
+                try:
+                    RateLimit(LOCKS[scan].parent/'rate_limit.json').ready()
+                except Cooldown as e:
+                    return {'status':'cooldown','message':'Rate limited · retry after '+time.strftime('%H:%M',time.localtime(e.retry_at))}
             for unit in units:
                 code, output = await _command('/bin/systemctl', 'show', unit,
                                               '--property=LoadState,ActiveState')
                 state = dict(line.split('=', 1) for line in output.splitlines() if '=' in line)
+                if unit != units[0] and state.get('LoadState') == 'not-found':
+                    continue # A full sweep can be transient; the shared lock still guards it.
                 if code or state.get('LoadState') != 'loaded':
                     return {'status': 'error', 'message': 'Scan service unavailable; update required'}
                 if state.get('ActiveState') in ('active', 'activating', 'reloading'):
