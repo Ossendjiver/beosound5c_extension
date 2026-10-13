@@ -6,6 +6,17 @@ from lib.library_tag_policy import *
 from lib.tidal_organise import destination
 import tidal_download as t
 class Tests(unittest.TestCase):
+ def test_generic_composer_is_not_an_artist(self):self.assertEqual(classical_composers({'genre':['Classical'],'composer':['Various']}),[])
+ def test_stale_album_role_id_is_not_reused_for_composer(self):
+  tags={'albumartist':['Ludwig van Beethoven'],'musicbrainz_albumartistid':['various-id']}
+  original={'albumartist':['Various Artists']}
+  self.assertEqual(album_identity_updates(tags,'Ludwig van Beethoven',original,{key('Ludwig van Beethoven'):['composer-id']}),{'musicbrainz_albumartistid':['composer-id']})
+  self.assertEqual(album_identity_updates(tags,'Ludwig van Beethoven',original,{}),{'musicbrainz_albumartistid':None})
+ def test_existing_verified_album_identity_preserved(self):
+  tags={'albumartist':['Aitch'],'musicbrainz_albumartistid':['aitch-id']}
+  self.assertEqual(album_identity_updates(tags,'Aitch',tags,{}),{})
+ def test_old_albumartist_list_does_not_override_main_composer(self):
+  self.assertEqual(album_identity_updates({'albumartists':['Composer; Performer']},'Composer',{},{}),{'albumartists':['Composer']})
  def test_primary_not_guest(self):self.assertEqual(provider_album_artist({'artist':{'name':'Aitch'},'artists':[{'name':'Ashanti'}]}),'Aitch')
  def test_band_not_split(self):self.assertEqual(folder_artist('Earth, Wind & Fire',['Earth, Wind & Fire']),'Earth, Wind & Fire')
  def test_pop_composer(self):self.assertEqual(classical_composers({'genre':['Pop'],'composer':['Taylor Swift']}),[])

@@ -33,7 +33,7 @@ def classical_composers(tags):
  explicit=[]
  for value in tags.get('composer',[]):
   # Only semicolons, the standard multi-value separator. Never split commas/&.
-  explicit.extend(canonical(v) for v in value.split(';') if v.strip())
+  explicit.extend(canonical(v) for v in value.split(';') if key(v) not in {'', 'various', 'variousartists', 'unknown', 'unknowncomposer', 'traditional', 'anonymous', 'anon', 'na'})
  values=explicit or known
  return list(dict.fromkeys(values))
 
@@ -54,3 +54,25 @@ def register_easy_mp4_keys():
     from mutagen.easymp4 import EasyMP4Tags
     EasyMP4Tags.RegisterTextKey('composer', '\xa9wrt')
     EasyMP4Tags.RegisterFreeformKey('performer', 'PERFORMER')
+    EasyMP4Tags.RegisterFreeformKey('albumartists', 'ALBUMARTISTS')
+    EasyMP4Tags.RegisterFreeformKey('musicbrainz_albumartistid', 'MusicBrainz Album Artist Id')
+    EasyMP4Tags.RegisterFreeformKey('musicbrainz_artistid', 'MusicBrainz Artist Id')
+
+def album_identity_updates(tags, target, original_tags, verified_artist_ids):
+    """Keep a changed album-artist name aligned with its role-specific IDs."""
+    updates = {}
+    if tags.get('albumartists') and tags['albumartists'] != [target]:
+        updates['albumartists'] = [target]
+    for field in ('musicbrainz_albumartistid', 'musicbrainzalbumartistid'):
+        old_ids = tags.get(field)
+        if not old_ids:
+            continue
+        ids = verified_artist_ids.get(key(canonical(target)))
+        if not ids:
+            old_names = original_tags.get('albumartist', [])
+            if len(old_names) == 1 and key(canonical(old_names[0])) == key(canonical(target)) and len(old_ids) == 1:
+                continue
+            ids = None  # Unverified old role IDs must not identify the new name.
+        if old_ids != ids:
+            updates[field] = ids
+    return updates
