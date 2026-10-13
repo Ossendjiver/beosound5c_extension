@@ -70,3 +70,26 @@ class PhoneBridgeTests(unittest.TestCase):
      with urllib.request.urlopen(request) as response:self.assertTrue(json.load(response)['ok'])
      history.assert_called_once_with('/library/ipod/history',{'events':[]});self.assertEqual('idle',phone.PLAN['state'])
     finally:server.shutdown();server.server_close();thread.join()
+
+ def test_plan_skips_mislabeled_podcast_and_broken_track_but_keeps_local_music(self):
+  with tempfile.TemporaryDirectory() as d:
+   source=Path(d)/'song.flac';source.write_bytes(b'fixture')
+   items=[{'uri':'podcastfeed--x://podcast_episode/bad','media_type':'track','title':'Episode'},
+          {'uri':'library://track/bad','media_type':'track','title':'Unavailable'},
+          {'uri':'library://track/good','media_type':'track','title':'Music','artist':'Artist'}]
+   def ma(command,args):
+    if command=='config/providers':return []
+    self.assertEqual(args['uri'],'library://track/bad')
+    raise urllib.error.HTTPError('http://ma/api',500,'Unavailable recording',{},None)
+   def file_source(item,roots,index):return source if item['uri']=='library://track/good' else None
+   with patch.object(phone,'MUSIC',Path(d)),patch.object(phone,'read',return_value={}),patch.object(phone,'local_call',return_value={'items':items,'groups':{}}),patch.object(phone,'ma',side_effect=ma),patch.object(phone,'file_source',side_effect=file_source),patch.object(phone,'PLAN',{'state':'selecting'}),patch.object(phone,'FILES',{}):
+    phone.build_plan('scoped-test-token')
+    self.assertEqual('ready',phone.PLAN['state'])
+    self.assertEqual(2,phone.PLAN['skipped'])
+    self.assertEqual(['library://track/good'],[x['item']['uri'] for x in phone.PLAN['items']])
+
+ def test_plan_does_not_hide_authentication_failure(self):
+  def ma(command,args):raise urllib.error.HTTPError('http://ma/api',401,'Unauthorized',{},None)
+  with patch.object(phone,'read',return_value={}),patch.object(phone,'local_call',return_value={'items':[],'groups':{}}),patch.object(phone,'ma',side_effect=ma),patch.object(phone,'PLAN',{'state':'selecting'}):
+   phone.build_plan('scoped-test-token')
+   self.assertEqual('error',phone.PLAN['state'])
