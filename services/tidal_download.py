@@ -4,6 +4,7 @@ import fcntl,hashlib,json,os,shutil,subprocess,time,urllib.request,urllib.error,
 from pathlib import Path
 from lib.ipod_sync import atomic_json
 from lib.tidal_rate_limit import RateLimit,Cooldown
+from lib.library_tag_policy import provider_album_artist,classical_composers
 from lib.tidal_cache import direct_flac,tidal_mapping,select,validate_url,ProtectedAudio,maximum_asset,explicit
 ROOT=Path('/media/local/music/HomeMedia-Tidal')
 CACHE=Path('/media/local/cache/tidal-download')
@@ -92,6 +93,22 @@ def all_tracks():
         if len(page)<500:return out
     raise ValueError('Library pagination exceeded safety limit')
 
+def with_album_artist(item,details,credentials):
+    """Prefer Tidal's explicit primary album artist over unordered MA credits."""
+    album_id=str((details.get('album') or {}).get('id') or '')
+    if not album_id:raise ValueError('Missing Tidal album identity')
+    cache=read(CACHE/'album-artists.json',{})
+    name=cache.get(album_id)
+    if not name:
+        album=request('https://api.tidal.com/v1/albums/'+album_id+'?countryCode='+credentials['country'],token=credentials['token'])
+        name=provider_album_artist(album)
+        if not name:raise ValueError('Missing primary album artist')
+        cache[album_id]=name;atomic_json(CACHE/'album-artists.json',cache)
+    composers=classical_composers({'artist':[a.get('name','') for a in item.get('artists',[]) if isinstance(a,dict)],'albumartist':[name],'genre':list((item.get('metadata') or {}).get('genres') or [])})
+    if len(composers)==1:
+        return dict(item,album_artist=composers[0],album_artist_source='classical_composer',composer=composers[0],performer=name if name!=composers[0] else '')
+    return dict(item,album_artist=name,album_artist_source='tidal_primary_album_artist')
+
 def transfer(asset,dest,reserve,item):
     temp=dest.with_suffix('.part');tagged=dest.with_suffix('.tagged.part')
     try:
@@ -122,7 +139,8 @@ def transfer(asset,dest,reserve,item):
         if check.returncode:raise ValueError('FLAC decode failed')
         require_idle();album=item.get('album') or {}
         artist=', '.join(a.get('name','') for a in item.get('artists',[]) if isinstance(a,dict))
-        tags={'title':item.get('name',''),'artist':artist,'album':album.get('name','') if isinstance(album,dict) else str(album),'track':str(item.get('track_number') or ''),'disc':str(item.get('disc_number') or '')}
+        artists='; '.join(a.get('name','') for a in item.get('artists',[]) if isinstance(a,dict) and a.get('name'))
+        tags={'title':item.get('name',''),'artist':artist,'artists':artists,'album_artist':item.get('album_artist',''),'composer':item.get('composer',''),'performer':item.get('performer',''),'album':album.get('name','') if isinstance(album,dict) else str(album),'track':str(item.get('track_number') or ''),'disc':str(item.get('disc_number') or '')}
         args=['ffmpeg','-nostdin','-v','error','-threads','1','-i',str(temp),'-map','0:a:0','-c:a','copy']
         for name,value in tags.items():
             if value:args+=['-metadata',name+'='+value]
@@ -191,6 +209,7 @@ def main():
                 details=request('https://api.tidal.com/v1/tracks/'+tid+'?countryCode='+credentials['country'],token=credentials['token'])
                 if details.get('explicit') is not True:
                     counters['non_explicit']+=1;completed=True;continue
+                item=with_album_artist(item,details,credentials)
                 params={'playbackmode':'STREAM','assetpresentation':'FULL','audioquality':'HI_RES_LOSSLESS','immersiveaudio':'false','countryCode':credentials['country']}
                 info=request('https://api.tidal.com/v1/tracks/'+tid+'/playbackinfopostpaywall?'+urllib.parse.urlencode(params),token=credentials['token'])
                 asset=maximum_asset(info)
