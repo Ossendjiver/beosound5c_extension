@@ -2426,6 +2426,7 @@ class MassSource(SourceBase):
         instance_id = providers[0]["instance_id"]
         attempts = []
         attempts.extend([
+            ("music/sync", {"media_types": ["track"], "providers": [instance_id]}),
             ("music/sync", {"provider_instance_id_or_domain": instance_id}),
             ("music/providers/sync", {"provider_instance_id_or_domain": instance_id}),
         ])

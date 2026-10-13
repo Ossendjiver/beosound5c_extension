@@ -365,3 +365,26 @@ async def test_library_sync_runs_daily_before_audio_profile_window(monkeypatch, 
     with pytest.raises(asyncio.CancelledError):
         await source._schedule_sync_loop()
     assert captured == [expected_hours*3600]
+
+
+def test_filesystem_refresh_uses_provider_scoped_current_ma_api():
+    source = _make_mass_source()
+    calls = []
+
+    async def providers():
+        return [{"instance_id": "filesystem-test", "path": "/music"}]
+
+    async def response(command, **kwargs):
+        calls.append((command, kwargs))
+        return {"result": []}
+
+    async def update():
+        return None
+
+    source._filesystem_providers = providers
+    source._send_command_response = response
+    source.update_library_cache = update
+    source._spawn = lambda coroutine, **kwargs: coroutine.close()
+    result = _run(source._refresh_filesystem_library())
+    assert result["state"] == "refreshing"
+    assert calls == [("music/sync", {"media_types": ["track"], "providers": ["filesystem-test"]})]
