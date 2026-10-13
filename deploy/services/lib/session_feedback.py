@@ -94,7 +94,7 @@ class SessionFeedback:
             return {'status': 'ok', 'duplicate': True}
         # Validate reasons and polarity through the same current-vote validator,
         # using an isolated instance; never change the live current item.
-        trial = SessionFeedback(lambda: {queue: dict(s, item=item, votes=[])}, lambda _: None)
+        trial = SessionFeedback(lambda: {queue: dict(s, item=item, votes=[], feedback_versions={})}, lambda _: None)
         trial.vote(queue, {'available': True, 'session_id': s['id'], 'current_item_id': item_id},
                    s['id'], item_id, payload.get('vote'), payload.get('reason'))
         versions = s.setdefault('feedback_versions', {})

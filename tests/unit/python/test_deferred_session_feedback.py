@@ -44,3 +44,11 @@ def test_persisted_feedback_survives_service_restart():
     f,s,_=setup();f.state('q',snap('b'),'mix2')
     restored=SessionFeedback(lambda:f.sessions,lambda _:None)
     assert restored.deferred_vote(event(s))['applied']
+
+
+def test_newer_vote_supersedes_without_validator_mutating_delivery_order():
+    f,s,_=setup();e=event(s);f.deferred_vote(e)
+    newer=dict(e,event_id='event-original-0003',timestamp_ms=e['timestamp_ms']+10,vote=1)
+    assert f.deferred_vote(newer)['applied']
+    assert f.votes('q','mix1')[0]['vote']==1
+    assert f.sessions['q']['feedback_versions']['a']==newer['timestamp_ms']/1000
