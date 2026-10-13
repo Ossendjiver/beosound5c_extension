@@ -5675,13 +5675,21 @@ class MassSource(SourceBase):
             media = data.get("media")
             if not isinstance(media, list) or len(media) > 50 or any(not isinstance(m, str) or not m.strip() for m in media):
                 return {"state": "error", "reason": "invalid_mix_media"}
+            if cmd == 'mood_append_upcoming':
+                index = item_index(snapshot)
+                tail = (snapshot.get('items') or [])[index+1:] if isinstance(index,int) else []
+                expected = data.get('expected_upcoming_ids')
+                if not isinstance(expected,list) or expected != [str(i.get('queue_item_id') or '') for i in tail]:
+                    return {'state':'error','reason':'upcoming_queue_changed'}
+                if snapshot.get('state') not in ('playing','paused','buffering'):
+                    return {'state':'error','reason':'queue_not_active'}
             # Local Pattern Play owns refill; MA's own autoplay must not compete.
             response = await self._send_command_response("player_queues/dont_stop_the_music", queue_id=queue, dont_stop_the_music_enabled=False)
             if not self._api_response_ok(response):
                 return {"state": "error", "reason": "cannot_disable_ma_autoplay"}
             if media:
                 response = await self._send_command_response("player_queues/play_media", queue_id=queue,
-                    media=media, option="replace_next", radio_mode=False)
+                    media=media, option="add" if cmd == "mood_append_upcoming" else "replace_next", radio_mode=False)
                 if not self._api_response_ok(response):
                     return {"state": "error", "reason": "mix_replace_failed"}
             else:
@@ -5700,7 +5708,7 @@ class MassSource(SourceBase):
             return {"state": "queued", "queue_id": queue}
 
     async def handle_command(self, cmd, data) -> dict:
-        if cmd in {"mood_snapshot", "mood_replace_upcoming"}:
+        if cmd in {"mood_snapshot", "mood_replace_upcoming", "mood_append_upcoming"}:
             return await self._handle_mood_queue(cmd, data)
         uri = self._resolve_command_url(data)
         if cmd == "save_channel_podcast":

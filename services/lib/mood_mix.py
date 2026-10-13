@@ -2,6 +2,9 @@
 import asyncio
 import time
 import uuid
+import logging
+
+log = logging.getLogger(__name__)
 from . import music_mood, mix_policy
 
 
@@ -51,8 +54,10 @@ class MoodMixes:
             # Writes occur at session changes/queue transitions, never each polling tick.
             self.save({'version':1,'sessions':self.sessions})
 
-    def stop(self,queue):
-        if self.sessions.pop(queue,None) is not None:self.persist()
+    def stop(self,queue,reason='explicit_stop'):
+        if self.sessions.pop(queue,None) is not None:
+            log.info('Mix session stopped queue=%s reason=%s', queue, reason)
+            self.persist()
 
     def lock(self, queue):
         return self.locks.setdefault(queue, asyncio.Lock())
@@ -63,7 +68,7 @@ class MoodMixes:
             raise ValueError(result.get('reason', 'Queue unavailable'))
         return result['snapshot']
 
-    async def begin(self, queue, room, seed=None, mode='mood'):
+    async def begin(self, queue, room, seed=None, mode='mood', preserve_upcoming=False):
         if not queue or mode not in ('mood', 'radio'):
             raise ValueError('A queue and valid mix mode are required')
         async with self.lock(queue):
@@ -80,11 +85,18 @@ class MoodMixes:
             session = {'session_id': uuid.uuid4().hex, 'queue_id': queue, 'room': room, 'mode': mode, 'seed': seed or {},
                        'awaiting_choice': mode == 'mood', 'mood': None,
                        'current_id': playing['id'], 'current_uri': playing['uri'], 'seen': [], 'owned': [playing['uri']],
-                       'recordings': [seed], 'versions': [seed], 'title': playing['title'], 'updated': time.time(), 'generation': 0}
+                       'recordings': [seed], 'versions': [seed], 'owned_item_ids': [playing['id']], 'owned_recordings': [seed], 'title': playing['title'], 'updated': time.time(), 'generation': 0}
             session.update(discovery_ledger={'total': 0, 'discovery': 0}, owned_categories={})
+            if preserve_upcoming:
+                index = item_index(snap)
+                tail = (snap.get('items') or [])[index+1:] if isinstance(index,int) else []
+                session['owned'] += [str((i.get('media_item') or i).get('uri') or '') for i in tail]
+                session['owned_item_ids'] += [str(i.get('queue_item_id') or '') for i in tail]
+                session['owned_recordings'] += [i.get('media_item') or i for i in tail]
             self.sessions[queue] = session
+            self.persist()  # Persist intent before a potentially interrupted first fill.
             if mode == 'radio':
-                await self.fill(queue, snap)
+                await self.fill(queue, snap, append=preserve_upcoming)
             else:
                 # Seed collections must wait for a deliberate mood; retain only the playing item.
                 result = await self.command('mood_replace_upcoming', queue_id=queue,
@@ -92,7 +104,8 @@ class MoodMixes:
                 if result.get('state') == 'error':
                     self.stop(queue)
                     raise ValueError(result.get('reason', 'Seed queue could not be prepared'))
-            self.persist()
+            if mode != 'radio':
+                self.persist()
             return self.public(queue)
 
     def public(self, queue):
@@ -102,7 +115,8 @@ class MoodMixes:
         return {key: s[key] for key in ('queue_id', 'room', 'mode', 'awaiting_choice', 'mood', 'title', 'updated')} | {
             'active': True, 'pending_refresh': bool(s.get('pending_refresh')),
             'refresh_status': s.get('refresh_status', 'ready'), 'applied_mood': s.get('applied_mood'),
-            'discovery_ledger': dict(s.get('discovery_ledger') or {})}
+            'discovery_ledger': dict(s.get('discovery_ledger') or {}),
+            'last_error': s.get('last_error'), 'next_refill': s.get('next_refill')}
 
     async def update(self, queue, angle, radius):
         mood = music_mood.selection(angle, radius)
@@ -111,8 +125,10 @@ class MoodMixes:
             if not s:
                 raise ValueError('This queue has no active mood mix')
             snap = await self.snapshot(queue)
-            if current(snap)['uri'] not in s['owned']:
-                self.stop(queue)
+            if not current(snap)['id'] or not current(snap)['uri']:
+                raise ValueError('Queue metadata is temporarily unavailable; retry the mood change')
+            if not self.owns(s, snap):
+                self.stop(queue, 'manual_replacement')
                 raise ValueError('Playback changed outside this mix')
             s['mood'], s['awaiting_choice'], s['mode'] = mood, False, 'mood'
             s['generation'] += 1
@@ -173,8 +189,10 @@ class MoodMixes:
             candidates = sorted(candidates, key=lambda p: last_played.get(p.get('uri'), -1))
             picks = eligible(candidates, blocked, [current_media] + existing)
         if not picks:
-            if append and upcoming:
-                return  # Already-compatible tail survives a temporary refill shortage.
+            if append:
+                s['refresh_status'] = 'waiting_for_candidates'
+                s['last_error'] = 'No eligible tracks available for continuation'
+                return  # Preserve the existing album/tail and retry after 15 seconds.
             if s.get('mood') or s.get('pending_refresh'):
                 # A mood change must not silently keep an incompatible old tail.
                 latest = await self.snapshot(queue)
@@ -200,16 +218,22 @@ class MoodMixes:
         if s is not self.sessions.get(queue) or generation != s['generation']:
             return
         if now['id'] != playing['id']:
-            s['pending_refresh'] = True
-            s['refresh_status'] = 'pending'
+            if not append:
+                s['pending_refresh'] = True
+            s['refresh_status'] = 'retrying' if append else 'pending'
             return  # The monitor will retry against the new song, never restart it.
-        result = await self.command('mood_replace_upcoming', queue_id=queue,
+        result = await self.command('mood_append_upcoming' if append else 'mood_replace_upcoming', queue_id=queue,
             expected_item_id=now['id'], expected_index=latest.get('current_index'),
-            media=upcoming+[p['uri'] for p in picks])
+            **({'expected_upcoming_ids': [str(i.get('queue_item_id') or '') for i in (snap.get('items') or [])[index+1:]]} if append and isinstance(index,int) else {}),
+            media=[p['uri'] for p in picks])
         if result.get('state') == 'error':
-            s['pending_refresh'] = True
+            if not append:
+                s['pending_refresh'] = True
             raise ValueError(result.get('reason', 'Queue refresh rejected'))
         s['owned'] = [playing['uri']] + upcoming + [p['uri'] for p in picks]
+        s['owned_recordings'] = [current_media] + existing + picks
+        s['owned_item_ids'] = [playing['id']]
+        s.pop('last_error', None)
         categories = s.setdefault('owned_categories', {})
         for pick in picks:
             categories[pick['uri']] = pick.get('_selection_category', 'familiar')
@@ -223,6 +247,22 @@ class MoodMixes:
         if self.record and s['mood']:
             self.record(s['mood'], picks)
 
+    @staticmethod
+    def owns(session, snapshot):
+        playing = current(snapshot)
+        if playing['uri'] in session['owned'] or playing['id'] in session.get('owned_item_ids', []):
+            return True
+        # MA can resolve a requested provider URI into a library URI. Compare
+        # the recording we actually selected, rather than treating that as a
+        # manual replacement. Stable queue IDs survive temporary metadata loss.
+        raw = snapshot.get('current_item') or {}
+        if not raw:
+            index = item_index(snapshot)
+            items = snapshot.get('items') or []
+            raw = items[index] if isinstance(index, int) and 0 <= index < len(items) else {}
+        media = raw.get('media_item') or raw
+        return any(mix_policy.same_recording(media, selected) for selected in session.get('owned_recordings', []))
+
     async def tick(self, queue):
         async with self.lock(queue):
             s = self.sessions.get(queue)
@@ -231,14 +271,28 @@ class MoodMixes:
             snap = await self.snapshot(queue)
             playing = current(snap)
             if snap.get('state') not in ('playing', 'paused', 'buffering'):
-                s.setdefault('idle_since',time.time())
-                if time.time()-s['idle_since'] >= 600:
-                    self.stop(queue)
+                # A disconnected phone may be reported idle for hours. Retain
+                # its durable mix; only a user resume can restart transport.
+                s.setdefault('idle_since', time.time())
                 return
             s.pop('idle_since',None)
-            if playing['uri'] not in s['owned']:
-                self.stop(queue)
+            if not playing['id'] or not playing['uri']:
+                s['refresh_status'] = 'waiting_for_queue_metadata'
                 return
+            if not self.owns(s, snap):
+                self.stop(queue, 'manual_replacement')
+                return
+            if s.get('refresh_status') == 'waiting_for_queue_metadata':
+                s['refresh_status'] = 'pending' if s.get('pending_refresh') else 'ready'
+            if playing['uri'] not in s['owned']:
+                s['owned'].append(playing['uri'])
+            known_ids = set(s.get('owned_item_ids', []))
+            for item in snap.get('items') or []:
+                media = item.get('media_item') or item
+                if media.get('uri') in s['owned'] and item.get('queue_item_id'):
+                    known_ids.add(str(item['queue_item_id']))
+            known_ids.add(playing['id'])
+            s['owned_item_ids'] = sorted(known_ids)[-500:]
             if playing['id'] != s['current_id']:
                 s.pop('next_refill', None)  # A real track transition warrants an immediate check.
                 old_uri = s.get('current_uri') or s['seed'].get('uri')
@@ -265,5 +319,5 @@ class MoodMixes:
                     await self.fill(queue, snap)  # None mood means normal Pattern Play.
             elif s.get('pending_refresh') and time.time() >= max(s.get('retry_after', 0), s.get('next_refill', 0)):
                 await self.fill(queue, snap, append=False)
-            elif not s.get('pending_refresh') and upcoming < 5 and time.time() >= s.get('next_refill', 0):
+            elif not s.get('pending_refresh') and upcoming < 8 and time.time() >= s.get('next_refill', 0):
                 await self.fill(queue, snap, append=True)

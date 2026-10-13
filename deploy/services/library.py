@@ -51,6 +51,7 @@ from lib import mix_policy
 from lib import music_features, provider_profiles, music_relations
 from lib import session_intent, taste_profiles, sequence_plan, recommendation_audit, profile_quality
 from lib.session_feedback import SessionFeedback
+from lib.queue_continuation import QueueContinuation
 from lib.prompt_playback import Guard as PromptPlaybackGuard
 
 log = logging.getLogger("beo-library")
@@ -533,6 +534,11 @@ class LibraryService:
         self.mixes = MoodMixes(self._mix_command, self._mix_recommend, self._mix_record,
             load=lambda: self.model.get_kv("mix_sessions_v1", {}),
             save=lambda data: self.model.put_kv("mix_sessions_v1", data))
+        self.continuation = QueueContinuation(self._ma_api, self.mixes, _music_item,
+            lambda q: (self.cfg.get('continuation_rooms') or {}).get(q, 'phone' if q.startswith('homemedia-') else 'shared'),
+            enabled=self.cfg.get('continue_music', True) is not False,
+            load=lambda: self.model.get_kv('queue_continuation_optouts', {}),
+            save=lambda data: self.model.put_kv('queue_continuation_optouts', data))
         self.session_feedback = SessionFeedback(lambda: self.model.get_kv('queue_feedback_v1', {}),
             lambda data: self.model.put_kv('queue_feedback_v1', data))
         self._manual_choices = {tuple(k.split('\0')):v for k,v in self.model.get_kv('manual_choices_v1',{}).items() if isinstance(v,dict) and v.get('expires',0)>time.time()}
@@ -557,6 +563,7 @@ class LibraryService:
         self.session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=12))
         self._background.spawn(self._context_loop(), name="library_context")
         self._background.spawn(self._mix_loop(), name="library_mood_mix")
+        self._background.spawn(self.continuation.run(), name="library_queue_continuation")
         self._background.spawn(self._seed_loop(), name="library_seed_sync")
         self._background.spawn(self._familiarity_loop(), name="library_familiarity_sync")
         self._background.spawn(self._metadata_loop(), name="library_metadata_sync")
@@ -1106,6 +1113,19 @@ class LibraryService:
         self._automatic_keys = {self.model._candidate_key(item) for item in picks}
         return picks
 
+    async def _ma_api(self, command, args):
+        assert self.session
+        configured = (os.getenv('MASS_WS_URL') or os.getenv('BS5C_MASS_WS_URL') or '').strip()
+        host = (os.getenv('PLAYER_IP') or cfg('player', 'ip', default='localhost')).strip()
+        base = configured.replace('wss://','https://').replace('ws://','http://').rstrip('/').removesuffix('/ws') if configured else f'http://{host}:8095'
+        token = os.getenv('MASS_TOKEN','').strip()
+        async with self.session.post(base+'/api', headers={'Authorization':'Bearer '+token} if token else {},
+                json={'command':command,'args':args}) as response:
+            response.raise_for_status()
+            result = await response.json()
+            if isinstance(result,dict) and result.get('error'):raise ValueError('MA continuation request failed')
+            return result
+
     async def _mix_command(self, command, **payload):
         assert self.session
         async with self.session.post(MASS_COMMAND, json={"command": command, **payload}) as response:
@@ -1174,15 +1194,42 @@ class LibraryService:
             self._mood_sessions[self.model._candidate_key(item)] = {"mood": mood, "ts": time.time()}
 
     async def _mix_loop(self):
-        while True:
-            for queue in list(self.mixes.sessions):
-                try:
-                    await self.mixes.tick(queue)
-                except asyncio.CancelledError:
-                    raise
-                except Exception as exc:
-                    log.warning("Mood mix monitor: %s", str(exc)[:300])
-            await asyncio.sleep(1)
+        # Each queue has its own in-flight check. A disconnected phone must
+        # never hold up another room's next refill.
+        running, retry, failures = {}, {}, {}
+        checks = BackgroundTaskSet(log, label="mix_refill_checks")
+        slots = asyncio.Semaphore(4)
+        async def tick(queue):
+            async with slots:
+                await self.mixes.tick(queue)
+        try:
+            while True:
+                for queue, task in list(running.items()):
+                    if not task.done():
+                        continue
+                    running.pop(queue)
+                    try:
+                        task.result()
+                        retry.pop(queue, None); failures.pop(queue, None)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as exc:
+                        failures[queue] = min(failures.get(queue, 0)+1, 5)
+                        retry[queue] = time.time()+min(60, 2**failures[queue])
+                        session = self.mixes.sessions.get(queue)
+                        if session:
+                            session['last_error'] = str(exc)[:300]
+                            session['refresh_status'] = 'retrying'
+                        log.warning("Mix refill retry queue=%s: %s", queue, str(exc)[:300])
+                for queue in list(self.mixes.sessions):
+                    if queue not in running and time.time() >= retry.get(queue, 0):
+                        running[queue] = checks.spawn(tick(queue), name="mix_refill_"+queue)
+                # Forget retry counters when a session is deliberately replaced/stopped.
+                retry = {q: v for q, v in retry.items() if q in self.mixes.sessions}
+                failures = {q: v for q, v in failures.items() if q in self.mixes.sessions}
+                await asyncio.sleep(1)
+        finally:
+            await checks.cancel_all()
 
     async def handle_mix(self, request):
         try:
@@ -1198,10 +1245,12 @@ class LibraryService:
             if not queue or len(queue) > 512:
                 raise ValueError("A queue is required")
             if data.get("action") == "begin":
+                self.continuation.unblock(queue)
                 result = await self.mixes.begin(queue, str(data.get("room") or "lounge"), data.get("seed"), data.get("mode", "mood"))
             elif data.get("action") == "update":
                 result = await self.mixes.update(queue, data["angle"], data["radius"])
             elif data.get("action") == "stop":
+                await self.continuation.block(queue)
                 self.mixes.stop(queue)
                 result = self.mixes.public(queue)
             elif data.get('action') == 'feedback':
@@ -1438,7 +1487,10 @@ class LibraryService:
 
     async def handle_context(self, request: web.Request) -> web.Response:
         room = request.query.get("room", "")
-        return web.json_response(self._context_for_room(room), headers={"Access-Control-Allow-Origin": "*"})
+        return web.json_response(self._context_for_room(room) | {
+            'queue_continuation': {'enabled': self.continuation.enabled, 'last_scan': self.continuation.last_scan,
+                'last_error': self.continuation.last_error, 'active_sessions': len(self.mixes.sessions)}
+        }, headers={"Access-Control-Allow-Origin": "*"})
 
     async def handle_recommend(self, request: web.Request) -> web.Response:
         room = request.query.get("room", "")

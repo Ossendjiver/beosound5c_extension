@@ -14,9 +14,9 @@ class FakeQueue:
     async def command(self, cmd, **data):
         self.calls.append((cmd,data))
         if cmd=='mood_snapshot': return {'state':'ok','snapshot':copy.deepcopy(self.state)}
-        assert cmd=='mood_replace_upcoming'
+        assert cmd in ('mood_replace_upcoming','mood_append_upcoming')
         assert data['expected_item_id']==self.state['current_item']['queue_item_id']
-        self.state['items']=self.state['items'][:self.state['current_index']+1]+[
+        self.state['items']=(self.state['items'] if cmd=='mood_append_upcoming' else self.state['items'][:self.state['current_index']+1])+[
             {'queue_item_id':'generated-'+u,'media_item':{'uri':u}} for u in data['media']]
         return {'state':'queued'}
 
@@ -221,3 +221,69 @@ async def test_invalid_session_storage_and_unknown_root_are_safe():
     with pytest.raises(ValueError,match='known duration'):await mixes.begin('q','bedroom')
     assert not mixes.sessions
     assert all(cmd=='mood_snapshot' for cmd,_ in q.calls)
+
+@pytest.mark.asyncio
+async def test_local_disconnect_idle_longer_than_ten_minutes_does_not_drop_session():
+    q=FakeQueue()
+    async def recommend(*args):return [dict(uri=f'a{i}',duration=100) for i in range(20)]
+    stored={}
+    def save(data):stored.clear();stored.update(copy.deepcopy(data))
+    mixes=MoodMixes(q.command,recommend,load=lambda:stored,save=save)
+    await mixes.begin('q','phone',mode='radio')
+    import time
+    q.state['state']='idle';mixes.sessions['q']['idle_since']=time.time()-7200
+    count=len(q.calls);await mixes.tick('q')
+    assert mixes.public('q')['active']
+    assert all(cmd=='mood_snapshot' for cmd,_ in q.calls[count:])
+    mixes=MoodMixes(q.command,recommend,load=lambda:stored,save=save)
+    q.state['state']='playing';q.state['current_index']=len(q.state['items'])-3
+    q.state['current_item']=copy.deepcopy(q.state['items'][q.state['current_index']])
+    await mixes.tick('q');assert mixes.public('q')['active']
+
+@pytest.mark.asyncio
+async def test_blank_metadata_during_transition_does_not_cancel_or_modify_queue():
+    q=FakeQueue()
+    async def recommend(*args):return [dict(uri=f'a{i}',duration=100) for i in range(20)]
+    mixes=MoodMixes(q.command,recommend);await mixes.begin('q','phone',mode='radio')
+    previous=copy.deepcopy(q.state);q.state['current_item']={'queue_item_id':'transient'}
+    count=len(q.calls);await mixes.tick('q')
+    assert mixes.public('q')['active']
+    assert mixes.public('q')['refresh_status']=='waiting_for_queue_metadata'
+    assert all(cmd=='mood_snapshot' for cmd,_ in q.calls[count:])
+    q.state=previous;await mixes.tick('q');assert mixes.public('q')['active']
+
+@pytest.mark.asyncio
+async def test_resolved_provider_uri_stays_owned_and_refills():
+    q=FakeQueue();n=0
+    async def recommend(*args):
+        nonlocal n
+        n+=1
+        return [dict(uri=f'tidal://batch{n}-{i}',name=f'Song {n}-{i}',artist=f'Artist {i}',duration=100) for i in range(20)]
+    mixes=MoodMixes(q.command,recommend);await mixes.begin('q','phone',mode='radio')
+    q.state['current_index']=len(q.state['items'])-3
+    m=mixes.sessions['q']['owned_recordings'][-3]
+    q.state['current_item']=dict(queue_item_id='resolved-id',duration=100,media_item=dict(m,uri='library://resolved'))
+    await mixes.tick('q')
+    assert mixes.public('q')['active']
+    assert len(q.state['items'])-q.state['current_index']-1>=20
+
+@pytest.mark.asyncio
+async def test_known_queue_item_id_with_changed_uri_is_not_manual_replacement():
+    q=FakeQueue()
+    async def recommend(*args):return [dict(uri=f'a{i}',duration=100) for i in range(20)]
+    mixes=MoodMixes(q.command,recommend);await mixes.begin('q','phone',mode='radio')
+    await mixes.tick('q')
+    q.state['current_index']=2;q.state['current_item']=copy.deepcopy(q.state['items'][2])
+    q.state['current_item']['media_item']['uri']='library://new-alias'
+    await mixes.tick('q');assert mixes.public('q')['active']
+
+@pytest.mark.asyncio
+async def test_low_water_refill_occurs_with_seven_tracks_remaining():
+    q=FakeQueue();serial=0
+    async def recommend(*args):
+        nonlocal serial
+        serial+=1;return [dict(uri=f'b{serial}-{i}',duration=100) for i in range(20)]
+    mixes=MoodMixes(q.command,recommend);await mixes.begin('q','phone',mode='radio')
+    q.state['current_index']=len(q.state['items'])-8
+    q.state['current_item']=copy.deepcopy(q.state['items'][q.state['current_index']])
+    await mixes.tick('q');assert len(q.state['items'])-q.state['current_index']-1==27
