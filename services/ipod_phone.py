@@ -59,11 +59,14 @@ def build_plan(token):
         index=read('/media/local/cache/tidal-download/index.json',{});files={};items=[];skipped=0
         for i,item in enumerate(selection['items']):
             with LOCK:PLAN.update(checked=i,total=len(selection['items']))
+            uri=str(item.get('uri',''))
+            if item.get('media_type','track') != 'track' or '/podcast_episode/' in uri or '/podcast/' in uri:
+                skipped+=1;continue
             source=file_source(item,roots,index)
             if source is None:
                 try:source=file_source(ma('music/item_by_uri',{'uri':item['uri'],'allow_update_metadata':False}),roots,index)
                 except urllib.error.HTTPError as e:
-                    if e.code in (400,404):skipped+=1;continue
+                    if e.code in (400,404,410,422,500):skipped+=1;continue
                     raise
             if source is None:skipped+=1;continue
             st=source.stat()
