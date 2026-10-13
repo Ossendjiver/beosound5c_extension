@@ -3,11 +3,13 @@
 import fcntl,hashlib,json,os,shutil,subprocess,time,urllib.request,urllib.error,urllib.parse
 from pathlib import Path
 from lib.ipod_sync import atomic_json
+from lib.tidal_rate_limit import RateLimit,Cooldown
 from lib.tidal_cache import direct_flac,tidal_mapping,select,validate_url,ProtectedAudio,maximum_asset,explicit
 ROOT=Path('/media/local/music/HomeMedia-Tidal')
 CACHE=Path('/media/local/cache/tidal-download')
 STATUS=Path('/home/thomas/beosound5c/web/json/tidal_download_status.json')
 CONFIG=Path('/etc/beosound5c/tidal-download.json')
+RATE=RateLimit(CACHE/'rate_limit.json')
 
 class Busy(Exception): pass
 class AuthNeeded(Exception): pass
@@ -26,6 +28,8 @@ def publish(state,**values):
     atomic_json(STATUS,dict(old,state=state,updated=time.time(),**values));STATUS.chmod(0o644)
 
 def request(url,body=None,token=None):
+    tidal=urllib.parse.urlsplit(url).hostname=='api.tidal.com'
+    if tidal:RATE.before_request()
     headers={'Content-Type':'application/json'}
     if token:headers['Authorization']='Bearer '+token
     r=urllib.request.Request(url,data=None if body is None else json.dumps(body).encode(),headers=headers)
@@ -35,6 +39,7 @@ def request(url,body=None,token=None):
     try:
         with urllib.request.build_opener(NoRedirect()).open(r,timeout=30) as response:return json.load(response)
     except urllib.error.HTTPError as e:
+        if e.code==429 and tidal:RATE.limited(e.headers)
         if e.code==401:raise AuthNeeded() from None
         raise
 
@@ -133,6 +138,13 @@ def transfer(asset,dest,reserve,item):
         for unfinished in (temp,tagged):
             if unfinished.exists():unfinished.unlink()
 
+def cached_record_valid(record):
+    if not record or record.get('quality_policy')!=2:return False
+    try:
+        path=Path(record['path'])
+        return path.is_file() and path.stat().st_size==record.get('size')
+    except (KeyError,OSError):return False
+
 def main():
     if subprocess.check_output(['findmnt','-n','-o','TARGET','/media/local'],text=True).strip()!='/media/local':raise ValueError('SSD missing')
     config=read(CONFIG,{'enabled':True,'tracks':250,'albums':20,'reserve_bytes':10*1024**3})
@@ -147,7 +159,8 @@ def main():
         state=read(CACHE/'index.json',{'version':1,'tracks':{}})
         selection_key=[int(config.get('tracks',250)),int(config.get('albums',20))]
         if state.get('quality_policy')==2 and state.get('selection_key')==selection_key and time.time()-state.get('last_completed',0)<86400:return
-        require_idle();publish('selecting',message='Ranking personal listening history')
+        RATE.ready()
+        require_idle();publish('selecting',retry_at=None,message='Ranking personal listening history')
         evidence=request('http://127.0.0.1:8788/library/tidal-download/ranking')
         tracks,albums=select(all_tracks(),evidence,int(config.get('tracks',250)),int(config.get('albums',20)))
         selected=list(tracks)
@@ -158,39 +171,56 @@ def main():
             selected.extend(t for t in rows if tidal_mapping(t) and explicit(t))
         plan={str(tidal_mapping(t)['item_id']):t for t in selected}
         atomic_json(CACHE/'selection.json',{'updated':time.time(),'tracks':len(tracks),'albums':albums,'items':list(plan)})
+        plan_key={'selection':selection_key,'ids':sorted(plan)}
+        if state.get('pending_plan')!=plan_key or not state.get('pending_ids'):
+            state['pending_plan']=plan_key
+            state['pending_ids']=sorted(plan,key=lambda tid:cached_record_valid(state['tracks'].get(tid)))
+            atomic_json(CACHE/'index.json',state)
         counters={'downloaded':0,'retained':0,'protected':0,'errors':0,'non_explicit':0};credentials=auth() if plan else None
         started=time.monotonic()
-        for tid,item in plan.items():
+        for tid in list(state['pending_ids']):
+            item=plan[tid]
+            completed=False
             if time.monotonic()-started>4*3600:publish('deferred',message='Run limit reached; will resume',**counters);return
             require_idle();old=state['tracks'].get(tid)
             publish('downloading',total=len(plan),**counters,message='Checking maximum quality for '+str(item.get('name','track')))
             try:
+                if cached_record_valid(old) and time.time()-old.get('quality_checked_at',old.get('downloaded_at',0))<86400:
+                    old['uris']=sorted(set(old.get('uris',[]))|{item['uri']})
+                    counters['retained']+=1;completed=True;continue
                 details=request('https://api.tidal.com/v1/tracks/'+tid+'?countryCode='+credentials['country'],token=credentials['token'])
                 if details.get('explicit') is not True:
-                    counters['non_explicit']+=1;continue
+                    counters['non_explicit']+=1;completed=True;continue
                 params={'playbackmode':'STREAM','assetpresentation':'FULL','audioquality':'HI_RES_LOSSLESS','immersiveaudio':'false','countryCode':credentials['country']}
                 info=request('https://api.tidal.com/v1/tracks/'+tid+'/playbackinfopostpaywall?'+urllib.parse.urlencode(params),token=credentials['token'])
                 asset=maximum_asset(info)
                 if old and old.get('quality_policy')==2 and old.get('sample_rate',0)>=asset['sample_rate'] and old.get('bit_depth',0)>=asset['bits'] and Path(old['path']).is_file() and Path(old['path']).stat().st_size==old.get('size'):
-                    aliases=set(old.get('uris',[]));aliases.add(item['uri']);old['uris']=sorted(aliases);counters['retained']+=1;continue
+                    aliases=set(old.get('uris',[]));aliases.add(item['uri']);old['uris']=sorted(aliases);counters['retained']+=1;old['quality_checked_at']=time.time();completed=True;continue
                 dest=ROOT/(tid+'.'+str(asset['bits'])+'bit-'+str(asset['sample_rate'])+'.flac')
                 if dest.exists():dest=ROOT/(tid+'.'+str(time.time_ns())+'.flac')
                 record=transfer(asset,dest,int(config.get('reserve_bytes',10*1024**3)),item)
                 if old:record['previous']=old.get('previous',[])+[{k:v for k,v in old.items() if k!='previous'}]
-                state['tracks'][tid]=dict(record,item=item,uris=[item['uri'],f'tidal://track/{tid}'],downloaded_at=time.time());counters['downloaded']+=1
-                atomic_json(CACHE/'index.json',state)
-            except ProtectedAudio:counters['protected']+=1
-            except (Busy,AuthNeeded,DiskFull):raise
+                state['tracks'][tid]=dict(record,item=item,uris=[item['uri'],f'tidal://track/{tid}'],downloaded_at=time.time(),quality_checked_at=time.time());counters['downloaded']+=1
+                completed=True
+            except ProtectedAudio:counters['protected']+=1;completed=True
+            except (Busy,AuthNeeded,DiskFull,Cooldown):raise
             except urllib.error.HTTPError as e:
-                if e.code==429:publish('rate_limited',message='Tidal rate limit; retry next check',**counters);return
-                counters['errors']+=1
-            except (ValueError,OSError,subprocess.SubprocessError):counters['errors']+=1
+                if e.code==429:RATE.limited(e.headers)
+                counters['errors']+=1;completed=True
+            except (ValueError,OSError,subprocess.SubprocessError):counters['errors']+=1;completed=True
+            finally:
+                if completed:
+                    state['pending_ids'].remove(tid)
+                    atomic_json(CACHE/'index.json',state)
+                publish('downloading',total=len(plan),remaining=len(state['pending_ids']),cached=len(state['tracks']),**counters)
             time.sleep(.5)
+        RATE.completed()
         state['last_completed']=time.time();state['quality_policy']=2;state['selection_key']=selection_key;atomic_json(CACHE/'index.json',state)
         publish('complete',last_completed=state['last_completed'],cached=len(state['tracks']),total=len(plan),**counters,message='Add-only cache updated; next refresh in 24 hours')
 
 if __name__=='__main__':
     try:main()
+    except Cooldown as e:publish('rate_limited',retry_at=e.retry_at,message='Tidal cooldown; automatic retry after '+time.strftime('%H:%M',time.localtime(e.retry_at)))
     except Busy:publish('waiting_for_idle',message='Waiting until all available players are idle')
     except AuthNeeded:publish('waiting_for_login',message='Waiting for Music Assistant to renew Tidal login')
     except DiskFull:publish('low_space',message='SSD free-space reserve reached; cached files retained')

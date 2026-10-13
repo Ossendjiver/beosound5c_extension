@@ -7,6 +7,7 @@ import logging
 import aiohttp
 from aiohttp import web, ClientSession
 from lib.background_tasks import BackgroundTaskSet
+from lib.maintenance_scans import start_scan
 from lib.transport import Transport
 from lib.config import cfg, reload_config
 from lib.correlation import install_logging
@@ -2591,6 +2592,10 @@ async def receive_commands(ws):
             elif cmd == 'get_network_status':
                 net = await asyncio.get_running_loop().run_in_executor(None, get_network_status)
                 await ws.send(json.dumps({'type': 'network_status', **net}))
+            elif cmd == 'start_scan':
+                scan = params.get('scan')
+                result = await start_scan(scan)
+                await ws.send(json.dumps({'type': 'maintenance_scan', 'scan': scan, **result}))
             elif cmd == 'restart_service':
                 await restart_service(params.get('action', ''))
             elif cmd == 'refresh_playlists':
