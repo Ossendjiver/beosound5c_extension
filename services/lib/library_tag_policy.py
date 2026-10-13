@@ -48,3 +48,9 @@ def folder_artist(folder,credits):
   if key(folder)==key(credit):return credit
   if any(key(folder)==key(part.strip()) for part in credit.split(',')):return folder
  return None
+
+def register_easy_mp4_keys():
+    """Expose native composer and retained performer credits in EasyMP4 views."""
+    from mutagen.easymp4 import EasyMP4Tags
+    EasyMP4Tags.RegisterTextKey('composer', '\xa9wrt')
+    EasyMP4Tags.RegisterFreeformKey('performer', 'PERFORMER')
