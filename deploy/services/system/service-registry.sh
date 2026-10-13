@@ -5,6 +5,7 @@
 
 # All service unit files (for install / copy / final status)
 ALL_SERVICES=(
+    "beo-ipod-phone.service"
     "beo-ipod-sync.service"
     "beo-ipod-sync.timer"
     "beo-tidal-download.service"

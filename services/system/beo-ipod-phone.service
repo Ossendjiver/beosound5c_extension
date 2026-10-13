@@ -1,0 +1,23 @@
+[Unit]
+Description=Home Media Wi-Fi iPod export bridge
+After=network-online.target beo-library.service
+ConditionPathIsMountPoint=/media/local
+ConditionPathExists=/etc/beosound5c/ipod-phone.json
+[Service]
+Type=simple
+User=root
+WorkingDirectory=__HOME__/beosound5c/services
+EnvironmentFile=/etc/beosound5c/secrets.env
+ExecStart=/usr/bin/python3 __HOME__/beosound5c/services/ipod_phone.py
+Restart=on-failure
+RestartSec=10
+Nice=19
+CPUQuota=20%
+MemoryMax=384M
+IOSchedulingClass=idle
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true
+[Install]
+WantedBy=multi-user.target

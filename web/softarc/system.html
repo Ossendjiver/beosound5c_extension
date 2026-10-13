@@ -1490,11 +1490,15 @@
                 fetch: async () => {
                     const response = await fetch('/json/ipod_sync_status.json');
                     if (!response.ok) throw new Error('offline');
-                    return await response.json();
+                    const data = await response.json();
+                    try { const pair = await fetch('http://' + location.hostname + ':8790/pairing'); if (pair.ok) data.phoneToken = (await pair.json()).token; } catch (_) {}
+                    return data;
                 },
                 render: (data) => '<div class="subcard-body">' +
                     row('Status', data.state || 'waiting', data.state === 'error' ? 'error' : 'ok') +
                     row('Device', data.device || 'iPod Video · Rockbox') +
+                    row('Phone Transfer', data.phoneToken ? 'Ready · Wi-Fi + USB OTG' : 'Unavailable') +
+                    row('Phone Token', String(data.phoneToken || 'Device display only').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))) +
                     row('Progress', (Number(data.copied) || 0) + ' / ' + (Number(data.total) || 0)) +
                     row('Imported Listens', Number(data.imported_total) || 0) +
                     row('Unmatched', Number(data.unmatched) || 0) +
