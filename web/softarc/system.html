@@ -1856,6 +1856,9 @@
                 this.tidalTrackEditing = false;
                 this.tidalTrackDraft = null;
                 this.tidalSaving = false;
+                this.scanPending = null;
+                this.scanMessage = {};
+                this.scanTimer = null;
                 this.subcardData = {};    // id -> last fetched data
                 this.subcardOnline = {};  // id -> bool
                 this.subcardRefreshTimer = null;
@@ -1963,7 +1966,7 @@
                 const card = SUBCARDS[this.currentSubcard];
                 const hint = document.getElementById('service-action-hint');
                 hint.hidden = card.id === 'ipod';
-                hint.innerHTML = '<span class="key">GO</span> ' + (card.id === 'tidal-download' ? (this.tidalTrackEditing ? 'Save count · wheel changes by 50' : 'Edit track count') : 'Restart service');
+                hint.innerHTML = '<span class="key">GO</span> ' + (['tidal-download', 'provider'].includes(card.id) ? (card.id === 'tidal-download' && this.tidalTrackEditing ? 'Save count · wheel changes by 50' : 'Start scan') : 'Restart service');
                 let data = this.subcardData[card.id];
                 if (card.id === 'tidal-download' && this.tidalTrackEditing && data) data = {...data, settings: {...data.settings, tracks: this.tidalTrackDraft}};
                 const online = this.subcardOnline[card.id] !== false;
@@ -1987,7 +1990,17 @@
                     }
                 }
 
+                if (['tidal-download', 'provider'].includes(card.id)) {
+                    html += '<div class="subcard-row"><button data-start-scan style="padding:8px 18px">Start scan</button><span data-scan-message class="subcard-value"></span></div>';
+                }
                 container.innerHTML = html;
+                const scanButton = container.querySelector('[data-start-scan]');
+                if (scanButton) {
+                    scanButton.disabled = !!this.scanPending || this.tidalSaving;
+                    scanButton.textContent = this.scanPending === card.id ? 'Starting…' : 'Start scan';
+                    scanButton.onclick = () => this.startSubcardScan();
+                    container.querySelector('[data-scan-message]').textContent = this.scanMessage[card.id] || '';
+                }
                 container.querySelectorAll('[data-tidal-step]').forEach(button => button.onclick = () => this.adjustTidalCount(Number(button.dataset.tidalStep)));
                 const save = container.querySelector('[data-tidal-save]');
                 if (save) { save.disabled = this.tidalSaving; save.onclick = () => this.saveTidalCount(); }
@@ -2031,7 +2044,9 @@
                     this.inputWs.onmessage = (event) => {
                         try {
                             const data = JSON.parse(event.data);
-                            if (data.type === 'system_info') {
+                            if (data.type === 'maintenance_scan') {
+                                this.receiveScanResult(data);
+                            } else if (data.type === 'system_info') {
                                 if (data.git_tag) {
                                     document.getElementById('git-tag').textContent = data.git_tag;
                                 }
@@ -2057,6 +2072,7 @@
                     this.inputWs.onerror = () => {};
 
                     this.inputWs.onclose = () => {
+                        if (this.scanPending) this.receiveScanResult({scan: this.scanPending, message: 'Connection lost; check status before retrying'});
                         setTimeout(() => this.connectInputWebSocket(), 5000);
                     };
                 } catch (e) {
@@ -2554,13 +2570,43 @@
                 finally { this.tidalSaving = false; this.renderCurrentSubcard(); }
             }
 
+            startSubcardScan() {
+                const scan = SUBCARDS[this.currentSubcard].id;
+                if (!['tidal-download', 'provider'].includes(scan) || this.scanPending || this.tidalSaving) return;
+                if (!this.inputWs || this.inputWs.readyState !== WebSocket.OPEN) {
+                    this.scanMessage[scan] = 'Input service disconnected';
+                    this.renderCurrentSubcard();
+                    return;
+                }
+                this.scanPending = scan;
+                this.scanMessage[scan] = '';
+                this.scanTimer = setTimeout(() => this.receiveScanResult({scan, message: 'No response; check status before retrying'}), 15000);
+                try {
+                    this.inputWs.send(JSON.stringify({type: 'command', command: 'start_scan', params: {scan}}));
+                } catch (_) {
+                    this.receiveScanResult({scan, message: 'Could not send request'});
+                }
+                this.renderCurrentSubcard();
+            }
+
+            receiveScanResult(data) {
+                if (!this.scanPending || data.scan !== this.scanPending) return;
+                clearTimeout(this.scanTimer);
+                this.scanTimer = null;
+                this.scanPending = null;
+                this.scanMessage[data.scan] = data.message || 'Check scan status';
+                const index = SUBCARDS.findIndex(card => card.id === data.scan);
+                if (index >= 0) this.fetchSubcard(index);
+                this.renderCurrentSubcard();
+            }
+
             // ── Service restart ──
 
             restartSubcardService() {
                 const card = SUBCARDS[this.currentSubcard];
-                if (card.id === 'tidal-download') {
-                    if (this.tidalTrackEditing) this.saveTidalCount();
-                    else { this.tidalTrackEditing = true; this.tidalTrackDraft = this.subcardData[card.id]?.settings?.tracks || 250; this.renderCurrentSubcard(); }
+                if (['tidal-download', 'provider'].includes(card.id)) {
+                    if (card.id === 'tidal-download' && this.tidalTrackEditing) this.saveTidalCount();
+                    else this.startSubcardScan();
                     return;
                 }
                 if (card.id === 'ipod') return; // Dock sync runs automatically; never restart playback services here.
