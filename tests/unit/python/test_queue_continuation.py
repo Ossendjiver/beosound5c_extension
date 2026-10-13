@@ -101,3 +101,8 @@ async def test_failed_auto_append_retries_append_and_never_replaces_album():
     await mixes.tick('q')
     assert q.state['items'][:4]==original
     assert 'mood_replace_upcoming' not in ops
+
+
+def test_external_native_source_cannot_adopt_stale_ma_queue():
+    data=snapshot();data['active']=False
+    assert not QueueContinuation(None,None,_music_item,None).eligible(data)

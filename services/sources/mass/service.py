@@ -5681,7 +5681,7 @@ class MassSource(SourceBase):
                 expected = data.get('expected_upcoming_ids')
                 if not isinstance(expected,list) or expected != [str(i.get('queue_item_id') or '') for i in tail]:
                     return {'state':'error','reason':'upcoming_queue_changed'}
-                if snapshot.get('state') not in ('playing','paused','buffering'):
+                if snapshot.get('state') not in ('playing','paused','buffering') or snapshot.get('active') is False:
                     return {'state':'error','reason':'queue_not_active'}
             # Local Pattern Play owns refill; MA's own autoplay must not compete.
             response = await self._send_command_response("player_queues/dont_stop_the_music", queue_id=queue, dont_stop_the_music_enabled=False)

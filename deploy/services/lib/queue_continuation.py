@@ -29,7 +29,7 @@ class QueueContinuation:
         return payload if isinstance(payload,list) else payload.get('items',[])
 
     def eligible(self, snapshot):
-        if snapshot.get('state') != 'playing' or snapshot.get('repeat_mode','off') not in ('off',None):return False
+        if snapshot.get('state') != 'playing' or snapshot.get('active') is False or snapshot.get('repeat_mode','off') not in ('off',None):return False
         index = item_index(snapshot)
         items = snapshot.get('items') or []
         if not isinstance(index,int) or index < 0:return False
@@ -48,7 +48,7 @@ class QueueContinuation:
         # Canonical queue owners only. Group members with empty queues are skipped.
         for queue in queues:
             q = str(queue.get('queue_id') or '')
-            if not q or q in self.mixes.sessions or queue.get('state')!='playing':continue
+            if not q or q in self.mixes.sessions or queue.get('state')!='playing' or queue.get('active') is False:continue
             if isinstance(queue.get('items'),int):
                 if queue['items']==0:continue
                 index=queue.get('current_index')
