@@ -1493,12 +1493,14 @@
                     const response = await fetch('/json/ipod_sync_status.json');
                     if (!response.ok) throw new Error('offline');
                     const data = await response.json();
+                    try { const remote = await fetch('/json/ipod_remote_status.json', {cache:'no-store'}); if (remote.ok) data.remoteTransfers = (await remote.json()).clients; } catch (_) {}
                     try { const pair = await fetch('http://' + location.hostname + ':8790/pairing'); if (pair.ok) data.phoneToken = (await pair.json()).token; } catch (_) {}
                     return data;
                 },
                 render: (data) => '<div class="subcard-body">' +
                     row('Status', data.state || 'waiting', data.state === 'error' ? 'error' : 'ok') +
                     row('Device', data.device || 'iPod Video · Rockbox') +
+                    ['ubuntu','app'].map(client => { const transfer = data.remoteTransfers?.[client]; if (!transfer) return ''; const stale = ['connecting','importing','selecting','copying'].includes(transfer.state) && Date.now()/1000 - transfer.updated > 900; const state = stale ? 'interrupted' : transfer.state; return row(client === 'ubuntu' ? 'Ubuntu Sync' : 'Phone Sync', ({connecting:'Connecting',importing:'Importing history',selecting:'Selecting music',copying:'Copying',complete:'Complete',waiting_for_eject:'Waiting for eject',error:'Error',cancelled:'Stopped',interrupted:'Interrupted'})[state] || 'Unknown') + row('Copied / unchanged', Number(transfer.copied || 0) + ' / ' + Number(transfer.retained || 0)) + row('Did not fit', Number(transfer.did_not_fit || 0)) + row('Last sync', transfer.last_sync ? new Date(transfer.last_sync * 1000).toLocaleString() : 'Not yet completed') + row('Saved transfers', Number(transfer.history?.length || 0)); }).join('') +
                     row('Phone Transfer', data.phoneToken ? 'Ready · Wi-Fi + USB OTG' : 'Unavailable') +
                     row('Phone Token', String(data.phoneToken || 'Device display only').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))) +
                     row('Progress', (Number(data.copied) || 0) + ' / ' + (Number(data.total) || 0)) +

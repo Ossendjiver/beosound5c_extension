@@ -63,6 +63,19 @@ for unit in "$SYSTEMD_DIR"/beo-player-*.service; do
     log "Removed unsupported player unit $svc"
 done
 
+# External iPod reports remain on SSD; the public card reads only safe counts/state.
+if mountpoint -q /media/local; then
+    install -d -m 755 /media/local/cache/ipod-external
+    if [ ! -f /media/local/cache/ipod-external/status.json ]; then
+        printf '%s\n' '{"clients":{}}' > /media/local/cache/ipod-external/status.json
+        chmod 644 /media/local/cache/ipod-external/status.json
+    fi
+    report_link="$BASE_DIR/web/json/ipod_remote_status.json"
+    if [ ! -e "$report_link" ] || [ -L "$report_link" ]; then
+        ln -sfn /media/local/cache/ipod-external/status.json "$report_link"
+    fi
+fi
+
 # ── 1. Refresh installed systemd service files ───────────────────────────────
 # OTA rsync only updates ~/beosound5c/services/system/ templates. This step
 # re-stamps any already-installed service into /etc/systemd/system/ so that

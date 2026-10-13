@@ -1,3 +1,4 @@
+import time
 import hashlib,json,tempfile,threading,unittest,urllib.request,urllib.error
 from pathlib import Path
 from unittest.mock import patch
@@ -93,3 +94,21 @@ class PhoneBridgeTests(unittest.TestCase):
   with patch.object(phone,'read',return_value={}),patch.object(phone,'local_call',return_value={'items':[],'groups':{}}),patch.object(phone,'ma',side_effect=ma),patch.object(phone,'PLAN',{'state':'selecting'}):
    phone.build_plan('scoped-test-token')
    self.assertEqual('error',phone.PLAN['state'])
+
+def test_remote_transfer_status_validation_and_stale_state(tmp_path,monkeypatch):
+ from lib import ipod_transfer_status as status
+ import pytest
+ monkeypatch.setattr(status,'STATUS',tmp_path/'status.json')
+ data={'client':'ubuntu','device_id':'uuid:ABCD-1234','session':'11111111-1111-1111-1111-111111111111','sequence':1,'state':'copying','copied':12}
+ assert status.update(data,'uuid:ABCD-1234')
+ assert not status.update(data,'uuid:ABCD-1234')
+ for payload in [dict(data,copied=-1),dict(data,device_id='wrong'),dict(data,path='/etc/shadow'),dict(data,client='other')]:
+  with pytest.raises(ValueError):status.update(payload,'uuid:ABCD-1234')
+ stored=json.loads(status.STATUS.read_text());assert status.public(stored,now=time.time()+901)['ubuntu']['state']=='interrupted'
+ assert 'session' not in status.public(stored)['ubuntu']
+ completed=dict(data,sequence=2,state='complete',completed_at=1700000000,retained=30)
+ assert status.update(completed,'uuid:ABCD-1234')
+ stored=json.loads(status.STATUS.read_text());assert stored['clients']['ubuntu']['last_sync']==1700000000
+ assert len(stored['clients']['ubuntu']['history'])==1
+ assert status.update(dict(completed,sequence=3),'uuid:ABCD-1234')
+ assert len(json.loads(status.STATUS.read_text())['clients']['ubuntu']['history'])==1

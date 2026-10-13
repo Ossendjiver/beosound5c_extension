@@ -4,6 +4,7 @@ import hashlib,hmac,ipaddress,json,os,re,threading,time,urllib.parse,urllib.requ
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer
 from lib.ipod_sync import destination,key,atomic_json
+from lib.ipod_transfer_status import update as update_transfer_status
 from lib.tidal_cache import cached_source
 CONFIG=Path('/etc/beosound5c/ipod-phone.json')
 SYNC_CONFIG=Path('/etc/beosound5c/ipod-sync.json')
@@ -124,6 +125,17 @@ class Handler(BaseHTTPRequestHandler):
             else:self.close_connection=True
     def do_POST(self):
         if not self.authorised():self.reply(401,{});return
+        if self.path=='/sync-status':
+            try:
+                self.connection.settimeout(5);length=int(self.headers.get('Content-Length','0'))
+                if not 0<length<=2048:raise ValueError()
+                body=json.loads(self.rfile.read(length))
+                with LOCK:
+                    cfg=read(SYNC_CONFIG,{})
+                    accepted=update_transfer_status(body,cfg.get('phone_device_id') or cfg.get('device_id'))
+                self.reply(200,{'ok':True,'accepted':accepted});return
+            except (ValueError,KeyError,TypeError):self.reply(400,{});return
+            except OSError:self.reply(503,{});return
         if self.path=='/pair':
             try:
                 self.connection.settimeout(5);length=int(self.headers.get('Content-Length','0'))
