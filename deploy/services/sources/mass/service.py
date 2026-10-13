@@ -54,6 +54,7 @@ from lib.mass_playback import (
 )
 from lib.playback_targets import get_audio_targets
 from lib.source_base import SourceBase
+from lib.youtube_search import YouTubeSearch, search_flag, VIDEO_URI
 
 # ── CONFIG ────────────────────────────────────────────────────────────────────
 def _mass_ws_url():
@@ -71,6 +72,7 @@ def _mass_ws_url():
 MASS_URI = _mass_ws_url()
 MASS_TOKEN = os.getenv("MASS_TOKEN", "").strip()
 ROUTER_PLAYBACK_URL = "http://127.0.0.1:8770/router/playback"
+ROUTER_STATUS_URL = "http://127.0.0.1:8770/router/status"
 TARGET_QUEUE_ID = (
     os.getenv("MASS_QUEUE_ID")
     or os.getenv("BS5C_MASS_TARGET_QUEUE_ID")
@@ -353,11 +355,16 @@ class MassSource(SourceBase):
             await self._art_http_session.close()
         self._art_http_session = None
 
+    def _cached_music_needs_duration_sync(self):
+        tracks = [node for node in getattr(self, "_library_node_by_uri", {}).values()
+                  if node.get("media_type") == "track"]
+        return bool(tracks) and not any(node.get("duration") for node in tracks)
+
     async def _schedule_sync_loop(self):
-        if not self.has_cache:
+        if not self.has_cache or self._cached_music_needs_duration_sync():
             while not self._connected:
                 await asyncio.sleep(2)
-            logger.info("No cache — running initial library sync.")
+            logger.info("Initial library/duration metadata sync.")
             await self.update_library_cache()
 
         while True:
@@ -365,13 +372,12 @@ class MassSource(SourceBase):
             next_sync = now.replace(hour=2, minute=0, second=0, microsecond=0)
             if now >= next_sync:
                 next_sync += datetime.timedelta(days=1)
-            next_sync += datetime.timedelta(days=1)
             wait_s = (next_sync - now).total_seconds()
             logger.info(f"Next sync in {wait_s / 3600:.1f}h.")
             await asyncio.sleep(wait_s)
             while not self._connected:
                 await asyncio.sleep(10)
-            logger.info("Triggering scheduled 48h library sync...")
+            logger.info("Triggering scheduled daily library sync...")
             await self.update_library_cache()
 
     # ── WebSocket ─────────────────────────────────────────────────────────────
@@ -472,6 +478,42 @@ class MassSource(SourceBase):
                 return any("capture" in line.lower() for line in handle)
         except OSError:
             return False
+
+    def _youtube_search(self):
+        host = urllib.parse.urlsplit(MASS_URI).hostname or "localhost"
+        return YouTubeSearch(cfg("mass", "youtube_search", default={}) or {}, f"http://{host}:8089",
+                             VOICE_SEARCH_HA_URL, VOICE_SEARCH_HA_TOKEN)
+
+    async def _search_enabled_sources(self, query, limit=8, music=None, videos=None):
+        bridge = self._youtube_search()
+        music, videos = bridge.flags(music, videos)
+        query = self._clean_voice_query(query)
+        if len(query) < 2 or len(query) > 200:
+            raise VoiceSearchError("invalid_query", "Enter between two and 200 characters.")
+        limit = max(1, min(20, int(limit or 8)))
+        warnings = []
+        try:
+            payload = await self._search_all_mass_providers(query, limit)
+        except VoiceSearchError:
+            if not (music or videos):
+                raise
+            payload = {"query": query, "transcript": query, "groups": [], "scope": "all_mass_providers"}
+            warnings.append("Music Assistant search unavailable")
+        kinds = [kind for kind, active in (("music", music), ("video", videos)) if active]
+        results = await asyncio.gather(*(bridge.search(query, kind, limit) for kind in kinds), return_exceptions=True)
+        for kind, group in zip(kinds, results):
+            if isinstance(group, asyncio.CancelledError):
+                raise group
+            if isinstance(group, Exception):
+                logger.warning("YouTube %s search unavailable (%s)", kind, type(group).__name__)
+                warnings.append(f"YouTube {kind} search unavailable")
+            elif group:
+                payload["groups"].append(group)
+        payload["state"] = "ready" if payload["groups"] else "empty"
+        payload["total"] = sum(len(group["tracks"]) for group in payload["groups"])
+        payload["warnings"] = warnings
+        payload["youtube_options"] = {"youtube_music": music, "youtube_videos": videos}
+        return payload
 
     def _voice_search_status(self):
         reason = ""
@@ -1245,7 +1287,7 @@ class MassSource(SourceBase):
         if url:    node["url"]    = url   # renamed to play_url by _finalize_node
         return node
 
-    def _make_leaf_node(self, id_, name, artist="", url="", image="", album=""):
+    def _make_leaf_node(self, id_, name, artist="", url="", image="", album="", duration=0):
         """Playable leaf. Has `url`, no `tracks`."""
         node = {
             "id":   id_,
@@ -1255,6 +1297,7 @@ class MassSource(SourceBase):
         if artist: node["artist"] = artist
         if album:  node["album"]  = album
         if image:  node["image"]  = image
+        if duration: node["duration"] = duration
         return node
 
     @staticmethod
@@ -1401,6 +1444,7 @@ class MassSource(SourceBase):
             self._apply_media_identity(
                 self._make_leaf_node(
                     id_=track.get("item_id", ""),
+                    duration=track.get("duration", 0),
                     name=track.get("name", "Unknown Track"),
                     artist=self._get_artist_name(track, ""),
                     album=self._get_album_name(track, ""),
@@ -1452,6 +1496,7 @@ class MassSource(SourceBase):
             self._apply_media_identity(
                 self._make_leaf_node(
                     id_=episode.get("item_id", ""),
+                    duration=episode.get("duration", 0),
                     name=episode.get("name", "Unknown Episode"),
                     artist=self._get_artist_name(episode, podcast_name) or podcast_name,
                     url=episode.get("uri", ""),
@@ -1579,6 +1624,7 @@ class MassSource(SourceBase):
             return self._apply_media_identity(
                 self._make_leaf_node(
                     id_=track.get("item_id", ""),
+                    duration=track.get("duration", 0),
                     name=track.get("name", "Unknown Track"),
                     artist=resolved_artist,
                     album=self._get_album_name(track, album_name),
@@ -1870,6 +1916,7 @@ class MassSource(SourceBase):
                             self._apply_media_identity(
                                 self._make_leaf_node(
                                     id_=t.get('item_id', ''),
+                                    duration=t.get("duration", 0),
                                     name=t.get('name', 'Unknown Track'),
                                     artist=self._get_artist_name(t, a.get('name', '')),
                                     album=self._get_album_name(t, alb.get('name', '')),
@@ -1918,6 +1965,7 @@ class MassSource(SourceBase):
                         self._apply_media_identity(
                             self._make_leaf_node(
                                 id_=t.get('item_id', ''),
+                                duration=t.get("duration", 0),
                                 name=t.get('name', 'Unknown Track'),
                                 artist=self._get_track_artist_for_album(a_name, t),
                                 album=self._get_album_name(t, alb.get('name', '')),
@@ -1943,6 +1991,7 @@ class MassSource(SourceBase):
                     self._apply_media_identity(
                         self._make_leaf_node(
                             id_=s.get('item_id', ''),
+                            duration=s.get("duration", 0),
                             name=s.get('name', 'Unknown Track'),
                             artist=self._get_artist_name(s, ""),
                             album=self._get_album_name(s, ""),
@@ -2109,7 +2158,8 @@ class MassSource(SourceBase):
             query = str(request.query.get("q") or "").strip()
             try:
                 limit = int(request.query.get("limit") or 8)
-                payload = await self._search_all_mass_providers(query, limit)
+                payload = await self._search_enabled_sources(query, limit,
+                    search_flag(request.query.get("youtube_music")), search_flag(request.query.get("youtube_videos")))
                 return web.json_response(payload, headers=self._cors_headers())
             except ValueError:
                 return web.json_response(
@@ -2134,11 +2184,18 @@ class MassSource(SourceBase):
                 )
             paused_player_id = ""
             try:
+                options = await request.json() if request.can_read_body else {}
+                music = search_flag(options.get("youtube_music"))
+                videos = search_flag(options.get("youtube_videos"))
                 paused_player_id = await self._pause_for_voice_capture()
                 transcript = await self._transcribe_microphone()
-                payload = await self._search_all_mass_providers(transcript)
+                payload = await self._search_enabled_sources(transcript, music=music, videos=videos)
                 payload["transcript"] = transcript
                 return web.json_response(payload, headers=self._cors_headers())
+            except (ValueError, TypeError) as exc:
+                return web.json_response(
+                    {"state": "error", "reason": "invalid_options", "message": "Search switches must be on or off."},
+                    status=400, headers=self._cors_headers())
             except VoiceSearchError as exc:
                 logger.warning("Voice search failed [%s]: %s", exc.code, exc)
                 status = 408 if exc.code in {"voice_timeout", "no_speech"} else 503
@@ -2210,6 +2267,10 @@ class MassSource(SourceBase):
         app.router.add_get('/now_playing', _handle_now_playing)
         app.router.add_get('/item_info', _handle_item_info)
         app.router.add_get('/art/{filename}', _handle_art)
+        async def _handle_search_options(request):
+            return web.json_response(self._youtube_search().options(), headers=self._cors_headers())
+
+        app.router.add_get('/search_options', _handle_search_options)
         app.router.add_get('/search', _handle_search)
         app.router.add_post('/voice_search', _handle_voice_search)
         app.router.add_options('/voice_search', self._handle_cors)
@@ -2669,13 +2730,24 @@ class MassSource(SourceBase):
             for target in get_audio_targets()
         ]
 
+    @staticmethod
+    def _player_list(payload):
+        """Accept player lists/envelopes; count fields are not iterable players."""
+        if isinstance(payload, list):
+            return [item for item in payload if isinstance(item, dict)]
+        if isinstance(payload, dict):
+            for key in ("items", "players", "results"):
+                if isinstance(payload.get(key), list):
+                    return MassSource._player_list(payload[key])
+            return [item for item in payload.values()
+                    if isinstance(item, dict) and (item.get("player_id") or item.get("id"))]
+        return []
+
     async def _available_transfer_targets(self):
         """Return live MASS players, preserving configured order where possible."""
         configured = self._configured_transfer_targets()
         players = await self.send_command("players/all")
-        player_items = players.get("items", []) if isinstance(players, dict) else (
-            players if isinstance(players, list) else []
-        )
+        player_items = self._player_list(players)
         discovered = {}
         for player in player_items:
             if not isinstance(player, dict):
@@ -3121,7 +3193,7 @@ class MassSource(SourceBase):
         if register_state == "paused":
             await self.register("paused")
         else:
-            await self.register("playing", auto_power=True)
+            await self.register("playing", auto_power=reason != "resync")
         await self.post_media_update(
             title=str(entry.get("title") or "Music Assistant").strip(),
             artist=str(entry.get("artist") or "").strip(),
@@ -3496,7 +3568,7 @@ class MassSource(SourceBase):
             await self.register("paused")
         else:
             register_state = "playing"
-            await self.register("playing", auto_power=True)
+            await self.register("playing", auto_power=reason != "resync")
 
         await self.post_media_update(
             title=str(payload.get("title") or "").strip(),
@@ -3522,7 +3594,20 @@ class MassSource(SourceBase):
                 return {"status": "ok", "resynced": True, "state": payload.get("state", "playing")}
             await self.register("available")
             return {"status": "ok", "resynced": False}
-        for queue_id in await self._resolve_queue_candidates():
+        if cfg("showing", "exclusive_playing_fallback", default=False):
+            selected = await self._router_selected_mass()
+            if selected is None or (not selected and self._registered_state not in {"playing", "paused"}):
+                if self._registered_state in {"playing", "paused"}:
+                    # An unreadable status endpoint is not evidence that an
+                    # already active source should be demoted to available.
+                    return {"status": "ok", "resynced": False}
+                # Availability and PLAYING authority are separate. The router
+                # loses its registry on restart; hiding unrelated room metadata
+                # must not also hide this healthy source's cached music menu.
+                await self.register("available")
+                return {"status": "ok", "resynced": False, "registered": True,
+                        "state": "available"}
+        for queue_id in await self._resolve_metadata_queue_candidates():
             payload = await self._build_now_playing_payload(queue_id)
             if not isinstance(payload, dict):
                 continue
@@ -3663,9 +3748,7 @@ class MassSource(SourceBase):
             add(preferred_player)
 
         players = await self.send_command("players/all")
-        player_items = players.get("items", []) if isinstance(players, dict) else (
-            players if isinstance(players, list) else []
-        )
+        player_items = self._player_list(players)
         for player in player_items:
             if not isinstance(player, dict):
                 continue
@@ -3711,6 +3794,9 @@ class MassSource(SourceBase):
         return candidates
 
     async def _resolve_media_candidates(self, uri):
+        youtube_item = await self._youtube_search().audio_item(uri, self.send_command)
+        if youtube_item:
+            return [youtube_item]
         candidates = [[uri]]
         item = await self.send_command("music/item_by_uri", uri=uri)
         if item:
@@ -4302,7 +4388,9 @@ class MassSource(SourceBase):
         if not uri_text:
             return {"state": "error", "error": "missing_uri"}
 
-        item = await self.send_command("music/item_by_uri", uri=uri_text)
+        item = await self._youtube_search().audio_item(uri_text, self.send_command)
+        if item is None:
+            item = await self.send_command("music/item_by_uri", uri=uri_text)
         if not isinstance(item, dict):
             return {"state": "error", "error": "item_not_found", "uri": uri_text}
 
@@ -4575,12 +4663,41 @@ class MassSource(SourceBase):
             self._preferred_player_id = target
         return self._preferred_player_id
 
+    async def _router_selected_mass(self):
+        """Return None on failure so a read error cannot claim PLAYING."""
+        session = self._art_http_session
+        if not session or session.closed:
+            return None
+        try:
+            async with session.get(ROUTER_STATUS_URL, timeout=ClientTimeout(total=2)) as response:
+                if response.status != 200:
+                    return None
+                status = await response.json(content_type=None)
+            return status.get("active_source") == self.id
+        except Exception as exc:
+            logger.debug("Unable to verify selected MASS source: %s", exc)
+            return None
+
+    async def _resolve_metadata_queue_candidates(self):
+        """Inspect the selected target only; never hunt other rooms' queues."""
+        await self._refresh_preferred_player_from_router()
+        if not cfg("showing", "exclusive_playing_fallback", default=False):
+            return await self._resolve_queue_candidates()
+        target = str(self._preferred_player_id or TARGET_PLAYER_ID or "").strip()
+        if not target:
+            queue = str(TARGET_QUEUE_ID or "").strip()
+            return [queue] if queue else []
+        active = await self.send_command("player_queues/get_active_queue", player_id=target)
+        queue = ""
+        if isinstance(active, dict):
+            queue = str(active.get("queue_id") or active.get("id") or "").strip()
+        return list(dict.fromkeys(value for value in (queue, target) if value))
+
     async def _best_now_playing_payload(self):
         """Prefer the targeted active queue; keep idle data only as fallback."""
-        await self._refresh_preferred_player_from_router()
         idle_fallback = None
         loaded_fallback = None
-        for queue_id in await self._resolve_queue_candidates():
+        for queue_id in await self._resolve_metadata_queue_candidates():
             payload = await self._build_now_playing_payload(queue_id)
             if not isinstance(payload, dict):
                 continue
@@ -4597,16 +4714,32 @@ class MassSource(SourceBase):
         return loaded_fallback or idle_fallback
 
     async def _remote_metadata_monitor_loop(self):
-        """Publish external/automatic MASS queue changes to the router."""
+        """Publish external/automatic MASS queue changes to the router.
+
+        MASS WebSocket events are not command responses and were previously
+        ignored by this service.  A small read-only monitor closes that gap,
+        including automatic queue advancement initiated by another client.
+        It never powers a player on and emits only when item/state changes.
+        """
         while True:
             try:
                 if not self._connected or self._local_queue_active:
                     await asyncio.sleep(1.0)
                     continue
+                if cfg("showing", "exclusive_playing_fallback", default=False):
+                    if await self._router_selected_mass() is not True:
+                        self._remote_metadata_signature = None
+                        await asyncio.sleep(2.0)
+                        continue
                 payload = await self._best_now_playing_payload()
                 if not isinstance(payload, dict):
                     await asyncio.sleep(2.0)
                     continue
+                if cfg("showing", "exclusive_playing_fallback", default=False):
+                    if await self._router_selected_mass() is not True:
+                        self._remote_metadata_signature = None
+                        await asyncio.sleep(2.0)
+                        continue
                 state = str(payload.get("state") or "").strip().lower()
                 register_state = "paused" if state == "paused" else (
                     "playing" if self._is_active_state(state) else "available"
@@ -4954,9 +5087,7 @@ class MassSource(SourceBase):
             return candidates
 
         players = await self.send_command("players/all")
-        player_items = players.get("items", []) if isinstance(players, dict) else (
-            players if isinstance(players, list) else []
-        )
+        player_items = self._player_list(players)
         for player in player_items:
             if not isinstance(player, dict):
                 continue
@@ -5505,7 +5636,87 @@ class MassSource(SourceBase):
 
         return kicked
 
+    async def _get_mood_snapshot(self, queue):
+        snapshot = await self._get_queue_snapshot(queue)
+        index = snapshot.get("current_index")
+        if isinstance(index, int) and index >= 400:
+            # A continuing queue may have more than 500 already-played items.
+            # Fetch around its current item, keeping the global index for guards.
+            offset = max(0, index - 20)
+            payload = await self.send_command("player_queues/items",
+                queue_id=snapshot.get("resolved_queue_id") or queue, offset=offset, limit=100)
+            items = self._coerce_queue_items(payload)
+            if items is None:
+                raise ValueError("Mix queue items unavailable")
+            snapshot["items"] = snapshot["queue_items"] = items
+            snapshot["items_offset"] = offset
+        return snapshot
+
+    async def _handle_mood_queue(self, cmd, data):
+        queue = self._explicit_queue_id(data)
+        if not queue:
+            self._apply_playback_target_from_data(data)
+            queues = await self._resolve_queue_candidates()
+            queue = queues[0] if queues else ""
+        if not queue:
+            return {"state": "error", "reason": "missing_queue"}
+        from lib.mood_mix import current, item_index
+        locks = getattr(self, "_mood_queue_locks", None)
+        if locks is None:
+            self._mood_queue_locks = locks = {}
+        async with locks.setdefault(queue, asyncio.Lock()):
+            snapshot = await self._get_mood_snapshot(queue)
+            queue = str(snapshot.get("resolved_queue_id") or queue)
+            if cmd == "mood_snapshot":
+                return {"state": "ok", "queue_id": queue, "snapshot": snapshot}
+            playing = current(snapshot)
+            if not playing["id"] or playing["id"] != str(data.get("expected_item_id") or ""):
+                return {"state": "error", "reason": "current_item_changed"}
+            media = data.get("media")
+            if not isinstance(media, list) or len(media) > 50 or any(not isinstance(m, str) or not m.strip() for m in media):
+                return {"state": "error", "reason": "invalid_mix_media"}
+            # Local Pattern Play owns refill; MA's own autoplay must not compete.
+            response = await self._send_command_response("player_queues/dont_stop_the_music", queue_id=queue, dont_stop_the_music_enabled=False)
+            if not self._api_response_ok(response):
+                return {"state": "error", "reason": "cannot_disable_ma_autoplay"}
+            if media:
+                response = await self._send_command_response("player_queues/play_media", queue_id=queue,
+                    media=media, option="replace_next", radio_mode=False)
+                if not self._api_response_ok(response):
+                    return {"state": "error", "reason": "mix_replace_failed"}
+            else:
+                # MA replace_next with an empty list is version dependent; delete only future IDs.
+                index = item_index(snapshot)
+                if not isinstance(index, int) or index < 0:
+                    return {"state": "error", "reason": "unknown_current_index"}
+                for item in reversed((snapshot.get("items") or [])[index+1:]):
+                    fresh = await self._get_mood_snapshot(queue)
+                    if current(fresh)["id"] != playing["id"]:
+                        return {"state": "error", "reason": "current_item_changed"}
+                    response = await self._send_command_response("player_queues/delete_item", queue_id=queue,
+                        item_id_or_index=item.get("queue_item_id"))
+                    if not self._api_response_ok(response):
+                        return {"state": "error", "reason": "mix_trim_failed"}
+            return {"state": "queued", "queue_id": queue}
+
     async def handle_command(self, cmd, data) -> dict:
+        if cmd in {"mood_snapshot", "mood_replace_upcoming"}:
+            return await self._handle_mood_queue(cmd, data)
+        uri = self._resolve_command_url(data)
+        if cmd == "save_channel_podcast":
+            try:
+                return await self._youtube_search().save_channel_podcast(data.get("channel_url", ""), self.send_command)
+            except Exception as exc:
+                logger.warning("YouTube podcast subscription failed (%s)", type(exc).__name__)
+                return {"state": "error", "reason": "podcast_save_failed", "message": "Check the bridge and MA admin permissions"}
+        if VIDEO_URI.fullmatch(str(uri)):
+            if cmd not in {"play_item", "play_now"}:
+                return {"state": "error", "reason": "video_action_unsupported"}
+            try:
+                return await self._youtube_search().play_video(uri)
+            except Exception as exc:
+                logger.warning("Frame YouTube request failed (%s)", type(exc).__name__)
+                return {"state": "error", "reason": "frame_youtube_failed"}
         source_switch_stop = cmd == "transport_stop" and str(data.get("action") or "").strip().lower() == "stop"
         if cmd in {"transport_toggle", "transport_stop", "transport_next", "transport_previous"}:
             if not source_switch_stop:
@@ -5558,7 +5769,8 @@ class MassSource(SourceBase):
 
         self._reset_local_queue()
 
-        queue_ids = await self._resolve_queue_candidates()
+        explicit = self._explicit_queue_id(data)
+        queue_ids = [explicit] if explicit else await self._resolve_queue_candidates()
         if not queue_ids:
             logger.error("No MASS queue_id available for playback.")
             return {"state": "error", "reason": "missing_queue"}

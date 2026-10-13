@@ -5769,7 +5769,8 @@ class MassSource(SourceBase):
 
         self._reset_local_queue()
 
-        queue_ids = await self._resolve_queue_candidates()
+        explicit = self._explicit_queue_id(data)
+        queue_ids = [explicit] if explicit else await self._resolve_queue_candidates()
         if not queue_ids:
             logger.error("No MASS queue_id available for playback.")
             return {"state": "error", "reason": "missing_queue"}

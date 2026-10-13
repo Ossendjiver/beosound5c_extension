@@ -1,0 +1,733 @@
+// WebSocket Dispatcher
+// Manages WebSocket connections (hardware input + media server) and
+// dispatches incoming messages to the appropriate handlers.
+// Hardware input functions (processLaserEvent, handleNavEvent, etc.)
+// are defined in hardware-input.js which loads before this file.
+
+// WebSocket logging throttle
+let lastWebSocketLogTime = 0;
+const WEBSOCKET_LOG_THROTTLE = 1000;
+const ENABLE_WEBSOCKET_LOGGING = false;
+
+function shouldLogWebSocket() {
+    if (!ENABLE_WEBSOCKET_LOGGING) return false;
+    const now = Date.now();
+    if (now - lastWebSocketLogTime >= WEBSOCKET_LOG_THROTTLE) {
+        lastWebSocketLogTime = now;
+        return true;
+    }
+    return false;
+}
+
+// Connection state
+let mainWebSocketConnecting = false;
+let hwReconnectTimer = null;
+let mediaReconnectTimer = null;
+
+// Reconnect backoff: start at 3s, grow ×1.6 up to 60s (see ws-backoff.js).
+// Resets to base on a successful open. Prevents the Pi + backend from
+// spinning on 3s reconnects forever during sustained network outages.
+const _nextBackoff = window.WsBackoff.wsNextBackoff;
+let _hwBackoffMs = window.WsBackoff.WS_RECONNECT_BASE_MS;
+let _mediaBackoffMs = window.WsBackoff.WS_RECONNECT_BASE_MS;
+
+// ── Resource health monitoring ──
+// Logs Chromium resource stats every 10 minutes to help diagnose
+// ERR_INSUFFICIENT_RESOURCES crashes on long-running kiosk sessions.
+let _hwReconnectCount = 0;
+let _mediaReconnectCount = 0;
+const HEALTH_LOG_INTERVAL = 10 * 60 * 1000; // 10 minutes
+
+// Rolling fetch-error counter: timestamps of recent failures; anything older
+// than FETCH_ERROR_WINDOW_MS is dropped on read. This prevents a transient
+// network blip from producing noisy HEALTH log lines forever.
+const FETCH_ERROR_WINDOW_MS = 10 * 60 * 1000; // 10 minutes
+let _fetchErrorTimes = [];
+let _lastFetchError = '';
+
+function _recentFetchErrorCount() {
+    const cutoff = Date.now() - FETCH_ERROR_WINDOW_MS;
+    _fetchErrorTimes = _fetchErrorTimes.filter(t => t >= cutoff);
+    return _fetchErrorTimes.length;
+}
+
+function _logResourceHealth() {
+    const perf = performance.getEntriesByType('resource');
+    const iframes = document.querySelectorAll('iframe');
+    let iframeLoadFails = 0;
+    iframes.forEach(f => {
+        try { if (!f.contentDocument?.readyState || f.contentDocument.readyState !== 'complete') iframeLoadFails++; }
+        catch(e) { /* cross-origin */ }
+    });
+    const mem = performance.memory ? {
+        usedMB: Math.round(performance.memory.usedJSHeapSize / 1048576),
+        totalMB: Math.round(performance.memory.totalJSHeapSize / 1048576),
+        limitMB: Math.round(performance.memory.jsHeapSizeLimit / 1048576)
+    } : null;
+    const uptimeMin = Math.round((Date.now() - performance.timeOrigin) / 60000);
+
+    const recentErrs = _recentFetchErrorCount();
+    console.log(`[HEALTH] uptime=${uptimeMin}min resources=${perf.length} ` +
+        `iframes=${iframes.length}(${iframeLoadFails} incomplete) ` +
+        `ws_media=${window.mediaWebSocket?.readyState ?? 'none'} ` +
+        `reconnects=[hw:${_hwReconnectCount} media:${_mediaReconnectCount}] ` +
+        `fetchErrors_10min=${recentErrs}` +
+        (recentErrs && _lastFetchError ? ` lastErr="${_lastFetchError}"` : '') +
+        (mem ? ` heap=${mem.usedMB}/${mem.totalMB}MB(limit ${mem.limitMB})` : ''));
+
+    // Clear performance buffer periodically to prevent unbounded growth
+    if (perf.length > 500) {
+        performance.clearResourceTimings();
+        console.log('[HEALTH] Cleared performance resource buffer');
+    }
+}
+
+// Intercept fetch errors globally to count network failures
+const _origFetch = window.fetch;
+window.fetch = function() {
+    const args = arguments;
+    return _origFetch.apply(this, args).catch(function(err) {
+        _fetchErrorTimes.push(Date.now());
+        _lastFetchError = (args[0]?.url || args[0] || '').toString().replace(/^https?:\/\/[^/]+/, '') + ': ' + err.message;
+        throw err;
+    });
+};
+
+setTimeout(() => {
+    _logResourceHealth();
+    setInterval(_logResourceHealth, HEALTH_LOG_INTERVAL);
+}, 30000); // first check 30s after load
+
+// Cache last source update data per source for replay on view mount
+const _lastSourceUpdate = {};
+
+// ── Message Dispatch ──
+
+function processWebSocketEvent(message) {
+    const uiStore = window.uiStore;
+    if (!uiStore) return;
+
+    const type = message.type;
+    const data = message.data;
+
+    switch (type) {
+        case 'laser':
+            processLaserEvent(data);
+            break;
+
+        case 'nav':
+            handleNavEvent(uiStore, data);
+            break;
+
+        case 'volume':
+            handleVolumeEvent(uiStore, data);
+            break;
+
+        case 'button':
+            handleButtonEvent(uiStore, data);
+            break;
+
+        case 'media_update':
+            if (uiStore.handleMediaUpdate) {
+                uiStore.handleMediaUpdate(data, message.reason);
+            }
+            break;
+
+        case 'navigate':
+            handleExternalNavigation(uiStore, data);
+            break;
+
+        case 'camera_overlay':
+            handleCameraOverlayEvent(data);
+            break;
+
+        case 'menu_item':
+            handleMenuItemEvent(uiStore, data);
+            break;
+
+        case 'source_change':
+            handleSourceChange(uiStore, data);
+            break;
+
+        case 'volume_update':
+            handleVolumeUpdate(data);
+            break;
+
+        case 'playback_targets':
+            window.PlaybackTargets?.applyState?.(data);
+            break;
+
+        case 'context_suggestion':
+            showContextSuggestion(data);
+            break;
+
+        case 'skip_hint':
+            // Router detected a track-skip action (next/prev from any source:
+            // physical button, BeoRemote, MQTT, Sonos app). Stop video panels
+            // immediately rather than waiting for the track_change round-trip.
+            document.dispatchEvent(new CustomEvent('bs5c:skip'));
+            break;
+
+        default:
+            // Generic source update: "{sourceId}_update" → SourcePresets[sourceId].controller
+            if (type.endsWith('_update')) {
+                const sourceId = type.slice(0, -'_update'.length);
+                _lastSourceUpdate[sourceId] = data;
+                const ctrl = window.SourcePresets?.[sourceId]?.controller;
+                if (ctrl?.updateMetadata) ctrl.updateMetadata(data);
+            } else {
+                console.log(`[EVENT] Unknown event type: ${type}`);
+            }
+    }
+}
+
+// ── Context-aware library suggestions ──
+let _activeContextSuggestion = null;
+let _contextSuggestionTimer = null;
+let _contextSuggestionIndex = 0;
+
+function _libraryBaseUrl() {
+    return `${window.location.protocol}//${window.location.hostname}:8788`;
+}
+
+function hideContextSuggestion() {
+    const overlay = document.getElementById('context-suggestion-overlay');
+    if (overlay) overlay.hidden = true;
+    _activeContextSuggestion = null;
+    _contextSuggestionIndex = 0;
+    if (_contextSuggestionTimer) {
+        clearTimeout(_contextSuggestionTimer);
+        _contextSuggestionTimer = null;
+    }
+}
+
+async function contextSuggestionAction(optionId) {
+    const suggestion = _activeContextSuggestion;
+    if (!suggestion || !suggestion.options.some(option => option.id === optionId)) return;
+    // Hide immediately; no backlight or wake call is made.
+    hideContextSuggestion();
+    try {
+        const response = await fetch(_libraryBaseUrl() + '/library/action', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                origin: 'bs5c_prompt',
+                kind: suggestion.kind,
+                action: optionId,
+                prompt_id: suggestion.id,
+                room: suggestion.room || ''
+            })
+        });
+        if (!response.ok) {
+            console.warn('[LIBRARY] Suggestion action returned HTTP', response.status);
+        }
+    } catch (err) {
+        console.warn('[LIBRARY] Suggestion action failed', err);
+    }
+}
+
+function showContextSuggestion(data) {
+    if (data?.clear && data.kind === 'music') {
+        if (_activeContextSuggestion?.kind === 'music') hideContextSuggestion();
+        return;
+    }
+    if (!data || !data.id || !data.question) return;
+    const overlay = document.getElementById('context-suggestion-overlay');
+    const question = document.getElementById('context-suggestion-question');
+    const options = document.getElementById('context-suggestion-options');
+    if (!overlay || !question || !options) return;
+
+    if (_activeContextSuggestion?.id === data.id && !overlay.hidden) return;
+    const choices = (Array.isArray(data.options) ? data.options : [])
+        .filter(option => option && typeof option.id === 'string' && option.id.trim());
+    if (!choices.length) return;
+    _activeContextSuggestion = { ...data, options: choices };
+    _contextSuggestionIndex = 0;
+    question.textContent = data.question;
+    options.replaceChildren();
+
+    choices.forEach((option, index) => {
+        const button = document.createElement('button');
+        button.className = 'context-suggestion-option';
+        button.type = 'button';
+        button.textContent = option.label || option.id || 'Select';
+        button.classList.toggle('selected', index === _contextSuggestionIndex);
+        button.tabIndex = index === _contextSuggestionIndex ? 0 : -1;
+        button.addEventListener('click', () => contextSuggestionAction(option.id));
+        options.appendChild(button);
+    });
+    overlay.hidden = false;
+
+    if (_contextSuggestionTimer) clearTimeout(_contextSuggestionTimer);
+    // Suggestions are ephemeral UI only; stale ones disappear without waking
+    // or changing the physical display/backlight state.
+    _contextSuggestionTimer = setTimeout(hideContextSuggestion, 12 * 60 * 1000);
+}
+
+function contextSuggestionIsActive() {
+    const overlay = document.getElementById('context-suggestion-overlay');
+    return Boolean(_activeContextSuggestion && overlay && !overlay.hidden);
+}
+
+function stepContextSuggestion(delta) {
+    if (!contextSuggestionIsActive()) return false;
+    const choices = _activeContextSuggestion.options;
+    _contextSuggestionIndex = Math.max(0, Math.min(choices.length - 1, _contextSuggestionIndex + delta));
+    document.getElementById('context-suggestion-options')?.querySelectorAll('button').forEach((button, index) => {
+        button.classList.toggle('selected', index === _contextSuggestionIndex);
+        button.tabIndex = index === _contextSuggestionIndex ? 0 : -1;
+    });
+    return true;
+}
+
+function handleContextSuggestionNav(data) {
+    if (!contextSuggestionIsActive()) return false;
+    const direction = String(data?.direction || '').toLowerCase();
+    if (direction === 'clock') stepContextSuggestion(1);
+    else if (direction === 'counter') stepContextSuggestion(-1);
+    return true;
+}
+
+function handleContextSuggestionButton(button) {
+    if (!contextSuggestionIsActive()) return false;
+    const normalized = String(button || '').toLowerCase();
+    if (normalized === 'go') {
+        void contextSuggestionAction(_activeContextSuggestion.options[_contextSuggestionIndex].id);
+    } else if (normalized === 'right') {
+        if (_activeContextSuggestion.options.some(option => option.id === 'dismiss')) {
+            void contextSuggestionAction('dismiss');
+        } else {
+            hideContextSuggestion();
+        }
+    } else if (normalized === 'up') {
+        stepContextSuggestion(-1);
+    } else if (normalized === 'down') {
+        stepContextSuggestion(1);
+    }
+    // A visible question owns its buttons; never leak GO/skip to playback.
+    return true;
+}
+
+window.ContextSuggestions = {
+    handleNav: handleContextSuggestionNav,
+    handleButton: handleContextSuggestionButton,
+    get isActive() { return contextSuggestionIsActive(); },
+};
+
+async function refreshContextSuggestion() {
+    try {
+        const response = await fetch(_libraryBaseUrl() + '/library/suggestions');
+        if (!response.ok) return;
+        const payload = await response.json();
+        if (payload?.primary) showContextSuggestion(payload.primary);
+    } catch (_err) {
+        // Library service is optional during upgrade/boot.
+    }
+}
+
+// ── Broadcast Event Handlers ──
+
+function handleExternalNavigation(uiStore, data) {
+    const page = data.page;
+    console.log(`[NAVIGATE] External navigation to: ${page}`);
+
+    // External navigations often come from wake-from-standby — ensure media WS is alive
+    ensureMediaWsConnected();
+
+    if (window.uiStore && window.uiStore.logWebsocketMessage) {
+        window.uiStore.logWebsocketMessage(`External navigation to: ${page}`);
+    }
+
+    // Handle next/previous cycling through visible menu items only
+    if (page === 'next' || page === 'previous') {
+        const menuOrder = uiStore.menuItems.map(m => m.path);
+        const currentRoute = uiStore.currentRoute || 'menu/playing';
+        let currentIndex = menuOrder.indexOf(currentRoute);
+        if (currentIndex === -1) currentIndex = menuOrder.length - 1;
+
+        let newIndex;
+        if (page === 'next') {
+            newIndex = (currentIndex + 1) % menuOrder.length;
+        } else {
+            newIndex = (currentIndex - 1 + menuOrder.length) % menuOrder.length;
+        }
+
+        const route = menuOrder[newIndex];
+        console.log(`[NAVIGATE] ${page}: ${currentRoute} -> ${route}`);
+        uiStore.navigateToView(route);
+        return;
+    }
+
+    // Map page names to routes
+    const pageRoutes = {
+        'now_playing': 'menu/playing',
+        'playing': 'menu/playing',
+        'spotify': 'menu/spotify',
+        'scenes': 'menu/scenes',
+        'system': 'menu/system',
+        'queue': 'menu/queue',
+        'showing': 'menu/showing',
+        'home': 'menu/scenes'
+    };
+
+    // Explicit mapping first, then auto-prefix bare names with "menu/"
+    const route = pageRoutes[page] || (page.startsWith('menu/') ? page : `menu/${page}`);
+
+    // External wake to the playing view (HA fires this when something
+    // starts playing on the active source). The media_update that
+    // triggered HA's automation usually races with this navigate, so
+    // isPlaying() may still be false when view-change fires. Arm
+    // immersive entry so the navigate lands directly in the immersive
+    // overlay instead of flashing the menu for ~1s.
+    if (route === 'menu/playing' && window.ImmersiveMode?.armEagerEntry) {
+        window.ImmersiveMode.armEagerEntry();
+    }
+
+    if (uiStore.navigateToView) {
+        uiStore.navigateToView(route);
+        console.log(`[NAVIGATE] Navigated to: ${route}`);
+    } else {
+        console.warn(`[NAVIGATE] No navigateToView method available on uiStore`);
+    }
+}
+
+function handleCameraOverlayEvent(data) {
+    const action = data.action;
+    console.log(`[CAMERA] Overlay event: ${action}`);
+
+    if (window.CameraOverlayManager) {
+        if (action === 'show') {
+            window.CameraOverlayManager.show(data);
+        } else if (action === 'hide' || action === 'dismiss') {
+            window.CameraOverlayManager.hide();
+        }
+    }
+}
+
+async function handleMenuItemEvent(uiStore, data) {
+    const action = data.action;
+    console.log(`[MENU_ITEM] ${action}`, data);
+
+    if (action === 'add') {
+        // Try loading source script if preset not yet available
+        if (data.preset && !window.SourcePresets?.[data.preset] && uiStore._loadSourceScript) {
+            await uiStore._loadSourceScript(data.preset);
+        }
+        const preset = data.preset && window.SourcePresets?.[data.preset];
+        if (preset) {
+            const item = data.title ? { ...preset.item, title: data.title } : preset.item;
+            uiStore.addMenuItem(item, preset.after, preset.view);
+            setTimeout(() => {
+                if (preset.onAdd) preset.onAdd(document.getElementById('contentArea'));
+            }, 50);
+            // Replay cached source update to newly loaded controller
+            const cached = data.preset && _lastSourceUpdate[data.preset];
+            if (cached && preset.controller?.updateMetadata) {
+                preset.controller.updateMetadata(cached);
+            }
+        } else if (data.title && data.path) {
+            // Non-preset: raw item definition
+            uiStore.addMenuItem(
+                { title: data.title, path: data.path },
+                data.after || 'menu/playing',
+                data.view || { title: data.title, content: `<div style="color:white;display:flex;align-items:center;justify-content:center;height:100%">${data.title}</div>` }
+            );
+        } else {
+            console.warn('[MENU_ITEM] add requires preset or title+path');
+        }
+    } else if (action === 'remove') {
+        const path = data.path || (data.preset && window.SourcePresets?.[data.preset]?.item.path);
+        if (path) {
+            const preset = data.preset && window.SourcePresets?.[data.preset];
+            if (preset?.onRemove) preset.onRemove();
+            if (data.preset) delete _lastSourceUpdate[data.preset];
+            uiStore.removeMenuItem(path);
+            // Auto-navigate away if viewing the removed item
+            if (uiStore.currentRoute === path && uiStore.navigateToView) {
+                uiStore.navigateToView('menu/playing');
+            }
+        } else {
+            console.warn('[MENU_ITEM] remove requires path or preset');
+        }
+    }
+}
+
+function handleSourceChange(uiStore, data) {
+    const sourceId = data.active_source;  // string or null
+    const sourceName = data.source_name || null;
+    const player = data.player || null;   // "local" | "remote" | null
+    console.log(`[SOURCE] Active source changed: ${sourceId || 'none'} (${sourceName || 'HA fallback'}, player=${player || 'none'})`);
+
+    const prevSource = uiStore.activeSource;
+    uiStore.activeSource = sourceId;
+    uiStore.activeSourcePlayer = player;
+    uiStore.setActivePlayingPreset(sourceId);
+    const usesQueueOverlay = Boolean(window.SourcePresets?.[sourceId]?.queueOverlay?.playing);
+
+    if (data.manages_queue && !usesQueueOverlay) {
+        uiStore.addMenuItem(
+            { title: 'QUEUE', path: 'menu/queue' },
+            'menu/playing',
+            uiStore.views?.['menu/queue']
+        );
+    } else {
+        if (uiStore.menuItems?.some((item) => item.path === 'menu/queue')) {
+            uiStore.removeMenuItem('menu/queue');
+        }
+        if (uiStore.currentRoute === 'menu/queue') {
+            uiStore.navigateToView('menu/playing');
+        }
+    }
+
+    // Clear canvas when switching away from Spotify
+    if (sourceId !== 'spotify') {
+        uiStore.mediaInfo.canvas_url = '';
+    }
+
+    // Clean up CD track list back face when switching away from CD
+    if (sourceId !== 'cd') {
+        const backFace = document.querySelector('#now-playing .playing-back');
+        const trackList = backFace?.querySelector('.cd-back-tracklist');
+        if (trackList) {
+            trackList.remove();
+            backFace.style.display = 'none';
+            const flipper = backFace.closest('.playing-flipper');
+            if (flipper) {
+                flipper.classList.remove('flipped');
+                flipper.style.transform = '';
+            }
+        }
+    }
+}
+
+// PLAYING view metadata is now handled entirely via the media WS
+// (handleMediaUpdate → DEFAULT_PLAYING_PRESET). Source-specific _update
+// events are only used by source controllers (e.g. USB browse state).
+
+// ── WebSocket Connections ──
+
+function connectHardwareWebSocket() {
+    if (hwReconnectTimer) {
+        clearTimeout(hwReconnectTimer);
+        hwReconnectTimer = null;
+    }
+
+    try {
+        const ws = new WebSocket(AppConfig.websocket.input);
+        let wasConnected = false;
+
+        const connectionTimeout = setTimeout(() => {
+            ws.close();
+        }, 2000);
+
+        ws.onerror = () => {
+            clearTimeout(connectionTimeout);
+        };
+
+        ws.onopen = () => {
+            clearTimeout(connectionTimeout);
+            wasConnected = true;
+            window.hardwareWebSocket = ws;
+            _hwBackoffMs = window.WsBackoff.WS_RECONNECT_BASE_MS;
+            console.log('[WS] Real hardware connected - switching from emulation mode');
+
+            if (window.dummyHardwareManager) {
+                window.dummyHardwareManager.stop();
+            }
+        };
+
+        ws.onmessage = (event) => {
+            try {
+                const msg = JSON.parse(event.data);
+                // Hardware WS: only process raw hardware events
+                const t = msg.type;
+                if (t === 'laser' || t === 'nav' || t === 'volume' || t === 'button') {
+                    processWebSocketEvent(msg);
+                }
+            } catch (error) {
+                console.error('[WS] Error parsing message:', error);
+            }
+        };
+
+        ws.onclose = () => {
+            clearTimeout(connectionTimeout);
+            window.hardwareWebSocket = null;
+
+            if (wasConnected) {
+                console.log('[WS] Hardware disconnected - will reconnect');
+            }
+
+            // Re-enable dummy server while disconnected
+            if (window.dummyHardwareManager) {
+                window.dummyHardwareManager.start();
+            }
+
+            _hwReconnectCount++;
+            hwReconnectTimer = setTimeout(connectHardwareWebSocket, _hwBackoffMs);
+            _hwBackoffMs = _nextBackoff(_hwBackoffMs);
+        };
+
+    } catch (error) {
+        _hwReconnectCount++;
+        hwReconnectTimer = setTimeout(connectHardwareWebSocket, _hwBackoffMs);
+        _hwBackoffMs = _nextBackoff(_hwBackoffMs);
+    }
+}
+
+function initWebSocket() {
+    // Always start dummy hardware server first
+    if (window.dummyHardwareManager) {
+        const dummyServer = window.dummyHardwareManager.start();
+        if (dummyServer) {
+            const fakeWs = {
+                readyState: WebSocket.OPEN,
+                onmessage: null,
+                close: () => {},
+                send: () => {}
+            };
+
+            dummyServer.addClient(fakeWs);
+
+            fakeWs.onmessage = (event) => {
+                try {
+                    const msg = JSON.parse(event.data);
+                    processWebSocketEvent(msg);
+                } catch (error) {
+                    console.error('[DUMMY-HW] Error processing message:', error);
+                }
+            };
+        } else {
+            console.error('[WS] Failed to start dummy hardware server');
+        }
+    } else {
+        console.error('[WS] Dummy hardware manager not available');
+    }
+
+    // Skip real hardware connection in demo mode
+    if (AppConfig.demo?.enabled) {
+        console.log('[WS] Demo mode - skipping real hardware connection');
+        initMediaWebSocket();
+        return;
+    }
+
+    // Connect to real hardware with auto-reconnect
+    connectHardwareWebSocket();
+
+    // Also initialize media server connection
+    initMediaWebSocket();
+}
+
+// Ensure media WS is connected — reconnect only if dead
+function ensureMediaWsConnected() {
+    const ws = window.mediaWebSocket;
+    if (!ws || ws.readyState === WebSocket.CLOSED || ws.readyState === WebSocket.CLOSING) {
+        console.log('[MEDIA] WS not connected, reconnecting');
+        initMediaWebSocket();
+    }
+    // If OPEN or CONNECTING, leave it alone — closing a healthy connection
+    // creates a gap during which events are lost.
+}
+
+// Media WebSocket connection (router /router/ws)
+function initMediaWebSocket() {
+    if (mediaReconnectTimer) {
+        clearTimeout(mediaReconnectTimer);
+        mediaReconnectTimer = null;
+    }
+
+    // Skip in demo mode - EmulatorModeManager handles mock media
+    if (AppConfig.demo?.enabled) {
+        console.log('[MEDIA] Demo mode - skipping media server connection');
+        if (window.EmulatorModeManager && !window.EmulatorModeManager.isActive) {
+            setTimeout(() => window.EmulatorModeManager.activate('static emulator'), 500);
+        }
+        return;
+    }
+
+    // Close any existing socket first — two live sockets would dispatch
+    // every event twice. Detach it from the global before closing so its
+    // handlers (identity-guarded below) become no-ops.
+    const existingWs = window.mediaWebSocket;
+    if (existingWs && existingWs.readyState !== WebSocket.CLOSED) {
+        window.mediaWebSocket = null;
+        try { existingWs.close(); } catch (e) { /* already closing */ }
+    }
+
+    try {
+        const mediaWs = new WebSocket(AppConfig.websocket.media);
+        window.mediaWebSocket = mediaWs;
+
+        // All handlers no-op if this socket has been superseded (a racing
+        // ensureMediaWsConnected/initMediaWebSocket replaced the global) —
+        // otherwise a stale socket's onclose would null the healthy socket's
+        // global and schedule a duplicate reconnect loop.
+        mediaWs.onerror = () => {
+            if (window.mediaWebSocket !== mediaWs) return;
+            // Auto-activate demo mode on media server failure if autoDetect enabled
+            if (window.AppConfig?.demo?.autoDetect && window.EmulatorModeManager && !window.EmulatorModeManager.isActive) {
+                window.EmulatorModeManager.activate('media server unavailable');
+            }
+        };
+
+        mediaWs.onopen = () => {
+            if (window.mediaWebSocket !== mediaWs) return;
+            _mediaBackoffMs = window.WsBackoff.WS_RECONNECT_BASE_MS;
+            console.log('[MEDIA] Router media WS connected');
+            if (window.uiStore && window.uiStore.logWebsocketMessage) {
+                window.uiStore.logWebsocketMessage('Media server connected');
+            }
+            // Always refresh the menu on (re)connect — the router may have
+            // restarted with a different config (sources added/removed).
+            // fetchMenu() replaces menuItems entirely so stale items vanish.
+            if (window.uiStore) {
+                window.uiStore.menu?.fetchMenu();
+            }
+            refreshContextSuggestion();
+            // Re-sync volume too — it may have changed while the WS was
+            // down, and the initial page-load fetch can race a cold router
+            // boot (see fetchVolumeFromRouter in hardware-input.js).
+            if (typeof fetchVolumeFromRouter === 'function') {
+                fetchVolumeFromRouter();
+            }
+        };
+
+        mediaWs.onclose = () => {
+            if (window.mediaWebSocket !== mediaWs) return; // superseded — no reconnect
+            window.mediaWebSocket = null;
+            if (_mediaReconnectCount > 0) {
+                console.log('[MEDIA] Router media WS disconnected - will reconnect');
+            }
+            _mediaReconnectCount++;
+            mediaReconnectTimer = setTimeout(initMediaWebSocket, _mediaBackoffMs);
+            _mediaBackoffMs = _nextBackoff(_mediaBackoffMs);
+        };
+
+        mediaWs.onmessage = (event) => {
+            if (window.mediaWebSocket !== mediaWs) return; // stale socket must not dispatch
+            try {
+                const msg = JSON.parse(event.data);
+                // Router WS: handles all state events (media, source, navigate, menu, etc.)
+                processWebSocketEvent(msg);
+            } catch (error) {
+                console.error('[ROUTER-WS] Error processing message:', error);
+            }
+        };
+    } catch (error) {
+        _mediaReconnectCount++;
+        mediaReconnectTimer = setTimeout(initMediaWebSocket, _mediaBackoffMs);
+        _mediaBackoffMs = _nextBackoff(_mediaBackoffMs);
+    }
+}
+
+// ── Initialization ──
+
+document.addEventListener('DOMContentLoaded', () => {
+    // Small delay to ensure UI store is ready
+    setTimeout(() => {
+        try {
+            initWebSocket();
+        } catch (error) {
+            console.error('WebSocket initialization failed:', error);
+        }
+    }, 100);
+});

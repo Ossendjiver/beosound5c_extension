@@ -1272,20 +1272,36 @@ class LibraryService:
             return {}
         return suggestion
 
-    async def _play_music_local(self) -> dict[str, Any]:
+    async def _play_music_local(self, device_prompt=False) -> dict[str, Any]:
         assert self.session
-        picks = await self.recommend_music(str(cfg("device", default="bs5c")), 20)
+        picks = await self.recommend_music("lounge" if device_prompt else str(cfg("device", default="bs5c")), 20)
         if not picks:
             raise RuntimeError("No Music Assistant recommendations are available")
+        target = str(self.cfg.get("prompt_music_player_id") or "") if device_prompt else ""
+        if device_prompt and not target:
+            async with self.session.get("http://127.0.0.1:8783/status") as resp:
+                if resp.status >= 400: raise RuntimeError("Music player discovery unavailable")
+                status = await resp.json()
+            links = [t for t in status.get("transfer_targets", []) if str(t.get("name", "")).lower() == "link"]
+            native = [t for t in links if str(t.get("id", "")).startswith("wiim_uuid:")]
+            choices = native or links
+            if len(choices) != 1: raise RuntimeError("Configure library.prompt_music_player_id for Link")
+            target = choices[0]["id"]
+        if device_prompt:
+            async with self.session.post(f"{_ha_base()}/services/media_player/select_source", headers=_headers(),
+                    json={"entity_id": self.cfg.get("prompt_music_entity", "media_player.bs3"), "source": "LINK"}) as resp:
+                if resp.status >= 400:
+                    raise RuntimeError(f"BS3 source selection failed: HTTP {resp.status}")
         results = []
         for index, item in enumerate(picks):
             payload = {
                 "command": "play_now" if index == 0 else "enqueue",
                 "url": item["uri"],
+                **({"target_player_id": target, "queue_id": target} if target else {}),
             }
             async with self.session.post(MASS_COMMAND, json=payload) as resp:
                 body = await resp.json(content_type=None)
-                if resp.status >= 400 or body.get("status") == "error":
+                if resp.status >= 400 or body.get("status") == "error" or body.get("state") == "error":
                     if index == 0:
                         raise RuntimeError(body.get("message") or body.get("reason") or f"MASS HTTP {resp.status}")
                     break
@@ -1297,11 +1313,14 @@ class LibraryService:
             await self.mixes.begin(queue, str(cfg("device", default="bs5c")), picks[0], mode="radio")
         return {"count": len(results), "first": picks[0], "continuous": bool(queue)}
 
-    async def _play_news_local(self) -> None:
+    async def _play_news_local(self, device_prompt=False) -> None:
         assert self.session
-        async with self.session.post(ROUTER_EVENT, json={"action": "news", "device_type": "Audio"}) as resp:
-            if resp.status >= 400:
-                raise RuntimeError(f"Router HTTP {resp.status}")
+        url = "http://127.0.0.1:8776/action" if device_prompt else ROUTER_EVENT
+        data = {"action": "play_news_lounge"} if device_prompt else {"action": "news", "device_type": "Audio"}
+        async with self.session.post(url, json=data) as resp:
+            body = await resp.json(content_type=None) if device_prompt else {}
+            if resp.status >= 400 or body.get("status") == "error":
+                raise RuntimeError(f"News prompt failed: HTTP {resp.status}")
 
     def _yoga_target_url(self, room: str) -> str:
         targets = self.cfg.get("yoga_targets") or {}
@@ -1530,6 +1549,20 @@ class LibraryService:
     async def handle_event(self, request: web.Request) -> web.Response:
         payload = await request.json()
         event_type = str(payload.get("type") or "")
+        if event_type == "session_feedback":
+            queue = str(payload.get("queue_id") or "")
+            try:
+                async with self.mixes.lock(queue):
+                    result = self.session_feedback.deferred_vote(payload)
+                    session = self.mixes.sessions.get(queue)
+                    if result.get('active') and result.get('applied') and session and not session['awaiting_choice']:
+                        session['generation'] += 1
+                        session.update(pending_refresh=True, refresh_status='pending')
+                        session.pop('next_refill', None); session.pop('retry_after', None)
+                        self.mixes.persist()
+                return web.json_response(result, headers={"Access-Control-Allow-Origin": "*"})
+            except (ValueError, TypeError, KeyError) as exc:
+                raise web.HTTPBadRequest(text=str(exc))
         if event_type == "listen_feedback":
             event_id = str(payload.get("event_id") or "")
             try:
@@ -1673,9 +1706,9 @@ class LibraryService:
 
         result: dict[str, Any] = {}
         if kind == "music":
-            result = await self._play_music_local()
+            result = await self._play_music_local(payload.get("origin") == "bs5c_prompt")
         elif kind == "news":
-            await self._play_news_local()
+            await self._play_news_local(payload.get("origin") == "bs5c_prompt")
         elif kind == "yoga":
             target = action if action in {"lounge", "bedroom"} else room
             if target not in {"lounge", "bedroom"}:
