@@ -449,6 +449,13 @@ class LocalModel:
                 'radio_distance': radio_distances.get(identity)}
             (familiar if trusted or context.get('radio') else discovery).append((score, item))
         bands={}
+        if context.get('offline_priority_only'):
+            # Offline transfers need a scored catalogue, not a playback sequence.
+            # Keep the eligibility checks above; avoid the quadratic queue planner.
+            ranked = sorted(familiar + discovery, key=lambda entry: entry[0], reverse=True)
+            chosen = [item for _, item in ranked[:max(0, limit)]]
+            self.last_trace = audit.finish(chosen, details)
+            return chosen
         def band(item):
             uri=item['uri']
             if uri not in bands:

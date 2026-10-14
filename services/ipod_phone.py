@@ -47,7 +47,38 @@ def checked(record):
     if st.st_size!=record['size'] or st.st_mtime_ns!=record['mtime']:raise ValueError('Source changed; refresh selection')
     return path
 
-def build_plan(token):
+def storage_request(body):
+    if not isinstance(body,dict) or set(body)-{'free_bytes','existing','reserve_bytes'}:raise ValueError('Invalid storage request')
+    if not body:return None
+    free=body.get('free_bytes')
+    if type(free) is not int or not 0<=free<2**63:raise ValueError('Invalid free space')
+    existing=body.get('existing',[])
+    if not isinstance(existing,list) or len(existing)>10000:raise ValueError('Invalid manifest')
+    records={}
+    for row in existing:
+        if not isinstance(row,dict) or set(row)!={'key','size','mtime'}:raise ValueError('Invalid recording')
+        if not isinstance(row['key'],str) or not 1<=len(row['key'])<=128:raise ValueError('Invalid recording key')
+        if any(type(row[k]) is not int or not 0<=row[k]<2**63 for k in ('size','mtime')):raise ValueError('Invalid recording size')
+        records[row['key']]={'size':row['size'],'mtime':row['mtime']}
+    result={'free_bytes':free,'existing':records}
+    if 'reserve_bytes' in body:
+        reserve=body['reserve_bytes']
+        if type(reserve) is not int or not 0<=reserve<2**63:raise ValueError('Invalid reserve')
+        result['reserve_bytes']=reserve
+    return result
+
+def fit_capacity(items,storage,reserve):
+    if storage is None:return items,{'capacity_limited':False}
+    budget=max(0,storage['free_bytes']-reserve);selected=[];did_not_fit=0;new_bytes=0
+    for item in items:
+        old=storage['existing'].get(item['key'],{})
+        retained=old.get('size')==item['size'] and old.get('mtime')==item['mtime']
+        cost=0 if retained else item['size']
+        if cost>budget:did_not_fit+=1;continue
+        selected.append(item);budget-=cost;new_bytes+=cost
+    return selected,{'capacity_limited':bool(did_not_fit),'did_not_fit':did_not_fit,'planned_new_bytes':new_bytes,'free_bytes':storage['free_bytes'],'remaining_budget_bytes':budget}
+
+def build_plan(token,storage=None):
     global PLAN,FILES
     try:
         cfg=read(SYNC_CONFIG,{})
@@ -78,8 +109,10 @@ def build_plan(token):
             files[identity]=dict(public,source=str(source),roots=roots,sha256=None)
             items.append(public)
         if not items:raise ValueError('No local recordings available')
+        reserve=max(1024**3,int(cfg.get('reserve_bytes',1024**3)),(storage or {}).get('reserve_bytes',0))
+        items,capacity=fit_capacity(items,storage,reserve)
         with LOCK:
-            FILES=files;PLAN=dict(state='ready',created=time.time(),items=items,groups=selection.get('groups',{}),skipped=skipped,device_id=cfg.get('phone_device_id') or cfg.get('device_id',''),reserve_bytes=max(1024**3,int(cfg.get('reserve_bytes',1024**3))))
+            FILES={i['id']:files[i['id']] for i in items};PLAN=dict(state='ready',created=time.time(),items=items,groups=selection.get('groups',{}),skipped=skipped,device_id=cfg.get('phone_device_id') or cfg.get('device_id',''),reserve_bytes=reserve,storage=storage,**capacity)
     except Exception:
         with LOCK:PLAN={'state':'error','message':'Selection unavailable; retry when BS5c and Music Assistant are connected'}
 
@@ -151,11 +184,19 @@ class Handler(BaseHTTPRequestHandler):
                 self.reply(200,{'device_id':ident});return
             except (ValueError,KeyError,TypeError):self.reply(400,{});return
         if self.path=='/plan':
+            try:
+                self.connection.settimeout(10);length=int(self.headers.get('Content-Length','0'))
+                if not 0<length<=2*1024*1024:raise ValueError()
+                storage=storage_request(json.loads(self.rfile.read(length)))
+            except (ValueError,TypeError,KeyError):self.reply(400,{});return
             with LOCK:
-                if PLAN['state']=='ready' and time.time()-PLAN.get('created',0)<3600:self.reply(200,{'state':'ready'});return
-                if PLAN['state']!='selecting':
-                    PLAN.clear();PLAN.update(state='selecting',checked=0,total=0)
-                    threading.Thread(target=build_plan,args=(self.token(),),daemon=True).start()
+                if PLAN['state']=='selecting':
+                    if PLAN.get('storage')!=storage:self.reply(409,{'error':'Another storage plan is running'});return
+                elif PLAN['state']=='ready' and PLAN.get('storage')==storage and time.time()-PLAN.get('created',0)<3600:
+                    self.reply(200,{'state':'ready'});return
+                else:
+                    PLAN.clear();PLAN.update(state='selecting',checked=0,total=0,storage=storage)
+                    threading.Thread(target=build_plan,args=(self.token(),storage),daemon=True).start()
             self.reply(202,{'state':'selecting'});return
         if self.path!='/history':self.reply(404,{});return
         try:

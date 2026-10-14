@@ -112,3 +112,20 @@ def test_remote_transfer_status_validation_and_stale_state(tmp_path,monkeypatch)
  assert len(stored['clients']['ubuntu']['history'])==1
  assert status.update(dict(completed,sequence=3),'uuid:ABCD-1234')
  assert len(json.loads(status.STATUS.read_text())['clients']['ubuntu']['history'])==1
+
+def test_capacity_plan_preserves_order_retained_files_and_reserve():
+ items=[{'key':'fav','id':'1','size':6,'mtime':1},{'key':'radio','id':'2','size':8,'mtime':1},{'key':'trial','id':'3','size':3,'mtime':1},{'key':'retained','id':'4','size':90,'mtime':1}]
+ small,stats=phone.fit_capacity(items,{'free_bytes':12,'existing':{'retained':{'size':90,'mtime':1}}},2)
+ assert [i['key'] for i in small]==['fav','trial','retained']
+ assert stats['planned_new_bytes']==9 and stats['remaining_budget_bytes']==1 and stats['did_not_fit']==1
+ large,stats=phone.fit_capacity(items,{'free_bytes':110,'existing':{}},2)
+ assert large==items and stats['planned_new_bytes']==107
+ empty,stats=phone.fit_capacity(items,{'free_bytes':1,'existing':{}},2)
+ assert empty==[] and stats['did_not_fit']==4
+
+def test_storage_request_rejects_invalid_or_unbounded_sizes():
+ import pytest
+ for data in [{'free_bytes':-1},{'free_bytes':True},{'free_bytes':2**63},{'free_bytes':1,'existing':[{'key':'x','size':-1,'mtime':1}]},{'free_bytes':1,'path':'/etc'}]:
+  with pytest.raises(ValueError):phone.storage_request(data)
+ assert phone.storage_request({}) is None
+ assert phone.storage_request({'free_bytes':12,'existing':[{'key':'x','size':3,'mtime':1}]})=={'free_bytes':12,'existing':{'x':{'size':3,'mtime':1}}}

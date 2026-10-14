@@ -87,3 +87,67 @@ async def test_catalogue_includes_predicted_radio_without_playback(tmp_path):
     assert calls and all(c=={'mode':'radio'} for c in calls)
     assert any(g.startswith('Radio') for g in plan['groups'])
     model.db.close()
+
+@pytest.mark.asyncio
+async def test_ipod_strict_priority_and_trial_exposure(tmp_path):
+    model=library.LocalModel(tmp_path/'model.sqlite')
+    songs=[dict(item(),uri='library://track/'+str(i),title='Song '+str(i),artist='Artist '+str(i),favorite=i==0) for i in range(7)]
+    context={'room':'ipod','hour':12,'time_bucket':'afternoon','weekpart':'weekday'}
+    model.record_listen(dict(songs[4],end_reason='complete'),200,context)
+    model.record_listen(dict(songs[5],end_reason='complete'),200,context)
+    model.rank=lambda candidates,ctx,limit: [songs[1]] if limit==3 else [songs[4],songs[3]]
+    async def recommend(*args):return [songs[2]]
+    service=SimpleNamespace(model=model,cfg={'trusted_playlists':[]},_load_library=lambda:songs,_context_for_room=lambda r:context,_mix_recommend=recommend)
+    plan=await ipod_library.catalogue(service,7)
+    assert [x['uri'] for x in plan['items']]==[songs[i]['uri'] for i in [0,1,2,3,4,5,6]]
+    model.db.close()
+
+def test_trial_exposure_survives_log_cleanup_and_counts_provider_aliases_once(tmp_path):
+    model=library.LocalModel(tmp_path/'model.sqlite');context={'room':'ipod'}
+    song=item()
+    model.record_listen(dict(song,end_reason='skip'),5,context)
+    model.record_listen(dict(song,uri='tidal://track/2',end_reason='skip'),8,context)
+    exposure=ipod_library.recorded_exposure(model.db)
+    assert exposure[ipod_library.exposure_key(song)]==(0,2)
+    assert ipod_library.recorded_exposure(model.db)==exposure
+    model.db.execute('DELETE FROM listens');model.db.commit()
+    assert ipod_library.recorded_exposure(model.db)==exposure
+    model.db.close()
+
+@pytest.mark.asyncio
+async def test_small_selection_balances_morning_afternoon_evening_radios(tmp_path):
+    model=library.LocalModel(tmp_path/'model.sqlite')
+    songs=[dict(item(),uri='library://track/'+str(i),title='Song '+str(i),artist='Artist '+str(i)) for i in range(9)]
+    model.rank=lambda candidates,ctx,limit: songs[{'morning':0,'afternoon':3,'evening':6}.get(ctx.get('time_bucket'),0):][:limit] if limit==3 else []
+    async def recommend(*args):return []
+    service=SimpleNamespace(model=model,cfg={'trusted_playlists':[]},_load_library=lambda:songs,_context_for_room=lambda r:{},_mix_recommend=recommend)
+    plan=await ipod_library.catalogue(service,3)
+    assert [x['uri'] for x in plan['items']]==[songs[i]['uri'] for i in [0,3,6]]
+    model.db.close()
+
+def test_bulk_offline_predictions_keep_rejections_without_sequence_planning(tmp_path,monkeypatch):
+    from lib import sequence_plan
+    model=library.LocalModel(tmp_path/'model.sqlite')
+    songs=[dict(item(),uri='library://track/'+str(i),title='Song '+str(i),artist='Artist '+str(i),trusted=True) for i in range(100)]
+    model.put_kv('music_feedback',{songs[2]['uri']:'dislike'})
+    model.record_listen(dict(songs[3],end_reason='skip',selection_origin='manual'),5,{'room':'ipod'})
+    def forbidden(*args,**kwargs):raise AssertionError('Offline bulk catalogue must not plan a playback sequence')
+    monkeypatch.setattr(sequence_plan,'Planner',forbidden)
+    picks=model.rank(songs,{'room':'ipod','offline_priority_only':True},100)
+    assert songs[2]['uri'] not in {s['uri'] for s in picks}
+    assert songs[3]['uri'] not in {s['uri'] for s in picks}
+    assert len(picks)==98
+    model.db.close()
+
+@pytest.mark.asyncio
+async def test_provider_counts_do_not_reenter_untested_priority(tmp_path):
+    model=library.LocalModel(tmp_path/'model.sqlite')
+    songs=[dict(item(),uri='library://track/'+str(i),title='Song '+str(i)) for i in range(2)]
+    model.put_kv('music_familiarity',{songs[0]['uri']:{'item':songs[0],'signals':{'ma':{'count':12}}}})
+    model.rank=lambda candidates,ctx,limit: [] if limit==3 else songs
+    async def recommend(*args):return []
+    service=SimpleNamespace(model=model,cfg={'trusted_playlists':[]},_load_library=lambda:songs,_context_for_room=lambda r:{},_mix_recommend=recommend)
+    plan=await ipod_library.catalogue(service,2)
+    assert [x['uri'] for x in plan['items']]==[songs[1]['uri'],songs[0]['uri']]
+    assert plan['groups']['Predicted listening — needs a trial']==[songs[1]['uri']]
+    model.db.close()
