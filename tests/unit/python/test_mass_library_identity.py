@@ -388,3 +388,26 @@ def test_filesystem_refresh_uses_provider_scoped_current_ma_api():
     result = _run(source._refresh_filesystem_library())
     assert result["state"] == "refreshing"
     assert calls == [("music/sync", {"media_types": ["track"], "providers": ["filesystem-test"]})]
+
+
+def test_cache_only_refresh_does_not_scan_or_require_provider_paths():
+    source = _make_mass_source()
+    spawned = []
+
+    async def forbidden(*args, **kwargs):
+        raise AssertionError("Cache refresh must not invoke provider or playback commands")
+
+    async def update():
+        return None
+
+    source._filesystem_providers = forbidden
+    source._send_command_response = forbidden
+    source.update_library_cache = update
+    def spawn(coroutine, **kwargs):
+        spawned.append(kwargs["name"])
+        coroutine.close()
+    source._spawn = spawn
+    assert _run(source._refresh_filesystem_library(cache_only=True)) == {
+        "state": "refreshing", "cache_only": True,
+    }
+    assert spawned == ["mass_library_cache_refresh"]
