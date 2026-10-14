@@ -138,3 +138,16 @@ def test_bulk_offline_predictions_keep_rejections_without_sequence_planning(tmp_
     assert songs[3]['uri'] not in {s['uri'] for s in picks}
     assert len(picks)==98
     model.db.close()
+
+@pytest.mark.asyncio
+async def test_provider_counts_do_not_reenter_untested_priority(tmp_path):
+    model=library.LocalModel(tmp_path/'model.sqlite')
+    songs=[dict(item(),uri='library://track/'+str(i),title='Song '+str(i)) for i in range(2)]
+    model.put_kv('music_familiarity',{songs[0]['uri']:{'item':songs[0],'signals':{'ma':{'count':12}}}})
+    model.rank=lambda candidates,ctx,limit: [] if limit==3 else songs
+    async def recommend(*args):return []
+    service=SimpleNamespace(model=model,cfg={'trusted_playlists':[]},_load_library=lambda:songs,_context_for_room=lambda r:{},_mix_recommend=recommend)
+    plan=await ipod_library.catalogue(service,2)
+    assert [x['uri'] for x in plan['items']]==[songs[1]['uri'],songs[0]['uri']]
+    assert plan['groups']['Predicted listening — needs a trial']==[songs[1]['uri']]
+    model.db.close()

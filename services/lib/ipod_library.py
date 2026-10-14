@@ -44,6 +44,16 @@ async def catalogue(service, limit=10000, playlists=()):
         for radio in radios:
             if radio:add([radio.popleft()])
     exposure=recorded_exposure(service.model.db)
+    # MA/provider counters live in the familiarity cache rather than every item.
+    # Use their maximum; polling must never add the same imported plays again.
+    for entry in service.model.get_kv('music_familiarity',{}).values():
+        recording=exposure_key(entry.get('item',{}))
+        plays,skips=exposure.get(recording,(0,0))
+        for signal in entry.get('signals',{}).values():
+            try:count=max(0,int(float(signal.get('count') or 0)))
+            except (ValueError,TypeError,OverflowError):count=0
+            plays=max(plays,count,int(bool(signal.get('history'))))
+        exposure[recording]=(plays,skips)
     def needs_trial(item):
         plays,skips=exposure.get(exposure_key(item),(0,0))
         try:plays=max(plays,int(item.get('play_count') or item.get('ma_play_count') or 0))
