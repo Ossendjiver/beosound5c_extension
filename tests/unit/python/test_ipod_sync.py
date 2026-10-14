@@ -124,3 +124,17 @@ async def test_small_selection_balances_morning_afternoon_evening_radios(tmp_pat
     plan=await ipod_library.catalogue(service,3)
     assert [x['uri'] for x in plan['items']]==[songs[i]['uri'] for i in [0,3,6]]
     model.db.close()
+
+def test_bulk_offline_predictions_keep_rejections_without_sequence_planning(tmp_path,monkeypatch):
+    from lib import sequence_plan
+    model=library.LocalModel(tmp_path/'model.sqlite')
+    songs=[dict(item(),uri='library://track/'+str(i),title='Song '+str(i),artist='Artist '+str(i),trusted=True) for i in range(100)]
+    model.put_kv('music_feedback',{songs[2]['uri']:'dislike'})
+    model.record_listen(dict(songs[3],end_reason='skip',selection_origin='manual'),5,{'room':'ipod'})
+    def forbidden(*args,**kwargs):raise AssertionError('Offline bulk catalogue must not plan a playback sequence')
+    monkeypatch.setattr(sequence_plan,'Planner',forbidden)
+    picks=model.rank(songs,{'room':'ipod','offline_priority_only':True},100)
+    assert songs[2]['uri'] not in {s['uri'] for s in picks}
+    assert songs[3]['uri'] not in {s['uri'] for s in picks}
+    assert len(picks)==98
+    model.db.close()

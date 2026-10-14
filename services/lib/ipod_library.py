@@ -35,7 +35,7 @@ async def catalogue(service, limit=10000, playlists=()):
                 item=pool.popleft()
                 if not any(mix_policy.same_recording(item,seed) for seed in seeds):seeds.append(item)
     radios=[]
-    for seed in seeds[:9]:
+    for seed in seeds[:6]:
         radio=[seed]+await service._mix_recommend('ipod',35,None,seed,{'mode':'radio'})
         name='Radio — '+str(seed.get('title') or seed.get('name') or 'Music')
         groups[name]=[i['uri'] for i in radio if i.get('uri') in by_uri]
@@ -50,7 +50,7 @@ async def catalogue(service, limit=10000, playlists=()):
         except (ValueError,TypeError):pass
         return plays<1 and skips<2
     # Let the prediction model retain its dislikes and recent-skip exclusions.
-    predicted=service.model.rank(candidates,context,len(candidates))
+    predicted=service.model.rank(candidates,dict(context,offline_priority_only=True),len(candidates))
     add([i for i in predicted if needs_trial(i)],'Predicted listening — needs a trial')
     add([i for i in predicted if not needs_trial(i)][:50],'Predicted listening')
     recent=service.model.db.execute('SELECT uri,MAX(ts) latest FROM listens WHERE ts>? AND seconds>=30 GROUP BY uri ORDER BY latest DESC LIMIT 1500',(time.time()-180*86400,)).fetchall()
