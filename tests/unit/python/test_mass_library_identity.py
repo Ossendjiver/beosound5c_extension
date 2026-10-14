@@ -365,3 +365,49 @@ async def test_library_sync_runs_daily_before_audio_profile_window(monkeypatch, 
     with pytest.raises(asyncio.CancelledError):
         await source._schedule_sync_loop()
     assert captured == [expected_hours*3600]
+
+
+def test_filesystem_refresh_uses_provider_scoped_current_ma_api():
+    source = _make_mass_source()
+    calls = []
+
+    async def providers():
+        return [{"instance_id": "filesystem-test", "path": "/music"}]
+
+    async def response(command, **kwargs):
+        calls.append((command, kwargs))
+        return {"result": []}
+
+    async def update():
+        return None
+
+    source._filesystem_providers = providers
+    source._send_command_response = response
+    source.update_library_cache = update
+    source._spawn = lambda coroutine, **kwargs: coroutine.close()
+    result = _run(source._refresh_filesystem_library())
+    assert result["state"] == "refreshing"
+    assert calls == [("music/sync", {"media_types": ["track"], "providers": ["filesystem-test"]})]
+
+
+def test_cache_only_refresh_does_not_scan_or_require_provider_paths():
+    source = _make_mass_source()
+    spawned = []
+
+    async def forbidden(*args, **kwargs):
+        raise AssertionError("Cache refresh must not invoke provider or playback commands")
+
+    async def update():
+        return None
+
+    source._filesystem_providers = forbidden
+    source._send_command_response = forbidden
+    source.update_library_cache = update
+    def spawn(coroutine, **kwargs):
+        spawned.append(kwargs["name"])
+        coroutine.close()
+    source._spawn = spawn
+    assert _run(source._refresh_filesystem_library(cache_only=True)) == {
+        "state": "refreshing", "cache_only": True,
+    }
+    assert spawned == ["mass_library_cache_refresh"]

@@ -17,7 +17,7 @@ def album_name(folder,artist):
 
 def destination(root,record,ident):
     root=Path(root).resolve();item=record['item'];artists=item.get('artists') or []
-    artist=str(item.get('artist') or next((a.get('name') for a in artists if isinstance(a,dict) and a.get('name')),''))
+    artist=str(item.get('album_artist') or item.get('artist') or next((a.get('name') for a in artists if isinstance(a,dict) and a.get('name')),''))
     album=item.get('album') or {};album=album.get('name','') if isinstance(album,dict) else str(album)
     if not artist or not album:raise ValueError('Missing artist/album metadata')
     # Exact filesystem mapping is stronger evidence than directory-name matching.

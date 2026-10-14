@@ -2232,7 +2232,8 @@ class MassSource(SourceBase):
             except (json.JSONDecodeError, TypeError):
                 body = {}
             result = await self._refresh_filesystem_library(
-                path=str(body.get("path") or "").strip()
+                path=str(body.get("path") or "").strip(),
+                cache_only=body.get("cache_only") is True,
             )
             return web.json_response(result, headers=self._cors_headers())
 
@@ -2413,7 +2414,10 @@ class MassSource(SourceBase):
         # create an overlapping CD-rips provider ourselves.
         return max(matches, key=lambda provider: len(provider["path"]))
 
-    async def _refresh_filesystem_library(self, path=""):
+    async def _refresh_filesystem_library(self, path="", *, cache_only=False):
+        if cache_only:
+            self._spawn(self.update_library_cache(), name="mass_library_cache_refresh")
+            return {"state": "refreshing", "cache_only": True}
         providers = await self._filesystem_providers()
         if path:
             matched = await self._filesystem_provider_for_path(path)
@@ -2426,6 +2430,7 @@ class MassSource(SourceBase):
         instance_id = providers[0]["instance_id"]
         attempts = []
         attempts.extend([
+            ("music/sync", {"media_types": ["track"], "providers": [instance_id]}),
             ("music/sync", {"provider_instance_id_or_domain": instance_id}),
             ("music/providers/sync", {"provider_instance_id_or_domain": instance_id}),
         ])
