@@ -47,6 +47,7 @@ from lib import skip_policy
 from lib import music_mood
 from lib import music_familiarity
 from lib.mood_mix import MoodMixes
+from lib.mood_starters import MoodStarters, SECTORS
 from lib import mix_policy
 from lib import music_features, provider_profiles, music_relations
 from lib import session_intent, taste_profiles, sequence_plan, recommendation_audit, profile_quality
@@ -536,6 +537,8 @@ class LibraryService:
         self._familiarity_status = self.model.get_kv("music_familiarity_status", {})
         self._automatic_keys: set[tuple[str, str]] = set()
         self._mood_sessions = {}
+        self.starters = MoodStarters(load=lambda: self.model.get_kv('mood_starters_v1', {}),
+            save=lambda value: self.model.put_kv('mood_starters_v1', value))
         self._audio_feature_stamp = None
         self._audio_feature_cache = {}
         self.mixes = MoodMixes(self._mix_command, self._mix_recommend, self._mix_record,
@@ -570,6 +573,7 @@ class LibraryService:
         self.session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=12))
         self._background.spawn(self._context_loop(), name="library_context")
         self._background.spawn(self._mix_loop(), name="library_mood_mix")
+        self._background.spawn(self._starter_loop(), name="library_mood_starters")
         self._background.spawn(self.continuation.run(), name="library_queue_continuation")
         self._background.spawn(self._seed_loop(), name="library_seed_sync")
         self._background.spawn(self._familiarity_loop(), name="library_familiarity_sync")
@@ -586,6 +590,7 @@ class LibraryService:
         if self.session:
             await self.session.close()
             self.session = None
+        self.starters.persist(force=True)
         self.model.db.close()
 
     async def _ha_states(self) -> list[dict[str, Any]]:
@@ -1105,17 +1110,112 @@ class LibraryService:
 
     async def handle_mood(self, request: web.Request) -> web.Response:
         mood = self.pattern_mood(request.query.get("room", "lounge"))
-        return web.json_response({"suggested": mood, "source": "listening_patterns" if mood else "not_enough_history"}, headers={"Access-Control-Allow-Origin":"*"})
+        return web.json_response({"suggested": mood, "source": "listening_patterns" if mood else "not_enough_history", "starters": self.starters.status()}, headers={"Access-Control-Allow-Origin":"*"})
+
+    def _rank_starter_background(self, database, candidates, context, relations):
+        # A separate read-only SQLite connection avoids sharing the live writer
+        # with a worker thread. No schema changes, commits, audio or MA calls.
+        model = object.__new__(LocalModel)
+        model.db = sqlite3.connect(Path(database).resolve().as_uri() + '?mode=ro', uri=True)
+        model.db.row_factory = sqlite3.Row
+        model.playlist_relations = relations
+        model._taste_cache = getattr(self, '_starter_taste_cache', (None, []))
+        model.last_trace = {}
+        try:
+            ranked = model.rank(candidates, context, len(candidates))
+            self._starter_taste_cache = model._taste_cache
+            return ranked
+        finally:
+            model.db.close()
+
+    async def _starter_loop(self):
+        """Incremental backend work: one sector at a time, no audio sampling."""
+        bound_at = 0.0
+        while True:
+            try:
+                if time.monotonic() - bound_at >= 60 or self.starters.catalogue is None:
+                    catalogue = self._load_library()
+                    revision = (getattr(self, '_loaded_catalogue', (None,))[0],
+                                self.model.get_kv('mood_calibration_v1', {}).get('revision', 0))
+                    self.starters.bind(catalogue, revision)
+                    bound_at = time.monotonic()
+                key = self.starters.due()
+                if key:
+                    kind, sector = key.split(':')
+                    mood = music_mood.selection(int(sector) * 360 / SECTORS, .72)
+                    catalogue = self.starters.catalogue
+                    candidates = [i for i in catalogue if mix_policy.duration(i) and
+                        (mix_policy.duration(i) >= mix_policy.MIX_SECONDS) == (kind == 'mix')]
+                    request = self.starters.requests.get(key)
+                    if request and time.time() - request['ts'] < 300:
+                        blocked = mix_policy.RecordingIndex(request['previous'])
+                        candidates = [i for i in candidates if i['uri'] not in request['exclude'] and not blocked.matches(i)
+                            and (not mix_policy.duration(request['seed']) or mix_policy.similar_length(i, request['seed']))]
+                    context = self._context_for_room(request['room'] if request else '')
+                    context.update(mood=mood, offline_priority_only=True, intent_catalogue=catalogue,
+                        catalogue_revision=(getattr(self, '_audio_feature_stamp', None), getattr(self, '_provider_profile_stamp', None)))
+                    database = self.model.db.execute('PRAGMA database_list').fetchone()[2]
+                    ranked = await asyncio.to_thread(self._rank_starter_background, database,
+                        [dict(i) for i in candidates], context, self.model.playlist_relations)
+                    self.starters.refresh(key, ranked)
+                    if self.starters.requests.get(key) is request:
+                        self.starters.requests.pop(key, None)
+                    if ranked:
+                        # Let the existing queue monitor retry a cache shortage
+                        # promptly once new candidates are prepared; never play here.
+                        for session in self.mixes.sessions.values():
+                            if session.get('pending_refresh') and session.get('mood') and self.starters.key(session['mood'], session.get('seed')) == key:
+                                session.pop('retry_after', None)
+                                session.pop('next_refill', None)
+                self.starters.persist()
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:
+                self.starters.last_error = type(error).__name__
+                log.warning('Mood starter refresh failed; retaining previous pools', exc_info=True)
+                await asyncio.sleep(30)
+            await asyncio.sleep(2 if self.starters.due() else 30)
+
+    def _mood_candidates(self, mood, seed=None):
+        starters = getattr(self, 'starters', None)
+        cached = starters.candidates(mood, seed) if starters and mood else None
+        return (self._load_library(), False) if cached is None else (cached, True)
+
+    def _rank_starters(self, candidates, context, limit, cached=False, seed=None):
+        starters = getattr(self, 'starters', None)
+        if cached:
+            context = dict(context, intent_catalogue=starters.catalogue)
+            fresh = starters.fresh(candidates)
+            picks = self.model.rank(fresh, context, limit)
+            if not picks:
+                # Sparse/exhausted pools may reuse safe tracks, but never bypass
+                # current skips, dislikes, mood, duration or session exclusions.
+                last_head = next((r for r in reversed(starters.recent) if r.get('head')), None)
+                without_head = [c for c in candidates if not last_head or
+                    not mix_policy.same_recording(c, starters.index.get(last_head['uri'], last_head))]
+                picks = self.model.rank(without_head, context, limit)
+                if not picks:
+                    picks = self.model.rank(candidates, context, limit)
+            if not picks:
+                starters.request(context['mood'], seed, context)
+            starters.reserve(context['mood'], picks, seed)
+            self.model.last_trace['starter_cache'] = {'used': True, 'candidates': len(candidates),
+                'fresh': len(fresh), 'sector': starters.key(context['mood'], seed)}
+        else:
+            picks = self.model.rank(candidates, context, limit)
+            self.model.last_trace['starter_cache'] = {'used': False, 'reason': 'warming_or_non_mood'}
+        return picks
 
     async def recommend_music(self, room: str, limit: int, mood: dict | None = None) -> list[dict[str, Any]]:
-        candidates = self._load_library()
+        selected = mood or self.pattern_mood(room)
+        candidates, cached = self._mood_candidates(selected)
         context = self._context_for_room(room)
         context['catalogue_revision'] = (getattr(self, '_audio_feature_stamp', None), getattr(self, '_provider_profile_stamp', None))
-        if mood or self.pattern_mood(room): context["mood"] = mood or self.pattern_mood(room)
+        if selected: context["mood"] = selected
         playing=self._external_media if self._external_media and self._external_media.get('room')==room else self._current_media
         if playing and str(playing.get('room') or 'lounge')==room:
             context['relation_seed'] = music_features.merge(next((c for c in candidates if mix_policy.same_recording(c, playing)), {}), playing)
-        picks = self.model.rank(candidates, context, max(1, min(limit, 50)))
+        picks = self._rank_starters(candidates, context, max(1, min(limit, 50)), cached)
         recommendation_audit.store(self.model.db, self.model.last_trace)
         self._automatic_keys = {self.model._candidate_key(item) for item in picks}
         return picks
@@ -1142,19 +1242,19 @@ class LibraryService:
             return result
 
     async def _mix_recommend(self, room, limit, mood, seed, policy=None):
-        candidates = self._load_library()
-        context = self._context_for_room(room)
         policy = policy or {}
         radio = policy.get('mode') == 'radio'
+        selected = mood if radio else mood or self.pattern_mood(room)
+        candidates, cached = self._mood_candidates(selected if not radio else None, seed)
+        context = self._context_for_room(room)
         context['radio'] = radio
         context['queue_id'] = policy.get('queue_id', '')
         context['discovery_balance'] = policy.get('discovery_balance') or {}
         context['catalogue_revision'] = (getattr(self, '_audio_feature_stamp', None), getattr(self, '_provider_profile_stamp', None))
-        selected = mood if radio else mood or self.pattern_mood(room)
         if selected:
             context["mood"] = selected
         if seed and seed.get("uri"):
-            cached_seed = next((c for c in candidates if c.get('uri') == seed['uri']), {})
+            cached_seed = self.starters.index.get(seed['uri'], {}) if cached else next((c for c in candidates if c.get('uri') == seed['uri']), {})
             # A manually chosen library item need not be in the playlist catalogue.
             profile = getattr(self, '_provider_profile_cache', {}).get(seed['uri'])
             if profile:
@@ -1173,7 +1273,8 @@ class LibraryService:
         candidates = [c for c in candidates if mix_policy.similar_length(c, seed or {})]
         policy = policy or {}
         current = policy.get('relation_seed') or seed or {}
-        context['relation_seed'] = music_features.merge(next((c for c in candidates if c.get('uri') == current.get('uri')), {}), current)
+        descriptor = self.starters.index.get(current.get('uri'), {}) if cached else next((c for c in candidates if c.get('uri') == current.get('uri')), {})
+        context['relation_seed'] = music_features.merge(descriptor, current)
         if policy.get('steering') and selected and not radio:
             context['steering_from'] = music_mood.profile(context['relation_seed'], self.model.get_kv('mood_profiles', {})) or policy.get('previous_mood')
         context['session_votes'] = [dict(v, item=music_features.merge(next((c for c in candidates if mix_policy.same_recording(c, v['item'])), {}), v['item']))
@@ -1183,13 +1284,15 @@ class LibraryService:
         previous = policy.get("previous", [])
         context['queue_previous'] = previous
         versions = policy.get("versions", [])
+        context['queue_versions'] = versions
+        context['starter_exclude'] = list(excluded)
         # Filter before ranking, so lower ranked eligible tracks are not starved.
         previous_index = mix_policy.RecordingIndex(previous)
         version_index = mix_policy.RecordingIndex(versions)
         candidates = [c for c in candidates if c.get("uri") not in excluded
                       and not previous_index.matches(c)
                       and not version_index.matches(c, alternate_only=True)]
-        picks = self.model.rank(candidates, context, limit)
+        picks = self._rank_starters(candidates, context, limit, cached, seed)
         self.model.last_trace['prefilter'] = {'excluded_uris': len(excluded), 'previous_recordings': len(previous),
                                              'version_history': len(versions)}
         recommendation_audit.store(self.model.db, self.model.last_trace)
