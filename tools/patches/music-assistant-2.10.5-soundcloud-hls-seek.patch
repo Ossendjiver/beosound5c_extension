@@ -1,0 +1,31 @@
+--- a/music_assistant/controllers/streams/audio.py
++++ b/music_assistant/controllers/streams/audio.py
+@@ -3864,8 +3864,19 @@
+             extra_input_args += ["-readrate", "1", "-readrate_initial_burst", "0.5"]
+ 
+         # handle seek support
++        extra_output_args: list[str] = []
+         if seek_position and streamdetails.duration and streamdetails.allow_seek:
+-            extra_input_args += ["-ss", str(int(seek_position))]
++            # SoundCloud's AAC/fMP4 HLS hangs on FFmpeg's input-side seek. Decode
++            # and discard instead, retaining the requested playback position.
++            provider = mass.get_provider(streamdetails.provider, return_unavailable=True)
++            if (
++                streamdetails.stream_type == StreamType.HLS
++                and streamdetails.media_type == MediaType.TRACK
++                and getattr(provider, "domain", None) == "soundcloud"
++            ):
++                extra_output_args += ["-ss", str(int(seek_position))]
++            else:
++                extra_input_args += ["-ss", str(int(seek_position))]
+ 
+         bytes_sent = 0
+         finished = False
+@@ -3879,6 +3890,7 @@
+             output_format=pcm_format,
+             filter_params=filter_params,
+             extra_input_args=extra_input_args,
++            extra_output_args=extra_output_args,
+             collect_log_history=True,
+             loglevel=ffmpeg_loglevel,
+         )
