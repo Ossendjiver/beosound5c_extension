@@ -553,6 +553,9 @@ class LibraryService:
             lambda data: self.model.put_kv('queue_feedback_v1', data))
         self._manual_choices = {tuple(k.split('\0')):v for k,v in self.model.get_kv('manual_choices_v1',{}).items() if isinstance(v,dict) and v.get('expires',0)>time.time()}
         self._background = BackgroundTaskSet(log, label="library")
+        self.playback_runtime = None
+        self.playback_task = None
+        self.playback_setup_error = False
 
     def _base_context(self, room: str = "") -> dict[str, Any]:
         now = dt.datetime.now()
@@ -571,6 +574,17 @@ class LibraryService:
 
     async def start(self, _app: web.Application) -> None:
         self.session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=12))
+        if os.getenv("BS5C_PLAYBACK_COORDINATOR_ENABLED") == "1":
+            try:
+                from lib.playback_runtime import Runtime
+                self.playback_runtime = Runtime(self, self.session, _ha_base(), _headers())
+                if len(self.playback_runtime.key) < 32:
+                    raise ValueError("A dedicated coordinator key is required")
+                self.playback_task = self._background.spawn(self.playback_runtime.coordinator.run(), name="library_playback_jobs")
+            except Exception:
+                self.playback_runtime = None
+                self.playback_setup_error = True
+                log.error("Playback coordinator configuration is incomplete; playback jobs disabled")
         self._background.spawn(self._context_loop(), name="library_context")
         self._background.spawn(self._mix_loop(), name="library_mood_mix")
         self._background.spawn(self._starter_loop(), name="library_mood_starters")
@@ -1687,6 +1701,10 @@ class LibraryService:
             'listens': self.model.db.execute('SELECT count(*) FROM listens').fetchone()[0],
             'relationships': self.model.db.execute('SELECT count(*) FROM track_relations').fetchone()[0],
             'music_prompts_suppressed': self._prompt_playback.blocked(time.time())},
+            'playback': {'enabled': self.playback_runtime is not None,
+                'healthy': self.playback_task is not None and not self.playback_task.done(),
+                'setup_error': self.playback_setup_error,
+                'queued_jobs': len(self.playback_runtime.coordinator.store.pending()) if self.playback_runtime else 0},
             'provider': provider}, headers={'Access-Control-Allow-Origin': '*'})
 
     def _finish_external(self) -> None:
@@ -1888,6 +1906,24 @@ class LibraryService:
             self.model.put_kv("handled_prompt_id", prompt_id)
         return web.json_response({"status": "ok", **result}, headers={"Access-Control-Allow-Origin": "*"})
 
+    async def handle_playback_capabilities(self, request):
+        if self.playback_runtime is not None and request.headers.get("X-HomeMedia-Key"):
+            self.playback_runtime.authorize(request)
+        return web.json_response({"api_version": 1, "enabled": self.playback_runtime is not None,
+            "setup_error": self.playback_setup_error or (self.playback_runtime is not None and (self.playback_task is None or self.playback_task.done())),
+            "operations": ["transfer", "join", "leave"] if self.playback_runtime else []},
+            headers={"Cache-Control": "no-store"})
+
+    async def handle_playback_jobs(self, request):
+        if self.playback_runtime is None:
+            return web.json_response({"error": "Playback coordinator is disabled"}, status=503)
+        return await self.playback_runtime.jobs(request)
+
+    async def handle_playback_state(self, request):
+        if self.playback_runtime is None:
+            return web.json_response({"available": False}, status=503)
+        return await self.playback_runtime.state(request)
+
     async def options(self, _request: web.Request) -> web.Response:
         return web.Response(headers={
             "Access-Control-Allow-Origin": "*",
@@ -1898,8 +1934,12 @@ class LibraryService:
 
 def create_app() -> web.Application:
     service = LibraryService()
-    app = web.Application()
+    app = web.Application(client_max_size=65536)
     app["library_service"] = service
+    app.router.add_get("/library/playback/capabilities", service.handle_playback_capabilities)
+    app.router.add_get("/library/playback/state", service.handle_playback_state)
+    app.router.add_get("/library/playback/jobs", service.handle_playback_jobs)
+    app.router.add_post("/library/playback/jobs", service.handle_playback_jobs)
     app.router.add_get("/library/mix", service.handle_mix)
     app.router.add_post("/library/mix", service.handle_mix)
     app.router.add_get("/library/mood", service.handle_mood)
