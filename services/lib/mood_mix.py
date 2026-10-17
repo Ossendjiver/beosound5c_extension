@@ -1,5 +1,6 @@
 """Server-owned live mood sessions; never restart the current queue item."""
 import asyncio
+import aiohttp
 import time
 import uuid
 import logging
@@ -138,6 +139,13 @@ class MoodMixes:
             s.pop('next_refill', None)
             try:
                 await self.fill(queue, snap)
+            except (asyncio.TimeoutError, OSError, aiohttp.ClientError) as exc:
+                # Steering was accepted/persisted. Existing music keeps playing;
+                # the session worker will reconcile and refill from a fresh snapshot.
+                s['pending_refresh'] = True
+                s['refresh_status'] = 'pending'
+                s['last_error'] = 'Provider or queue temporarily unavailable; mood refresh pending'
+                log.warning('Mood steering deferred (%s)', type(exc).__name__)
             finally:
                 self.persist()  # Failed/racing steering must remain pending after restart.
             return self.public(queue)

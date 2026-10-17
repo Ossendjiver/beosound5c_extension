@@ -287,3 +287,32 @@ async def test_low_water_refill_occurs_with_seven_tracks_remaining():
     q.state['current_index']=len(q.state['items'])-8
     q.state['current_item']=copy.deepcopy(q.state['items'][q.state['current_index']])
     await mixes.tick('q');assert len(q.state['items'])-q.state['current_index']-1==27
+
+
+@pytest.mark.asyncio
+async def test_transient_steering_failure_is_persisted_and_retries_without_restarting_seed():
+    from unittest.mock import AsyncMock
+    q=FakeQueue()
+    async def recommend(*args): return [dict(uri='a',duration=100)]
+    mixes=MoodMixes(q.command,recommend)
+    await mixes.begin('q','bedroom',mode='radio')
+    original=mixes.fill
+    mixes.fill=AsyncMock(side_effect=asyncio.TimeoutError())
+    result=await mixes.update('q',90,.5)
+    assert result['pending_refresh'] and result['refresh_status']=='pending'
+    assert q.state['current_item']['queue_item_id']=='seed-id'
+    assert q.state['elapsed_time']==10
+    mixes.fill=original
+    await mixes.tick('q')
+    assert not mixes.public('q')['pending_refresh']
+    assert q.state['current_item']['queue_item_id']=='seed-id'
+
+
+@pytest.mark.asyncio
+async def test_programming_error_during_steering_is_not_hidden():
+    from unittest.mock import AsyncMock
+    q=FakeQueue()
+    async def recommend(*args): return [dict(uri='a',duration=100)]
+    mixes=MoodMixes(q.command,recommend); await mixes.begin('q','bedroom',mode='radio')
+    mixes.fill=AsyncMock(side_effect=RuntimeError('bug'))
+    with pytest.raises(RuntimeError,match='bug'): await mixes.update('q',90,.5)
