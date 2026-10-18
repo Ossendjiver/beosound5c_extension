@@ -107,9 +107,35 @@ def leader(player_id, snapshot):
     while p["player_id"] not in seen:
         seen.add(p["player_id"])
         parent = p.get("active_group") or p.get("synced_to")
-        if not parent or parent == p["player_id"]: return p
+        if not parent or parent == p["player_id"]:
+            # Some MA providers publish group_members without a child synced_to pointer.
+            parents = {canonical(other["player_id"], snapshot["players"])["player_id"]
+                       for other in snapshot["players"]
+                       if other["player_id"] != p["player_id"] and p["player_id"] in (other.get("group_members") or [])}
+            parents.discard(p["player_id"])
+            if len(parents) > 1: raise Uncertain("Ambiguous MA group ownership")
+            parent = next(iter(parents), None)
+            if not parent: return p
         p = canonical(parent, snapshot["players"])
     raise Uncertain("Cyclic MA group topology")
+
+def require_music(player_id, snapshot):
+    """Reject Kodi behind renamed/grouped/protocol players before any mutation."""
+    players = {p["player_id"]: p for p in snapshot["players"]}
+    visited = set()
+    def visit(pid):
+        if pid in visited: return
+        visited.add(pid)
+        player = players.get(pid)
+        if player is None: raise Uncertain("Music player topology is incomplete")
+        identity = " ".join(str(player.get(k, "")) for k in ("player_id", "provider", "name", "display_name", "device_info"))
+        if "kodi" in identity.casefold(): raise InvalidIntent("Kodi cannot be a music target")
+        for key in ("group_members", "static_group_members"):
+            for member in player.get(key) or []: visit(member)
+        for key in ("protocol_parent_id", "active_output_protocol"):
+            if player.get(key): visit(player[key])
+    visit(player_id)
+    visit(canonical(player_id, snapshot["players"])["player_id"])
 
 def queue_for(route, snapshot, *, own=False):
     p = canonical(route.player_id, snapshot["players"]) if own else leader(route.player_id, snapshot)
@@ -220,11 +246,14 @@ class Coordinator:
     async def _execute(self, job_id, intent):
         target = self.route(intent["target"]); operation = intent["operation"]
         s = await self.snapshot.get(fresh=True)
+        require_music(target.player_id, s)
         interlock=s["ha"].get("input_boolean.kodi_mass_interlock")
         if interlock is None or interlock.get("state") != "off":
             raise InvalidIntent("Kodi owns or may own the audio route; stop it before routing music")
         if operation in {"transfer", "join"}:
-            source = self.route(intent["source"]); source_queue = queue_for(source, s); target_queue = queue_for(target, s)
+            source = self.route(intent["source"])
+            require_music(source.player_id, s)
+            source_queue = queue_for(source, s); target_queue = queue_for(target, s)
             if operation == "transfer" and source == target: return
             if source.shared:
                 hardware=s["ha"].get(source.entity,{})
