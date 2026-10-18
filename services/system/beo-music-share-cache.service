@@ -1,0 +1,16 @@
+[Unit]
+Description=SSD-backed Linux filesystem for network music index and artwork
+RequiresMountsFor=/media/local
+ConditionPathIsMountPoint=/media/local
+ConditionPathExists=/media/local/cache/music-share-cache.ext4
+Before=beo-music-share.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+RuntimeDirectory=beo-music-share-cache
+RuntimeDirectoryPreserve=yes
+ExecStart=/bin/mount -t ext4 -o loop,nodev,nosuid,noexec /media/local/cache/music-share-cache.ext4 /run/beo-music-share-cache
+ExecStop=/bin/umount /run/beo-music-share-cache
+TimeoutStartSec=30
+TimeoutStopSec=30

@@ -1,0 +1,38 @@
+[Unit]
+Description=BeoSound 5c read-only network music library (DLNA)
+After=network-online.target beo-music-share-cache.service
+Requires=beo-music-share-cache.service
+Wants=network-online.target
+RequiresMountsFor=/media/local
+ConditionPathIsMountPoint=/media/local
+ConditionPathIsDirectory=/media/local/music
+
+[Service]
+Type=simple
+User=minidlna
+Group=minidlna
+RuntimeDirectory=beo-music-share
+ExecStartPre=/usr/bin/mountpoint -q /run/beo-music-share-cache
+ExecStart=/usr/sbin/minidlnad -S -r -f /etc/beosound5c/music-share.conf -P /run/beo-music-share/minidlna.pid
+Restart=on-failure
+RestartSec=10
+Nice=15
+CPUQuota=20%
+MemoryMax=384M
+IOSchedulingClass=idle
+IOWeight=10
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadOnlyPaths=/media/local/music
+ReadWritePaths=/run/beo-music-share-cache /run/beo-music-share
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
