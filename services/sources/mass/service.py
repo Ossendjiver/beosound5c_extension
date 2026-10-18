@@ -46,6 +46,7 @@ if 'lib' in os.listdir(current_dir):
     sys.path.insert(0, current_dir)
 
 from lib.config import cfg
+from lib.mass_catalogue import mappings as catalogue_mappings, merge as merge_catalogue
 from lib.mass_playback import (
     get_configured_mass_playback_mode,
     mass_local_backend_ready,
@@ -2112,9 +2113,86 @@ class MassSource(SourceBase):
         except Exception as e:
             logger.error(f"Save failed: {e}")
 
+    async def _catalogue_items(self, command, **kwargs):
+        result = await self.send_command(command, **kwargs)
+        if result is None:
+            raise ValueError("Provider catalogue unavailable")
+        rows = result.get("items", []) if isinstance(result, dict) else result
+        if not isinstance(rows, list):
+            raise ValueError("Invalid provider catalogue response")
+        return [row for row in rows if isinstance(row, dict)]
+
+    def _catalogue_node(self, row):
+        kind = str(row.get("media_type") or "")
+        uri = str(row.get("uri") or "").strip()
+        if not uri:
+            provider, item_id = row.get("provider"), row.get("item_id")
+            if provider and item_id is not None:
+                uri = f"{provider}://{kind}/{item_id}"
+        folder = kind in ("artist", "album")
+        base = MASS_URI.replace("ws://", "http://").replace("wss://", "https://").removesuffix("/ws")
+        node = self._make_folder_node(row.get("item_id", ""), row.get("name") or "Unknown", self._get_artist_name(row, ""), self._get_img(row, base), uri) if folder else self._make_leaf_node(row.get("item_id", ""), row.get("name") or "Unknown", artist=self._get_artist_name(row, ""), url=uri, image=self._resolve_track_image(row, base), album=self._get_album_name(row, ""), duration=row.get("duration", 0))
+        self._apply_media_identity(node, media_type=kind, item_id=row.get("item_id", ""), provider=row.get("provider", "library"), provider_item_id=row.get("item_id"))
+        if folder:
+            node["play_url"] = node.pop("url", uri)
+            node["catalogue_expandable"] = True
+        return node
+
+    async def _build_catalogue(self, uri):
+        if not uri or len(uri) > 2048:
+            raise ValueError("Select an artist or album")
+        item = await self.send_command("music/item_by_uri", uri=uri, allow_update_metadata=False)
+        if not isinstance(item, dict) or item.get("media_type") not in ("artist", "album"):
+            raise ValueError("Select an artist or album")
+        kind = item["media_type"]
+        rows, warnings = [], []
+        targets = [(str(item.get("provider") or "library"), str(item.get("item_id") or ""))]
+        if kind == "artist":
+            targets += [pair for pair in catalogue_mappings(item) if pair not in targets]
+        async def fetch(provider, item_id, collection):
+            params = {"item_id": item_id, "provider_instance_id_or_domain": provider}
+            if kind == "artist":
+                command = "music/artists/artist_" + collection
+            else:
+                command = "music/albums/album_tracks"
+                params["in_library_only"] = False
+            result = await self._catalogue_items(command, **params)
+            for row in result:
+                rows.append(dict(row, media_type=row.get("media_type") or ("album" if collection == "albums" else "track")))
+        # Bounded read-only expansion: never scan all providers or fill/play a queue.
+        requests = [(provider, item_id, collection) for provider, item_id in targets for collection in (("albums", "tracks") if kind == "artist" else ("tracks",))]
+        semaphore = asyncio.Semaphore(3)
+        async def attempt(target):
+            async with semaphore:
+                try:
+                    await fetch(*target)
+                    return True
+                except ValueError:
+                    warnings.append(f"{target[0]}: {target[2]} unavailable")
+                    return False
+        succeeded = await asyncio.gather(*(attempt(target) for target in requests))
+        if not any(succeeded):
+            raise ValueError("Provider catalogue unavailable")
+        root = self._catalogue_node(item)
+        children = merge_catalogue(rows)
+        if kind == "artist":
+            children.sort(key=lambda row: (row.get("media_type") != "album", str(row.get("sort_name") or row.get("name") or "").casefold()))
+        root["tracks"] = [self._catalogue_node(row) for row in children]
+        root["catalogue_loaded"] = True
+        root["name"] = str(item.get("name") or "Music") + " · All music"
+        return {"state": "ready", "item": root, "warnings": sorted(set(warnings))}
+
     # ── HTTP routes ───────────────────────────────────────────────────────────
 
     def add_routes(self, app):
+        async def _handle_catalogue(request):
+            try:
+                payload = await asyncio.wait_for(self._build_catalogue(str(request.query.get("uri") or "").strip()), timeout=60)
+                return web.json_response(payload, headers=self._cors_headers())
+            except (ValueError, asyncio.TimeoutError) as error:
+                message = str(error) or "Provider catalogue timed out; try again"
+                return web.json_response({"state": "error", "error": message}, status=503, headers=self._cors_headers())
+        app.router.add_get('/catalogue', _handle_catalogue)
         async def _handle_playlists(request):
             if self._is_syncing and not self._library_data:
                 return web.json_response({"loading": True}, headers=self._cors_headers())

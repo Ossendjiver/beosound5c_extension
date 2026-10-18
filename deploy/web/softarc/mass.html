@@ -443,7 +443,11 @@
     <script src="../js/config.js"></script>
     <script src="../js/arc-utils.js"></script>
     <script src="../js/fast-letter-index.js"></script>
+    <link rel="stylesheet" href="../mood-wheel.css?v=20261009.1">
+    <script src="../js/mood-wheel.js?v=20261009-mood-fullscreen"></script>
     <script src="../js/search-composer.js"></script>
+    <script src="../js/youtube-search-options.js"></script>
+    <script src="../js/mass-catalogue.js?v=20261018"></script>
     <script src="../js/emulator-bridge.js"></script>
     <script src="../assets/qrcode.min.js"></script>
     <script src="script.js"></script>
@@ -902,6 +906,7 @@
             const voiceSearchUrl = serviceBaseUrl + '/voice_search';
             const FALLBACK_CARD_IMAGE = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNjQiIGhlaWdodD0iNjQiIHZpZXdCb3g9IjAgMCA2NCA2NCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPHJlY3Qgd2lkdGg9IjY0IiBoZWlnaHQ9IjY0IiBmaWxsPSIjMzMzMzMzIi8+Cjx0ZXh0IHg9IjMyIiB5PSI0MCIgZm9udC1mYW1pbHk9IkFyaWFsLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjI0IiBmaWxsPSIjZmZmZmZmIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIj7imqo8L3RleHQ+Cjwvc3ZnPgo=';
             const ROOT_ICON_STYLE = {
+                mood: { icon: 'circle', color: '#c471ed' },
                 search:     { icon: 'magnifying-glass', color: '#f03e3e' },
                 artists:   { icon: 'users-three', color: '#e05618' },
                 albums:    { icon: 'vinyl-record', color: '#1c7ed6' },
@@ -912,8 +917,9 @@
                 mixes:     { icon: 'radio', color: '#e6ca19' },
             };
             const SOURCE_ROOT_IDS = new Set(['queue', 'artists', 'albums', 'songs', 'playlists', 'playlist_mixes', 'podcasts', 'mixes']);
-            const ROOT_SECTION_IDS = new Set(['queue', 'search', 'artists', 'albums', 'titles', 'playlists', 'playlist_mixes', 'podcasts', 'mixes']);
+            const ROOT_SECTION_IDS = new Set(['queue', 'mood', 'search', 'artists', 'albums', 'titles', 'playlists', 'playlist_mixes', 'podcasts', 'mixes']);
             const CROSS_SECTION_TARGET_IDS = new Set(['artists', 'albums', 'titles']);
+            const MOOD_ROOT = {id: 'mood', name: 'Mood wheel', mood_root: true, tracks: []};
             const SEARCH_ROOT = {
                 id: 'search',
                 name: 'Search',
@@ -1026,7 +1032,7 @@
             //   â€¢ `play_url` must never be deleted â€” both branches need it to survive.
             const childNameMapper = (item, index, allItems) => {
                 let displayName = item.name || '';
-                const isFolder  = Array.isArray(item.tracks) && item.tracks.length > 0;
+                const isFolder  = window.MassCatalogue.isFolder(item);
                 const metadata = getItemMeta(item);
                 const resolvedArtist = item.artist || metadata.artist || '';
                 const hasArtist = resolvedArtist
@@ -1564,7 +1570,7 @@
 
             const rootItems = () => {
                 const libraryItems = buildDisplayRootSource(withQueueRoot(arcList.parentData || preloadedData || []));
-                const src = [SEARCH_ROOT].concat(libraryItems);
+                const src = [MOOD_ROOT, SEARCH_ROOT].concat(libraryItems);
                 return src.map((item, idx, arr) => applyRootPresentation(childNameMapper(item, idx, arr)));
             };
 
@@ -1583,6 +1589,21 @@
             let voiceSearchRunning = false;
             let textSearchRunning = false;
             let searchComposerQuery = '';
+            let youtubeSearchDefaults = {};
+            let youtubeSearchOptions = window.YouTubeSearchOptions?.load(window.localStorage) || {};
+            let youtubeOptionsReady = false;
+            const loadYouTubeSearchOptions = async () => {
+                if (youtubeOptionsReady) return;
+                const controller = new AbortController();
+                const timeout = setTimeout(() => controller.abort(), 3000);
+                try {
+                    const response = await fetch(`${serviceBaseUrl}/search_options`, { cache: 'no-store', signal: controller.signal });
+                    if (response.ok) youtubeSearchDefaults = await response.json();
+                } catch (_) {} finally { clearTimeout(timeout); }
+                youtubeSearchOptions = window.YouTubeSearchOptions?.load(window.localStorage, youtubeSearchDefaults) || {};
+                youtubeOptionsReady = true;
+            };
+
             const voiceErrorMessage = (reason, fallback) => {
                 const messages = {
                     disabled: 'Voice search is disabled',
@@ -1642,7 +1663,7 @@
                 showActionToast(`Searching for “${normalizedQuery}”…`, { maxMs: 30000 });
                 try {
                     const response = await fetch(
-                        `${searchUrl}?q=${encodeURIComponent(normalizedQuery)}&limit=8`,
+                        `${searchUrl}?q=${encodeURIComponent(normalizedQuery)}&limit=8${window.YouTubeSearchOptions?.query(youtubeSearchOptions) || ''}`,
                         { cache: 'no-store' },
                     );
                     let payload = null;
@@ -1664,7 +1685,7 @@
                         return true;
                     }
 
-                    showActionToast(`Results for “${normalizedQuery}”`, { preserveTiming: true });
+                    showActionToast(`Results for “${normalizedQuery}”${payload?.warnings?.length ? ' · ' + payload.warnings.join(' · ') : ''}`, { preserveTiming: true });
                     settleActionToast();
                     return true;
                 } catch (error) {
@@ -1677,7 +1698,8 @@
                 }
             };
 
-            const openSearchComposer = (query = searchComposerQuery, selectedIndex = 0) => {
+            const openSearchComposer = async (query = searchComposerQuery, selectedIndex = 0) => {
+                await loadYouTubeSearchOptions();
                 if (!window.SearchComposer) {
                     showActionToast('Search keyboard is unavailable', { preserveTiming: true });
                     settleActionToast();
@@ -1686,8 +1708,13 @@
                 searchComposerQuery = String(query || '').slice(0, window.SearchComposer.MAX_QUERY_LENGTH);
                 const roots = rootItems();
                 const searchRoot = roots.find((entry) => String(entry?.id || '') === 'search') || SEARCH_ROOT;
-                const entries = window.SearchComposer.buildKeySpecs().map((spec, index) => Object.assign({}, spec, {
+                const entries = [...(window.YouTubeSearchOptions?.keys(youtubeSearchOptions) || []), ...window.SearchComposer.buildKeySpecs()].map((spec, index) => Object.assign({}, spec, {
                     onSelect: async () => {
+                        if (spec.action === 'youtube_music' || spec.action === 'youtube_videos') {
+                            youtubeSearchOptions = window.YouTubeSearchOptions.toggle(youtubeSearchOptions, spec.action);
+                            window.YouTubeSearchOptions.save(window.localStorage, youtubeSearchOptions);
+                            return openSearchComposer(searchComposerQuery, index);
+                        }
                         if (spec.action === 'voice') return startVoiceSearch();
                         if (spec.action === 'submit') return startTextSearch(searchComposerQuery);
                         searchComposerQuery = window.SearchComposer.applyAction(
@@ -1720,7 +1747,7 @@
                     const response = await fetch(voiceSearchUrl, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: '{}',
+                        body: JSON.stringify(youtubeSearchOptions),
                     });
                     let payload = null;
                     try {
@@ -1792,12 +1819,13 @@
                 return resolveDefaultContextSectionId();
             };
 
+            let moodWheel = null;
             let lastPublishedContextMenuSignature = '';
             const publishContextMenu = () => {
                 const payload = {
                     type: 'bs5c-context-menu',
                     route: CONTEXT_ROUTE,
-                    items: contextMenuItems(),
+                    items: moodWheel?.active ? [] : contextMenuItems(),
                     selectedId: resolveCurrentContextSectionId(),
                     activeId: resolveActiveContextSectionId(),
                 };
@@ -1812,6 +1840,8 @@
                 const normalizedId = String(sectionId || '').trim();
                 if (!normalizedId) return false;
                 const activeSectionId = String(folderStack[0]?.item?.id || '').trim();
+                if (normalizedId === 'mood') { moodWheel.open(); publishContextMenu(); return true; }
+                if (moodWheel.active) moodWheel.close();
                 if (normalizedId === 'search') {
                     if (activeSectionId === 'search' || optionsState?.kind === 'search_composer') {
                         publishContextMenu();
@@ -1995,8 +2025,82 @@
             let detailState = null;
             let detailRequestId = 0;
             let optionsState = null;
+            const libraryBase = getServiceUrl('libraryServiceUrl', 8788);
+            let moodQueue = '';
+            const mixCall = async data => {
+                const response = await fetch(`${libraryBase}/library/mix`, {method:'POST',
+                    headers:{'Content-Type':'application/json'},body:JSON.stringify(data),signal:AbortSignal.timeout(30000)});
+                if (!response.ok) throw new Error(await response.text() || 'Mood session unavailable');
+                return response.json();
+            };
+            const moodSnapshot = async () => {
+                const response = await fetch(sourceCommandUrl, {method:'POST',headers:{'Content-Type':'application/json'},
+                    body:JSON.stringify({command:'mood_snapshot',...activeMassTargetPayload()}),signal:AbortSignal.timeout(15000)});
+                const result=await response.json();
+                if (!response.ok || result.state === 'error') throw new Error('Current queue unavailable');
+                moodQueue=result.queue_id;
+                return result.snapshot;
+            };
+            const startSeedMix = async (item, mode='mood') => {
+                let before;
+                try { before=(await moodSnapshot()).current_item?.queue_item_id; } catch (_) {}
+                const started=await arcList.sendGoWebhook('play_now', {...item,url:item.url || item.play_url || item.uri});
+                if (!started) throw new Error('The seed could not be started');
+                let snapshot;
+                for (let i=0;i<10;i++) {
+                    snapshot=await moodSnapshot();
+                    if (snapshot.current_item?.queue_item_id && snapshot.current_item.queue_item_id !== before) break;
+                    await new Promise(resolve=>setTimeout(resolve,300));
+                }
+                if (!snapshot.current_item?.queue_item_id || snapshot.current_item.queue_item_id === before) throw new Error('Seed playback was not confirmed');
+                const media=snapshot.current_item?.media_item || snapshot.current_item || {};
+                await mixCall({action:'begin',queue_id:moodQueue,room:'lounge',mode,
+                    seed:{uri:media.uri || item.uri || item.url,name:media.name || item.name,
+                        artist:(media.artists || []).map(a=>a.name).join(', '),media_type:media.media_type || 'track'}});
+                if (mode === 'mood') { moodWheel.open(); publishContextMenu(); }
+            };
+            moodWheel = new window.MoodWheel.Wheel({
+                onSuggest: async () => {
+                    try {
+                        await moodSnapshot();
+                        const active=await fetch(`${libraryBase}/library/mix?queue_id=${encodeURIComponent(moodQueue)}`);
+                        const state=await active.json();
+                        if (state.active && state.mood) return state.mood;
+                    } catch (_) {}
+                    const response = await fetch(`${libraryBase}/library/mood?room=lounge`, {signal:AbortSignal.timeout(5000)});
+                    return response.ok ? (await response.json()).suggested : null;
+                },
+                onClose: () => publishContextMenu(),
+                onQueue: () => window.parent.postMessage({type:'bs5c-mood-queue'},'*'),
+                onState: async () => {
+                    if (!moodQueue) await moodSnapshot();
+                    const response=await fetch(`${libraryBase}/library/mix?queue_id=${encodeURIComponent(moodQueue)}`);
+                    return response.ok ? response.json() : null;
+                },
+                onAdjust: async ({angle,radius}) => {
+                    if (!moodQueue) await moodSnapshot();
+                    const response=await fetch(`${libraryBase}/library/mix?queue_id=${encodeURIComponent(moodQueue)}`);
+                    const state=await response.json();
+                    if (state.active) { await mixCall({action:'update',queue_id:moodQueue,angle,radius}); await refreshQueueRoot(false); }
+                },
+                onPlay: async ({angle,radius}) => {
+                    if (!moodQueue) await moodSnapshot();
+                    const response=await fetch(`${libraryBase}/library/mix?queue_id=${encodeURIComponent(moodQueue)}`);
+                    const state=await response.json();
+                    if (!state.active) {
+                        const rec=await fetch(`${libraryBase}/library/recommend/music?room=lounge&limit=20&angle=${angle}&radius=${radius}`);
+                        const mix=await rec.json();
+                        if (!mix.items?.length) throw new Error(mix.mood_coverage?.notice || 'No mood-compatible tracks with sufficient metadata');
+                        await startSeedMix(mix.items[0]);
+                    }
+                    const updated=await mixCall({action:'update',queue_id:moodQueue,angle,radius});
+                    await refreshQueueRoot(false);
+                    return updated.pending_refresh ? 'Updating upcoming tracks…' : 'Upcoming tracks updated';
+                }
+            });
 
             const getDetailSpec = (item) => {
+                if (item?.youtube_video || item?.catalogue_expandable) return null;
                 const isLeaf = item && (!Array.isArray(item.tracks) || item.tracks.length === 0);
                 const uri = String(item?.url || item?.play_url || '').trim();
                 if (!isLeaf || !uri) return null;
@@ -2227,8 +2331,43 @@
                 return true;
             };
 
+            let catalogueRequestId = 0;
+            let catalogueLoading = false;
+            const showAllCatalogue = async (item) => {
+                if (catalogueLoading) return;
+                const requestId = ++catalogueRequestId;
+                const selected = getCurrentItem();
+                const depth = folderStack.length;
+                catalogueLoading = true;
+                showActionToast('Loading all music…', { preserveTiming: true });
+                try {
+                    const payload = await window.MassCatalogue.load(item, serviceBaseUrl);
+                    if (requestId !== catalogueRequestId || selected !== getCurrentItem() || depth !== folderStack.length) return;
+                    if (!payload.item.tracks.length) {
+                        showActionToast('No provider music available', { preserveTiming: true });
+                        return;
+                    }
+                    dismissOptionsMenu(false);
+                    enterFolder(payload.item);
+                    if (payload.warnings?.length) showActionToast('Some providers unavailable', { preserveTiming: true });
+                } catch (error) {
+                    if (requestId === catalogueRequestId) showActionToast(error.message || 'Catalogue unavailable', { preserveTiming: true });
+                } finally {
+                    catalogueLoading = false;
+                    settleActionToast();
+                }
+            };
+
             const buildMassOptionsEntries = (item) => {
                 const safeItem = childNameMapper(item || {}, 0, [item || {}]);
+                const podcastAction = safeItem.channel_url ? {
+                    id: 'save_channel_podcast', icon: 'broadcast', title: 'Save channel as podcast',
+                    onSelect: async () => { dismissOptionsMenu(false); await arcList.sendGoWebhook('save_channel_podcast', safeItem); },
+                } : null;
+                if (safeItem.youtube_video) return [{
+                    id: 'play_now', icon: 'youtube-logo', title: 'Play on Samsung Frame',
+                    onSelect: async () => { dismissOptionsMenu(false); await arcList.sendGoWebhook('play_now', safeItem); },
+                }, podcastAction].filter(Boolean);
                 const metadata = getItemMeta(safeItem);
                 const uri = String(safeItem?.url || safeItem?.play_url || '').trim();
                 const artist = cleanTitle(deriveSectionArtist(safeItem, getCurrentRootSectionId()) || metadata.artist || safeItem?.artist || '');
@@ -2236,8 +2375,13 @@
                 const playlistTargets = resolvePlaylistTargets();
                 const isRadioItem = massUriLooksLikeRadio(uri);
                 const isLeaf = !Array.isArray(safeItem?.tracks) || safeItem.tracks.length === 0;
-                const canInspect = !!getDetailSpec(safeItem);
+                const canInspect = !safeItem.youtube_video && !!getDetailSpec(safeItem);
                 const entries = [
+                    podcastAction,
+                    window.MassCatalogue.canShowAll(safeItem) ? {
+                        id: 'show_all', icon: 'stack', title: 'Show all',
+                        onSelect: async () => { dismissOptionsMenu(false); await showAllCatalogue(safeItem); },
+                    } : null,
                     {
                         id: 'play_now',
                         icon: 'play-circle',
@@ -2248,13 +2392,14 @@
                             refreshList();
                         },
                     },
+                    {id:'mood_mix',icon:'sparkles',title:'Start Mood Mix',onSelect:async()=>{ dismissOptionsMenu(false); await startSeedMix(safeItem); }},
                     !isRadioItem ? {
                         id: 'play_radio',
                         icon: 'broadcast',
-                        title: 'Start Radio',
+                        title: 'Play Radio from here',
                         onSelect: async () => {
                             dismissOptionsMenu(false);
-                            await arcList.sendGoWebhook('play_radio', safeItem);
+                            await startSeedMix(safeItem, 'radio');
                             refreshList();
                         },
                     } : null,
@@ -2639,6 +2784,10 @@
                     openSearchComposer();
                     return true;
                 }
+                if (current?.catalogue_expandable && !current.catalogue_loaded) {
+                    showAllCatalogue(current);
+                    return true;
+                }
                 if (!current || !Array.isArray(current.tracks) || current.tracks.length === 0)
                     return false;
                 const enteringFromRoot = folderStack.length === 0;
@@ -2667,6 +2816,7 @@
             };
 
             const exitFolder = () => {
+                catalogueRequestId++;
                 if (!folderStack.length) return false;
                 if (folderStack.length === 1 && folderStack[0]?.item?.search_results_root) {
                     openSearchComposer();
@@ -2724,6 +2874,7 @@
             };
 
             arcList.destroy = function () {
+                catalogueRequestId++;
                 saveBrowseState();
                 if (typeof originalDestroy === 'function') {
                     originalDestroy();
@@ -2746,8 +2897,11 @@
                 const current = itemOverride || detailState?.item || optionsState?.item || getCurrentItem();
                 if (!current) return;
                 if (detailState?.loading) return;
+                if (current.mood_root) { moodWheel.open(); publishContextMenu(); return; }
                 if (current.search_root) return openSearchComposer();
                 if (current.search_group) return enterFolder(current);
+                if (current.youtube_video && !['play_item', 'play_now', 'save_channel_podcast'].includes(command)) return;
+
 
                 const playUri = String(
                     extraPayload.url
@@ -2772,6 +2926,7 @@
                     queue_item:   { pending: 'Adding to queue…', error: 'Error adding to queue', queued: 'Added to queue', playing: 'Added to queue' },
                     play_radio:   { pending: 'Starting radio…', error: 'Error starting radio', queued: 'Starting radio', playing: 'Starting radio' },
                     favorite_add: { pending: 'Adding to favorites…', error: 'Error adding to favorites', favorited: 'Added to favorites' },
+                    save_channel_podcast: { pending: 'Subscribing to channel…', error: 'Could not save podcast — check MA admin permissions', podcast_saved: 'Channel saved in MA Podcasts', podcast_exists: 'Channel already subscribed' },
                     playlist_add: { pending: 'Adding to playlist…', error: 'Error adding to playlist', playlist_added: 'Added to playlist' },
                 };
                 const copy = commandMessages[command] || commandMessages.play_item;
@@ -2780,7 +2935,9 @@
                     id: current.id || '',
                     url: current.url || '',
                     play_url: current.play_url || '',
-                }, activeMassTargetPayload(), extraPayload || {});
+                    youtube_video: !!current.youtube_video,
+                    channel_url: current.channel_url || '', 
+                }, current.youtube_video ? {} : activeMassTargetPayload(), extraPayload || {});
 
                 showActionToast(copy.pending);
 
@@ -2807,8 +2964,15 @@
                         return;
                     }
 
+                    if (!current.youtube_video && !Array.isArray(current.tracks) &&
+                        (result?.state === 'playing' || result?.state === 'queued' || command === 'play_now')) {
+                        const meta = getItemMeta(current);
+                        void fetch(`${libraryBase}/library/event`, {method:'POST',headers:{'Content-Type':'application/json'},
+                            body:JSON.stringify({type:'selection',title:current.name,artist:current.artist || meta.artist,uri:playUri,
+                                media_type:'track',selection_origin:'manual',action:command,room:'lounge'}),signal:AbortSignal.timeout(5000)}).catch(()=>{});
+                    }
                     const state = String(result?.state || '').trim().toLowerCase();
-                    const successMessage = copy[state] || copy.playing || copy.queued || copy.pending;
+                    const successMessage = state === 'video_sent' ? 'Sent to Samsung Frame' : (copy[state] || copy.playing || copy.queued || copy.pending);
                     showActionToast(successMessage, { preserveTiming: true });
                     if (state === 'playing' || command === 'play_now' || command === 'play_radio') {
                         pushNowPlayingPayload(current, detailState?.page || null);
@@ -2818,6 +2982,7 @@
                     }
                     settleActionToast();
                     console.log('[MASS] Command complete:', command, current.name, '→', playUri, result);
+                    return result;
                 } catch (err) {
                     showActionToast(copy.error, { preserveTiming: true });
                     settleActionToast();
@@ -2832,6 +2997,7 @@
 
             arcList.handleButtonFromParent = function (button) {
                 const normalized = String(button || '').toLowerCase();
+                if (moodWheel.active) return moodWheel.button(normalized);
                 if (optionsState) {
                     if (normalized === 'left') {
                         const entry = optionsState.entries?.[optionsState.currentIndex || 0];
@@ -2856,6 +3022,7 @@
                 if (normalized === 'left')  {
                     clearPendingGoPress();
                     const current = getCurrentItem();
+                    if (current?.mood_root) { moodWheel.open(); publishContextMenu(); return; }
                     if (current && getDetailSpec(current)) { openDetailPage(current); return; }
                     if (enterFolder()) return;
                 }
@@ -2875,6 +3042,7 @@
 
             arcList.handleKeyPress = function (e) {
                 clearPendingGoPress();
+                if (moodWheel.active) return moodWheel.key(e.key);
                 if (optionsState) {
                     if (e.key === 'ArrowUp') { moveOptionsSelection(-1); return; }
                     if (e.key === 'ArrowDown') { moveOptionsSelection(1); return; }
@@ -2898,6 +3066,7 @@
                 }
                 if (e.key === 'ArrowLeft')  {
                     const current = getCurrentItem();
+                    if (current?.mood_root) { moodWheel.open(); publishContextMenu(); return; }
                     if (current && getDetailSpec(current)) { openDetailPage(current); return; }
                     if (enterFolder()) return;
                 }
@@ -2910,6 +3079,7 @@
             };
 
             arcList.handleNavFromParent = function (data) {
+                if (moodWheel.active) return moodWheel.nav(data);
                 if (optionsState) {
                     fastLetterMode?.reset();
                     if (optionWheelStateRef !== optionsState) {
@@ -2974,6 +3144,8 @@
             }, 5000);
 
             window.addEventListener('message', (event) => {
+                if (event.source !== window.parent) return;
+                if (event.data?.type === 'mood-laser' && moodWheel.active) { moodWheel.laser(event.data.position); return; }
                 if (event.data?.type === 'context-select') {
                     const sectionId = String(event.data?.id || '').trim();
                     if (!sectionId) return;

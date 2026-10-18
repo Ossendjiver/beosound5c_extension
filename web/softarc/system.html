@@ -1448,7 +1448,8 @@
                 fetch: async () => {
                     const resp = await fetch('http://' + location.hostname + ':8788/library/status');
                     if (!resp.ok) throw new Error('offline');
-                    return (await resp.json()).library;
+                    const status = await resp.json();
+                    return {...status.library, playback: status.playback};
                 },
                 render: (data) => {
                     if (!data) return '<div class="subcard-body">' + row('Status', 'No data', 'dim') + '</div>';
@@ -1456,7 +1457,9 @@
                         row('Mix Sessions', Number(data.mix_sessions) || 0) +
                         row('Listening Events', Number(data.listens) || 0) +
                         row('Relationships', Number(data.relationships) || 0) +
-                        row('Music Prompts', data.music_prompts_suppressed ? 'Suppressed by playback' : 'Available') + '</div>';
+                        row('Music Prompts', data.music_prompts_suppressed ? 'Suppressed by playback' : 'Available') +
+                        row('Playback Coordinator', data.playback?.setup_error ? 'Setup needs attention' : data.playback?.enabled ? (data.playback.healthy ? 'Ready' : 'Worker stopped') : 'Disabled') +
+                        row('Pending Playback Jobs', Number(data.playback?.queued_jobs) || 0) + '</div>';
                 },
             },
             {

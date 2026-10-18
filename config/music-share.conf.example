@@ -1,0 +1,14 @@
+# Music-only LAN sharing. Render interface and subnet placeholders with the installer.
+port=8200
+network_interface=@LAN_INTERFACE@
+friendly_name=BS5c Music
+media_dir=A,/media/local/music
+db_dir=/run/beo-music-share-cache
+log_dir=/run/beo-music-share
+inotify=yes
+wide_links=no
+root_container=M
+notify_interval=60
+max_connections=20
+log_level=general,artwork,database,inotify,scanner,metadata,http,ssdp,tivo=warn
+album_art_names=Cover.jpg/cover.jpg/Folder.jpg/folder.jpg/AlbumArt.jpg/albumart.jpg/front.jpg

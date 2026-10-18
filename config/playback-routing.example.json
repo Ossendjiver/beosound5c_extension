@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "rooms": {
+    "living_room": {
+      "primary": {
+        "player_id": "REPLACE_WITH_SHARED_MA_PLAYER_ID",
+        "entity": "media_player.replace_with_living_room_hardware",
+        "source": "LINK",
+        "alternate_sources": [
+          "A.AUX"
+        ],
+        "shared": true
+      },
+      "secondary": {
+        "player_id": "REPLACE_WITH_SECONDARY_MA_PLAYER_ID",
+        "shared": false
+      }
+    },
+    "another_room": {
+      "primary": {
+        "player_id": "REPLACE_WITH_SHARED_MA_PLAYER_ID",
+        "entity": "media_player.replace_with_another_room_hardware",
+        "source": "A.AUX",
+        "alternate_sources": [
+          "LINK"
+        ],
+        "shared": true
+      }
+    },
+    "independent_room": {
+      "primary": {
+        "player_id": "REPLACE_WITH_INDEPENDENT_MA_PLAYER_ID",
+        "shared": false
+      }
+    }
+  }
+}
