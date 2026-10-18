@@ -198,3 +198,52 @@ async def test_room_audio_policy_runs_once_after_final_hardware_state():
     assert len(sync)==1 and sync[0][0]=='bedroom'
     assert sync[0][1]['media_player.lounge']=='off' and sync[0][1]['media_player.bedroom']=='on'
     assert not f.mutations()
+
+
+# Safeguards recovered from the retired Home Media #2 routing prototype.
+@pytest.mark.asyncio
+@pytest.mark.parametrize('identity', [dict(provider='kodi'), dict(name='Renamed TV', device_info={'model':'Kodi'})])
+async def test_hidden_kodi_target_fails_before_any_mutation(identity):
+    f=Fake();f.players[1].update(identity)
+    assert (await f.run('join'))['status']=='failed'
+    assert not f.actions and not f.mutations()
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('membership', ['group_members','static_group_members'])
+async def test_group_with_kodi_member_fails_before_any_mutation(membership):
+    f=Fake();f.players[1][membership]=['cast','hidden']
+    f.players.append(dict(player_id='hidden',provider='kodi',available=True))
+    assert (await f.run('join'))['status']=='failed'
+    assert not f.actions and not f.mutations()
+
+@pytest.mark.asyncio
+async def test_protocol_output_cannot_hide_kodi_target():
+    f=Fake();f.players[1]['active_output_protocol']='hidden'
+    f.players.append(dict(player_id='hidden',provider='kodi',available=True))
+    assert (await f.run('join'))['status']=='failed'
+    assert not f.actions and not f.mutations()
+
+@pytest.mark.asyncio
+async def test_reverse_group_membership_already_joined_is_noop():
+    f=Fake();f.players[0]['group_members']=['link','cast']
+    assert (await f.run('join'))['status']=='succeeded'
+    assert not f.actions and not f.mutations()
+
+def test_reverse_group_membership_ambiguous_owner_is_rejected():
+    from lib.playback_jobs import leader
+    f=Fake();f.players[0]['group_members']=['link','cast'];f.players[2]['group_members']=['phone','cast']
+    with pytest.raises(Uncertain):leader('cast',{'players':f.players})
+
+
+@pytest.mark.asyncio
+async def test_configured_protocol_child_cannot_hide_kodi_identity():
+    f=Fake();f.routes['kitchen']['primary']['player_id']='hidden'
+    f.players.append(dict(player_id='hidden',provider='kodi',protocol_parent_id='cast',available=True))
+    assert (await f.run('join'))['status']=='failed'
+    assert not f.actions and not f.mutations()
+
+@pytest.mark.asyncio
+async def test_kodi_source_is_rejected_before_routing_target():
+    f=Fake();f.players[0].update(provider='kodi',name='Renamed TV')
+    assert (await f.run('join'))['status']=='failed'
+    assert not f.actions and not f.mutations()

@@ -114,8 +114,19 @@ class ViewManager {
             } catch (e) { /* cross-origin or unloaded iframe */ }
         });
 
-        // Rescue preloaded iframes before replacing content
         const preloadContainer = document.getElementById('iframe-preload-container');
+        // External pages must stop streaming on exit. Also clear legacy webpage
+        // frames that older versions rescued into the hidden preload container.
+        const webpageFrames = new Set([
+            ...contentArea.querySelectorAll('iframe.webpage-iframe'),
+            ...(preloadContainer?.querySelectorAll('iframe.webpage-iframe') || [])
+        ]);
+        webpageFrames.forEach(iframe => {
+            try { iframe.src = 'about:blank'; } catch (e) { /* already unloaded */ }
+            iframe.remove();
+        });
+
+        // Keep internal preloaded source views alive across navigation.
         if (preloadContainer) {
             contentArea.querySelectorAll('iframe[id^="preload-"]').forEach(iframe => {
                 iframe.style.cssText = 'width:1024px;height:768px;border:none;';
@@ -129,18 +140,15 @@ class ViewManager {
             this.menuManager.attachPreloadedIframe(view.preloadId);
         }
 
-        // Webpage views: reuse existing iframe or create on first visit
+        // Recreate external pages when entered; their previous document was unloaded.
         if (view._webpage) {
             const { iframeId, containerId, url } = view._webpage;
             const container = document.getElementById(containerId);
             if (container) {
-                let iframe = document.getElementById(iframeId);
-                if (!iframe) {
-                    iframe = document.createElement('iframe');
-                    iframe.id = iframeId;
-                    iframe.className = 'webpage-iframe';
-                    iframe.src = url;
-                }
+                const iframe = document.createElement('iframe');
+                iframe.id = iframeId;
+                iframe.className = 'webpage-iframe';
+                iframe.src = url;
                 iframe.style.cssText = 'width:100%;height:100%;border:none;';
                 container.appendChild(iframe);
             }
@@ -246,4 +254,8 @@ class ViewManager {
 
 }
 
-window.ViewManager = ViewManager;
+if (typeof module !== 'undefined' && module.exports) {
+    module.exports = { ViewManager };
+} else {
+    window.ViewManager = ViewManager;
+}
