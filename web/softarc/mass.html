@@ -447,6 +447,7 @@
     <script src="../js/mood-wheel.js?v=20261009-mood-fullscreen"></script>
     <script src="../js/search-composer.js"></script>
     <script src="../js/youtube-search-options.js"></script>
+    <script src="../js/mass-catalogue.js?v=20261018"></script>
     <script src="../js/emulator-bridge.js"></script>
     <script src="../assets/qrcode.min.js"></script>
     <script src="script.js"></script>
@@ -1031,7 +1032,7 @@
             //   â€¢ `play_url` must never be deleted â€” both branches need it to survive.
             const childNameMapper = (item, index, allItems) => {
                 let displayName = item.name || '';
-                const isFolder  = Array.isArray(item.tracks) && item.tracks.length > 0;
+                const isFolder  = window.MassCatalogue.isFolder(item);
                 const metadata = getItemMeta(item);
                 const resolvedArtist = item.artist || metadata.artist || '';
                 const hasArtist = resolvedArtist
@@ -2099,7 +2100,7 @@
             });
 
             const getDetailSpec = (item) => {
-                if (item?.youtube_video) return null;
+                if (item?.youtube_video || item?.catalogue_expandable) return null;
                 const isLeaf = item && (!Array.isArray(item.tracks) || item.tracks.length === 0);
                 const uri = String(item?.url || item?.play_url || '').trim();
                 if (!isLeaf || !uri) return null;
@@ -2330,6 +2331,33 @@
                 return true;
             };
 
+            let catalogueRequestId = 0;
+            let catalogueLoading = false;
+            const showAllCatalogue = async (item) => {
+                if (catalogueLoading) return;
+                const requestId = ++catalogueRequestId;
+                const selected = getCurrentItem();
+                const depth = folderStack.length;
+                catalogueLoading = true;
+                showActionToast('Loading all music…', { preserveTiming: true });
+                try {
+                    const payload = await window.MassCatalogue.load(item, serviceBaseUrl);
+                    if (requestId !== catalogueRequestId || selected !== getCurrentItem() || depth !== folderStack.length) return;
+                    if (!payload.item.tracks.length) {
+                        showActionToast('No provider music available', { preserveTiming: true });
+                        return;
+                    }
+                    dismissOptionsMenu(false);
+                    enterFolder(payload.item);
+                    if (payload.warnings?.length) showActionToast('Some providers unavailable', { preserveTiming: true });
+                } catch (error) {
+                    if (requestId === catalogueRequestId) showActionToast(error.message || 'Catalogue unavailable', { preserveTiming: true });
+                } finally {
+                    catalogueLoading = false;
+                    settleActionToast();
+                }
+            };
+
             const buildMassOptionsEntries = (item) => {
                 const safeItem = childNameMapper(item || {}, 0, [item || {}]);
                 const podcastAction = safeItem.channel_url ? {
@@ -2350,6 +2378,10 @@
                 const canInspect = !safeItem.youtube_video && !!getDetailSpec(safeItem);
                 const entries = [
                     podcastAction,
+                    window.MassCatalogue.canShowAll(safeItem) ? {
+                        id: 'show_all', icon: 'stack', title: 'Show all',
+                        onSelect: async () => { dismissOptionsMenu(false); await showAllCatalogue(safeItem); },
+                    } : null,
                     {
                         id: 'play_now',
                         icon: 'play-circle',
@@ -2752,6 +2784,10 @@
                     openSearchComposer();
                     return true;
                 }
+                if (current?.catalogue_expandable && !current.catalogue_loaded) {
+                    showAllCatalogue(current);
+                    return true;
+                }
                 if (!current || !Array.isArray(current.tracks) || current.tracks.length === 0)
                     return false;
                 const enteringFromRoot = folderStack.length === 0;
@@ -2780,6 +2816,7 @@
             };
 
             const exitFolder = () => {
+                catalogueRequestId++;
                 if (!folderStack.length) return false;
                 if (folderStack.length === 1 && folderStack[0]?.item?.search_results_root) {
                     openSearchComposer();
@@ -2837,6 +2874,7 @@
             };
 
             arcList.destroy = function () {
+                catalogueRequestId++;
                 saveBrowseState();
                 if (typeof originalDestroy === 'function') {
                     originalDestroy();
