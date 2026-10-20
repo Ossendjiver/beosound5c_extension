@@ -11,8 +11,11 @@ log = logging.getLogger('beo-router.frame')
 
 
 async def frame_art_standby(session):
-    entity = str(cfg('home_assistant', 'all_off_frame_entity', default='') or
-                 cfg('mass', 'youtube_search', 'frame_entity', default='') or '').strip()
+    entity = cfg('home_assistant', 'all_off_frame_entity', default='')
+    if not entity:
+        youtube = cfg('mass', 'youtube_search', default={})
+        entity = youtube.get('frame_entity', '') if isinstance(youtube, dict) else ''
+    entity = str(entity or '').strip()
     token = os.getenv('HA_TOKEN', '').strip()
     if not re.fullmatch(r'media_player\.[a-z0-9_]+', entity) or not token or session is None:
         return

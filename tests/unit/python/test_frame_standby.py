@@ -21,8 +21,9 @@ async def test_only_active_frame_is_sent_to_art(state, art, expected):
             return web.json_response({'entity_id':'media_player.the_frame','state':state,'attributes':{'art_mode_status':art}})
         return web.json_response([])
     app=web.Application();app.router.add_route('*','/{tail:.*}',handle)
-    def config(*keys,default=None):
-        return 'media_player.the_frame' if keys==('mass','youtube_search','frame_entity') else default
+    def config(section, key=None, *, default=None):
+        # Match the real cfg(section, key=None, *, default=None) contract.
+        return {'frame_entity':'media_player.the_frame'} if (section,key)==('mass','youtube_search') else default
     async with TestServer(app) as server, ClientSession() as session:
         with patch('lib.frame_standby.cfg',side_effect=config), patch.dict('os.environ',{'HA_URL':str(server.make_url('/')),'HA_TOKEN':'test-token'}):
             await frame_art_standby(session)
@@ -53,3 +54,22 @@ async def test_missing_auth_or_invalid_entity_never_contacts_ha():
         with patch('lib.frame_standby.cfg',return_value=entity),patch.dict('os.environ',{'HA_TOKEN':token}):
             await frame_art_standby(session)
     session.get.assert_not_called();session.post.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('configuration', [
+    {'mass': {'youtube_search': {'frame_entity': 'media_player.the_frame'}}},
+    {'home_assistant': {'all_off_frame_entity': 'media_player.the_frame'}},
+])
+async def test_real_config_loader_contract_sends_art_mode(configuration):
+    calls=[]
+    async def handle(request):
+        calls.append(request.method)
+        if request.method=='GET':
+            return web.json_response({'entity_id':'media_player.the_frame','state':'on','attributes':{'art_mode_status':'off'}})
+        return web.json_response([])
+    app=web.Application();app.router.add_route('*','/{tail:.*}',handle)
+    async with TestServer(app) as server, ClientSession() as session:
+        with patch('lib.config._config',configuration),patch.dict('os.environ',{'HA_URL':str(server.make_url('/')),'HA_TOKEN':'test-token'}):
+            await frame_art_standby(session)
+    assert calls==['GET','POST']
