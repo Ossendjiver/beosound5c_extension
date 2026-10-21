@@ -1475,10 +1475,14 @@
                     return data;
                 },
                 render: (data) => '<div class="subcard-body">' +
-                    row('Status', data.state || 'waiting', data.state === 'error' ? 'error' : 'ok') +
-                    row('Retry After', data.state === 'rate_limited' && data.retry_at ? new Date(data.retry_at * 1000).toLocaleString() : '—') +
+                    row('Status', data.state || 'waiting', ['error','retry_pending'].includes(data.state) ? 'warn' : 'ok') +
+                    row('Retry After', data.retry_at ? new Date(data.retry_at * 1000).toLocaleString() : '—') +
                     row('Remaining This Pass', data.remaining == null ? 'Pending check' : Number(data.remaining)) +
                     row('Cached Tracks', Number(data.cached) || 0) +
+                    row('Selected Files Verified', data.cached_selected == null ? 'Pending reconciliation' : Number(data.cached_selected)) +
+                    row('Missing Selected Files', data.missing == null ? 'Pending reconciliation' : Number(data.missing)) +
+                    row('Awaiting Retry', Number(data.retry_pending) || 0) +
+                    row('Excluded by Explicit Policy', Number(data.excluded) || 0) +
                     row('Added This Run', Number(data.downloaded) || 0) +
                     row('Already Stored', Number(data.retained) || 0) +
                     row('Protected / Unsupported', Number(data.protected) || 0) +
@@ -1533,6 +1537,9 @@
                         row('Successful Samples', data.successful_samples == null ? 'Available at next checkpoint' : Number(data.successful_samples)) +
                         row('Ready Profiles', data.ready == null ? 'Available after sweep' : Number(data.ready)) +
                         row('Pending Samples', sweep.pending_samples == null ? 'Available after sweep' : Number(sweep.pending_samples)) +
+                        row('Sampling', data.running ? 'Running' : Number(sweep.pending_samples) > 0 ? 'Automatic retries pending' : 'Complete') +
+                        row('Retrying Samples', Number(data.retry_pending) || 0) +
+                        row('Next Sample Retry', data.next_retry_at ? new Date(data.next_retry_at * 1000).toLocaleString() : 'When idle') +
                         row('Errors', Number(sweep.errors || data.failed) || 0) + '</div>';
                 },
             },

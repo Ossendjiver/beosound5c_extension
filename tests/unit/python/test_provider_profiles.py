@@ -219,3 +219,24 @@ def test_genre_hints_do_not_suppress_needed_audio_sampling():
     assert not p.useful({'genres':['Classical']})
     payload={'tracks':{'a':{'status':'metadata_ready','metadata':{'genres':['Jazz']},'next_check':999}}}
     assert worker.pending_entries([{'uri':'a'}],payload)==[{'uri':'a'}]
+
+
+def test_retries_keep_useful_previous_audio_and_include_new_library_items():
+    import time
+    good={'audio_features':FEATURES}
+    payload={'tracks':{'a':{'status':'retry_pending','metadata':good,'next_check':time.time()-1},'b':{'status':'sample_ready','metadata':good}}}
+    assert worker.pending_entries([{'uri':'a'},{'uri':'b'},{'uri':'new'}],payload,respect_retry_backoff=True)==[{'uri':'a'},{'uri':'new'}]
+
+
+def test_transient_sampling_retries_back_off_and_clear_after_success():
+    def failed(*a):raise OSError('do not persist signed URL')
+    state,counts,_=run(preview=failed)
+    record=state['tracks'][ITEM['uri']]
+    assert record['retry_attempts']==1 and record['next_check']==100+900
+    record['next_check']=0
+    state,counts,_=run(payload=state,preview=failed)
+    assert state['tracks'][ITEM['uri']]['retry_attempts']==2
+    state['tracks'][ITEM['uri']]['next_check']=0
+    state,counts,_=run(payload=state)
+    assert state['tracks'][ITEM['uri']]['status']=='sample_ready'
+    assert 'retry_attempts' not in state['tracks'][ITEM['uri']]

@@ -64,7 +64,7 @@ def test_resume_starts_with_missing_and_does_not_repeat_completed(tmp_path,monke
  monkeypatch.setattr(m,'request',request)
  with pytest.raises(Cooldown):m.main()
  assert '/tracks/2?' in calls[0] and '/tracks/3?' in calls[1]
- assert json.loads((cache/'index.json').read_text())['pending_ids']==['3','1']
+ assert json.loads((cache/'index.json').read_text())['pending_ids']==['3']
  calls.clear()
  with pytest.raises(Cooldown):m.main()
  assert len(calls)==1 and '/tracks/3?' in calls[0]

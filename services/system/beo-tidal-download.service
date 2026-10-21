@@ -19,4 +19,4 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectHome=read-only
 ProtectSystem=strict
-ReadWritePaths=/media/local/music/HomeMedia-Tidal /media/local/cache/tidal-download __HOME__/beosound5c/web/json
+ReadWritePaths=/media/local/music /media/local/cache/tidal-download __HOME__/beosound5c/web/json
