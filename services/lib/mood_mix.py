@@ -33,6 +33,23 @@ def item_index(snapshot):
     return index - int(snapshot.get('items_offset') or 0) if isinstance(index, int) else None
 
 
+def committed_items(snapshot):
+    """MA retains both the playing item and any next item already handed to the player."""
+    start = item_index(snapshot)
+    if not isinstance(start, int) or start < 0:
+        return [snapshot['current_item']] if snapshot.get('current_item') else []
+    buffered = snapshot.get('index_in_buffer')
+    end = max(start, buffered - int(snapshot.get('items_offset') or 0)) if type(buffered) is int else start
+    items = snapshot.get('items') or []
+    if end >= len(items):
+        raise ValueError('Buffered queue boundary is outside the available snapshot')
+    return items[start:end+1]
+
+
+def committed_ids(snapshot):
+    return [str(i.get('queue_item_id') or '') for i in committed_items(snapshot)]
+
+
 class MoodMixes:
     def __init__(self, command, recommend, record=None, load=None, save=None):
         self.command, self.recommend, self.record = command, recommend, record
@@ -164,11 +181,13 @@ class MoodMixes:
             for item in (snap.get('items') or [])[index+1:]:
                 media=item.get('media_item') or item
                 if media.get('uri'): upcoming.append(media['uri'])
-        exclude = set(s['seen']) | {playing['uri']} | set(upcoming)
+        committed = [i.get('media_item') or i for i in committed_items(snap)]
+        kept_uris = {i.get('uri') for i in committed if i.get('uri')}
+        exclude = set(s['seen']) | {playing['uri']} | set(upcoming) | kept_uris
         existing = []
         if append and isinstance(index, int):
             existing = [item.get('media_item') or item for item in (snap.get('items') or [])[index+1:]]
-        previous = s.get('recordings', []) + existing
+        previous = s.get('recordings', []) + committed + existing
         versions = s.get('versions', s.get('recordings', []))
         current_media=(snap.get('current_item') or {}).get('media_item') or snap.get('current_item') or {}
         relation_seed=existing[-1] if append and existing else current_media
@@ -188,14 +207,14 @@ class MoodMixes:
         if not picks:
             # An endless session can reuse older exact recordings after exhausting
             # fresh candidates, but never alternate versions of the same song.
-            blocked = {playing['uri']} | set(upcoming)
+            blocked = {playing['uri']} | set(upcoming) | kept_uris
             current_media = (snap.get('current_item') or {}).get('media_item') or snap.get('current_item') or {}
-            repeat_policy = {'mode': s.get('mode', 'mood'), 'queue_id': queue, 'exclude': list(blocked), 'previous': [current_media] + existing, 'versions': versions, 'relation_seed':relation_seed}
+            repeat_policy = {'mode': s.get('mode', 'mood'), 'queue_id': queue, 'exclude': list(blocked), 'previous': committed + existing, 'versions': versions, 'relation_seed':relation_seed}
             repeat_policy.update(discovery_balance=balance, steering=policy.get('steering'), previous_mood=policy.get('previous_mood'))
             candidates = await self.recommend(s['room'], 50, s['mood'], s['seed'], repeat_policy)
             last_played = {p.get('uri'): i for i,p in enumerate(s.get('recordings', []))}
             candidates = sorted(candidates, key=lambda p: last_played.get(p.get('uri'), -1))
-            picks = eligible(candidates, blocked, [current_media] + existing)
+            picks = eligible(candidates, blocked, committed + existing)
         if not picks:
             if append:
                 s['refresh_status'] = 'waiting_for_candidates'
@@ -225,21 +244,21 @@ class MoodMixes:
         now = current(latest)
         if s is not self.sessions.get(queue) or generation != s['generation']:
             return
-        if now['id'] != playing['id']:
+        if now['id'] != playing['id'] or committed_ids(latest) != committed_ids(snap):
             if not append:
                 s['pending_refresh'] = True
             s['refresh_status'] = 'retrying' if append else 'pending'
             return  # The monitor will retry against the new song, never restart it.
         result = await self.command('mood_append_upcoming' if append else 'mood_replace_upcoming', queue_id=queue,
-            expected_item_id=now['id'], expected_index=latest.get('current_index'),
+            expected_item_id=now['id'], expected_index=latest.get('current_index'), expected_committed_ids=committed_ids(latest),
             **({'expected_upcoming_ids': [str(i.get('queue_item_id') or '') for i in (snap.get('items') or [])[index+1:]]} if append and isinstance(index,int) else {}),
             media=[p['uri'] for p in picks])
         if result.get('state') == 'error':
             if not append:
                 s['pending_refresh'] = True
             raise ValueError(result.get('reason', 'Queue refresh rejected'))
-        s['owned'] = [playing['uri']] + upcoming + [p['uri'] for p in picks]
-        s['owned_recordings'] = [current_media] + existing + picks
+        s['owned'] = list(dict.fromkeys([playing['uri']] + [i['uri'] for i in committed if i.get('uri')] + upcoming + [p['uri'] for p in picks]))
+        s['owned_recordings'] = committed + existing + picks
         s['owned_item_ids'] = [playing['id']]
         s.pop('last_error', None)
         categories = s.setdefault('owned_categories', {})

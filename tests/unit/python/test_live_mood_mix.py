@@ -16,7 +16,8 @@ class FakeQueue:
         if cmd=='mood_snapshot': return {'state':'ok','snapshot':copy.deepcopy(self.state)}
         assert cmd in ('mood_replace_upcoming','mood_append_upcoming')
         assert data['expected_item_id']==self.state['current_item']['queue_item_id']
-        self.state['items']=(self.state['items'] if cmd=='mood_append_upcoming' else self.state['items'][:self.state['current_index']+1])+[
+        boundary=max(self.state['current_index'],self.state.get('index_in_buffer',self.state['current_index']))
+        self.state['items']=(self.state['items'] if cmd=='mood_append_upcoming' else self.state['items'][:boundary+1])+[
             {'queue_item_id':'generated-'+u,'media_item':{'uri':u}} for u in data['media']]
         return {'state':'queued'}
 
@@ -316,3 +317,41 @@ async def test_programming_error_during_steering_is_not_hidden():
     mixes=MoodMixes(q.command,recommend); await mixes.begin('q','bedroom',mode='radio')
     mixes.fill=AsyncMock(side_effect=RuntimeError('bug'))
     with pytest.raises(RuntimeError,match='bug'): await mixes.update('q',90,.5)
+
+
+@pytest.mark.asyncio
+async def test_replace_excludes_already_buffered_next_recording():
+    q=FakeQueue()
+    q.state['index_in_buffer']=2
+    q.state['items'][2]={'queue_item_id':'buffered','media_item':{'uri':'buffered-uri','name':'Buffered','duration':100}}
+    async def recommend(room,limit,mood,seed,policy):
+        assert 'buffered-uri' in policy['exclude']
+        return [{'uri':'buffered-uri','duration':100},{'uri':'fresh','duration':100}]
+    mixes=MoodMixes(q.command,recommend)
+    # Begin radio's tail fill must not put the retained buffered item back into the new tail.
+    await mixes.begin('q','bedroom',mode='radio')
+    writes=[data for cmd,data in q.calls if cmd=='mood_replace_upcoming']
+    assert writes[-1]['media']==['fresh']
+    assert writes[-1]['expected_committed_ids']==['seed-id','buffered']
+    assert [i.get('uri') or i['media_item']['uri'] for i in q.state['items']]==['past','seed','buffered-uri','fresh']
+
+
+@pytest.mark.asyncio
+async def test_buffer_advancing_during_ranking_defers_queue_commit():
+    q=FakeQueue()
+    async def recommend(*args):
+        q.state['index_in_buffer']=2
+        return [{'uri':'fresh','duration':100}]
+    mixes=MoodMixes(q.command,recommend)
+    await mixes.begin('q','bedroom',mode='radio')
+    assert not [data for cmd,data in q.calls if cmd in ('mood_replace_upcoming','mood_append_upcoming')]
+
+
+def test_committed_boundary_handles_offset_and_repeat_wrap():
+    from lib.mood_mix import committed_ids
+    s={'current_index':405,'items_offset':404,'index_in_buffer':406,'items':[{'queue_item_id':str(i)} for i in range(404,408)]}
+    assert committed_ids(s)==['405','406']
+    s['index_in_buffer']=0
+    assert committed_ids(s)==['405']
+    s['index_in_buffer']=500
+    with pytest.raises(ValueError):committed_ids(s)

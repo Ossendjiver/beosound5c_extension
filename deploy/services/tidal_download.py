@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """Personal Tidal cache: idle-only, authenticated unencrypted FLAC, add-only SSD."""
-import fcntl,hashlib,json,os,shutil,subprocess,time,urllib.request,urllib.error,urllib.parse
+import fcntl,hashlib,json,os,shutil,subprocess,time,uuid,urllib.request,urllib.error,urllib.parse
 from pathlib import Path
 from lib.ipod_sync import atomic_json
 from lib.tidal_rate_limit import RateLimit,Cooldown
+from lib.tidal_organise import destination,move_no_replace,matches
+from lib.library_tag_policy import provider_album_artist,classical_composers
 from lib.tidal_cache import direct_flac,tidal_mapping,select,validate_url,ProtectedAudio,maximum_asset,explicit
-ROOT=Path('/media/local/music/HomeMedia-Tidal')
+ROOT=Path('/media/local/music')
 CACHE=Path('/media/local/cache/tidal-download')
 STATUS=Path('/home/thomas/beosound5c/web/json/tidal_download_status.json')
 CONFIG=Path('/etc/beosound5c/tidal-download.json')
@@ -92,11 +94,30 @@ def all_tracks():
         if len(page)<500:return out
     raise ValueError('Library pagination exceeded safety limit')
 
-def transfer(asset,dest,reserve,item):
-    temp=dest.with_suffix('.part');tagged=dest.with_suffix('.tagged.part')
+def with_album_artist(item,details,credentials):
+    """Prefer Tidal's explicit primary album artist over unordered MA credits."""
+    album_id=str((details.get('album') or {}).get('id') or '')
+    if not album_id:raise ValueError('Missing Tidal album identity')
+    cache=read(CACHE/'album-artists.json',{})
+    name=cache.get(album_id)
+    if not name:
+        album=request('https://api.tidal.com/v1/albums/'+album_id+'?countryCode='+credentials['country'],token=credentials['token'])
+        name=provider_album_artist(album)
+        if not name:raise ValueError('Missing primary album artist')
+        cache[album_id]=name;atomic_json(CACHE/'album-artists.json',cache)
+    composers=classical_composers({'artist':[a.get('name','') for a in item.get('artists',[]) if isinstance(a,dict)],'albumartist':[name],'genre':list((item.get('metadata') or {}).get('genres') or [])})
+    if len(composers)==1:
+        return dict(item,album_artist=composers[0],album_artist_source='classical_composer',composer=composers[0],performer=name if name!=composers[0] else '')
+    return dict(item,album_artist=name,album_artist_source='tidal_primary_album_artist')
+
+def transfer(asset,dest,reserve,item,before_publish=None):
+    if not dest.resolve().is_relative_to(ROOT.resolve()):raise ValueError('Unsafe destination')
+    dest.parent.mkdir(parents=True,exist_ok=True)
+    token=uuid.uuid4().hex
+    temp=dest.with_name('.'+dest.name+'.'+token+'.part');tagged=dest.with_name('.'+dest.name+'.'+token+'.tagged.part')
     try:
         require_idle();size=0;last_check=0
-        with temp.open('wb') as f:
+        with temp.open('xb') as f:
             for url in asset['urls']:
                 validate_url(url)
                 with urllib.request.build_opener(SafeRedirect()).open(url,timeout=15) as response:
@@ -122,7 +143,8 @@ def transfer(asset,dest,reserve,item):
         if check.returncode:raise ValueError('FLAC decode failed')
         require_idle();album=item.get('album') or {}
         artist=', '.join(a.get('name','') for a in item.get('artists',[]) if isinstance(a,dict))
-        tags={'title':item.get('name',''),'artist':artist,'album':album.get('name','') if isinstance(album,dict) else str(album),'track':str(item.get('track_number') or ''),'disc':str(item.get('disc_number') or '')}
+        artists='; '.join(a.get('name','') for a in item.get('artists',[]) if isinstance(a,dict) and a.get('name'))
+        tags={'title':item.get('name',''),'artist':artist,'artists':artists,'album_artist':item.get('album_artist',''),'composer':item.get('composer',''),'performer':item.get('performer',''),'album':album.get('name','') if isinstance(album,dict) else str(album),'track':str(item.get('track_number') or ''),'disc':str(item.get('disc_number') or '')}
         args=['ffmpeg','-nostdin','-v','error','-threads','1','-i',str(temp),'-map','0:a:0','-c:a','copy']
         for name,value in tags.items():
             if value:args+=['-metadata',name+'='+value]
@@ -132,8 +154,11 @@ def transfer(asset,dest,reserve,item):
             for chunk in iter(lambda:f.read(1024*1024),b''):digest.update(chunk)
         require_idle()
         if dest.exists():raise ValueError('Refusing overwrite')
-        size=tagged.stat().st_size;os.replace(tagged,dest)
-        return {'path':str(dest),'size':size,'sha256':digest.hexdigest(),'sample_rate':rate,'bit_depth':bits,'quality_policy':2}
+        size=tagged.stat().st_size
+        record={'path':str(dest),'size':size,'sha256':digest.hexdigest(),'sample_rate':rate,'bit_depth':bits,'quality_policy':2}
+        if before_publish:before_publish(record)
+        move_no_replace(tagged,dest)
+        return record
     finally:
         for unfinished in (temp,tagged):
             if unfinished.exists():unfinished.unlink()
@@ -144,6 +169,54 @@ def cached_record_valid(record):
         path=Path(record['path'])
         return path.is_file() and path.stat().st_size==record.get('size')
     except (KeyError,OSError):return False
+
+def record_retry(state,tid,reason,now=None,minimum_delay=0):
+    now=time.time() if now is None else now
+    old=state.setdefault('outcomes',{}).get(tid,{})
+    attempts=int(old.get('attempts',0))+1
+    delay=max(minimum_delay,min(21600,300*2**min(attempts-1,7)))
+    state['outcomes'][tid]={'state':'retry_pending','reason':reason,'attempts':attempts,'retry_at':now+delay}
+
+
+def reconcile(state,plan,now=None):
+    """Rebuild work from files, not last_completed or the old pending list."""
+    now=time.time() if now is None else now
+    pending=[];cached=excluded=missing=0
+    outcomes=state.setdefault('outcomes',{})
+    for tid in plan:
+        old=state.get('tracks',{}).get(tid)
+        valid=cached_record_valid(old)
+        outcome=outcomes.get(tid,{})
+        if valid:
+            cached+=1
+            if now-old.get('quality_checked_at',old.get('downloaded_at',0))<86400:
+                outcomes.pop(tid,None);continue
+        elif outcome.get('state')=='non_explicit' and outcome.get('retry_at',0)>now:
+            excluded+=1;continue
+        else:missing+=1
+        pending.append(tid)
+    pending.sort(key=lambda tid:cached_record_valid(state.get('tracks',{}).get(tid)))
+    state['pending_ids']=pending
+    return {'cached_selected':cached,'excluded':excluded,'missing':missing,'remaining':len(pending),
+            'retry_pending':sum(outcomes.get(tid,{}).get('state')=='retry_pending' for tid in pending)}
+
+
+def recover_commit(state):
+    journal=CACHE/'commit-journal.json';intent=read(journal,{})
+    if not intent:return
+    record=intent['record'];path=Path(record['path'])
+    if not path.resolve().is_relative_to(ROOT.resolve()):raise ValueError('Unsafe download recovery')
+    if path.exists():
+        if not matches(path,record):raise ValueError('Interrupted download could not be verified')
+        state.setdefault('tracks',{})[intent['id']]=record
+        atomic_json(CACHE/'index.json',state)
+    atomic_json(journal,{})
+
+
+def completion(state,plan):
+    summary=reconcile(state,plan)
+    return ('retry_pending' if summary['remaining'] else ('complete_with_exclusions' if summary['excluded'] else 'complete')),summary
+
 
 def main():
     if subprocess.check_output(['findmnt','-n','-o','TARGET','/media/local'],text=True).strip()!='/media/local':raise ValueError('SSD missing')
@@ -157,66 +230,86 @@ def main():
         try:fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
         except BlockingIOError:return
         state=read(CACHE/'index.json',{'version':1,'tracks':{}})
+        recover_commit(state)
         selection_key=[int(config.get('tracks',250)),int(config.get('albums',20))]
-        if state.get('quality_policy')==2 and state.get('selection_key')==selection_key and time.time()-state.get('last_completed',0)<86400:return
-        RATE.ready()
-        require_idle();publish('selecting',retry_at=None,message='Ranking personal listening history')
-        evidence=request('http://127.0.0.1:8788/library/tidal-download/ranking')
-        tracks,albums=select(all_tracks(),evidence,int(config.get('tracks',250)),int(config.get('albums',20)))
-        selected=list(tracks)
-        for album in albums:
-            require_idle()
-            rows=command('music/albums/album_tracks',{'item_id':album['item_id'],'provider_instance_id_or_domain':album['provider']})
-            if not isinstance(rows,list):raise ValueError('Invalid album response')
-            selected.extend(t for t in rows if tidal_mapping(t) and explicit(t))
-        plan={str(tidal_mapping(t)['item_id']):t for t in selected}
-        atomic_json(CACHE/'selection.json',{'updated':time.time(),'tracks':len(tracks),'albums':albums,'items':list(plan)})
-        plan_key={'selection':selection_key,'ids':sorted(plan)}
-        if state.get('pending_plan')!=plan_key or not state.get('pending_ids'):
-            state['pending_plan']=plan_key
-            state['pending_ids']=sorted(plan,key=lambda tid:cached_record_valid(state['tracks'].get(tid)))
-            atomic_json(CACHE/'index.json',state)
-        counters={'downloaded':0,'retained':0,'protected':0,'errors':0,'non_explicit':0};credentials=auth() if plan else None
-        started=time.monotonic()
+        selected=state.get('selected_items',{})
+        refresh=state.get('selection_key')!=selection_key or time.time()-state.get('selected_at',0)>=86400 or not selected
+        if refresh:
+            RATE.ready();require_idle();publish('selecting',retry_at=None,message='Ranking personal listening history')
+            evidence=request('http://127.0.0.1:8788/library/tidal-download/ranking')
+            tracks,albums=select(all_tracks(),evidence,int(config.get('tracks',250)),int(config.get('albums',20)))
+            selected=list(tracks)
+            for album in albums:
+                require_idle()
+                rows=command('music/albums/album_tracks',{'item_id':album['item_id'],'provider_instance_id_or_domain':album['provider']})
+                if not isinstance(rows,list):raise ValueError('Invalid album response')
+                selected.extend(t for t in rows if tidal_mapping(t) and explicit(t))
+            plan={str(tidal_mapping(t)['item_id']):t for t in selected}
+            atomic_json(CACHE/'selection.json',{'updated':time.time(),'tracks':len(tracks),'albums':albums,'items':list(plan)})
+            state.update(selected_items=plan,selected_at=time.time(),selection_key=selection_key)
+        else:plan=selected
+        summary=reconcile(state,plan);atomic_json(CACHE/'index.json',state)
+        if not summary['remaining']:
+            status,summary=completion(state,plan)
+            publish(status,total=len(plan),cached=len(state['tracks']),**summary,message='Selection reconciled against files')
+            return
+        RATE.ready();require_idle()
+        counters={'downloaded':0,'retained':0,'protected':0,'errors':0,'non_explicit':0}
+        credentials=None;started=time.monotonic()
         for tid in list(state['pending_ids']):
-            item=plan[tid]
-            completed=False
-            if time.monotonic()-started>4*3600:publish('deferred',message='Run limit reached; will resume',**counters);return
+            item=plan[tid];outcome=state.setdefault('outcomes',{}).get(tid,{})
+            if outcome.get('retry_at',0)>time.time():continue
+            if time.monotonic()-started>4*3600:break
             require_idle();old=state['tracks'].get(tid)
             publish('downloading',total=len(plan),**counters,message='Checking maximum quality for '+str(item.get('name','track')))
             try:
                 if cached_record_valid(old) and time.time()-old.get('quality_checked_at',old.get('downloaded_at',0))<86400:
-                    old['uris']=sorted(set(old.get('uris',[]))|{item['uri']})
-                    counters['retained']+=1;completed=True;continue
+                    counters['retained']+=1;continue
+                if credentials is None:credentials=auth()
                 details=request('https://api.tidal.com/v1/tracks/'+tid+'?countryCode='+credentials['country'],token=credentials['token'])
                 if details.get('explicit') is not True:
-                    counters['non_explicit']+=1;completed=True;continue
+                    counters['non_explicit']+=1
+                    state['outcomes'][tid]={'state':'non_explicit','reason':'Provider confirms no explicit version','retry_at':time.time()+86400}
+                    continue
+                item=with_album_artist(item,details,credentials)
                 params={'playbackmode':'STREAM','assetpresentation':'FULL','audioquality':'HI_RES_LOSSLESS','immersiveaudio':'false','countryCode':credentials['country']}
                 info=request('https://api.tidal.com/v1/tracks/'+tid+'/playbackinfopostpaywall?'+urllib.parse.urlencode(params),token=credentials['token'])
                 asset=maximum_asset(info)
-                if old and old.get('quality_policy')==2 and old.get('sample_rate',0)>=asset['sample_rate'] and old.get('bit_depth',0)>=asset['bits'] and Path(old['path']).is_file() and Path(old['path']).stat().st_size==old.get('size'):
-                    aliases=set(old.get('uris',[]));aliases.add(item['uri']);old['uris']=sorted(aliases);counters['retained']+=1;old['quality_checked_at']=time.time();completed=True;continue
-                dest=ROOT/(tid+'.'+str(asset['bits'])+'bit-'+str(asset['sample_rate'])+'.flac')
-                if dest.exists():dest=ROOT/(tid+'.'+str(time.time_ns())+'.flac')
-                record=transfer(asset,dest,int(config.get('reserve_bytes',10*1024**3)),item)
-                if old:record['previous']=old.get('previous',[])+[{k:v for k,v in old.items() if k!='previous'}]
-                state['tracks'][tid]=dict(record,item=item,uris=[item['uri'],f'tidal://track/{tid}'],downloaded_at=time.time(),quality_checked_at=time.time());counters['downloaded']+=1
-                completed=True
-            except ProtectedAudio:counters['protected']+=1;completed=True
+                if cached_record_valid(old) and old.get('sample_rate',0)>=asset['sample_rate'] and old.get('bit_depth',0)>=asset['bits']:
+                    aliases=set(old.get('uris',[]));aliases.add(item['uri']);old['uris']=sorted(aliases)
+                    counters['retained']+=1;old['quality_checked_at']=time.time();state['outcomes'].pop(tid,None);continue
+                # Write and verify hidden partials in the final artist/album folder. No staging move.
+                dest=destination(ROOT,{'item':item,'bit_depth':asset['bits'],'sample_rate':asset['sample_rate']},tid)
+                def commit(record):
+                    previous=old.get('previous',[])+[{k:v for k,v in old.items() if k!='previous'}] if old else []
+                    final=dict(record,item=item,uris=[item['uri'],f'tidal://track/{tid}'],downloaded_at=time.time(),quality_checked_at=time.time())
+                    if previous:final['previous']=previous
+                    atomic_json(CACHE/'commit-journal.json',{'id':tid,'record':final})
+                record=transfer(asset,dest,int(config.get('reserve_bytes',10*1024**3)),item,before_publish=commit)
+                intent=read(CACHE/'commit-journal.json',{})
+                state['tracks'][tid]=intent['record'];state['outcomes'].pop(tid,None)
+                atomic_json(CACHE/'index.json',state);atomic_json(CACHE/'commit-journal.json',{})
+                counters['downloaded']+=1
+            except ProtectedAudio:
+                counters['protected']+=1;record_retry(state,tid,'protected_audio',minimum_delay=86400)
             except (Busy,AuthNeeded,DiskFull,Cooldown):raise
             except urllib.error.HTTPError as e:
                 if e.code==429:RATE.limited(e.headers)
-                counters['errors']+=1;completed=True
-            except (ValueError,OSError,subprocess.SubprocessError):counters['errors']+=1;completed=True
+                counters['errors']+=1;record_retry(state,tid,'HTTP_'+str(e.code),minimum_delay=86400 if e.code in (403,404,410) else 0)
+            except (ValueError,OSError,subprocess.SubprocessError) as e:
+                counters['errors']+=1;record_retry(state,tid,type(e).__name__)
             finally:
-                if completed:
-                    state['pending_ids'].remove(tid)
-                    atomic_json(CACHE/'index.json',state)
-                publish('downloading',total=len(plan),remaining=len(state['pending_ids']),cached=len(state['tracks']),**counters)
+                # Save outcomes even when playback starts or credentials/rate limits defer the run.
+                summary=reconcile(state,plan);atomic_json(CACHE/'index.json',state)
+                publish('downloading',total=len(plan),cached=len(state['tracks']),**summary,**counters)
             time.sleep(.5)
-        RATE.completed()
-        state['last_completed']=time.time();state['quality_policy']=2;state['selection_key']=selection_key;atomic_json(CACHE/'index.json',state)
-        publish('complete',last_completed=state['last_completed'],cached=len(state['tracks']),total=len(plan),**counters,message='Add-only cache updated; next refresh in 24 hours')
+        status,summary=completion(state,plan)
+        if not summary['remaining']:
+            RATE.completed();state['last_completed']=time.time();state['quality_policy']=2
+        atomic_json(CACHE/'index.json',state)
+        retry_at=min((state['outcomes'].get(tid,{}).get('retry_at',time.time()) for tid in state['pending_ids']),default=None)
+        publish(status,last_completed=state.get('last_completed'),cached=len(state['tracks']),total=len(plan),
+            retry_at=retry_at,**summary,**counters,message='Selection verified' if not summary['remaining'] else 'Unresolved files retained for automatic retry')
 
 if __name__=='__main__':
     try:main()

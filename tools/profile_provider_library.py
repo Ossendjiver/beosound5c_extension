@@ -285,10 +285,17 @@ def update(entries,payload,command,online,analyzer,local_aliases,*,max_items=500
                 features.update(analysis='provider-preview-four-patches-v2', coverage='preview_only')
                 record.update(metadata=music_features.merge(metadata,{'audio_features':features}),source='ma_preview',audio_source='ma_preview',status='sample_ready',analysis_fingerprint=analyzer.fingerprint)
                 counts['sampled']+=1
-            record.pop('error',None)
+            record.pop('error',None);record.pop('retry_attempts',None)
         except (OSError,http.client.HTTPException,ValueError,RuntimeError,TypeError,AttributeError,subprocess.SubprocessError) as exc:
             # Retain useful previous metadata/descriptors, and never persist signed URLs.
-            record.update(error=type(exc).__name__,next_check=now+86400,status='retry_pending')
+            attempts=int(previous.get('retry_attempts',0))+1
+            delay=min(6*3600, 900*2**min(attempts-1,5))
+            if isinstance(exc,urllib.error.HTTPError):
+                if exc.code in (403,404,410):delay=max(delay,86400)
+                retry=exc.headers.get('Retry-After') if exc.headers else None
+                try:delay=max(delay,min(7*86400,float(retry)))
+                except (TypeError,ValueError):pass
+            record.update(error=type(exc).__name__,retry_attempts=attempts,next_check=now+delay,status='retry_pending')
             if previous.get('metadata',{}).get('audio_features'):
                 record['source']=previous.get('source','ma_preview')
             counts['failed']+=1
@@ -308,6 +315,8 @@ def progress_status(payload, *, running):
     sweep['errors']=sum(bool(r.get('error')) for r in records)
     return {'running':running,'sweep':sweep,'updated_at':time.time(),
             'successful_samples':sum(r.get('status')=='sample_ready' for r in records),
+            'retry_pending':sum(r.get('status')=='retry_pending' for r in records),
+            'next_retry_at':min((r.get('next_check',0) for r in records if r.get('status')=='retry_pending'),default=None),
             'ready':sum(profiles.useful(r.get('metadata',{})) or r.get('status')=='local_audio_available' for r in records)}
 
 
@@ -317,7 +326,7 @@ def pending_entries(entries,payload,*,respect_retry_backoff=False,upgrade_qualit
         record=payload['tracks'].get(entry['uri'],{})
         if respect_retry_backoff and record.get('status')=='retry_pending' and record.get('next_check',0)>time.time():continue
         outdated = upgrade_quality and record.get('status')=='sample_ready' and not (record.get('metadata',{}).get('audio_features') or {}).get('profile_quality_version')
-        if outdated or record.get('status') in ('awaiting_sample','sampling_deferred_busy','retry_pending','metadata_ready') and not profiles.useful(record.get('metadata',{})):
+        if not record or outdated or record.get('status') in ('awaiting_sample','sampling_deferred_busy','retry_pending') or (record.get('status')=='metadata_ready' and not profiles.useful(record.get('metadata',{}))):
             record['next_check']=0
             selected.append(entry)
     return selected
@@ -356,7 +365,10 @@ def main():
                 print(json.dumps({'skipped':True,'reason':'Sweep incomplete or playback not idle'}));return 0
             entries=pending_entries(entries,payload,respect_retry_backoff=args.respect_retry_backoff,upgrade_quality=args.upgrade_quality)
             if not entries:
-                print(json.dumps({'skipped':True,'reason':'No profiles need sampling'}));return 0
+                status=progress_status(payload,running=False)
+                status.update(checked_at=time.time(),state='waiting_for_retry' if status['sweep']['pending_samples'] else 'complete')
+                atomic_write(args.output.with_suffix('.status.json'),status)
+                print(json.dumps(status));return 0
         from lib.profile_priorities import ordered
         priorities=json.loads(args.priority_file.read_text()) if args.priority_file else {}
         entries=ordered(entries,payload['tracks'],priorities)
@@ -387,11 +399,11 @@ def main():
             print(json.dumps(status));return 1
         if args.full_sweep:
             payload['sweep']['complete']=payload['sweep']['visited']>=len(entries)
-            payload['sweep']['pending_samples']=sum(r.get('status') in ('awaiting_sample','sampling_deferred_busy') for r in payload['tracks'].values())
+            payload['sweep']['pending_samples']=progress_status(payload,running=False)['sweep']['pending_samples']
             payload['sweep']['errors']=sum(bool(r.get('error')) for r in payload['tracks'].values())
         payload['generated_at']=time.time();atomic_write(args.output,payload);atomic_write(request_path,requests)
         if args.retry_pending:
-            payload['sweep']['pending_samples']=sum(r.get('status') in ('awaiting_sample','sampling_deferred_busy') for r in payload['tracks'].values())
+            payload['sweep']['pending_samples']=progress_status(payload,running=False)['sweep']['pending_samples']
             payload['sweep']['errors']=sum(bool(r.get('error')) for r in payload['tracks'].values())
             atomic_write(args.output,payload)
         status={**progress_status(payload,running=False),'checked_at':time.time(),'catalogue_entries':catalogue_entries,'running':False,**counts,'ready':sum(profiles.useful(r.get('metadata',{})) or r.get('status')=='local_audio_available' for r in payload['tracks'].values())}

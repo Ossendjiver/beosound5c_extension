@@ -147,3 +147,21 @@ def test_batched_inference_preserves_section_coverage_and_rejects_silence():
     with pytest.raises(ValueError,match='No usable audio'):
         analyzer.analyze([np.zeros(30*16000,dtype=np.float32)])
     assert len(calls)==1
+
+
+def test_playback_start_defers_next_local_sample_without_losing_good_profiles(tmp_path):
+    paths=[tmp_path/str(n) for n in range(2)]
+    for path in paths:path.write_bytes(b'a')
+    items=[entry(path,str(n)) for n,path in enumerate(paths)]
+    calls=[];checks=iter([True,False]);payload={'version':1,'tracks':{}}
+    counts,_=profiler.update(items,payload,Analyzer(),sample=lambda path:calls.append(path) or [],can_sample=lambda:next(checks))
+    assert counts['analysed']==1 and counts['deferred']==1 and calls==paths[:1]
+    assert '0' in payload['tracks'] and '1' not in payload['tracks']
+
+
+def test_busy_local_pass_does_not_poll_ma_once_for_each_deferred_file(tmp_path):
+    paths=[tmp_path/str(n) for n in range(5)]
+    for path in paths:path.write_bytes(b'a')
+    checks=[]
+    counts,_=profiler.update([entry(path,str(n)) for n,path in enumerate(paths)],{'version':1,'tracks':{}},Analyzer(),can_sample=lambda:checks.append(1) or False)
+    assert checks==[1] and counts['deferred']==5

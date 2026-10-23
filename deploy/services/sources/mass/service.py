@@ -5743,7 +5743,7 @@ class MassSource(SourceBase):
             queue = queues[0] if queues else ""
         if not queue:
             return {"state": "error", "reason": "missing_queue"}
-        from lib.mood_mix import current, item_index
+        from lib.mood_mix import current, item_index, committed_items, committed_ids
         locks = getattr(self, "_mood_queue_locks", None)
         if locks is None:
             self._mood_queue_locks = locks = {}
@@ -5758,6 +5758,14 @@ class MassSource(SourceBase):
             media = data.get("media")
             if not isinstance(media, list) or len(media) > 50 or any(not isinstance(m, str) or not m.strip() for m in media):
                 return {"state": "error", "reason": "invalid_mix_media"}
+            expected_committed = data.get('expected_committed_ids')
+            if expected_committed is not None and expected_committed != committed_ids(snapshot):
+                return {'state':'error','reason':'buffered_queue_changed'}
+            original_media = list(media)
+            protected = {str((i.get('media_item') or i).get('uri') or '') for i in committed_items(snapshot)}
+            media = list(dict.fromkeys(m for m in media if m not in protected))
+            if original_media and not media:
+                return {'state':'queued','queue_id':queue,'reason':'no_new_mix_media'}
             if cmd == 'mood_append_upcoming':
                 index = item_index(snapshot)
                 tail = (snapshot.get('items') or [])[index+1:] if isinstance(index,int) else []
@@ -5770,6 +5778,9 @@ class MassSource(SourceBase):
             response = await self._send_command_response("player_queues/dont_stop_the_music", queue_id=queue, dont_stop_the_music_enabled=False)
             if not self._api_response_ok(response):
                 return {"state": "error", "reason": "cannot_disable_ma_autoplay"}
+            fresh = await self._get_mood_snapshot(queue)
+            if current(fresh)['id'] != playing['id'] or committed_ids(fresh) != committed_ids(snapshot):
+                return {'state':'error','reason':'buffered_queue_changed'}
             if media:
                 response = await self._send_command_response("player_queues/play_media", queue_id=queue,
                     media=media, option="add" if cmd == "mood_append_upcoming" else "replace_next", radio_mode=False)
@@ -5780,7 +5791,7 @@ class MassSource(SourceBase):
                 index = item_index(snapshot)
                 if not isinstance(index, int) or index < 0:
                     return {"state": "error", "reason": "unknown_current_index"}
-                for item in reversed((snapshot.get("items") or [])[index+1:]):
+                for item in reversed((snapshot.get("items") or [])[index+len(committed_items(snapshot)):]):
                     fresh = await self._get_mood_snapshot(queue)
                     if current(fresh)["id"] != playing["id"]:
                         return {"state": "error", "reason": "current_item_changed"}

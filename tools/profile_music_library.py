@@ -63,7 +63,7 @@ def inventory(items, root):
     return result
 
 
-def update(entries, payload, analyzer, *, max_tracks=250, max_seconds=3600, now=None, sample=segments, checkpoint=None):
+def update(entries, payload, analyzer, *, max_tracks=250, max_seconds=3600, now=None, sample=segments, checkpoint=None, can_sample=None):
     now = time.time() if now is None else now
     started = time.monotonic()
     tracks = payload.setdefault('tracks', {})
@@ -72,6 +72,7 @@ def update(entries, payload, analyzer, *, max_tracks=250, max_seconds=3600, now=
     previous_failures = payload.get('failures', {})
     failures, counts = {}, {'unchanged': 0, 'analysed': 0, 'failed': 0, 'no_local_audio': 0, 'deferred': 0}
     changed = False
+    playback_busy = False
     for entry in entries:
         uri = entry['uri']
         if not entry.get('path'):
@@ -93,6 +94,10 @@ def update(entries, payload, analyzer, *, max_tracks=250, max_seconds=3600, now=
                 counts['deferred'] += 1
                 continue
             if counts['analysed'] + counts['failed'] >= max_tracks or time.monotonic()-started >= max_seconds:
+                counts['deferred'] += 1
+                continue
+            if playback_busy or (can_sample is not None and not can_sample()):
+                playback_busy = True
                 counts['deferred'] += 1
                 continue
             features = analyzer.analyze(sample(Path(entry['path'])))
@@ -141,6 +146,12 @@ def main():
         raise ValueError('Invalid work limits')
     os.umask(0o077)
     args.output.parent.mkdir(parents=True, exist_ok=True)
+    # Serialize local and provider analysis under the same SSD lock.
+    shared = args.output.parent/'provider_profiles.lock'
+    shared_lock = shared.open('a')
+    try:fcntl.flock(shared_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        shared_lock.close();return 0
     # systemd serializes scheduled runs; also protect manual invocations.
     with args.output.with_suffix('.lock').open('w') as lock:
         try:
@@ -149,12 +160,16 @@ def main():
             return 0
         configured = os.getenv('MASS_WS_URL') or os.getenv('BS5C_MASS_WS_URL') or 'http://localhost:8095'
         base = configured.replace('wss://', 'https://').replace('ws://', 'http://').removesuffix('/ws')
-        items = catalogue(api_client(base, os.getenv('MASS_TOKEN', '')))
+        command = api_client(base, os.getenv('MASS_TOKEN', ''))
+        from profile_provider_library import players_idle
+        if not players_idle(command):
+            print(json.dumps({'skipped':True,'reason':'Playback is not idle'}));return 0
+        items = catalogue(command)
         entries = inventory(items, args.root)
         payload = json.loads(args.output.read_text()) if args.output.exists() else {'version': 1, 'tracks': {}}
         from music_audio_onnx import Analyzer
         counts, changed = update(entries, payload, Analyzer(args.models), max_tracks=args.max_tracks,
-                                max_seconds=args.max_seconds, checkpoint=lambda p: atomic_write(args.output, p))
+                                max_seconds=args.max_seconds, can_sample=lambda:players_idle(command), checkpoint=lambda p: atomic_write(args.output, p))
         calibration = library_calibration(payload['tracks'].values())
         if payload.get('mood_calibration') != calibration:
             payload['mood_calibration'] = calibration
@@ -164,6 +179,7 @@ def main():
             atomic_write(args.output, payload)
         # Inventory/status can change independently of audio and uses a separate file.
         status = {'checked_at': time.time(), 'catalogue_tracks': len(entries), **counts,
+                  'complete': counts['deferred']==0 and counts['failed']==0 and not payload.get('failures'),
                   'profiled': sum(bool(payload['tracks'].get(e['uri'], {}).get('audio_features')) for e in entries)}
         atomic_write(args.output.with_suffix('.status.json'), status)
         print(json.dumps(status))
