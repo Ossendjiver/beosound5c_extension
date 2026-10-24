@@ -132,8 +132,20 @@ def require_music(player_id, snapshot):
         if "kodi" in identity.casefold(): raise InvalidIntent("Kodi cannot be a music target")
         for key in ("group_members", "static_group_members"):
             for member in player.get(key) or []: visit(member)
-        for key in ("protocol_parent_id", "active_output_protocol"):
-            if player.get(key): visit(player[key])
+        if player.get("protocol_parent_id"): visit(player["protocol_parent_id"])
+        protocol = player.get("active_output_protocol")
+        if protocol:
+            # MA protocols can be owner-local descriptors (including "native"),
+            # rather than entries returned by players/all.
+            descriptors = player.get("output_protocols") or []
+            if not isinstance(descriptors, list): raise Uncertain("Invalid output protocol descriptors")
+            matches = [p for p in descriptors if isinstance(p, dict) and p.get("output_protocol_id") == protocol]
+            if len(matches) > 1: raise Uncertain("Ambiguous output protocol")
+            if matches:
+                if "kodi" in " ".join(str(v) for v in matches[0].values()).casefold():
+                    raise InvalidIntent("Kodi cannot be a music target")
+            if protocol in players: visit(protocol)
+            elif not matches: raise Uncertain("Music output protocol is not advertised by its owner")
     visit(player_id)
     visit(canonical(player_id, snapshot["players"])["player_id"])
 
