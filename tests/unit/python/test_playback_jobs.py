@@ -247,3 +247,23 @@ async def test_kodi_source_is_rejected_before_routing_target():
     f=Fake();f.players[0].update(provider='kodi',name='Renamed TV')
     assert (await f.run('join'))['status']=='failed'
     assert not f.actions and not f.mutations()
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('protocol,domain', [('native','wiim'), ('uuid:renderer','dlna')])
+async def test_owner_local_output_protocol_allows_transfer(protocol,domain):
+    f=Fake();f.players[0].update(active_output_protocol=protocol,output_protocols=[dict(output_protocol_id=protocol,protocol_domain=domain,is_native=protocol=='native')])
+    assert (await f.run())['status']=='succeeded'
+    assert len(f.mutations())==1
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('updates', [
+    dict(active_output_protocol='missing'),
+    dict(protocol_parent_id='missing'),
+    dict(group_members=['missing']),
+    dict(active_output_protocol='native',output_protocols=[dict(output_protocol_id='native',protocol_domain='kodi')]),
+    dict(active_output_protocol='native',output_protocols=[dict(output_protocol_id='native'),dict(output_protocol_id='native')]),
+])
+async def test_unresolved_or_unsafe_topology_still_rejects_without_effects(updates):
+    f=Fake();f.players[0].update(updates)
+    assert (await f.run())['status']!='succeeded'
+    assert not f.mutations() and not f.actions
