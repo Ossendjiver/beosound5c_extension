@@ -2343,6 +2343,13 @@ class MassSource(SourceBase):
 
         app.router.add_get('/playlists', _handle_playlists)
         app.router.add_get('/artist_bio', _handle_artist_bio)
+        async def _handle_playing_queue(request):
+            payload = await self._playing_queue_snapshot(
+                str(request.query.get('title') or '')[:512],
+                str(request.query.get('artist') or '')[:512])
+            return web.json_response(payload, headers=self._cors_headers())
+
+        app.router.add_get('/playing_queue', _handle_playing_queue)
         app.router.add_get('/now_playing', _handle_now_playing)
         app.router.add_get('/item_info', _handle_item_info)
         app.router.add_get('/art/{filename}', _handle_art)
@@ -4930,6 +4937,41 @@ class MassSource(SourceBase):
             "artwork": artwork,
             "uri": self._extract_queue_uri(current_item),
         }
+
+    async def _playing_queue_snapshot(self, title='', artist=''):
+        """Read only the explicitly configured BS5c queue; never hunt other rooms."""
+        player = str(cfg('mass', 'playing_queue_player_id', default='') or TARGET_PLAYER_ID or '').strip()
+        empty = {'bound': False, 'read_only': True, 'tracks': [], 'current_index': -1}
+        if not player:
+            return empty
+        snapshot = await self._get_queue_snapshot(player)
+        if not isinstance(snapshot, dict) or not snapshot:
+            return empty
+        item = self._extract_current_queue_item(snapshot) or {}
+        media = item.get('media_item') or item
+        normalize = lambda value: ' '.join(str(value or '').casefold().split())
+        actual_title = normalize(media.get('name') or item.get('name'))
+        actual_artist = normalize(self._extract_queue_artist(item))
+        state = self._extract_playback_state(snapshot) or 'idle'
+        if title and normalize(title) not in ('—', '-'):
+            if not artist or actual_title != normalize(title) or actual_artist != normalize(artist):
+                return empty
+        elif self._is_active_state(state):
+            return empty  # no matching displayed identity: cannot claim playing audio
+        offset = int(snapshot.get('items_offset') or 0)
+        rows = self._extract_queue_items(snapshot)[:80]
+        tracks = []
+        for i, row in enumerate(rows):
+            m = row.get('media_item') or row
+            tracks.append({'queue_item_id': str(row.get('queue_item_id') or ''),
+                'name': str(m.get('name') or row.get('name') or 'Queued item'),
+                'artist': self._extract_queue_artist(row),
+                'album': self._extract_queue_album(row), 'index': offset+i,
+                'current': offset+i == snapshot.get('current_index')})
+        current_index = snapshot.get('current_index')
+        return {'bound': True, 'read_only': True, 'queue_id': str(snapshot.get('resolved_queue_id') or player),
+                'tracks': tracks, 'state': state,
+                'current_index': current_index-offset if isinstance(current_index, int) else -1}
 
     async def _build_queue_root(self):
         if self._local_queue_active or self._local_queue_entries:

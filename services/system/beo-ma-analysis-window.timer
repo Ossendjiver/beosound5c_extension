@@ -1,0 +1,10 @@
+[Unit]
+Description=Maintain overnight audio-analysis start policy
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=30min
+Unit=beo-ma-analysis-window.service
+
+[Install]
+WantedBy=timers.target

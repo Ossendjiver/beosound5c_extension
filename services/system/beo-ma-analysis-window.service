@@ -1,0 +1,17 @@
+[Unit]
+Description=Melbourne overnight Music Assistant analysis autostart
+After=network-online.target
+RequiresMountsFor=/media/local/cache
+
+[Service]
+Type=oneshot
+User=__USER__
+Group=__USER__
+EnvironmentFile=/etc/beosound5c/secrets.env
+ExecStart=/usr/bin/python3 __HOME__/beosound5c/tools/analysis_night_window.py
+Nice=19
+IOSchedulingClass=idle
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/media/local/cache
