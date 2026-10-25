@@ -254,10 +254,10 @@ function routeNavToView(page, data, uiStore) {
 
     // Playing page — active source owns nav
     const playingSourceId = page === 'menu/playing' ? resolvePlayingSourceId(uiStore) : '';
+    if (page === 'menu/playing' && window.PlayingQueueOverlay?.handleNavEvent?.(data, playingSourceId)) {
+        return true;
+    }
     if (page === 'menu/playing' && playingSourceId) {
-        if (window.PlayingQueueOverlay?.handleNavEvent?.(data, playingSourceId)) {
-            return true;
-        }
         const ctrl = window.SourcePresets?.[playingSourceId]?.controller;
         const forceSourceNav = Boolean(ctrl?.wantsPlayingNav?.());
         const useMainMenuWheel = uiStore?.view?.menuVisible !== false;

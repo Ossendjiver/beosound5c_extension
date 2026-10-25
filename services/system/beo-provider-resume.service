@@ -17,6 +17,7 @@ EnvironmentFile=-/etc/beosound5c/secrets.env
 Environment=OPENBLAS_NUM_THREADS=1
 Environment=OMP_NUM_THREADS=1
 Environment=PYTHONUNBUFFERED=1
+ExecCondition=/usr/bin/python3 __HOME__/beosound5c/tools/analysis_night_window.py --check
 ExecStart=/media/local/cache/audio-analysis/venv/bin/python __HOME__/beosound5c/tools/resume_library_profiles.py
 Nice=19
 IOSchedulingClass=idle

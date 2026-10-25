@@ -104,6 +104,10 @@ const PlayingQueueOverlay = (() => {
 
     let mountedContainer = null;
     let activeSourceId = '';
+    let fallbackCandidate = false;
+    let fallbackVerified = false;
+    let fallbackMedia = {};
+    let fallbackSignature = '';
     let refreshTimer = null;
     let queueRequestId = 0;
     let ui = createUiState();
@@ -160,6 +164,10 @@ const PlayingQueueOverlay = (() => {
     }
 
     function queueConfigFor(sourceId = activeSourceId) {
+        if (!normalizeSourceId(sourceId) && fallbackVerified) {
+            return { playing: true, capabilities: { playNow: false, playNext: false,
+                remove: false, showInformation: true, goto: [] } };
+        }
         const preset = window.SourcePresets?.[normalizeSourceId(sourceId)];
         const config = preset?.queueOverlay;
         if (!config?.playing) return null;
@@ -624,23 +632,28 @@ const PlayingQueueOverlay = (() => {
     }
 
     function ensureRefresh() {
-        if (refreshTimer || !isEnabledFor(activeSourceId)) return;
+        if (refreshTimer || (!fallbackCandidate && !isEnabledFor(activeSourceId))) return;
         refreshTimer = setInterval(() => {
             void refreshQueue(false);
         }, REFRESH_MS);
     }
 
     async function refreshQueue(force = false) {
-        if (!isEnabledFor(activeSourceId)) return;
+        if (!fallbackCandidate && !isEnabledFor(activeSourceId)) return;
         const requestId = ++queueRequestId;
         queueState.loading = true;
         if (force) queueState.error = '';
         render();
         try {
-            const response = await fetch(`${routerUrl()}/router/queue?start=0&max_items=${MAX_ITEMS}`, { cache: 'no-store' });
+            const serviceBase = typeof getServiceUrl === 'function' ? getServiceUrl('massServiceUrl', 8783) : 'http://localhost:8783';
+            const url = fallbackCandidate
+                ? `${serviceBase}/playing_queue?title=${encodeURIComponent(fallbackMedia.title || '')}&artist=${encodeURIComponent(fallbackMedia.artist || '')}`
+                : `${routerUrl()}/router/queue?start=0&max_items=${MAX_ITEMS}`;
+            const response = await fetch(url, { cache: 'no-store' });
             const data = await response.json().catch(() => ({}));
             if (requestId !== queueRequestId) return;
-            if (!response.ok || data.error || data.state === 'error') {
+            if (fallbackCandidate) fallbackVerified = response.ok && data.bound === true;
+            if (!response.ok || data.error || data.state === 'error' || (fallbackCandidate && !fallbackVerified)) {
                 queueState.items = [];
                 queueState.currentIndex = -1;
                 queueState.error = 'Queue unavailable';
@@ -656,6 +669,7 @@ const PlayingQueueOverlay = (() => {
             }
         } catch (error) {
             if (requestId !== queueRequestId) return;
+            if (fallbackCandidate) fallbackVerified = false;
             queueState.items = [];
             queueState.currentIndex = -1;
             queueState.error = 'Queue unavailable';
@@ -729,8 +743,14 @@ const PlayingQueueOverlay = (() => {
         const nextSourceId = normalizeSourceId(context.activeSource);
         const sourceChanged = nextSourceId !== activeSourceId;
         activeSourceId = nextSourceId;
+        const media = context.mediaInfo || {};
+        const candidate = !activeSourceId && !!window.AppConfig?.showing?.exclusivePlayingFallback;
+        const signature = JSON.stringify([candidate, media.relay_id, media.title, media.artist, media.state]);
+        const fallbackChanged = signature !== fallbackSignature;
+        fallbackSignature = signature; fallbackCandidate = candidate; fallbackMedia = media;
+        if (!candidate || fallbackChanged) fallbackVerified = false;
 
-        if (!isEnabledFor(activeSourceId)) {
+        if (!fallbackCandidate && !isEnabledFor(activeSourceId)) {
             stopRefresh();
             queueRequestId += 1;
             queueState = createQueueState();
@@ -741,7 +761,7 @@ const PlayingQueueOverlay = (() => {
 
         ensureOverlay(mountedContainer);
         ensureRefresh();
-        if (sourceChanged) {
+        if (sourceChanged || (fallbackCandidate && fallbackChanged)) {
             queueRequestId += 1;
             queueState = createQueueState();
             ui = createUiState();
