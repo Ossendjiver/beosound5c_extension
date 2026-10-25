@@ -5,7 +5,7 @@ Description=Daily new/changed music audio profiling
 OnCalendar=*-*-* 04:15:00 Australia/Melbourne
 RandomizedDelaySec=30min
 Persistent=true
-Unit=beo-audio-profile.service
+Unit=beo-auto-audio-profile.service
 
 [Install]
 WantedBy=timers.target
