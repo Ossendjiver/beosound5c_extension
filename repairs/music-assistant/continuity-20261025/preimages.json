@@ -1,0 +1,5 @@
+{
+  "providers/tidal/streaming.py": "e2c6331121ac6a8e5373b0c31ade5a12e858320f1e5d5948b6a0632f8dcf26ab",
+  "controllers/player_queues/controller.py": "306ec2e2949f10adc4506fb8eab5ad1744a79f573d90641eed9df814df1c4b93",
+  "controllers/streams/controller.py": "79602f26d6ca052e7d05af07d194202bfc66b6c78816f6921d0e45ed150bbb79"
+}
