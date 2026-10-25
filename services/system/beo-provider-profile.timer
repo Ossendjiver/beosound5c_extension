@@ -5,7 +5,7 @@ Description=Daily provider metadata and idle preview profiling
 OnCalendar=*-*-* 23:00:00 Australia/Melbourne
 RandomizedDelaySec=30min
 Persistent=true
-Unit=beo-provider-profile.service
+Unit=beo-auto-provider-profile.service
 
 [Install]
 WantedBy=timers.target

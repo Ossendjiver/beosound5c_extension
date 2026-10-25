@@ -17,3 +17,11 @@ def test_dst_and_standard_time():
     for stamp in ['2026-01-01T12:30:00+00:00','2026-07-01T13:30:00+00:00']:
         assert night.in_window(dt.datetime.fromisoformat(stamp))
     assert not night.in_window(dt.datetime.fromisoformat('2026-01-01T18:00:00+00:00'))
+
+
+def test_only_automatic_launches_are_guarded():
+    root=Path(__file__).parents[3]/'services/system'
+    for kind in ['audio-profile','provider-profile','provider-resume']:
+        assert 'ExecCondition=' not in (root/f'beo-{kind}.service').read_text()
+        assert f'Unit=beo-auto-{kind}.service' in (root/f'beo-{kind}.timer').read_text()
+        assert 'analysis_night_window.py --check' in (root/f'beo-auto-{kind}.service').read_text()

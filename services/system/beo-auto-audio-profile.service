@@ -1,0 +1,11 @@
+[Unit]
+Description=Overnight automatic audio-profile launch
+RequiresMountsFor=/media/local/cache
+
+[Service]
+Type=oneshot
+ExecCondition=/usr/bin/python3 __HOME__/beosound5c/tools/analysis_night_window.py --check
+ExecStart=/usr/bin/systemctl start --no-block beo-audio-profile.service
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
