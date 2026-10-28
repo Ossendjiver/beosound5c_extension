@@ -593,6 +593,10 @@ class LibraryService:
             load=lambda: self.model.get_kv('youtube_watchdog_v1', {}),
             save=lambda state: self.model.put_kv('youtube_watchdog_v1', state))
         if self.youtube_watchdog.enabled:
+            # Keep warning checks independent of catalogue/recommendation I/O.
+            self.youtube_watchdog.session = aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=12),
+                connector=aiohttp.TCPConnector(limit=6, force_close=True))
             self._background.spawn(self.youtube_watchdog.poll_loop(), name="library_youtube_watchdog")
             self._background.spawn(self.youtube_watchdog.motion_loop(), name="library_youtube_warning")
             self._background.spawn(self.youtube_watchdog.ha_loop(), name="library_youtube_pir")
@@ -608,6 +612,8 @@ class LibraryService:
 
     async def stop(self, _app: web.Application) -> None:
         await self._background.cancel_all()
+        if self.youtube_watchdog and self.youtube_watchdog.session is not self.session:
+            await self.youtube_watchdog.session.close()
         if self._current_media:
             self._finish_current()
         if self._external_media:
