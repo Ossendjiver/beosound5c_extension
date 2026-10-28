@@ -36,6 +36,7 @@ class YouTubeWatchdog:
         self.absent_checks = 0
         self.last_check = 0
         self.last_result = 'not_checked'
+        self.last_probes = {}
         self.ha_connected = False
         self.last_sensor = ''
         self.last_motion = 0
@@ -71,11 +72,13 @@ class YouTubeWatchdog:
     async def check(self):
         async with self.check_lock:
             unknown = False
+            self.last_probes = {}
             for app_id in STOCK_APP_IDS:
                 try:
                     url = f'http://{self.host}:8001/api/v2/applications/{quote(app_id, safe="")}'
                     async with self.session.get(url, timeout=aiohttp.ClientTimeout(total=4),
                                                 allow_redirects=False) as response:
+                        self.last_probes[app_id] = response.status
                         if response.status == 404:
                             continue
                         if response.status != 200:
@@ -84,11 +87,13 @@ class YouTubeWatchdog:
                         data = await response.json(content_type=None)
                         # Exact stock IDs only. The replacement has the same display
                         # name but a different ID; embedded firmware stubs are ignored.
-                        if isinstance(data, dict) and str(data.get('name', '')).casefold() == 'youtube':
+                        if (isinstance(data, dict) and data.get('id') in STOCK_APP_IDS
+                                and str(data.get('name', '')).casefold() == 'youtube'):
                             self.observe(True)
                             return True
                         unknown = True
-                except (aiohttp.ClientError, asyncio.TimeoutError, ValueError):
+                except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as exc:
+                    self.last_probes[app_id] = type(exc).__name__
                     unknown = True
             result = None if unknown else False
             self.observe(result)
@@ -226,5 +231,5 @@ class YouTubeWatchdog:
 
     def status(self):
         return {**self.state, 'enabled': self.enabled, 'last_check': self.last_check,
-                'last_result': self.last_result, 'ha_connected': self.ha_connected, 'pir_entities': sorted(self.pirs),
+                'last_result': self.last_result, 'last_probes': dict(self.last_probes), 'ha_connected': self.ha_connected, 'pir_entities': sorted(self.pirs),
                 'last_sensor': self.last_sensor, 'poll_seconds': self.interval}

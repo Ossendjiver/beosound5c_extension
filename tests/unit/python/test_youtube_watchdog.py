@@ -158,3 +158,13 @@ def test_polling_does_not_write_on_every_successful_check():
 def test_explicitly_disabled_until_configured():
     w = YouTubeWatchdog(None, {}, ha_base='', headers={}, load=lambda: {}, save=lambda _: None)
     assert not w.enabled
+
+
+def test_same_name_replacement_response_cannot_create_stock_incident():
+    async def run():
+        w, writes, _ = watchdog()
+        w.session = Session([Response(200, {'name': 'YouTube', 'id': 'tUb3Xq7Lm9.Tube'}), Response(404)])
+        assert await w.check() is None
+        assert not w.state['present']
+        assert writes == []
+    asyncio.run(run())
