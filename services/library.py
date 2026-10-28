@@ -54,6 +54,7 @@ from lib import session_intent, taste_profiles, sequence_plan, recommendation_au
 from lib.session_feedback import SessionFeedback
 from lib.queue_continuation import QueueContinuation
 from lib.prompt_playback import Guard as PromptPlaybackGuard
+from lib.youtube_watchdog import YouTubeWatchdog
 
 log = logging.getLogger("beo-library")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -556,6 +557,7 @@ class LibraryService:
         self.playback_runtime = None
         self.playback_task = None
         self.playback_setup_error = False
+        self.youtube_watchdog = None
 
     def _base_context(self, room: str = "") -> dict[str, Any]:
         now = dt.datetime.now()
@@ -585,6 +587,19 @@ class LibraryService:
                 self.playback_runtime = None
                 self.playback_setup_error = True
                 log.error("Playback coordinator configuration is incomplete; playback jobs disabled")
+        watchdog_cfg = self.cfg.get('youtube_watchdog') or {}
+        self.youtube_watchdog = YouTubeWatchdog(self.session, watchdog_cfg,
+            ha_base=_ha_base(), headers=_headers(),
+            load=lambda: self.model.get_kv('youtube_watchdog_v1', {}),
+            save=lambda state: self.model.put_kv('youtube_watchdog_v1', state))
+        if self.youtube_watchdog.enabled:
+            # Keep warning checks independent of catalogue/recommendation I/O.
+            self.youtube_watchdog.session = aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=12),
+                connector=aiohttp.TCPConnector(limit=6, force_close=True))
+            self._background.spawn(self.youtube_watchdog.poll_loop(), name="library_youtube_watchdog")
+            self._background.spawn(self.youtube_watchdog.motion_loop(), name="library_youtube_warning")
+            self._background.spawn(self.youtube_watchdog.ha_loop(), name="library_youtube_pir")
         self._background.spawn(self._context_loop(), name="library_context")
         self._background.spawn(self._mix_loop(), name="library_mood_mix")
         self._background.spawn(self._starter_loop(), name="library_mood_starters")
@@ -597,6 +612,8 @@ class LibraryService:
 
     async def stop(self, _app: web.Application) -> None:
         await self._background.cancel_all()
+        if self.youtube_watchdog and self.youtube_watchdog.session is not self.session:
+            await self.youtube_watchdog.session.close()
         if self._current_media:
             self._finish_current()
         if self._external_media:
@@ -1873,6 +1890,10 @@ class LibraryService:
         action = str(payload.get("action") or "play")
         prompt_id = str(payload.get("prompt_id") or "")
         room = str(payload.get("room") or "")
+        if kind == 'youtube_watchdog':
+            if action != 'dismiss' or not self.youtube_watchdog or not self.youtube_watchdog.acknowledge(prompt_id):
+                raise web.HTTPBadRequest(text="Unknown YouTube warning")
+            return web.json_response({"status": "ok", "dismissed": True}, headers={"Access-Control-Allow-Origin": "*"})
         if action == "dismiss":
             if prompt_id:
                 self.model.record_prompt(prompt_id, kind, action, room)
@@ -1950,6 +1971,10 @@ def create_app() -> web.Application:
     app.router.add_post("/library/ipod/history", service.handle_ipod_history)
     app.router.add_get("/library/recommend/music", service.handle_recommend)
     app.router.add_get("/library/recommend/diagnostics", service.handle_recommend_diagnostics)
+    async def youtube_watchdog_status(_request):
+        return web.json_response(service.youtube_watchdog.status() if service.youtube_watchdog else {"enabled": False},
+                                 headers={"Cache-Control": "no-store"})
+    app.router.add_get("/library/youtube-watchdog", youtube_watchdog_status)
     app.router.add_get("/library/suggestions", service.handle_suggestions)
     app.router.add_post("/library/event", service.handle_event)
     app.router.add_post("/library/action", service.handle_action)
