@@ -154,6 +154,7 @@ class YouTubeWatchdog:
             return True
 
     async def poll_loop(self):
+        retry = 30
         while True:
             try:
                 was_present = self.state.get('present')
@@ -166,7 +167,12 @@ class YouTubeWatchdog:
                 await self.notify()
             except Exception:
                 log.exception('YouTube watchdog check/delivery failed; retrying next interval')
-            await asyncio.sleep(self.interval)
+            if self.last_result == 'unreachable_or_unknown':
+                await asyncio.sleep(min(retry, self.interval))
+                retry = min(self.interval, retry * 2)
+            else:
+                retry = 30
+                await asyncio.sleep(self.interval)
 
     async def motion_loop(self):
         while True:

@@ -1,7 +1,8 @@
 # Stock YouTube return watchdog
 
 The existing `beo-library` service checks Samsung's read-only application-status
-API every five minutes. It probes only `9Ur5IzDKqV.TizenYouTube` and
+API every five minutes. Unreachable/unknown checks retry after 30 seconds, then
+60, 120 and up to 300 seconds; a confirmed response resets that backoff. It probes only `9Ur5IzDKqV.TizenYouTube` and
 `111299001912`. It does not treat Samsung's permanently listed Cobalt stub,
 YouTube Kids, YouTube TV or the replacement `tUb3Xq7Lm9.Tube` as a reinstall.
 A successful response must name YouTube. Unknown/error/offline responses never

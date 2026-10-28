@@ -168,3 +168,27 @@ def test_same_name_replacement_response_cannot_create_stock_incident():
         assert not w.state['present']
         assert writes == []
     asyncio.run(run())
+
+
+def test_unknown_tv_checks_retry_with_backoff_then_resume_normal_polling(monkeypatch):
+    async def run():
+        import pytest
+        import lib.youtube_watchdog as module
+        w, _, _ = watchdog()
+        results = iter([None, None, False])
+        async def check():
+            result = next(results)
+            w.observe(result)
+            return result
+        sleeps = []
+        async def sleep(delay):
+            sleeps.append(delay)
+            if len(sleeps) == 3:
+                raise asyncio.CancelledError()
+        w.check = check
+        monkeypatch.setattr(module.asyncio, 'sleep', sleep)
+        with pytest.raises(asyncio.CancelledError):
+            await w.poll_loop()
+        assert sleeps == [30, 60, 300]
+        assert not w.state['present']
+    asyncio.run(run())
