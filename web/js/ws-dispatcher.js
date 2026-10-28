@@ -227,11 +227,13 @@ async function contextSuggestionAction(optionId) {
 }
 
 function showContextSuggestion(data) {
-    if (data?.clear && data.kind === 'music') {
-        if (_activeContextSuggestion?.kind === 'music') hideContextSuggestion();
+    if (data?.clear) {
+        if (_activeContextSuggestion?.kind === data.kind && (!data.id || _activeContextSuggestion.id === data.id)) hideContextSuggestion();
         return;
     }
     if (!data || !data.id || !data.question) return;
+    // A safety warning keeps priority over periodic music/news suggestions.
+    if (_activeContextSuggestion?.kind === 'youtube_watchdog' && data.kind !== 'youtube_watchdog') return;
     const overlay = document.getElementById('context-suggestion-overlay');
     const question = document.getElementById('context-suggestion-question');
     const options = document.getElementById('context-suggestion-options');
@@ -261,7 +263,8 @@ function showContextSuggestion(data) {
     if (_contextSuggestionTimer) clearTimeout(_contextSuggestionTimer);
     // Suggestions are ephemeral UI only; stale ones disappear without waking
     // or changing the physical display/backlight state.
-    _contextSuggestionTimer = setTimeout(hideContextSuggestion, 12 * 60 * 1000);
+    const timeoutMs = data.kind === 'youtube_watchdog' ? 90 * 1000 : 12 * 60 * 1000;
+    _contextSuggestionTimer = setTimeout(hideContextSuggestion, timeoutMs);
 }
 
 function contextSuggestionIsActive() {

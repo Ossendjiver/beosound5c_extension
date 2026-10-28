@@ -168,3 +168,28 @@ test('PLAYING transport switches between configured fallback and a newly selecte
     assert.deepEqual(fallbackButtons, ['go', 'go']);
     assert.equal(h.requests.length, 0);
 });
+
+test('YouTube warning has priority, expires after 90s, and RIGHT acknowledges only that incident', () => {
+    const h = harness();
+    h.ctx.showContextSuggestion({id:'youtube-return-123', kind:'youtube_watchdog', question:'Original YouTube returned', options:[{id:'dismiss',label:'Got it'}]});
+    h.show(choices);
+    assert.equal(h.elements['context-suggestion-question'].textContent, 'Original YouTube returned');
+    assert.ok([...h.timers.values()].some(t => t.delay === 90000));
+    h.ctx.showContextSuggestion({clear:true,kind:'music'});
+    assert.equal(h.elements['context-suggestion-overlay'].hidden, false);
+    h.right();
+    const payload = JSON.parse(h.requests[0].body);
+    assert.equal(payload.kind, 'youtube_watchdog');
+    assert.equal(payload.prompt_id, 'youtube-return-123');
+    assert.equal(payload.action, 'dismiss');
+    assert.equal(h.underlyingInputs, 0);
+});
+
+test('removal clears only the matching YouTube warning', () => {
+    const h = harness();
+    h.ctx.showContextSuggestion({id:'youtube-return-123',kind:'youtube_watchdog',question:'Warning',options:[{id:'dismiss'}]});
+    h.ctx.showContextSuggestion({clear:true,kind:'youtube_watchdog',id:'old-incident'});
+    assert.equal(h.elements['context-suggestion-overlay'].hidden, false);
+    h.ctx.showContextSuggestion({clear:true,kind:'youtube_watchdog',id:'youtube-return-123'});
+    assert.equal(h.elements['context-suggestion-overlay'].hidden, true);
+});
