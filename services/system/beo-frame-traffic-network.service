@@ -1,0 +1,14 @@
+[Unit]
+ConditionPathExists=/media/local/cache/frame-traffic/enabled.flag
+ConditionPathExists=/etc/beosound5c/frame-traffic.json
+Description=TV-only diagnostic gateway rules
+After=network-online.target docker.service beo-frame-traffic-flow.service beo-frame-traffic-dns.service
+Requires=beo-frame-traffic-flow.service beo-frame-traffic-dns.service
+RequiresMountsFor=/media/local/cache/frame-traffic
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /media/local/cache/frame-traffic/app/activate.py /etc/beosound5c/frame-traffic.json --action ensure
+RemainAfterExit=yes
+# Explicit rollback only: restarting a logger must not silently remove the TV gateway.
+[Install]
+WantedBy=multi-user.target
