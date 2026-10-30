@@ -527,6 +527,7 @@ class LibraryService:
         self._current_media: dict[str, Any] | None = None
         self._current_started = 0.0
         self._external_media: dict[str, Any] | None = None
+        self._reported_skip_observers = []
         self._external_started = 0.0
         self._last_run_marker = ""
         self._last_broadcast_prompt = ""
@@ -781,11 +782,17 @@ class LibraryService:
             self._persist_manual_choices()
         return item
 
+    def _skip_already_reported(self, item):
+        now = time.monotonic()
+        self._reported_skip_observers = [(until, track) for until, track in
+            self._reported_skip_observers if until > now]
+        return any(skip_policy.same(item, track) for _, track in self._reported_skip_observers)
+
     def _finish_current(self) -> None:
         if not self._current_media or not self._current_started:
             return
         seconds = max(0.0, time.monotonic() - self._current_started)
-        if seconds >= 5:
+        if seconds >= 5 and not self._skip_already_reported(self._current_media):
             self.model.record_listen(self._learning_item(self._current_media), seconds, self._context_for_room(str(self._current_media.get('room') or 'lounge')))
         self._current_media = None
         self._current_started = 0.0
@@ -807,6 +814,10 @@ class LibraryService:
                     str((self._current_media or {}).get("artist") or ""),
                 )
                 active = state == "playing"
+                if active and self._skip_already_reported(media):
+                    active = False
+                elif active:
+                    self._reported_skip_observers = []  # A distinct track confirms router catch-up.
                 if active and key != current_key:
                     self._finish_current()
                     self._current_media = self._start_learning_item(media)
@@ -1757,8 +1768,14 @@ class LibraryService:
             item=dict(payload,end_reason="skip",selection_origin="reported")
             accepted=self.model.record_listen(item,min(seconds,duration or 12*3600),
                 self._context_for_room(str(payload.get("room") or "phone")),event_id=event_id,event_ts=stamp)
-            if accepted and self._external_media and skip_policy.same(item,self._external_media):
-                self._external_media=None; self._external_started=0.0
+            if accepted:
+                # The router can lag HA metadata briefly after the actual transition.
+                # Do not finish/restart its outgoing observation as an accepted listen.
+                self._reported_skip_observers.append((time.monotonic()+20, item))
+                if self._current_media and skip_policy.same(item, self._current_media):
+                    self._current_media = None; self._current_started = 0.0
+                if self._external_media and skip_policy.same(item, self._external_media):
+                    self._external_media = None; self._external_started = 0.0
             return web.json_response({"status":"ok","duplicate":accepted is False},headers={"Access-Control-Allow-Origin":"*"})
         if event_type == "selection":
             if _music_item(payload) and str(payload.get("uri") or "").strip():
