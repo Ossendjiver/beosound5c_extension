@@ -1,0 +1,42 @@
+rest_command:
+  homemedia_remote_skip_feedback:
+    url: http://192.168.1.51:8788/library/event
+    method: POST
+    content_type: application/json
+    timeout: 2
+    payload: '{{ payload | to_json }}'
+script:
+  homemedia_confirm_remote_skip:
+    alias: Home Media confirm remote skip
+    mode: parallel
+    max: 20
+    description: Report a successful Link remote next command using the outgoing track
+      snapshot; never sends playback commands.
+    sequence:
+    - wait_template: '{{ states(player) in [''playing'',''paused'',''buffering'']
+        and state_attr(player,''media_title'') not in [none,'''',''unknown'',''unavailable'']
+        and (state_attr(player,''media_content_id'')|default('''',true) != old_uri
+        or state_attr(player,''media_title'')|default('''',true) != old_title or state_attr(player,''media_artist'')|default('''',true)
+        != old_artist) }}'
+      timeout: 00:00:12
+      continue_on_timeout: false
+    - repeat:
+        count: 3
+        sequence:
+        - action: rest_command.homemedia_remote_skip_feedback
+          data:
+            payload: '{{ feedback }}'
+          response_variable: feedback_result
+          continue_on_error: true
+        - if: '{{ feedback_result is defined and feedback_result.status|default(0)|int
+            == 200 }}'
+          then:
+          - stop: Skip feedback accepted
+        - delay:
+            seconds: 1
+    - action: system_log.write
+      data:
+        level: warning
+        logger: homemedia.remote_skip
+        message: Link skip succeeded but BS5c feedback could not be delivered after
+          three attempts.
