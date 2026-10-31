@@ -1370,7 +1370,7 @@ class LibraryService:
                 raise ValueError("A queue is required")
             if data.get("action") == "begin":
                 self.continuation.unblock(queue)
-                result = await self.mixes.begin(queue, str(data.get("room") or "lounge"), data.get("seed"), data.get("mode", "mood"))
+                result = await self.mixes.begin(queue, str(data.get("room") or "lounge"), data.get("seed"), data.get("mode", "mood"), expected_item_id=data.get("expected_item_id"))
             elif data.get("action") == "update":
                 result = await self.mixes.update(queue, data["angle"], data["radius"])
             elif data.get("action") == "stop":

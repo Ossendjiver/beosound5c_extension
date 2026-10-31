@@ -2349,7 +2349,22 @@ class MassSource(SourceBase):
                 str(request.query.get('artist') or '')[:512])
             return web.json_response(payload, headers=self._cors_headers())
 
+        async def _handle_playing_queue_action(request):
+            try:
+                data = await request.json()
+                if not isinstance(data, dict):
+                    raise ValueError()
+            except (ValueError, TypeError):
+                return web.json_response({'state': 'error', 'reason': 'invalid_request'},
+                    status=400, headers=self._cors_headers())
+            from lib.playing_queue_actions import command
+            result = await command(self, data)
+            return web.json_response(result, status=409 if result.get('state') == 'error' else 200,
+                headers=self._cors_headers())
+
         app.router.add_get('/playing_queue', _handle_playing_queue)
+        app.router.add_post('/playing_queue/action', _handle_playing_queue_action)
+        app.router.add_options('/playing_queue/action', self._handle_cors)
         app.router.add_get('/now_playing', _handle_now_playing)
         app.router.add_get('/item_info', _handle_item_info)
         app.router.add_get('/art/{filename}', _handle_art)
@@ -4965,11 +4980,19 @@ class MassSource(SourceBase):
             m = row.get('media_item') or row
             tracks.append({'queue_item_id': str(row.get('queue_item_id') or ''),
                 'name': str(m.get('name') or row.get('name') or 'Queued item'),
+                'uri': self._extract_queue_uri(row),
+                'duration': m.get('duration') or row.get('duration') or 0,
                 'artist': self._extract_queue_artist(row),
                 'album': self._extract_queue_album(row), 'index': offset+i,
                 'current': offset+i == snapshot.get('current_index')})
         current_index = snapshot.get('current_index')
-        return {'bound': True, 'read_only': True, 'queue_id': str(snapshot.get('resolved_queue_id') or player),
+        current_id = str(item.get('queue_item_id') or '')
+        writable = bool(title and artist and current_id and self._is_active_state(state))
+        return {'bound': True, 'read_only': not writable,
+                'current_item_id': current_id,
+                'capabilities': {'playNow': writable, 'playNext': writable, 'remove': writable,
+                    'startRadio': writable, 'showInformation': True, 'goto': ['artist', 'album', 'genre']},
+                'queue_id': str(snapshot.get('resolved_queue_id') or player),
                 'tracks': tracks, 'state': state,
                 'current_index': current_index-offset if isinstance(current_index, int) else -1}
 
