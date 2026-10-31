@@ -355,3 +355,14 @@ def test_committed_boundary_handles_offset_and_repeat_wrap():
     assert committed_ids(s)==['405']
     s['index_in_buffer']=500
     with pytest.raises(ValueError):committed_ids(s)
+
+
+@pytest.mark.asyncio
+async def test_radio_seed_guard_rejects_transition_before_begin():
+    q=FakeQueue()
+    async def recommend(*args):raise AssertionError('Must not rank a changed seed')
+    mixes=MoodMixes(q.command,recommend)
+    with pytest.raises(ValueError,match='no longer playing'):
+        await mixes.begin('q','lounge',mode='radio',expected_item_id='stale-id')
+    assert not mixes.sessions
+    assert all(cmd=='mood_snapshot' for cmd,_ in q.calls)
