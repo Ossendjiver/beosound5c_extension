@@ -4967,9 +4967,14 @@ class MassSource(SourceBase):
         normalize = lambda value: ' '.join(str(value or '').casefold().split())
         actual_title = normalize(media.get('name') or item.get('name'))
         actual_artist = normalize(self._extract_queue_artist(item))
+        # HA may join every artist while the source's compact label uses only
+        # the first credit. Compare complete native credit variants, not substrings.
+        credit = lambda value: ' '.join(re.findall(r'\w+', normalize(value)))
+        names = [str(a.get('name') or '') for a in media.get('artists', []) if isinstance(a, dict)]
+        artist_credits = {credit(actual_artist), credit(', '.join(names))} - {''}
         state = self._extract_playback_state(snapshot) or 'idle'
         if title and normalize(title) not in ('—', '-'):
-            if not artist or actual_title != normalize(title) or actual_artist != normalize(artist):
+            if not artist or actual_title != normalize(title) or credit(artist) not in artist_credits:
                 return empty
         elif self._is_active_state(state):
             return empty  # no matching displayed identity: cannot claim playing audio

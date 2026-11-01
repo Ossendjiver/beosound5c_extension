@@ -34,3 +34,14 @@ def test_verified_queue_exposes_stable_ids_uris_and_scoped_capabilities(monkeypa
     assert result['tracks'][0]['uri']=='tidal://one'
     assert result['tracks'][0]['duration']==200
     assert result['capabilities']['startRadio'] and result['capabilities']['remove']
+
+
+@pytest.mark.parametrize('artist,bound',[('Oklou',True),('Oklou, Danny L Harle, MNEK',True),('Oklou, Danny L Harle & MNEK',True),('Other artist',False),('Danny L Harle',False)])
+def test_shared_queue_accepts_native_multi_artist_credit_variants(monkeypatch,artist,bound):
+    monkeypatch.setattr(module,'cfg',lambda *args,**kw:'verified-link')
+    source=object.__new__(MassSource)
+    item={'queue_item_id':'current','media_item':{'name':'Song','artists':[{'name':'Oklou'},{'name':'Danny L Harle'},{'name':'MNEK'}]}}
+    async def get(player):return {'state':'playing','current_item':item,'items':[item],'current_index':0}
+    source._get_queue_snapshot=get
+    result=asyncio.run(source._playing_queue_snapshot('Song',artist))
+    assert result['bound'] is bound
