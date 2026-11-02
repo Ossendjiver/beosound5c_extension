@@ -51,6 +51,7 @@ from lib.mood_starters import MoodStarters, SECTORS
 from lib import mix_policy
 from lib import music_features, provider_profiles, music_relations
 from lib import session_intent, taste_profiles, sequence_plan, recommendation_audit, profile_quality
+from lib.ma_recommendations import Candidates as MARecommendationCandidates, aliases as ma_track_aliases
 from lib.session_feedback import SessionFeedback
 from lib.queue_continuation import QueueContinuation
 from lib.prompt_playback import Guard as PromptPlaybackGuard
@@ -398,7 +399,10 @@ class LocalModel:
                 audit.reject('global_dislike', item)
                 continue
             trusted = item.get("trusted") or item.get("favorite") or key in known or feedback.get(identity) == "like" or familiarity.baseline(item) or bool(selected_artist and key[0] == selected_artist)
-            if not trusted and key[0] not in seed_artists and not context.get('radio') and not (mood and mood["discovery_fraction"] >= .1 and music_mood.profile(item, mood_profiles) and music_mood.adjustment(item, mood, mood_profiles) >= -2):
+            provider_supported = bool(item.get('_ma_recommendation') and
+                item['_ma_recommendation'] in {s.get('uri') for s in context.get('provider_seeds', [])} and
+                any(music_features.radio_distance(item, s, sound) is not None for s in context.get('provider_seeds', [])))
+            if not trusted and key[0] not in seed_artists and not context.get('radio') and not provider_supported and not (mood and mood["discovery_fraction"] >= .1 and music_mood.profile(item, mood_profiles) and music_mood.adjustment(item, mood, mood_profiles) >= -2):
                 audit.reject('insufficient_preference_evidence', item)
                 continue  # Discovery is constrained to artists already represented by seeds.
             direct = bool(item.get('trusted') or key in known or feedback.get(identity)=='like')
@@ -415,6 +419,7 @@ class LocalModel:
             score += taste_bonus
             graph_bonus = relations.boost(relation_root, item)
             score += .5*max(0., min(1., graph_bonus))
+            score += .25 if provider_supported else 0.  # A modest tie-break, after compatibility gates.
             for row in history_by_artist.get(key[0], ()) if key[0] else ():
                 same_track = row["title"].casefold() == key[1]
                 reward = float(row["reward"])
@@ -447,7 +452,8 @@ class LocalModel:
                 'root_relationship': round(graph_bonus, 4), 'mood_source': p.get('source') if p else None,
                 'profile_confidence': profile_quality.confidence(item.get('audio_features') or {}),
                 'mood_distance': round(music_mood.distance(item, mood, mood_profiles), 4) if mood and p else None,
-                'radio_distance': radio_distances.get(identity)}
+                'radio_distance': radio_distances.get(identity),
+                'provider_recommendation_seed': item.get('_ma_recommendation')}
             (familiar if trusted or context.get('radio') else discovery).append((score, item))
         bands={}
         if context.get('offline_priority_only'):
@@ -553,6 +559,12 @@ class LibraryService:
             lambda data: self.model.put_kv('queue_feedback_v1', data))
         self._manual_choices = {tuple(k.split('\0')):v for k,v in self.model.get_kv('manual_choices_v1',{}).items() if isinstance(v,dict) and v.get('expires',0)>time.time()}
         self._background = BackgroundTaskSet(log, label="library")
+        self.ma_recommendations = MARecommendationCandidates(self._ma_api,
+            load=lambda: self.model.get_kv('ma_recommendation_candidates_v1', {}),
+            save=lambda value: self.model.put_kv('ma_recommendation_candidates_v1', value),
+            enabled=self.cfg.get('ma_recommendations', True) is not False)
+        self._ma_candidate_index = {}
+        self._ma_session_seeds = {}
         self.playback_runtime = None
         self.playback_task = None
         self.playback_setup_error = False
@@ -588,6 +600,7 @@ class LibraryService:
         self._background.spawn(self._context_loop(), name="library_context")
         self._background.spawn(self._mix_loop(), name="library_mood_mix")
         self._background.spawn(self._starter_loop(), name="library_mood_starters")
+        self._background.spawn(self.ma_recommendations.run(self._provider_candidates_refreshed), name="library_ma_recommendations")
         self._background.spawn(self.continuation.run(), name="library_queue_continuation")
         self._background.spawn(self._seed_loop(), name="library_seed_sync")
         self._background.spawn(self._familiarity_loop(), name="library_familiarity_sync")
@@ -605,6 +618,7 @@ class LibraryService:
             await self.session.close()
             self.session = None
         self.starters.persist(force=True)
+        self.ma_recommendations.persist(force=True)
         self.model.db.close()
 
     async def _ha_states(self) -> list[dict[str, Any]]:
@@ -1152,6 +1166,7 @@ class LibraryService:
                     revision = (getattr(self, '_loaded_catalogue', (None,))[0],
                                 self.model.get_kv('mood_calibration_v1', {}).get('revision', 0))
                     self.starters.bind(catalogue, revision)
+                    self._ma_candidate_index = {alias: item for item in catalogue for alias in ma_track_aliases(item)}
                     bound_at = time.monotonic()
                 key = self.starters.due()
                 if key:
@@ -1172,6 +1187,7 @@ class LibraryService:
                     ranked = await asyncio.to_thread(self._rank_starter_background, database,
                         [dict(i) for i in candidates], context, self.model.playlist_relations)
                     self.starters.refresh(key, ranked)
+                    self.ma_recommendations.get(ranked[:3])  # Warm provider neighbours off the request path.
                     if self.starters.requests.get(key) is request:
                         self.starters.requests.pop(key, None)
                     if ranked:
@@ -1196,6 +1212,24 @@ class LibraryService:
         return (self._load_library(), False) if cached is None else (cached, True)
 
     def _rank_starters(self, candidates, context, limit, cached=False, seed=None):
+        provider_seeds = []
+        root = context.get('seed_features') or seed or {}
+        if context.get('radio'):
+            if root.get('uri'):
+                provider_seeds.append(root)
+            # Only accepted/eligible local anchors widen the provider graph; a
+            # provider's unvalidated suggestion never becomes the next seed.
+            current = context.get('relation_seed') or {}
+            if current.get('uri') != root.get('uri') and music_features.radio_distance(current, root) is not None:
+                provider_seeds.append(current)
+        elif getattr(self, 'ma_recommendations', None) and self.ma_recommendations.enabled:
+            # Predict anchors using exactly the existing model (no reservation,
+            # queue mutation or network work); sequence only the final pool.
+            provider_seeds = self.model.rank(candidates, dict(context, offline_priority_only=True), 3)
+        candidates = self._provider_candidates(candidates, context, provider_seeds)
+        if context.get('queue_id'):
+            self._ma_session_seeds = {q: s for q, s in self._ma_session_seeds.items() if q in self.mixes.sessions}
+            self._ma_session_seeds[context['queue_id']] = {i['uri'] for i in provider_seeds if i.get('uri')}
         starters = getattr(self, 'starters', None)
         if cached:
             context = dict(context, intent_catalogue=starters.catalogue)
@@ -1218,7 +1252,59 @@ class LibraryService:
         else:
             picks = self.model.rank(candidates, context, limit)
             self.model.last_trace['starter_cache'] = {'used': False, 'reason': 'warming_or_non_mood'}
+        source = getattr(self, 'ma_recommendations', None)
+        self.model.last_trace['ma_recommendations'] = dict(source.status() if source else {},
+            seeds=[i['uri'] for i in provider_seeds if i.get('uri')],
+            candidates=sum(bool(i.get('_ma_recommendation')) for i in candidates))
         return picks
+
+    def _provider_candidates_refreshed(self, seed_uri):
+        # A previously empty safe pool can retry promptly. Do not replace a
+        # healthy queue simply because a provider has supplied more suggestions.
+        for queue, session in self.mixes.sessions.items():
+            if seed_uri in self._ma_session_seeds.get(queue, set()) and session.get('refresh_status') in ('waiting_for_candidates', 'insufficient_mood_data', 'insufficient_session_matches'):
+                session.pop('retry_after', None)
+                session.pop('next_refill', None)
+
+    def _provider_candidates(self, candidates, context, seeds):
+        source = getattr(self, 'ma_recommendations', None)
+        if source is None:
+            return candidates
+        suggestions = source.get(seeds, priority=True)
+        context['provider_seeds'] = seeds
+        if not suggestions:
+            return candidates
+        # The background catalogue bind prepares provider aliases once. A warm
+        # wheel request must not scan the full library to hydrate forty results.
+        index = getattr(self, '_ma_candidate_index', {})
+        canonical = getattr(getattr(self, 'starters', None), 'index', {})
+        result = {i['uri']: dict(i) for i in candidates if i.get('uri')}
+        excluded = set(context.get('starter_exclude') or [])
+        previous = mix_policy.RecordingIndex(context.get('queue_previous') or [])
+        versions = mix_policy.RecordingIndex(context.get('queue_versions') or [])
+        root = context.get('seed_features') or (seeds[0] if seeds else {})
+        for suggestion in suggestions:
+            known = index.get(suggestion['uri']) or result.get(suggestion['uri']) or canonical.get(suggestion['uri'], {})
+            item = music_features.merge(suggestion, known)
+            item['_ma_recommendation'] = suggestion['_ma_recommendation']
+            for alias in ma_track_aliases(item) | {suggestion['uri']}:
+                profile = getattr(self, '_provider_profile_cache', {}).get(alias)
+                if profile:
+                    extra = dict(profile[0])
+                    if item.get('audio_features') and profile[1] == 'ma_preview':
+                        extra.pop('audio_features', None)
+                    item = music_features.merge(item, extra)
+                features = getattr(self, '_audio_feature_cache', {}).get(alias)
+                if features:
+                    item['audio_features'] = features
+            if (not _music_item(item) or not mix_policy.similar_length(item, root) or
+                excluded & ma_track_aliases(item) or suggestion['uri'] in excluded or
+                previous.matches(item) or versions.matches(item, alternate_only=True)):
+                continue
+            # Keep canonical metadata and preference evidence, but never let
+            # MA's recommendation response itself mark a new song trusted.
+            result[item['uri']] = music_features.merge(result.get(item['uri'], {}), item)
+        return list(result.values())
 
     async def recommend_music(self, room: str, limit: int, mood: dict | None = None) -> list[dict[str, Any]]:
         selected = mood or self.pattern_mood(room)
@@ -1288,6 +1374,8 @@ class LibraryService:
         policy = policy or {}
         current = policy.get('relation_seed') or seed or {}
         descriptor = self.starters.index.get(current.get('uri'), {}) if cached else next((c for c in candidates if c.get('uri') == current.get('uri')), {})
+        if getattr(self, 'ma_recommendations', None):
+            descriptor = music_features.merge(self.ma_recommendations.describe(current.get('uri')), descriptor)
         context['relation_seed'] = music_features.merge(descriptor, current)
         if policy.get('steering') and selected and not radio:
             context['steering_from'] = music_mood.profile(context['relation_seed'], self.model.get_kv('mood_profiles', {})) or policy.get('previous_mood')
@@ -1612,6 +1700,7 @@ class LibraryService:
     async def handle_context(self, request: web.Request) -> web.Response:
         room = request.query.get("room", "")
         return web.json_response(self._context_for_room(room) | {
+            'ma_recommendations': self.ma_recommendations.status(),
             'queue_continuation': {'enabled': self.continuation.enabled, 'last_scan': self.continuation.last_scan,
                 'last_error': self.continuation.last_error, 'active_sessions': len(self.mixes.sessions)}
         }, headers={"Access-Control-Allow-Origin": "*"})
