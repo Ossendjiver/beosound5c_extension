@@ -267,3 +267,29 @@ async def test_unresolved_or_unsafe_topology_still_rejects_without_effects(updat
     f=Fake();f.players[0].update(updates)
     assert (await f.run())['status']!='succeeded'
     assert not f.mutations() and not f.actions
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('state', ['paused', 'idle', 'stopped'])
+@pytest.mark.parametrize('target', ['bedroom', 'kitchen'])
+async def test_saved_paused_queue_moves_from_powered_off_room_without_waking_it(state, target):
+    f = Fake(); f.ha[0]['state'] = 'off'; f.queue('link')['state'] = state
+    assert (await f.run('transfer', target=target))['status'] == 'succeeded'
+    assert not any(action == 'select_source' and entity == 'media_player.lounge' for action, entity, _ in f.actions)
+    moves = [args for name, args in f.calls if name == 'player_queues/transfer']
+    assert all(args['auto_play'] is False for args in moves)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('hardware,queue_state', [('unknown','paused'), ('unavailable','paused'), ('off','playing')])
+async def test_dormant_transfer_exception_never_accepts_unknown_or_playing_source(hardware, queue_state):
+    f = Fake(); f.ha[0]['state'] = hardware; f.queue('link')['state'] = queue_state
+    assert (await f.run())['status'] in {'failed', 'needs_review'}
+    assert not f.mutations() and not f.actions
+
+
+@pytest.mark.asyncio
+async def test_paused_queue_does_not_turn_off_room_now_using_video():
+    f = Fake(); f.ha[0]['attributes']['source'] = 'TV'; f.queue('link')['state'] = 'paused'
+    assert (await f.run())['status'] == 'failed'
+    assert not f.mutations() and not f.actions
