@@ -86,12 +86,14 @@ class MoodMixes:
             raise ValueError(result.get('reason', 'Queue unavailable'))
         return result['snapshot']
 
-    async def begin(self, queue, room, seed=None, mode='mood', preserve_upcoming=False):
+    async def begin(self, queue, room, seed=None, mode='mood', preserve_upcoming=False, expected_item_id=None):
         if not queue or mode not in ('mood', 'radio'):
             raise ValueError('A queue and valid mix mode are required')
         async with self.lock(queue):
             snap = await self.snapshot(queue)
             playing = current(snap)
+            if expected_item_id is not None and playing['id'] != str(expected_item_id):
+                raise ValueError('The selected radio seed is no longer playing')
             if not playing['id'] or not playing['uri']:
                 raise ValueError('Start the seed item before opening its mood mix')
             seed = dict(seed or {})
