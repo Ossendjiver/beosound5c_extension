@@ -66,6 +66,7 @@ ROUTER_BROADCAST = "http://127.0.0.1:8770/router/broadcast"
 MASS_COMMAND = "http://127.0.0.1:8783/command"
 MASS_LIBRARY = "http://127.0.0.1:8783/playlists"
 from lib import track_enrichment
+from lib import radio_seed
 
 CACHE_LIBRARY = Path("/media/local/cache/mass_playlists.json")
 DB_PATH = Path(os.getenv("BS5C_LIBRARY_DB", "/media/local/cache/library_recommender.sqlite3"))
@@ -1341,9 +1342,26 @@ class LibraryService:
                 raise ValueError(result.get("reason") or "Mix queue request failed")
             return result
 
+    async def _fetch_radio_seed(self, uri):
+        configured = (os.getenv('MASS_WS_URL') or os.getenv('BS5C_MASS_WS_URL') or '').strip()
+        host = (os.getenv('PLAYER_IP') or cfg('player', 'ip', default='') or 'localhost').strip()
+        base = configured.replace('wss://', 'https://').replace('ws://', 'http://').removesuffix('/ws') if configured else f'http://{host}:8095'
+        token = os.getenv('MASS_TOKEN', '').strip()
+        headers = {'Authorization': 'Bearer '+token} if token else {}
+        # Isolated short request: a stale background catalogue connection must not
+        # hold up starting or refilling a manually chosen song radio.
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=4),
+                connector=aiohttp.TCPConnector(limit=1, force_close=True)) as session:
+            async with session.post(base.rstrip('/')+'/api', headers=headers,
+                    json={'command': 'music/item_by_uri',
+                          'args': {'uri': uri, 'allow_update_metadata': False}}) as response:
+                response.raise_for_status()
+                return await response.json()
+
     async def _mix_recommend(self, room, limit, mood, seed, policy=None):
         policy = policy or {}
         radio = policy.get('mode') == 'radio'
+        seed_metadata_status = None
         selected = mood if radio else mood or self.pattern_mood(room)
         candidates, cached = self._mood_candidates(selected if not radio else None, seed)
         context = self._context_for_room(room)
@@ -1363,6 +1381,12 @@ class LibraryService:
             if features:
                 cached_seed = music_features.merge(cached_seed, {'audio_features': features})
             seed = music_features.merge(cached_seed, seed)
+            if radio:
+                metadata_cache = self.model.get_kv('track_metadata', {})
+                seed, changed, seed_metadata_status = await radio_seed.enrich(
+                    seed, metadata_cache, self._fetch_radio_seed, time.time())
+                if changed:
+                    self.model.put_kv('track_metadata', metadata_cache)
             seed = dict(seed, trusted=True, media_type=seed.get("media_type") or "track")
             candidates = [seed] + [c for c in candidates if c.get("uri") != seed["uri"]]
             context["seed_artist"] = mix_policy.identity(seed)[0]
@@ -1395,6 +1419,8 @@ class LibraryService:
                       and not previous_index.matches(c)
                       and not version_index.matches(c, alternate_only=True)]
         picks = self._rank_starters(candidates, context, limit, cached, seed)
+        if radio:
+            self.model.last_trace['seed_metadata'] = seed_metadata_status
         self.model.last_trace['prefilter'] = {'excluded_uris': len(excluded), 'previous_recordings': len(previous),
                                              'version_history': len(versions)}
         recommendation_audit.store(self.model.db, self.model.last_trace)
