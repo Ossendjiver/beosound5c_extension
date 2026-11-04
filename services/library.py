@@ -28,6 +28,7 @@ import logging
 import math
 import os
 import random
+import uuid
 import re
 import sqlite3
 import time
@@ -43,7 +44,7 @@ HERE = Path(__file__).resolve().parent
 from lib.config import cfg
 from lib.background_tasks import BackgroundTaskSet
 from lib import ipod_library
-from lib import skip_policy
+from lib import skip_policy, listening_variety
 from lib import music_mood
 from lib import music_familiarity
 from lib.mood_mix import MoodMixes
@@ -324,8 +325,15 @@ class LocalModel:
                 deduplicated[key] = item
             elif item.get("trusted"):
                 existing["trusted"] = True
-        candidates = list(deduplicated.values())
+        preferences = self.get_kv('avoided_artists', {})
+        candidates = []
+        for item in deduplicated.values():
+            if listening_variety.avoided(item, preferences):
+                audit.reject('avoided_artist', item)
+            else:
+                candidates.append(item)
         history = self._history()
+        variety = listening_variety.Prior(history, context.get('recent_proposals', ()), time.time())
         sound = music_features.Similarity()
         recent_intent = session_intent.accepted(history, context.get('intent_catalogue', candidates), context.get('room', ''), time.time())
         catalogue = context.get('intent_catalogue', candidates)
@@ -420,6 +428,8 @@ class LocalModel:
             graph_bonus = relations.boost(relation_root, item)
             score += .5*max(0., min(1., graph_bonus))
             score += .25 if provider_supported else 0.  # A modest tie-break, after compatibility gates.
+            positive_learning = 0.
+            negative_learning = 0.
             for row in history_by_artist.get(key[0], ()) if key[0] else ():
                 same_track = row["title"].casefold() == key[1]
                 reward = float(row["reward"])
@@ -438,17 +448,26 @@ class LocalModel:
                     if context.get("weekday") == row["weekday"]: similarity *= 1.2
                     if context.get("room") == row["room"]: similarity *= 1.15
                     if context.get("weather") not in (None, "unknown") and context.get("weather") == row["weather"]: similarity *= 1.1
-                score += reward * similarity * 0.5 ** (max(0.0, now_ts - row["ts"]) / (28 * 86400))
-                if same_track and now_ts - row["ts"] < 2 * 3600:
-                    score -= 1.5  # Modest temporary suppression; favourites remain eligible.
-            score += random.Random(f"{identity}:{int(now_ts // 3600)}").uniform(-0.1, 0.1)
+                learned = reward * similarity * 0.5 ** (max(0.0, now_ts - row["ts"]) / (28 * 86400))
+                if learned > 0: positive_learning += learned
+                else: negative_learning += learned
+            score += listening_variety.learning_bonus(positive_learning) + negative_learning
+            fatigue = variety.describe(item)
+            score -= fatigue['penalty']
+            token = context.get('rotation_token')
+            if token and not context.get('offline_priority_only'):
+                # Per-request exploration within the already compatible/preference-qualified pool.
+                score += random.Random(f"{identity}:{token}").uniform(-2., 2.)
+            else:
+                score += random.Random(f"{identity}:{int(now_ts // 3600)}").uniform(-0.1, 0.1)
             evidence = familiarity.describe(item)
             p = music_mood.profile(item, mood_profiles)
             item['_selection_category'] = 'familiar' if trusted or context.get('radio') else 'discovery'
             details[identity] = {'score': round(score, 4), 'category': item['_selection_category'],
                 'recording_novelty': 'heard' if evidence['recording_heard'] else 'unheard',
                 'familiarity': evidence, 'familiarity_boost': round(familiar_boost, 4),
-                'skip_penalty': round(skip_penalty, 4), 'taste_bonus': round(taste_bonus, 4),
+                'skip_penalty': round(skip_penalty, 4), 'listening_fatigue': fatigue,
+                'positive_learning': round(listening_variety.learning_bonus(positive_learning), 4), 'taste_bonus': round(taste_bonus, 4),
                 'root_relationship': round(graph_bonus, 4), 'mood_source': p.get('source') if p else None,
                 'profile_confidence': profile_quality.confidence(item.get('audio_features') or {}),
                 'mood_distance': round(music_mood.distance(item, mood, mood_profiles), 4) if mood and p else None,
@@ -470,7 +489,9 @@ class LocalModel:
                     bands[uri]=int(radio_distances[uri]/.1)
                     return bands[uri]
                 bands[uri]=int(music_mood.distance(item,planning_mood,mood_profiles)/.05) if planning_mood else 0
-            return bands[uri]
+            # Pattern starts prefer rested recordings, relaxing oldest cooldowns first
+            # only when necessary. Radio/mood eligibility still applies before this point.
+            return (details[uri]['listening_fatigue']['tier'], bands[uri]) if context.get('play_music') else bands[uri]
         fraction = mood["discovery_fraction"] if mood else 0.1
         balance = context.get('discovery_balance') or {}
         prior_total = max(0, int(balance.get('total', 0)))
@@ -1310,12 +1331,17 @@ class LibraryService:
         selected = mood or self.pattern_mood(room)
         candidates, cached = self._mood_candidates(selected)
         context = self._context_for_room(room)
+        now = time.time()
+        proposals = self.model.get_kv('play_music_proposals', [])
+        context.update(play_music=True, rotation_token=uuid.uuid4().hex, recent_proposals=proposals)
         context['catalogue_revision'] = (getattr(self, '_audio_feature_stamp', None), getattr(self, '_provider_profile_stamp', None))
         if selected: context["mood"] = selected
         playing=self._external_media if self._external_media and self._external_media.get('room')==room else self._current_media
         if playing and str(playing.get('room') or 'lounge')==room:
             context['relation_seed'] = music_features.merge(next((c for c in candidates if mix_policy.same_recording(c, playing)), {}), playing)
         picks = self._rank_starters(candidates, context, max(1, min(limit, 50)), cached)
+        if picks:
+            self.model.put_kv('play_music_proposals', listening_variety.remember(proposals, picks, now))
         recommendation_audit.store(self.model.db, self.model.last_trace)
         self._automatic_keys = {self.model._candidate_key(item) for item in picks}
         return picks
@@ -1896,6 +1922,17 @@ class LibraryService:
             calibration = {'version':1, 'revision':int(calibration.get('revision', 0))+1, 'anchors':anchors[-256:]}
             self.model.put_kv('mood_calibration_v1', calibration)
             return web.json_response({'status':'ok', 'revision':calibration['revision']}, headers={'Access-Control-Allow-Origin':'*'})
+        if event_type == 'artist_feedback':
+            name = str(payload.get('artist') or '').strip()
+            action = payload.get('action')
+            key = listening_variety.artist_key(name)
+            if not key or len(name) > 200 or action not in {'avoid', 'allow'}:
+                raise web.HTTPBadRequest(text='Artist name and avoid/allow action required')
+            preferences = self.model.get_kv('avoided_artists', {})
+            if action == 'avoid': preferences[key] = name
+            else: preferences.pop(key, None)
+            self.model.put_kv('avoided_artists', preferences)
+            return web.json_response({'status': 'ok', 'artist': name, 'avoided': action == 'avoid'})
         if event_type == "feedback":
             uri = str(payload.get("uri") or "").strip()
             action = str(payload.get("action") or "")
