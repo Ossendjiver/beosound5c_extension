@@ -1,0 +1,7 @@
+# BS5C speaker startup
+
+The physical BS5C can offer four speaker choices when starting audio from Playing, Showing, Music Assistant or News and Home Assistant reports the playback devices are off. Turn the navigation wheel to select, press GO to start, or press RIGHT to cancel. A selection holds the existing Home Media routing lease while Home Assistant confirms the requested input and Music Assistant starts playback. The existing motion and Kodi policies continue to apply after startup.
+
+Merge the `volume.showing_child_targets` and `playback.speaker_start` keys from [the example](../config/speaker-start.example.json) into the device's existing `/etc/beosound5c/config.json`. Replace the queue ID placeholders with your Music Assistant queue IDs and confirm the Home Assistant entity IDs match your installation. Keep the current configuration for the other keys. The picker uses the same `HA_TOKEN` and URL as the router. The HA token needs the administrator access required by the existing Home Media routing-lease endpoint.
+
+Dining BL4000 selects `A.AUX` on the dining BV10 and powers `switch.bl4000`. Dining Penta powers `switch.beosystem_9500`, waits for the existing BC9500 MC AUX automation, and starts the Dining queue. Both lounge choices select `LINK` on the BS3 and use `script.homemedia_speaker_control` for the requested orientation and stereo layout. The Dining MC volume mapping uses the physical `media_player.dining` when Showing identifies that player or its Music Assistant alias as the active child.

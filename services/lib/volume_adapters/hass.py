@@ -12,6 +12,7 @@ from .base import VolumeAdapter
 
 logger = logging.getLogger("beo-router.volume.hass")
 _MLGW_STEP_MULTIPLIER_DEFAULT = 2.0
+_FRAME = "media_player.the_frame"
 
 
 def _ha_api_base() -> str:
@@ -97,6 +98,9 @@ class HassVolume(VolumeAdapter):
         self._ha_token = os.getenv("HA_TOKEN", "").strip()
         self._fallback_entity = os.getenv("HASS_FALLBACK_ENTITY", "").strip()
         self._volume_priority = _env_list("HASS_VOLUME_PRIORITY", [])
+        self._showing_entity = cfg("showing", "entity_id", default="")
+        targets = cfg("volume", "showing_child_targets", default={})
+        self._showing_child_targets = targets if isinstance(targets, dict) else {}
         self._mlgw_host = os.getenv("MLGW_HOST", "").strip()
         self._mlgw_port = int(os.getenv("MLGW_PORT", "9000"))
         self._mlgw_user = os.getenv("MLGW_USER", "").strip()
@@ -150,9 +154,26 @@ class HassVolume(VolumeAdapter):
                 if resp.status == 200:
                     data = await resp.json()
                     if data.get("state") in {"playing", "paused", "buffering"}:
-                        return "media_player.the_frame"
+                        return _FRAME
         except Exception as exc:
             logger.debug("HA state lookup failed for %s: %s", youtube_entity, exc)
+
+        if self._showing_entity and self._showing_child_targets:
+            try:
+                async with self._session.get(
+                    f"{self._ha_api_base}/states/{self._showing_entity}",
+                    headers=self._headers(), timeout=aiohttp.ClientTimeout(total=2),
+                ) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        child = (data.get("attributes") or {}).get("active_child")
+                        target = self._showing_child_targets.get(child) if isinstance(child, str) else None
+                        if target and data.get("state") in {"playing", "buffering", "paused"} and (
+                            target != _FRAME or await self._read_level(_FRAME) is not None
+                        ):
+                            return target
+            except Exception as exc:
+                logger.debug("HA Showing volume lookup failed: %s", exc)
 
         for entity in self._volume_priority:
             try:
@@ -167,6 +188,24 @@ class HassVolume(VolumeAdapter):
                         return entity
             except Exception as exc:
                 logger.debug("HA state lookup failed for %s: %s", entity, exc)
+        # A configured physical output can still be playing when Showing is
+        # temporarily reporting a different child. Preserve other active priorities.
+        for target in dict.fromkeys(self._showing_child_targets.values()):
+            if target in self._volume_priority or target == _FRAME:
+                continue
+            try:
+                async with self._session.get(
+                    f"{self._ha_api_base}/states/{target}", headers=self._headers(),
+                    timeout=aiohttp.ClientTimeout(total=2),
+                ) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        if data.get("state") in {"playing", "buffering"}:
+                            return target
+            except Exception as exc:
+                logger.debug("HA volume lookup failed for %s: %s", target, exc)
+        if _FRAME in self._showing_child_targets.values() and await self._read_level(_FRAME) is not None:
+            return _FRAME
         if self._fallback_entity:
             return self._fallback_entity
         return self._volume_priority[0] if self._volume_priority else None
@@ -205,11 +244,66 @@ class HassVolume(VolumeAdapter):
                 ) as resp:
                     if resp.status >= 400:
                         logger.warning("HA volume step returned %d for %s", resp.status, target)
+                        return False
                 await asyncio.sleep(0.05)
             logger.info("HA %s -> %s x%d", target, service, steps)
             return True
         except Exception as exc:
             logger.warning("HA volume send failed: %s", exc)
+            return False
+
+    async def _read_level(self, target: str) -> float | None:
+        try:
+            async with self._session.get(f"{self._ha_api_base}/states/{target}", headers=self._headers()) as resp:
+                if resp.status != 200:
+                    return None
+                data = await resp.json()
+                attrs = data.get("attributes") or {}
+                level = attrs.get("volume_level")
+                active = data.get("state") in {"playing", "paused", "buffering"}
+                if target == _FRAME:
+                    active = data.get("state") in {"on", "idle", "playing", "paused", "buffering"} and attrs.get("art_mode_status") != "on"
+                if active and type(level) in {int, float} and 0 <= level <= 1:
+                    return level
+        except Exception as exc:
+            logger.debug("HA volume feedback failed for %s: %s", target, exc)
+        return None
+
+    async def read_active_volume(self) -> float | None:
+        if not self._ha_token or not self._showing_child_targets:
+            return None
+        target = await self._get_active_target()
+        if target not in self._showing_child_targets.values():
+            return None
+        level = await self._read_level(target)
+        return level * 100 if level is not None else None
+
+    def sync_volume_baseline(self, volume: float) -> None:
+        self._last_reported_vol = volume
+
+    async def _set_measured_level(self, target: str, diff: float) -> bool:
+        level = await self._read_level(target)
+        if level is None:
+            return False
+        # Apply a wheel delta to the receiver's own level. External changes
+        # and the router's UI scale must never become absolute volume jumps.
+        step = max(0.01, abs(diff) / 100)
+        limit = max(level, self._max_volume / 100)
+        requested = max(0.0, min(limit, level + (step if diff > 0 else -step)))
+        if requested == level:
+            return True
+        try:
+            async with self._session.post(
+                f"{self._ha_api_base}/services/media_player/volume_set", headers=self._headers(),
+                json={"entity_id": target, "volume_level": round(requested, 4)},
+            ) as resp:
+                if resp.status >= 400:
+                    logger.warning("HA volume_set returned %d for %s", resp.status, target)
+                    return False
+            logger.info("HA %s volume_set %.1f%% -> %.1f%%", target, level * 100, requested * 100)
+            return True
+        except Exception as exc:
+            logger.warning("HA volume_set failed for %s: %s", target, exc)
             return False
 
     async def _apply_volume(self, volume: float) -> None:
@@ -224,11 +318,12 @@ class HassVolume(VolumeAdapter):
 
         steps = max(1, int(abs(diff) / self._step_size))
         mlgw_steps = max(steps, int(steps * self._mlgw_step_multiplier + 0.5))
-        self._last_reported_vol = volume
-
-        if await self._send_mlgw_steps(target, mlgw_steps, diff):
+        if target in self._showing_child_targets.values():
+            if await self._set_measured_level(target, diff):
+                self._last_reported_vol = volume
             return
-        await self._send_ha_steps(target, steps, diff)
+        if await self._send_mlgw_steps(target, mlgw_steps, diff) or await self._send_ha_steps(target, steps, diff):
+            self._last_reported_vol = volume
 
     async def get_volume(self) -> float:
         return self._last_reported_vol

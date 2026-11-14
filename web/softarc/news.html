@@ -368,17 +368,20 @@
         async function postMassPlayback(item) {
             const target = selectedPodcastTarget();
             const targetPayload = window.PlaybackTargets?.payloadFor?.('mass') || {};
+            const playback = {
+                command: 'play_item',
+                id: item.id || '',
+                url: item.url || '',
+                play_url: item.play_url || '',
+                target_player_id: target?.id || targetPayload.target_player_id || targetPayload.audio_target_id || '',
+                ...targetPayload,
+            };
+            const speakerResult = await window.parent?.PlaybackTargets?.chooseSpeakerForStart?.(playback);
+            if (speakerResult !== undefined) return speakerResult;
             const response = await fetch(`${MASS_URL}/command`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    command: 'play_item',
-                    id: item.id || '',
-                    url: item.url || '',
-                    play_url: item.play_url || '',
-                    target_player_id: target?.id || targetPayload.target_player_id || targetPayload.audio_target_id || '',
-                    ...targetPayload,
-                }),
+                body: JSON.stringify(playback),
             });
             const payload = await response.json().catch(() => ({}));
             if (!response.ok || payload?.status === 'error' || payload?.state === 'error') {
@@ -413,6 +416,11 @@
         }
 
         async function triggerSelectedPlayNews() {
+            const speakerResult = await window.parent?.PlaybackTargets?.chooseSpeakerForStart?.({ command: 'play_news' });
+            if (speakerResult !== undefined) {
+                if (speakerResult) showToast(`Playing news on ${speakerResult.speaker_name}`);
+                return speakerResult;
+            }
             const target = selectedPlayNewsTarget();
             if (!target) throw new Error('No MASS players are available');
             const payload = await postNewsAction('play_news', {
@@ -498,9 +506,11 @@
                         }
 
                         if ((item?.url || item?.play_url) && !Array.isArray(item?.tracks)) {
-                            await postMassPlayback(item);
+                            const result = await postMassPlayback(item);
+                            if (!result) return;
                             const target = selectedPodcastTarget();
-                            showToast(`Playing ${item.name || 'podcast'}${target?.name ? ` on ${target.name}` : ''}`);
+                            const name = result.speaker_name || target?.name;
+                            showToast(`Playing ${item.name || 'podcast'}${name ? ` on ${name}` : ''}`);
                             return;
                         }
 

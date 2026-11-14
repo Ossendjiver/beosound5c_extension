@@ -1,0 +1,86 @@
+{
+  "volume": {
+    "showing_child_targets": {
+      "media_player.dining": "media_player.dining",
+      "media_player.dining_3": "media_player.dining",
+      "media_player.cuisine": "media_player.cuisine",
+      "media_player.cuisine_ma": "media_player.cuisine_ma",
+      "media_player.lounge_g": "media_player.lounge_g",
+      "media_player.lounge_mini_ma": "media_player.lounge_mini_ma",
+      "media_player.the_frame": "media_player.the_frame",
+      "media_player.frame_65": "media_player.the_frame",
+      "media_player.frame_tv": "media_player.the_frame",
+      "media_player.youtube_on_frame_65": "media_player.the_frame"
+    }
+  },
+  "playback": {
+    "speaker_start": {
+      "power_entities": [
+        "media_player.bv10_32",
+        "media_player.bs3",
+        "media_player.bv10_40_2",
+        "media_player.bl3500",
+        "switch.bl4000",
+        "switch.beosystem_9500"
+      ],
+      "playback_entities": [
+        "media_player.link",
+        "media_player.link_ma",
+        "media_player.link_wiim",
+        "media_player.dining",
+        "media_player.dining_3",
+        "media_player.cuisine",
+        "media_player.cuisine_ma",
+        "media_player.lounge_mini_ma",
+        "media_player.bedroom_mini_4",
+        "media_player.bedroomcast_2",
+        "media_player.youtube_on_frame_65",
+        "media_player.the_frame",
+        "media_player.lounge",
+        "media_player.dining_kodi",
+        "media_player.bedroom_kodi"
+      ],
+      "targets": {
+        "dining-bl4000": {
+          "name": "Dining BL4000",
+          "receiver": "media_player.bv10_32",
+          "source": "A.AUX",
+          "switch": "switch.bl4000",
+          "player_entities": ["media_player.link_ma", "media_player.link", "media_player.link_wiim"],
+          "player_name": "Link",
+          "queue_id": "REPLACE_WITH_LINK_MA_QUEUE_ID",
+          "resume_script": "beosystem_start_link_playback"
+        },
+        "dining-penta": {
+          "name": "Dining Penta",
+          "switch": "switch.beosystem_9500",
+          "startup_input": { "entity": "media_player.dining", "source": "AUX" },
+          "player_entity": "media_player.dining_3",
+          "player_entities": ["media_player.dining_3"],
+          "player_name": "Dining",
+          "queue_id": "REPLACE_WITH_DINING_MA_QUEUE_ID"
+        },
+        "lounge-window": {
+          "name": "Lounge Window",
+          "receiver": "media_player.bs3",
+          "source": "LINK",
+          "cinema": "off",
+          "player_entities": ["media_player.link_ma", "media_player.link", "media_player.link_wiim"],
+          "player_name": "Link",
+          "queue_id": "REPLACE_WITH_LINK_MA_QUEUE_ID",
+          "resume_script": "beosystem_start_link_playback"
+        },
+        "lounge-cinema": {
+          "name": "Lounge Cinema",
+          "receiver": "media_player.bs3",
+          "source": "LINK",
+          "cinema": "on",
+          "player_entities": ["media_player.link_ma", "media_player.link", "media_player.link_wiim"],
+          "player_name": "Link",
+          "queue_id": "REPLACE_WITH_LINK_MA_QUEUE_ID",
+          "resume_script": "beosystem_start_link_playback"
+        }
+      }
+    }
+  }
+}

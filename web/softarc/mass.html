@@ -443,8 +443,8 @@
     <script src="../js/config.js"></script>
     <script src="../js/arc-utils.js"></script>
     <script src="../js/fast-letter-index.js"></script>
-    <link rel="stylesheet" href="../mood-wheel.css?v=20261009.1">
-    <script src="../js/mood-wheel.js?v=20261009-mood-fullscreen"></script>
+    <link rel="stylesheet" href="../mood-wheel.css?v=20261113-confirm">
+    <script src="../js/mood-wheel.js?v=20261114-start"></script>
     <script src="../js/search-composer.js"></script>
     <script src="../js/youtube-search-options.js"></script>
     <script src="../js/mass-catalogue.js?v=20261018"></script>
@@ -2033,39 +2033,61 @@
                 if (!response.ok) throw new Error(await response.text() || 'Mood session unavailable');
                 return response.json();
             };
-            const moodSnapshot = async () => {
+            const moodSnapshot = async (queueId = '', timeout = 15000) => {
                 const response = await fetch(sourceCommandUrl, {method:'POST',headers:{'Content-Type':'application/json'},
-                    body:JSON.stringify({command:'mood_snapshot',...activeMassTargetPayload()}),signal:AbortSignal.timeout(15000)});
+                    body:JSON.stringify({command:'mood_snapshot',...activeMassTargetPayload(),queue_id:queueId}),signal:AbortSignal.timeout(timeout)});
                 const result=await response.json();
-                if (!response.ok || result.state === 'error') throw new Error('Current queue unavailable');
-                moodQueue=result.queue_id;
-                return result.snapshot;
+                if (!response.ok || result.state === 'error' || !result.queue_id || !result.snapshot) {
+                    throw new Error('Current queue unavailable');
+                }
+                return { queueId: result.queue_id, snapshot: result.snapshot };
+            };
+            const playingMoodQueue = async () => {
+                try {
+                    const {queueId, snapshot} = await moodSnapshot('', 3000);
+                    if (['playing', 'buffering'].includes(snapshot.state) && snapshot.current_item?.queue_item_id) return queueId;
+                } catch (error) {
+                    console.warn('[MOOD] Could not check for an existing live mix:', error);
+                }
+                return '';
+            };
+            const moodState = async queueId => {
+                const response = await fetch(`${libraryBase}/library/mix?queue_id=${encodeURIComponent(queueId)}`,
+                    {signal: AbortSignal.timeout(5000)});
+                if (!response.ok) throw new Error('Mood session unavailable');
+                return response.json();
             };
             const startSeedMix = async (item, mode='mood') => {
-                let before;
-                try { before=(await moodSnapshot()).current_item?.queue_item_id; } catch (_) {}
-                const started=await arcList.sendGoWebhook('play_now', {...item,url:item.url || item.play_url || item.uri});
-                if (!started) throw new Error('The seed could not be started');
-                let snapshot;
+                const started = await arcList.sendGoWebhook('play_now', {...item,url:item.url || item.play_url || item.uri});
+                if (started === false) return '';
+                if (started?.state !== 'playing' || !started.queue_id) throw new Error('The first track could not be started');
+                let playing;
                 for (let i=0;i<10;i++) {
-                    snapshot=await moodSnapshot();
-                    if (snapshot.current_item?.queue_item_id && snapshot.current_item.queue_item_id !== before) break;
+                    const result = await moodSnapshot(started.queue_id);
+                    if (['playing', 'buffering'].includes(result.snapshot.state) && result.snapshot.current_item?.queue_item_id) {
+                        playing = result;
+                        break;
+                    }
                     await new Promise(resolve=>setTimeout(resolve,300));
                 }
-                if (!snapshot.current_item?.queue_item_id || snapshot.current_item.queue_item_id === before) throw new Error('Seed playback was not confirmed');
-                const media=snapshot.current_item?.media_item || snapshot.current_item || {};
-                await mixCall({action:'begin',queue_id:moodQueue,room:'lounge',mode,
+                if (!playing) throw new Error('First track playback was not confirmed');
+                const media = playing.snapshot.current_item.media_item || playing.snapshot.current_item;
+                await mixCall({action:'begin',queue_id:playing.queueId,room:'lounge',mode,
                     seed:{uri:media.uri || item.uri || item.url,name:media.name || item.name,
-                        artist:(media.artists || []).map(a=>a.name).join(', '),media_type:media.media_type || 'track'}});
+                        artist:(media.artists || []).map(a=>a.name).join(', '),media_type:media.media_type || 'track',
+                        duration: media.duration || item.duration}});
+                moodQueue = playing.queueId;
                 if (mode === 'mood') { moodWheel.open(); publishContextMenu(); }
+                return playing.queueId;
             };
             moodWheel = new window.MoodWheel.Wheel({
                 onSuggest: async () => {
                     try {
-                        await moodSnapshot();
-                        const active=await fetch(`${libraryBase}/library/mix?queue_id=${encodeURIComponent(moodQueue)}`);
-                        const state=await active.json();
-                        if (state.active && state.mood) return state.mood;
+                        const queueId = await playingMoodQueue();
+                        if (queueId) {
+                            const state = await moodState(queueId);
+                            if (state.active && state.mood) return state.mood;
+                        }
                     } catch (_) {}
                     const response = await fetch(`${libraryBase}/library/mood?room=lounge`, {signal:AbortSignal.timeout(5000)});
                     return response.ok ? (await response.json()).suggested : null;
@@ -2073,27 +2095,22 @@
                 onClose: () => publishContextMenu(),
                 onQueue: () => window.parent.postMessage({type:'bs5c-mood-queue'},'*'),
                 onState: async () => {
-                    if (!moodQueue) await moodSnapshot();
-                    const response=await fetch(`${libraryBase}/library/mix?queue_id=${encodeURIComponent(moodQueue)}`);
-                    return response.ok ? response.json() : null;
-                },
-                onAdjust: async ({angle,radius}) => {
-                    if (!moodQueue) await moodSnapshot();
-                    const response=await fetch(`${libraryBase}/library/mix?queue_id=${encodeURIComponent(moodQueue)}`);
-                    const state=await response.json();
-                    if (state.active) { await mixCall({action:'update',queue_id:moodQueue,angle,radius}); await refreshQueueRoot(false); }
+                    const queueId = moodQueue || await playingMoodQueue();
+                    return queueId ? moodState(queueId) : null;
                 },
                 onPlay: async ({angle,radius}) => {
-                    if (!moodQueue) await moodSnapshot();
-                    const response=await fetch(`${libraryBase}/library/mix?queue_id=${encodeURIComponent(moodQueue)}`);
-                    const state=await response.json();
-                    if (!state.active) {
-                        const rec=await fetch(`${libraryBase}/library/recommend/music?room=lounge&limit=20&angle=${angle}&radius=${radius}`);
+                    let queueId = await playingMoodQueue();
+                    if (!queueId || !(await moodState(queueId)).active) {
+                        const rec=await fetch(`${libraryBase}/library/recommend/music?room=lounge&limit=20&angle=${angle}&radius=${radius}`,
+                            {signal: AbortSignal.timeout(15000)});
+                        if (!rec.ok) throw new Error('Could not load mood recommendations');
                         const mix=await rec.json();
                         if (!mix.items?.length) throw new Error(mix.mood_coverage?.notice || 'No mood-compatible tracks with sufficient metadata');
-                        await startSeedMix(mix.items[0]);
+                        queueId = await startSeedMix(mix.items[0]);
+                        if (!queueId) return 'Speaker selection cancelled';
                     }
-                    const updated=await mixCall({action:'update',queue_id:moodQueue,angle,radius});
+                    moodQueue = queueId;
+                    const updated=await mixCall({action:'update',queue_id:queueId,angle,radius});
                     await refreshQueueRoot(false);
                     return updated.pending_refresh ? 'Updating upcoming tracks…' : 'Upcoming tracks updated';
                 }
@@ -2942,16 +2959,19 @@
                 showActionToast(copy.pending);
 
                 try {
-                    const response = await fetch(sourceCommandUrl, {
+                    const speakerResult = !current.youtube_video && ['play_item', 'play_now', 'play_radio'].includes(command)
+                        ? await window.parent?.PlaybackTargets?.chooseSpeakerForStart?.(payload) : undefined;
+                    if (speakerResult === null) {
+                        settleActionToast();
+                        return false;
+                    }
+                    const response = speakerResult === undefined ? await fetch(sourceCommandUrl, {
                         method:  'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body:    JSON.stringify(payload),
-                    });
-                    let result = null;
-                    try {
-                        result = await response.json();
-                    } catch (e) {}
-                    if (!response.ok) {
+                    }) : null;
+                    const result = response ? await response.json().catch(() => null) : speakerResult;
+                    if (response && !response.ok) {
                         showActionToast(copy.error, { preserveTiming: true });
                         settleActionToast();
                         console.warn('[MASS] Command failed:', response.status);
@@ -2974,7 +2994,9 @@
                     const state = String(result?.state || '').trim().toLowerCase();
                     const successMessage = state === 'video_sent' ? 'Sent to Samsung Frame' : (copy[state] || copy.playing || copy.queued || copy.pending);
                     showActionToast(successMessage, { preserveTiming: true });
-                    if (state === 'playing' || command === 'play_now' || command === 'play_radio') {
+                    // The router's acknowledged metadata is authoritative on this kiosk.
+                    if (!window.parent?.AppConfig?.showing?.exclusivePlayingFallback
+                            && (state === 'playing' || command === 'play_now' || command === 'play_radio')) {
                         pushNowPlayingPayload(current, detailState?.page || null);
                     }
                     if (state === 'queued' || state === 'playing' || state === 'playlist_added') {

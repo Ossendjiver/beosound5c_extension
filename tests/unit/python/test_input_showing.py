@@ -21,6 +21,11 @@ pytestmark = pytest.mark.skipif(
 def _load_input_module(monkeypatch):
     sys.modules.pop("input", None)
     monkeypatch.setitem(sys.modules, "hid", types.ModuleType("hid"))
+    # The unrelated scan endpoint depends on Linux file locking.
+    if sys.platform == "win32":
+        scans = types.ModuleType("lib.maintenance_scans")
+        scans.start_scan = AsyncMock()
+        monkeypatch.setitem(sys.modules, scans.__name__, scans)
     return importlib.import_module("input")
 
 
@@ -187,6 +192,28 @@ def test_showing_relay_takes_over_when_router_is_idle(monkeypatch):
     assert payload["title"] == "The Walk"
     assert payload["artwork"] == "http://ha.local/art.jpg"
     assert payload["state"] == "playing"
+
+
+def test_showing_updates_when_child_changes_and_ignores_enrichment(monkeypatch):
+    input_mod = _load_input_module(monkeypatch)
+    showing = {
+        "entity_id": "media_player.display_target", "active_child": "media_player.dining",
+        "title": "The Walk", "artist": "Christine & the Queens", "state": "playing",
+        "position": 61, "duration": 190,
+    }
+    router_media = input_mod._showing_router_media_payload(showing)
+    assert router_media["position"] == "1:01"
+    assert router_media["duration"] == "3:10"
+    router_media.update(music_video_url="enriched", canvas_url="enriched", track_id="enriched")
+    assert input_mod._decide_showing_relay_action(None, router_media, showing) == ("unchanged", None)
+    action, payload = input_mod._decide_showing_relay_action(None, router_media, {**showing, "position": 66})
+    assert action == "update_position"
+    assert payload["position"] == "1:06"
+    assert payload["music_video_url"] == "enriched"
+    updated = {**showing, "active_child": "media_player.link"}
+    action, payload = input_mod._decide_showing_relay_action(None, router_media, updated)
+    assert action == "update_relay"
+    assert payload["active_child"] == "media_player.link"
 
 
 def test_showing_relay_yields_to_existing_nonrelay_media(monkeypatch):

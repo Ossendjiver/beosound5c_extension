@@ -11,7 +11,7 @@
     const layerMove = (state,direction) => normalize(state.angle, radiusForDiscovery(
         Math.max(0, Math.min(90, discovery(state.radius) + (direction === 'right' ? 1 : -1)))));
     class Wheel {
-        constructor({onPlay, onClose, onSuggest, onAdjust, onQueue, onState}) { this.onAdjust=onAdjust; this.onQueue=onQueue; this.onState=onState; this.onSuggest=onSuggest; this.onPlay = onPlay; this.onClose = onClose; this.state = normalize(0, .25); }
+        constructor({onPlay, onClose, onSuggest, onQueue, onState}) { this.onQueue=onQueue; this.onState=onState; this.onSuggest=onSuggest; this.onPlay = onPlay; this.onClose = onClose; this.state = normalize(0, .25); }
         open() {
             if (this.el) return;
             try { this.state = normalize(...JSON.parse(localStorage.getItem('bs5c-mood') || '[0,0.25]')); } catch (_) {}
@@ -37,15 +37,17 @@
             this.poll = setInterval(async () => {
                 // Reassert ownership after mounting or a missed open message.
                 if (this.el) this.notify(true);
+                if (this.busy || this.polling) return;
+                this.polling = true;
                 try {
                     const state = await this.onState?.();
-                    if (this.el) {
+                    if (this.el && !this.busy) {
                         this.el.querySelector('.mood-playing').textContent = state?.title || '';
                         if (state?.active) this.el.querySelector('.mood-status').textContent =
                             state.refresh_status === 'insufficient_mood_data' ? 'More mood data needed for this selection' :
                             state.pending_refresh ? 'Updating upcoming tracks…' : '';
                     }
-                } catch (_) {}
+                } catch (_) {} finally { this.polling = false; }
             }, 1500);
             this.changed = false;
             if (!localStorage.getItem('bs5c-mood-user') && this.onSuggest) {
@@ -59,17 +61,12 @@
             if (!this.el) return;
             const t = this.state.angle * Math.PI/180, p = this.el.querySelector('.mood-point');
             p.style.left = `${50+48*this.state.radius*Math.sin(t)}%`; p.style.top = `${50-48*this.state.radius*Math.cos(t)}%`;
-            this.el.classList.remove('settled');
-            clearTimeout(this.dwellTimer);
-            const view = this.el;
-            this.dwellTimer = setTimeout(() => {
-                if (this.el !== view) return;
-                view.querySelector('.mood-atmosphere').textContent = mood(this.state.angle);
-                view.querySelector('.mood-discovery').textContent = `${ring(this.state.radius)} · ${discovery(this.state.radius)}% discovery`;
-                view.classList.add('settled');
-                if (this.changed && this.onAdjust) Promise.resolve(this.onAdjust({...this.state})).catch(e => { if (this.el) this.el.querySelector('.mood-status').textContent=e.message; });
-            }, 1000);
-            localStorage.setItem('bs5c-mood', JSON.stringify([this.state.angle,this.state.radius]));
+            const atmosphere = this.el.querySelector('.mood-atmosphere');
+            const level = this.el.querySelector('.mood-discovery');
+            const name = mood(this.state.angle);
+            const discoveryLabel = `${ring(this.state.radius)} · ${discovery(this.state.radius)}% discovery`;
+            if (atmosphere.textContent !== name) atmosphere.textContent = name;
+            if (level.textContent !== discoveryLabel) level.textContent = discoveryLabel;
         }
         nav(data) { this.changed=true; localStorage.setItem('bs5c-mood-user','1'); const sign = data?.direction === 'clock' ? 1 : data?.direction === 'counter' ? -1 : 0;
             this.state = normalize(this.state.angle + sign * 5 * clamp(data?.speed || 1,1,4), this.state.radius); this.render(); }
@@ -97,11 +94,15 @@
             if (this.busy || !this.el) return; this.busy = true;
             const status = this.el.querySelector('.mood-status'), button = this.el.querySelector('.mood-play'); button.disabled = true;
             status.textContent = 'Building your mix…';
-            try { status.textContent = await this.onPlay({...this.state}) || 'Playing'; }
+            const selection = {...this.state};
+            try {
+                status.textContent = await this.onPlay(selection) || 'Playing';
+                localStorage.setItem('bs5c-mood', JSON.stringify([selection.angle, selection.radius]));
+            }
             catch(e) { status.textContent = e.message || 'Could not start this mood'; }
             finally { this.busy=false; if (this.el) button.disabled=false; }
         }
-        close() { clearInterval(this.poll); clearTimeout(this.dwellTimer); this.el?.remove(); this.el = null; this.notify(false); this.onClose?.(); }
+        close() { clearInterval(this.poll); this.el?.remove(); this.el = null; this.notify(false); this.onClose?.(); }
         get active() { return !!this.el; }
     }
     const api = {normalize, fromPoint, ring, mood, discovery, radiusForDiscovery, layerMove, Wheel}; root.MoodWheel = api;

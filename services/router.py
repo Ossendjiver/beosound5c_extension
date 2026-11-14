@@ -24,6 +24,7 @@ import os
 import signal
 import time
 import sys
+from urllib.parse import urlsplit
 
 import aiohttp
 from aiohttp import web
@@ -61,12 +62,13 @@ from lib.metadata_enrichment import (
     valid_artwork,
 )
 from lib.playback_targets import default_playback_state
+from lib.speaker_start import SpeakerStart, SpeakerStartError
 from lib.spotify_canvas import extract_spotify_track_id
 from lib.source_registry import (
     Source, SourceRegistry, DEFAULT_SOURCE_HANDLES, DEFAULT_SOURCE_PORTS,
 )
 from lib.transport import Transport
-from lib.volume_adapters import create_volume_adapter, infer_volume_type
+from lib.volume_adapters import HassVolume, create_volume_adapter, infer_volume_type
 from lib.watchdog import watchdog_loop
 
 logger = install_logging("beo-router")
@@ -92,6 +94,7 @@ class EventRouter:
         self._lydbro = LydbroHandler(self)
         self.active_view = None
         self.volume = 0
+        self._receiver_volume: float | None = None
         self.balance = 0
         self.output_device = cfg("volume", "output_name", default="BeoLab 5")
         self._volume_step = int(cfg("volume", "step", default=3))
@@ -244,6 +247,8 @@ class EventRouter:
 
         self._spawn(self._startup_recovery(), name="startup_recovery")
         self._spawn(self._auto_standby_loop(), name="auto_standby")
+        if isinstance(self._volume, HassVolume) and cfg("volume", "showing_child_targets"):
+            self._spawn(self._sync_hass_volume(), name="hass_volume_feedback")
 
     async def stop(self):
         # Cancel all tracked background tasks
@@ -779,7 +784,32 @@ class EventRouter:
         await self._broadcast_volume()
 
     async def _broadcast_volume(self):
-        await self.media.broadcast("volume_update", {"volume": round(self.volume)})
+        await self.media.broadcast("volume_update", {
+            "volume": round(self.volume), "receiver_volume": self._receiver_volume,
+            "volume_limit": self._volume._max_volume if self._receiver_volume is not None else None,
+        })
+
+    async def _sync_hass_volume(self):
+        while True:
+            stamp = self._last_local_volume_set
+            if time.monotonic() - stamp >= 1.5:
+                volume = await self._volume.read_active_volume()
+                if stamp == self._last_local_volume_set:
+                    changed = self._receiver_volume != volume
+                    self._receiver_volume = volume
+                    if volume is not None:
+                        baseline = min(volume, self._volume._max_volume)
+                        self._volume.sync_volume_baseline(baseline)
+                        ui_volume = self._hw_to_ui(baseline)
+                        changed |= round(ui_volume) != round(self.volume)
+                        self.volume = ui_volume
+                    if changed:
+                        await self.media.broadcast("volume_update", {
+                            "volume": round(self.volume), "receiver_volume": volume,
+                            "volume_limit": self._volume._max_volume if volume is not None else None,
+                            "passive": True,
+                        })
+            await asyncio.sleep(2)
 
     # ── Menu helpers ──
 
@@ -1382,6 +1412,8 @@ async def handle_status(request: web.Request) -> web.Response:
         "active_has_queue": bool(active and active.manages_queue),
         "active_view": router_instance.active_view,
         "volume": router_instance.volume,
+        "receiver_volume": router_instance._receiver_volume,
+        "volume_limit": router_instance._volume._max_volume if router_instance._receiver_volume is not None else None,
         "output_device": router_instance.output_device,
         "transport_mode": router_instance.transport.mode,
         "latest_action_ts": router_instance._latest_action_ts,
@@ -1491,6 +1523,34 @@ async def handle_playback(request: web.Request) -> web.Response:
             await _notify_mass_playback_target(audio_target)
         await router_instance.media.broadcast("playback_targets", state)
     return web.json_response(router_instance.playback_state)
+
+
+async def handle_speaker_start(request: web.Request) -> web.Response:
+    try:
+        origin = request.headers.get("Origin")
+        if (request.remote not in {"127.0.0.1", "::1"}
+                or (origin and urlsplit(origin).hostname not in {"localhost", "127.0.0.1", "::1"})):
+            return web.json_response({"error": "Use the BS5C screen to choose speakers."}, status=403)
+        picker = SpeakerStart(router_instance._session)
+        if request.method == "GET":
+            return web.json_response({"options": await picker.options()})
+        data = await request.json()
+        if not isinstance(data, dict) or not isinstance(data.get("target"), str):
+            return web.json_response({"error": "Choose a speaker route."}, status=400)
+        result = await picker.start(data["target"], data.get("playback"))
+        queue = result["queue_id"]
+        state = router_instance.playback_state
+        if not any(target["id"] == queue for target in state["audio_targets"]):
+            state["audio_targets"].append({"id": queue, "name": picker.targets[data["target"]]["player_name"]})
+        state["audio_target_id"] = queue
+        await _notify_mass_playback_target(queue)
+        await router_instance.media.broadcast("playback_targets", state)
+        return web.json_response(result)
+    except SpeakerStartError as exc:
+        return web.json_response({"error": str(exc)}, status=409)
+    except (aiohttp.ClientError, TimeoutError, ValueError):
+        logger.warning("Speaker routing request failed", exc_info=True)
+        return web.json_response({"error": "Speaker routing is unavailable. Try again shortly."}, status=503)
 
 
 async def handle_queue(request: web.Request) -> web.Response:
@@ -1713,6 +1773,8 @@ def create_app() -> web.Application:
     app.router.add_post("/router/playback_override", handle_playback_override)
     app.router.add_get("/router/playback", handle_playback)
     app.router.add_post("/router/playback", handle_playback)
+    app.router.add_get("/router/speaker-start", handle_speaker_start)
+    app.router.add_post("/router/speaker-start", handle_speaker_start)
     app.router.add_post("/router/output/off", handle_output_off)
     app.router.add_post("/router/output/on", handle_output_on)
     app.router.add_post("/router/resync", handle_resync)

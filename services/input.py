@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import asyncio, threading, json, time, sys, re
+import hashlib
 import hid, websockets
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
@@ -2227,7 +2228,7 @@ def _showing_payload(data: dict, ha_url: str, entity_id: str) -> dict:
     artist = attrs.get('media_artist') or attrs.get('media_series_title') or app_name or '—'
     album = attrs.get('media_album_name') or attrs.get('source') or friendly_name or '—'
 
-    return {
+    payload = {
         'entity_id': entity_id,
         'title': attrs.get('media_title') or attrs.get('title') or '—',
         'artist': artist,
@@ -2238,6 +2239,15 @@ def _showing_payload(data: dict, ha_url: str, entity_id: str) -> dict:
         'state': data.get('state', 'unknown'),
         'supported_features': attrs.get('supported_features', 0),
     }
+    for field, attribute in (
+        ('active_child', 'active_child'),
+        ('position', 'media_position'), ('duration', 'media_duration'),
+    ):
+        if attrs.get(attribute) is not None:
+            payload[field] = attrs[attribute]
+    if attrs.get('media_content_id'):
+        payload['media_key'] = hashlib.sha256(str(attrs['media_content_id']).encode()).hexdigest()
+    return payload
 
 
 def _showing_command_service(command: str) -> str | None:
@@ -2319,10 +2329,18 @@ def _showing_relay_media_is_active(showing_media: dict | None) -> bool:
 def _showing_relay_signature(media: dict | None) -> tuple[str, ...]:
     media = media or {}
     keys = (
-        'relay_id', 'state', 'title', 'artist', 'album', 'artwork',
-        'back_artwork', 'canvas_url', 'music_video_url', 'track_id',
+        'relay_id', 'active_child', 'media_key', 'state', 'title', 'artist', 'album', 'artwork', 'duration',
     )
     return tuple(str(media.get(key) or '') for key in keys)
+
+
+def _showing_time(value) -> str:
+    try:
+        seconds = max(0, int(value))
+    except (TypeError, ValueError, OverflowError):
+        return '0:00'
+    minutes, seconds = divmod(seconds, 60)
+    return f'{minutes}:{seconds:02d}'
 
 
 def _showing_router_media_payload(showing_media: dict | None) -> dict:
@@ -2355,9 +2373,11 @@ def _showing_router_media_payload(showing_media: dict | None) -> dict:
         'canvas_url': '',
         'music_video_url': '',
         'track_id': '',
+        'active_child': showing_media.get('active_child') or '',
+        'media_key': showing_media.get('media_key') or '',
         'state': _showing_relay_normalize_state(showing_media.get('state')) or 'playing',
-        'position': '0:00',
-        'duration': '0:00',
+        'position': _showing_time(showing_media.get('position')),
+        'duration': _showing_time(showing_media.get('duration')),
         'app_name': showing_media.get('app_name') or '',
         'friendly_name': showing_media.get('friendly_name') or '',
         'entity_id': showing_media.get('entity_id') or '',
@@ -2385,6 +2405,8 @@ def _decide_showing_relay_action(
         return 'idle', None
 
     if relay_owns_router_media and _showing_relay_signature(router_media) == _showing_relay_signature(next_payload):
+        if router_media.get('position', '0:00') != next_payload['position']:
+            return 'update_position', {**router_media, 'position': next_payload['position']}
         return 'unchanged', None
 
     return ('update_relay' if relay_owns_router_media else 'takeover_idle_router', next_payload)

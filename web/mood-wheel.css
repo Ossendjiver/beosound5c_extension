@@ -7,10 +7,7 @@
 .mood-view button svg {width:30px;height:30px;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round;}
 .mood-back {top:20px;right:20px;}.mood-play {bottom:20px;right:20px;color:#36a868!important;}
 .mood-view button:disabled {opacity:.4;}.mood-view button:focus-visible {outline:2px solid currentColor;outline-offset:4px;}
-.mood-label {position:absolute;bottom:12px;left:50%;transform:translateX(-50%);display:flex;flex-direction:column;align-items:center;text-align:center;gap:5px;max-width:70vw;font-size:24px;opacity:0;pointer-events:none;}
+.mood-label {position:absolute;bottom:12px;left:50%;transform:translateX(-50%);display:flex;flex-direction:column;align-items:center;text-align:center;gap:5px;max-width:70vw;font-size:24px;pointer-events:none;}
 .mood-discovery {font-size:17px;color:#c5cdd7;}
-.mood-view.settled .mood-label {animation:mood-idle-pulse 4s ease-in-out infinite;}
-@keyframes mood-idle-pulse {0%,100% {opacity:0;}50% {opacity:.9;}}
 .mood-status {position:absolute;top:60px;left:50%;transform:translateX(-50%);font-size:17px;color:#c5cdd7;max-width:65vw;text-align:center;}
-@media(prefers-reduced-motion:reduce) {.mood-view.settled .mood-label {animation:none;opacity:.85;}}
 .mood-playing {position:absolute;top:22px;left:22px;max-width:70vw;font-size:21px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}

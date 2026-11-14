@@ -212,6 +212,7 @@ function updateViaStore(angle, laserPosition) {
 
 function handleNavEvent(uiStore, data) {
     notifyUserInteraction('nav', data || {});
+    if (window.PlaybackTargets?.handleSpeakerNav?.(data)) return;
     if (window.PlayingQueueOverlay?.moodOpen?.() && window.PlayingQueueOverlay.handleNavEvent(data, 'mass')) return;
     if (moodWheelActive && uiStore.currentRoute === 'menu/mass') {
         window.IframeMessenger?.sendNavEvent('menu/mass', data);
@@ -308,6 +309,8 @@ function routeNavToView(page, data, uiStore) {
 // and forwards to the volume adapter (BeoLab 5, Sonos, etc.).
 
 let currentVolume = 50;         // placeholder until synced from the router
+let receiverVolume = null;
+let receiverVolumeLimit = null;
 let volumeSynced = false;       // true once a real value arrived (fetch or broadcast)
 let volumeFetchInFlight = false;
 let volumeSyncRetryTimer = null;
@@ -339,11 +342,10 @@ async function fetchVolumeFromRouter() {
             { signal: AbortSignal.timeout(2000) });
         const data = await resp.json();
         currentVolume = data.volume || 0;
+        updateReceiverVolume(data);
         volumeSynced = true;
         volumeSyncRetries = 0;
         volumeOutputDevice = data.output_device || '';
-        const deviceEl = document.getElementById('volume-device');
-        if (deviceEl) deviceEl.textContent = volumeOutputDevice;
         updateVolumeArc(currentVolume);
         console.log(`[VOLUME] Synced from router: ${currentVolume}% (${volumeOutputDevice})`);
     } catch (e) {
@@ -369,10 +371,12 @@ function handleVolumeUpdate(data) {
     const newVol = data.volume;
     if (newVol == null || typeof newVol !== 'number') return;
     currentVolume = newVol;
+    updateReceiverVolume(data);
     volumeSynced = true;  // router broadcast is a real value
     updateVolumeArc(currentVolume);
 
     // Show the arc overlay briefly (same as physical wheel)
+    if (data.passive) return;
     const overlay = document.getElementById('volume-overlay');
     if (overlay) {
         overlay.classList.add('visible');
@@ -396,10 +400,19 @@ function sendVolumeToRouter(volume) {
     }, 50);
 }
 
+function updateReceiverVolume(data) {
+    if (!Object.hasOwn(data, 'receiver_volume')) return;
+    receiverVolume = data.receiver_volume;
+    receiverVolumeLimit = data.volume_limit;
+}
+
 function updateVolumeArc(volume) {
+    const displayed = receiverVolume ?? volume;
+    const deviceEl = document.getElementById('volume-device');
+    if (deviceEl) deviceEl.textContent = receiverVolume == null ? volumeOutputDevice : `${Math.round(displayed)}%`;
     const arcPath = document.getElementById('volume-arc-path');
     if (!arcPath) return;
-    const arcFraction = 0.18 + (volume / 100) * (0.82 - 0.18);
+    const arcFraction = 0.18 + (displayed / 100) * (0.82 - 0.18);
     arcPath.style.strokeDashoffset = VOLUME_ARC_LENGTH * (1 - arcFraction);
 }
 
@@ -421,6 +434,7 @@ function handleVolumeEvent(uiStore, data) {
 
     const speed = data.speed || 10;
     const direction = data.direction === 'clock' ? 1 : -1;
+    const previousVolume = currentVolume;
 
     // Fast spin down → snap to 0
     if (direction === -1 && speed > 25) {
@@ -430,6 +444,10 @@ function handleVolumeEvent(uiStore, data) {
         const scale = 1.5 - (currentVolume / 100) * 0.9;
         const step = (speed / 14) * scale;
         currentVolume = Math.max(0, Math.min(100, currentVolume + direction * step));
+    }
+    if (receiverVolume != null && receiverVolumeLimit != null) {
+        const delta = (currentVolume - previousVolume) * receiverVolumeLimit / 100;
+        receiverVolume = Math.max(0, Math.min(Math.max(receiverVolume, receiverVolumeLimit), receiverVolume + delta));
     }
 
     const overlay = document.getElementById('volume-overlay');
@@ -445,7 +463,7 @@ function handleVolumeEvent(uiStore, data) {
     }
 
     if (synced) sendVolumeToRouter(currentVolume);
-    console.log(`[VOLUME] ${Math.round(currentVolume)}%${synced ? '' : ' (local only — unsynced)'}`);
+    console.log(`[VOLUME] ${Math.round(receiverVolume ?? currentVolume)}%${synced ? '' : ' (local only — unsynced)'}`);
 }
 
 // ── Buttons ──
@@ -472,6 +490,7 @@ function handleButtonEvent(uiStore, data) {
     // Global overlay intercept — camera overlay captures all buttons when active
     if (window.CameraOverlayManager?.isActive &&
         window.CameraOverlayManager.handleAction(button)) return;
+    if (window.PlaybackTargets?.handleSpeakerButton?.(button)) return;
     // An open mood wheel owns layer/play buttons before generic context handlers.
     if (moodWheelActive && page === 'menu/mass') {
         if (window.PlayingQueueOverlay?.moodOpen?.() && window.PlayingQueueOverlay.handleButton(button, 'mass')) return;
@@ -482,6 +501,15 @@ function handleButtonEvent(uiStore, data) {
     if (window.PlaybackTargets?.handleButton?.(button)) return;
 
     // Route to current view — if handled, done
+    if (button === 'go' && ['menu/playing', 'menu/showing'].includes(page)
+            && window.PlaybackTargets?.chooseSpeakerForStart) {
+        void window.PlaybackTargets.chooseSpeakerForStart().then(result => {
+            if (result === undefined && uiStore.currentRoute === page) {
+                if (!routeButtonToView(page, button, uiStore)) sendWebhook(getWebhookContext(page), button);
+            }
+        });
+        return;
+    }
     if (routeButtonToView(page, button, uiStore)) return;
 
     // Fallback: HA webhook (pages without local handling)

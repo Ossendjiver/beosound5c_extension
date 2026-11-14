@@ -187,6 +187,11 @@
           "description": "Volume increment per wheel click.",
           "default": 3
         },
+        "showing_child_targets": {
+          "type": "object",
+          "description": "Maps a Home Assistant Showing active_child entity to the media player that owns its volume.",
+          "additionalProperties": { "type": "string" }
+        },
         "output_name": {
           "type": "string",
           "description": "Display name for the audio output shown in the UI.",
@@ -420,6 +425,45 @@
         }
       },
       "additionalProperties": false
+    },
+    "playback": {
+      "type": "object",
+      "properties": {
+        "speaker_start": {
+          "type": "object",
+          "description": "Optional physical BS5C speaker picker. See config/speaker-start.example.json for the Home Assistant routing configuration.",
+          "required": ["power_entities", "targets"],
+          "properties": {
+            "power_entities": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+            "playback_entities": { "type": "array", "items": { "type": "string" } },
+            "targets": {
+              "type": "object",
+              "minProperties": 1,
+              "additionalProperties": {
+                "type": "object",
+                "required": ["name", "queue_id", "player_entities", "player_name"],
+                "properties": {
+                  "name": { "type": "string" },
+                  "queue_id": { "type": "string" },
+                  "player_entities": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+                  "player_name": { "type": "string" },
+                  "receiver": { "type": "string" },
+                  "source": { "type": "string" },
+                  "switch": { "type": "string" },
+                  "cinema": { "enum": ["on", "off"] },
+                  "player_entity": { "type": "string" },
+                  "resume_script": { "type": "string" },
+                  "startup_input": {
+                    "type": "object",
+                    "required": ["entity", "source"],
+                    "properties": { "entity": { "type": "string" }, "source": { "type": "string" } }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
     },
     "showing": {
       "type": "object",

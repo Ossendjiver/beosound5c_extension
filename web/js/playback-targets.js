@@ -24,6 +24,8 @@
 
     let state = { ...defaults };
     let targetPrompt = null;
+    let speakerPrompt = null;
+    let speakerCheck = false;
 
     function normalizeTargets(targets) {
         if (!Array.isArray(targets)) return [];
@@ -148,6 +150,10 @@
             #playback-target-queue-prompt .target-queue-option.selected {
                 color: #06111f; background: #9bd0ff; border-color: #cce7ff;
             }
+            #playback-target-queue-prompt .speaker-option {
+                display: block; width: 100%; text-align: left;
+                font: inherit; font-size: 18px; color: inherit; background: transparent;
+            }
             #playback-target-queue-prompt .target-queue-status {
                 min-height: 20px; margin-top: 12px; color: #ffb5b5; font-size: 14px;
             }
@@ -178,6 +184,14 @@
             void activateTargetPrompt();
         });
         document.body.appendChild(overlay);
+        document.addEventListener('keydown', (event) => {
+            if (!speakerPrompt) return;
+            const button = { Enter: 'go', Escape: 'right', Backspace: 'right', ArrowUp: 'up', ArrowDown: 'down' }[event.key];
+            if (!button) return;
+            event.preventDefault();
+            event.stopImmediatePropagation();
+            handleSpeakerButton(button);
+        }, true);
         return overlay;
     }
 
@@ -206,6 +220,112 @@
         const overlay = document.getElementById('playback-target-queue-prompt');
         if (overlay) overlay.hidden = true;
         prompt?.resolve?.(result);
+    }
+
+    function renderSpeakerPrompt() {
+        const overlay = ensurePromptElement();
+        overlay.hidden = !speakerPrompt;
+        if (!speakerPrompt) return;
+        overlay.querySelector('.target-queue-kicker').textContent = 'Speakers';
+        overlay.querySelector('.target-queue-title').textContent = 'Where should this play?';
+        overlay.querySelector('.target-queue-copy').textContent = '';
+        const options = overlay.querySelector('.target-queue-options');
+        options.replaceChildren(...speakerPrompt.options.map((option, index) => {
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.className = `target-queue-option speaker-option${index === speakerPrompt.index ? ' selected' : ''}`;
+            button.textContent = option.name;
+            button.disabled = speakerPrompt.busy || Boolean(speakerPrompt.error);
+            button.onclick = () => { speakerPrompt.index = index; void confirmSpeaker(); };
+            return button;
+        }));
+        overlay.querySelector('.target-queue-status').textContent = speakerPrompt.busy
+            ? 'Starting the selected speakers…' : (speakerPrompt.error || '');
+        overlay.querySelector('.target-queue-hint').textContent = speakerPrompt.error
+            ? 'RIGHT Close' : 'Wheel Select   GO Confirm   RIGHT Cancel';
+    }
+
+    function closeSpeakerPrompt(result) {
+        const prompt = speakerPrompt;
+        speakerPrompt = null;
+        const overlay = ensurePromptElement();
+        overlay.hidden = true;
+        overlay.querySelector('.target-queue-kicker').textContent = 'Playback target';
+        overlay.querySelector('.target-queue-hint').textContent = 'Wheel Select   GO Confirm   RIGHT Cancel';
+        prompt.resolve(result);
+    }
+
+    async function confirmSpeaker() {
+        const prompt = speakerPrompt;
+        if (!prompt || prompt.busy || prompt.error) return;
+        prompt.busy = true;
+        renderSpeakerPrompt();
+        try {
+            const response = await fetch(`${ROUTER_URL()}/router/speaker-start`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ target: prompt.options[prompt.index].id, playback: prompt.playback }),
+            });
+            const result = await response.json();
+            if (!response.ok) throw new Error(result.error || 'Could not start the selected speakers.');
+            closeSpeakerPrompt(result);
+            void refresh();
+        } catch (error) {
+            prompt.busy = false;
+            prompt.error = error.message || 'Could not start the selected speakers.';
+            renderSpeakerPrompt();
+        }
+    }
+
+    async function chooseSpeakerForStart(playback = null) {
+        if (!['localhost', '127.0.0.1', '[::1]'].includes(window.location.hostname)
+                || window.EmulatorBridge?.isInEmulator || targetPrompt) return undefined;
+        if (speakerPrompt || speakerCheck) return null;
+        speakerCheck = true;
+        try {
+            const response = await fetch(`${ROUTER_URL()}/router/speaker-start`, {
+                cache: 'no-store', signal: AbortSignal.timeout(6000),
+            });
+            if (response.status === 404) return undefined;
+            if (!response.ok) {
+                const result = await response.json().catch(() => ({}));
+                return new Promise((resolve) => {
+                    speakerPrompt = { options: [], index: 0, busy: false, resolve,
+                        error: result.error || 'Could not check speaker power.' };
+                    renderSpeakerPrompt();
+                });
+            }
+            const { options } = await response.json();
+            if (!options?.length || targetPrompt) return undefined;
+            return new Promise((resolve) => {
+                speakerPrompt = { options, index: 0, busy: false, playback, resolve };
+                renderSpeakerPrompt();
+            });
+        } catch (_error) {
+            return undefined;
+        } finally {
+            speakerCheck = false;
+        }
+    }
+
+    function handleSpeakerNav(data) {
+        if (!speakerPrompt) return false;
+        if (!speakerPrompt.busy && !speakerPrompt.error) {
+            const step = data?.direction === 'counter' ? -1 : 1;
+            speakerPrompt.index = Math.max(0, Math.min(speakerPrompt.options.length - 1, speakerPrompt.index + step));
+            renderSpeakerPrompt();
+        }
+        return true;
+    }
+
+    function handleSpeakerButton(button) {
+        if (!speakerPrompt) return false;
+        if (!speakerPrompt.busy) {
+            if (button === 'right' || button === 'go_long') closeSpeakerPrompt(null);
+            else if (button === 'go') void confirmSpeaker();
+            else if (button === 'up' || button === 'down') handleSpeakerNav({ direction: button === 'up' ? 'counter' : 'clock' });
+        }
+        return true;
     }
 
     async function fetchActiveMassQueue() {
@@ -271,10 +391,11 @@
         if (options.skipQueuePrompt === true) {
             return update({ audio_target_id: targetId, queue_resolution: options.queueResolution || 'synced' });
         }
-        if (targetPrompt) return state;
+        if (targetPrompt || speakerPrompt) return state;
         const queue = await fetchActiveMassQueue();
         const queueId = String(queue?.player_id || queue?.queue_id || '').trim();
         const tracks = Array.isArray(queue?.tracks) ? queue.tracks : [];
+        if (speakerPrompt) return state;
         if (!queueId || queueId === targetId || !tracks.length) {
             return update({ audio_target_id: targetId });
         }
@@ -358,6 +479,9 @@
         requestAudioTargetChange,
         setAudioTarget: requestAudioTargetChange,
         isQueuePromptOpen: () => Boolean(targetPrompt),
+        chooseSpeakerForStart,
+        handleSpeakerNav,
+        handleSpeakerButton,
         handleNav: handlePromptNav,
         handleButton: handlePromptButton,
         setVideoTarget: (id) => update({ video_target_id: id }),
