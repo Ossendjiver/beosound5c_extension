@@ -269,7 +269,11 @@ class Coordinator:
             if operation == "transfer" and source == target: return
             if source.shared:
                 hardware=s["ha"].get(source.entity,{})
-                if hardware.get("state") in {None,"off","unknown","unavailable"} or hardware.get("attributes",{}).get("source") not in (source.source,*source.alternate_sources):
+                # A saved paused queue can be moved without waking its former room.
+                # Never infer this permission for a playing queue or an unknown hardware state.
+                dormant_transfer = (operation == "transfer" and hardware.get("state") == "off"
+                                    and source_queue.get("state") in {"paused", "idle", "stopped"})
+                if not dormant_transfer and (hardware.get("state") in {None,"off","unknown","unavailable"} or hardware.get("attributes",{}).get("source") not in (source.source,*source.alternate_sources)):
                     raise InvalidIntent("Source room is not listening to the configured Link source")
             if source_queue.get("state") != "playing" and operation == "join":
                 raise InvalidIntent("Only playing music can be joined")
