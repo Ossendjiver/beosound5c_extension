@@ -1,0 +1,22 @@
+[Unit]
+ConditionPathExists=/etc/beosound5c/frame-traffic.json
+Description=TV-only Internet flow metadata diagnostic
+After=network-online.target beo-library.service
+RequiresMountsFor=/media/local/cache/frame-traffic
+[Service]
+User=__USER__
+Group=__USER__
+ExecStart=/usr/bin/python3 /media/local/cache/frame-traffic/app/traffic.py --mode flow --config /etc/beosound5c/frame-traffic.json
+AmbientCapabilities=CAP_NET_ADMIN
+CapabilityBoundingSet=CAP_NET_ADMIN
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/media/local/cache/frame-traffic
+Restart=on-failure
+RestartSec=5
+Nice=15
+CPUQuota=10%
+MemoryMax=96M
+StandardOutput=null
+StandardError=journal

@@ -1,0 +1,22 @@
+{
+  "interface": "wlan0",
+  "tv_ip": "192.168.1.50",
+  "tv_mac": "02:00:00:00:00:50",
+  "bs5c_ip": "192.168.1.51",
+  "router_ip": "192.168.1.1",
+  "lan": "192.168.1.0/24",
+  "dns_port": 1053,
+  "enabled": false,
+  "tv_ipv6_disabled": false,
+  "router_policy_mirrored": false,
+  "ipv4_dns_only": true,
+  "allow_ipv4_only_capture": false,
+  "blocked_domains": [
+    "osb-apps.samsungqbe.com",
+    "osb-apps-v2.samsungqbe.com",
+    "osb-v2.samsungqbe.com",
+    "osb.samsungqbe.com",
+    "osb-eusvc.samsungqbe.com",
+    "osb-krsvc.samsungqbe.com"
+  ]
+}

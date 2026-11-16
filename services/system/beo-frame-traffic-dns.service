@@ -1,0 +1,20 @@
+[Unit]
+ConditionPathExists=/etc/beosound5c/frame-traffic.json
+Description=TV-only DNS diagnostic
+After=network-online.target
+RequiresMountsFor=/media/local/cache/frame-traffic
+[Service]
+User=__USER__
+Group=__USER__
+ExecStart=/usr/bin/python3 /media/local/cache/frame-traffic/app/traffic.py --mode dns --config /etc/beosound5c/frame-traffic.json
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/media/local/cache/frame-traffic
+Restart=on-failure
+RestartSec=3
+Nice=15
+CPUQuota=10%
+MemoryMax=96M
+StandardOutput=null
+StandardError=journal
