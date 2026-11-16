@@ -124,6 +124,7 @@ const PlayingQueueOverlay = (() => {
             message: '',
             detailItemKey: '',
             detailPayload: null,
+            destinationIndex: 0,
         };
     }
 
@@ -133,18 +134,25 @@ const PlayingQueueOverlay = (() => {
             error: '',
             items: [],
             currentIndex: -1,
+            queueId: '',
+            currentItemId: '',
+            capabilities: null,
         };
     }
 
     let moodHost = null;
     let playingContainer = null;
     let playingSource = null;
+    let moodBinding = null;
     function isPlayingRoute() {
         return window.uiStore?.currentRoute === 'menu/playing' || !!moodHost;
     }
     function openForMood() {
         if (moodHost) return openOverlay();
         playingContainer = mountedContainer; playingSource=activeSourceId;
+        moodBinding = { fallbackCandidate, fallbackVerified, fallbackMedia };
+        fallbackCandidate = true; fallbackVerified = false;
+        fallbackMedia = window.uiStore?.mediaInfo || {};
         moodHost = document.createElement('div');
         moodHost.className = 'bs5c-mood-queue-host';
         Object.assign(moodHost.style, {position:'fixed',inset:'0',background:'#000',zIndex:'20000'});
@@ -164,14 +172,14 @@ const PlayingQueueOverlay = (() => {
     }
 
     function queueConfigFor(sourceId = activeSourceId) {
-        if (!normalizeSourceId(sourceId) && fallbackVerified) {
-            return { playing: true, capabilities: { playNow: false, playNext: false,
+        if (moodHost || (!normalizeSourceId(sourceId) && fallbackVerified)) {
+            return { playing: true, capabilities: (fallbackVerified && queueState.capabilities) || { playNow: false, playNext: false,
                 remove: false, showInformation: true, goto: [] } };
         }
         const preset = window.SourcePresets?.[normalizeSourceId(sourceId)];
         const config = preset?.queueOverlay;
         if (!config?.playing) return null;
-        if (String(config.mode || '').trim().toLowerCase() === 'custom') return null;
+        if (String(config.mode || '').trim().toLowerCase() === 'custom' && !moodHost) return null;
         return config;
     }
 
@@ -183,6 +191,7 @@ const PlayingQueueOverlay = (() => {
         return {
             playNow: declared.playNow !== false,
             playNext: declared.playNext === true,
+            startRadio: declared.startRadio === true,
             remove: declared.remove === true,
             showInformation: declared.showInformation !== false,
             goto: gotoTargets,
@@ -223,7 +232,8 @@ const PlayingQueueOverlay = (() => {
         if (moodHost) {
             moodHost.remove(); moodHost=null;
             mountedContainer=playingContainer; playingContainer=null;
-            activeSourceId=playingSource || activeSourceId; playingSource=null;
+            activeSourceId=playingSource ?? activeSourceId; playingSource=null;
+            if (moodBinding) { ({ fallbackCandidate, fallbackVerified, fallbackMedia } = moodBinding); moodBinding = null; }
         }
         ui.open = false;
         ui.mode = 'list';
@@ -422,7 +432,8 @@ const PlayingQueueOverlay = (() => {
             }
             const queueAction = event.target.closest('[data-queue-action-index]');
             if (queueAction) {
-                ui.actionIndex = Math.max(0, Number(queueAction.dataset.queueActionIndex) || 0);
+                const index = Math.max(0, Number(queueAction.dataset.queueActionIndex) || 0);
+                if (ui.mode === 'goto') ui.destinationIndex = index; else ui.actionIndex = index;
                 render();
                 void activateSelectedAction();
             }
@@ -436,7 +447,9 @@ const PlayingQueueOverlay = (() => {
         const items = [];
         if (caps.playNow) items.push({ id: 'play_now', title: 'Play Now' });
         if (caps.playNext) items.push({ id: 'play_next', title: 'Play Next' });
+        if (caps.startRadio) items.push({ id: 'start_radio', title: 'Play Radio from here' });
         if (caps.showInformation) items.push({ id: 'show_information', title: 'Show Information' });
+        if (caps.goto.length) items.push({ id: 'goto', title: 'Go to Artist/Album/Genre' });
         if (caps.remove) items.push({ id: 'remove', title: 'Remove' });
         return items;
     }
@@ -537,7 +550,7 @@ const PlayingQueueOverlay = (() => {
             const button = document.createElement('button');
             button.type = 'button';
             button.className = 'bs5c-playing-queue-action';
-            if (index === ui.actionIndex) button.classList.add('is-selected');
+            if (index === (ui.mode === 'goto' ? ui.destinationIndex : ui.actionIndex)) button.classList.add('is-selected');
             button.dataset.queueActionIndex = String(index);
             button.textContent = action.title;
             list.appendChild(button);
@@ -566,7 +579,7 @@ const PlayingQueueOverlay = (() => {
         if (image) {
             const img = document.createElement('img');
             img.className = 'bs5c-playing-queue-detail-image';
-            img.src = image;
+            img.src = image.startsWith('/') ? `${massServiceUrl()}${image}` : image;
             img.alt = payload.title || 'Queue item artwork';
             detail.appendChild(img);
         }
@@ -575,6 +588,12 @@ const PlayingQueueOverlay = (() => {
             subtitle.className = 'bs5c-playing-queue-detail-subtitle';
             subtitle.textContent = payload.subtitle;
             detail.appendChild(subtitle);
+        }
+        for (const fact of Array.isArray(payload.facts) ? payload.facts : []) {
+            const row = document.createElement('div');
+            row.className = 'bs5c-playing-queue-detail-subtitle';
+            row.textContent = [fact.label, fact.value].filter(Boolean).join(': ');
+            detail.appendChild(row);
         }
         if (payload.description) {
             const copy = document.createElement('div');
@@ -598,6 +617,14 @@ const PlayingQueueOverlay = (() => {
         const meta = overlay.querySelector('.bs5c-playing-queue-meta');
         const body = overlay.querySelector('.bs5c-playing-queue-body');
         if (!heading || !copy || !meta || !body) return;
+
+        if (ui.mode === 'goto') {
+            heading.textContent = 'Go to';
+            copy.textContent = ui.message || '';
+            meta.textContent = 'GO Open   RIGHT Back';
+            renderActionList(body, destinationItems());
+            return;
+        }
 
         if (ui.mode === 'context') {
             heading.textContent = selectedItem()?.title || selectedItem()?.name || 'Queue Actions';
@@ -659,9 +686,17 @@ const PlayingQueueOverlay = (() => {
                 queueState.error = 'Queue unavailable';
             } else {
                 const nextItems = Array.isArray(data.tracks) ? data.tracks : [];
-                const nextSelectedIndex = Math.max(0, Math.min(ui.selectedIndex, Math.max(0, nextItems.length - 1)));
+                const selectedKey = selectedItem() ? queueItemKey(selectedItem()) : '';
+                const matchingIndex = selectedKey ? nextItems.findIndex(item => queueItemKey(item) === selectedKey) : -1;
+                const nextSelectedIndex = matchingIndex >= 0 ? matchingIndex : Math.max(0, Math.min(ui.selectedIndex, Math.max(0, nextItems.length - 1)));
+                if (selectedKey && matchingIndex < 0 && ui.mode !== 'list') {
+                    ui.mode = 'list'; clearDetail(); ui.message = 'Queue changed; select the item again';
+                }
                 if (nextSelectedIndex !== ui.selectedIndex) requestSelectionReveal();
                 queueState.items = nextItems;
+                queueState.queueId = String(data.queue_id || '');
+                queueState.currentItemId = String(data.current_item_id || '');
+                queueState.capabilities = data.capabilities || null;
                 queueState.currentIndex = Number.isFinite(Number(data.current_index)) ? Number(data.current_index) : -1;
                 ui.selectedIndex = nextSelectedIndex;
                 queueState.error = '';
@@ -712,11 +747,80 @@ const PlayingQueueOverlay = (() => {
         return true;
     }
 
+    function massServiceUrl() {
+        return typeof getServiceUrl === 'function' ? getServiceUrl('massServiceUrl', 8783) : 'http://localhost:8783';
+    }
+
+    function destinationItems() {
+        return queueCapabilities().goto.map(id => ({ id, title: `Go to ${id.charAt(0).toUpperCase()+id.slice(1)}` }));
+    }
+
+    function navigateDestination() {
+        const kind = destinationItems()[ui.destinationIndex]?.id;
+        const item = selectedItem();
+        if (!kind || !item) return true;
+        if (kind === 'genre') { ui.message = 'Genre navigation is not available yet'; render(); return true; }
+        const payload = { kind, item: { ...item, title: item.title || item.name || '' } };
+        closeOverlay();
+        window.uiStore?.navigateToView?.('menu/mass');
+        window.IframeMessenger?.sendToRoute?.('menu/mass', 'queue-focus', payload);
+        for (const delay of [90, 260]) setTimeout(() => {
+            if (window.uiStore?.currentRoute === 'menu/mass') window.IframeMessenger?.sendToRoute?.('menu/mass', 'queue-focus', payload);
+        }, delay);
+        return true;
+    }
+
+    async function loadItemDetail(item) {
+        if (!item.uri) return;
+        const key = queueItemKey(item);
+        try {
+            const response = await fetch(`${massServiceUrl()}/item_info?uri=${encodeURIComponent(item.uri)}`, { cache: 'no-store' });
+            const data = await response.json();
+            if (!response.ok || !ui.open || ui.mode !== 'detail' || ui.detailItemKey !== key) return;
+            ui.detailPayload = { ...fallbackDetailPayload(item), ...data };
+            render();
+        } catch (_) { /* Keep the useful queue metadata when lookup is unavailable. */ }
+    }
+
+    async function postBoundAction(action, item) {
+        if (ui.busy || !fallbackVerified) return true;
+        ui.busy = true; ui.message = 'Working...'; render();
+        const body = { action, queue_id: queueState.queueId, queue_item_id: item.queue_item_id,
+            expected_current_item_id: queueState.currentItemId,
+            title: fallbackMedia.title || '', artist: fallbackMedia.artist || '' };
+        try {
+            const response = await fetch(`${massServiceUrl()}/playing_queue/action`, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+            });
+            const data = await response.json();
+            if (!response.ok || data.state === 'error') {
+                ui.message = ['playing_queue_changed','current_item_changed','queue_item_not_found'].includes(data.reason)
+                    ? 'Queue changed; select the item again'
+                    : data.reason === 'radio_seed_metadata_unavailable' ? 'Radio needs this track’s duration and source metadata' : 'Queue update failed';
+            } else if (action === 'play_now' || action === 'start_radio') {
+                closeOverlay();
+            } else {
+                ui.mode = 'list'; ui.message = action === 'remove' ? 'Removed' : 'Moved next';
+                await refreshQueue(true);
+            }
+        } catch (_) { ui.message = 'Queue update failed'; }
+        finally { ui.busy = false; render(); }
+        return true;
+    }
+
     async function activateSelectedAction() {
+        if (ui.busy) return true;
+        if (ui.mode === 'goto') return navigateDestination();
         const actions = actionItems();
         const action = actions[ui.actionIndex];
         const item = selectedItem();
         if (!action || !item) return true;
+        if (action.id === 'goto') {
+            ui.mode = 'goto'; ui.destinationIndex = 0; clearMessage(); render(); return true;
+        }
+        if (fallbackCandidate && ['play_now', 'play_next', 'remove', 'start_radio'].includes(action.id)) {
+            return postBoundAction(action.id, item);
+        }
         if (action.id === 'play_now') {
             return postQueueAction('/router/queue/play', payloadFor(item), 'Playing');
         }
@@ -731,6 +835,7 @@ const PlayingQueueOverlay = (() => {
             ui.detailItemKey = queueItemKey(item);
             ui.detailPayload = fallbackDetailPayload(item);
             render();
+            void loadItemDetail(item);
             return true;
         }
         return true;
@@ -776,6 +881,10 @@ const PlayingQueueOverlay = (() => {
         const delta = String(data?.direction || '').toLowerCase() === 'counter' ? -1 : 1;
         if (!ui.open) return openOverlay();
         if (ui.mode === 'detail') return true;
+        if (ui.mode === 'goto') {
+            ui.destinationIndex = Math.max(0, Math.min(destinationItems().length - 1, ui.destinationIndex + delta));
+            render(); return true;
+        }
         if (ui.mode === 'context') {
             const actions = actionItems();
             if (!actions.length) return true;
@@ -801,6 +910,7 @@ const PlayingQueueOverlay = (() => {
         if (!ui.open) return false;
         if (normalized === 'left') return true;
         if (normalized === 'right') {
+            if (ui.mode === 'goto') { ui.mode = 'context'; clearMessage(); render(); return true; }
             if (ui.mode === 'detail') {
                 clearDetail();
                 ui.mode = 'context';
@@ -819,6 +929,7 @@ const PlayingQueueOverlay = (() => {
         if (ui.mode === 'detail') {
             return true;
         }
+        if (ui.mode === 'goto') { void navigateDestination(); return true; }
         if (ui.mode === 'context') {
             if (normalized === 'go') {
                 void activateSelectedAction();
