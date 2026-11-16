@@ -219,6 +219,7 @@ class MoodMixes:
             if append:
                 s['refresh_status'] = 'waiting_for_candidates'
                 s['last_error'] = 'No eligible tracks available for continuation'
+                self.persist()
                 return  # Preserve the existing album/tail and retry after 15 seconds.
             if s.get('mood') or s.get('pending_refresh'):
                 # A mood change must not silently keep an incompatible old tail.
@@ -239,6 +240,9 @@ class MoodMixes:
                 self.persist()
                 reason = 'No mood-compatible tracks' if s.get('mood') else 'No session-compatible tracks'
                 raise ValueError(reason+' with sufficient metadata; current song kept, upcoming queue cleared')
+            s['refresh_status'] = 'waiting_for_candidates'
+            s['last_error'] = 'No compatible radio tracks available; waiting for seed metadata or library updates'
+            self.persist()
             return
         latest = await self.snapshot(queue)
         now = current(latest)
