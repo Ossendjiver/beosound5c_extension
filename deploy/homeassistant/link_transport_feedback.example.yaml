@@ -1,0 +1,88 @@
+script:
+  beosystem_link_transport:
+    alias: Beosystem Link Transport
+    mode: queued
+    description: Handles Link next, previous, and play-pause transport through the
+      combined Link player
+    fields:
+      command:
+        description: Transport action to run
+        example: next
+      remote_feedback:
+        description: Record confirmed remote skip feedback
+        example: true
+    sequence:
+    - variables:
+        requested_command: '{{ command | default('''', true) | lower }}'
+        target_link_player: "{% if is_state('media_player.link', 'playing') %}\n \
+          \ media_player.link\n{% else %}\n  media_player.link_ma\n{% endif %}"
+        feedback_player: '{% set p = target_link_player|trim %}{% if state_attr(p,''media_title'')
+          %}{{ p }}{% elif is_state(''media_player.link_wiim'',''playing'') %}media_player.link_wiim{%
+          else %}{{ p }}{% endif %}'
+    - variables:
+        skip_title: '{{ state_attr(feedback_player|trim,''media_title'')|default('''',true)
+          }}'
+        skip_artist: '{{ state_attr(feedback_player|trim,''media_artist'')|default('''',true)
+          }}'
+        skip_uri: '{{ state_attr(feedback_player|trim,''media_content_id'')|default('''',true)
+          }}'
+        skip_duration: '{{ state_attr(feedback_player|trim,''media_duration'')|float(0)
+          }}'
+        skip_seconds: '{% set p = feedback_player|trim %}{% set pos = state_attr(p,''media_position'')|float(0)
+          %}{% set updated = as_timestamp(state_attr(p,''media_position_updated_at''),none)
+          %}{{ [state_attr(p,''media_duration'')|float(0), pos + ([0,as_timestamp(now())-updated]|max
+          if updated is not none and is_state(p,''playing'') else 0)]|min }}'
+        skip_state: '{{ states(feedback_player|trim) }}'
+        skip_stamp: '{{ (as_timestamp(now())*1000)|int }}'
+        skip_event_id: ha_remote_{{ now().strftime('%Y%m%d%H%M%S%f') }}_{{ range(100000,999999)|random
+          }}
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: '{{ requested_command == ''next'' }}'
+        sequence:
+        - action: media_player.media_next_track
+          target:
+            entity_id: '{{ target_link_player }}'
+        - if: '{{ remote_feedback|default(false)|bool and skip_state == ''playing''
+            and skip_title|trim != '''' and skip_artist|trim != '''' and skip_duration|float(0)
+            > 0 and skip_seconds|float(0) < skip_duration|float(0)-3 }}'
+          then:
+          - action: script.turn_on
+            continue_on_error: true
+            target:
+              entity_id: script.homemedia_confirm_remote_skip
+            data:
+              variables:
+                player: '{{ feedback_player|trim }}'
+                old_uri: '{{ skip_uri }}'
+                old_title: '{{ skip_title }}'
+                old_artist: '{{ skip_artist }}'
+                feedback:
+                  type: listen_feedback
+                  reason: skip
+                  media_type: track
+                  title: '{{ skip_title }}'
+                  artist: '{{ skip_artist }}'
+                  uri: '{{ skip_uri }}'
+                  duration: '{{ skip_duration|float(0) }}'
+                  seconds: '{{ skip_seconds|float(0) }}'
+                  timestamp_ms: '{{ skip_stamp|int }}'
+                  event_id: '{{ skip_event_id }}'
+                  room: link
+                  reporter: ha_beo4_remote
+      - conditions:
+        - condition: template
+          value_template: '{{ requested_command == ''previous'' }}'
+        sequence:
+        - action: media_player.media_previous_track
+          target:
+            entity_id: '{{ target_link_player }}'
+      - conditions:
+        - condition: template
+          value_template: '{{ requested_command in [''play'', ''pause'', ''play_pause'',
+            ''toggle''] }}'
+        sequence:
+        - action: media_player.media_play_pause
+          target:
+            entity_id: '{{ target_link_player }}'
