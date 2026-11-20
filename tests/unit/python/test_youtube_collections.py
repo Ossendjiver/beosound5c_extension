@@ -32,7 +32,7 @@ def test_home_playlists_separate_from_smarttube(tmp_path):
     collections = Collections(store.db)
     p = {"id": "local-list-1", "name": "For later",
          "videos": [{"videoId": "dQw4w9WgXcQ", "title": "Example"}]}
-    assert collections.change("home_playlists", change(id="local-list-1", **p))["accepted"]
+    assert collections.change("home_playlists", change(id="local-list-1", name=p["name"], videos=p["videos"]))["accepted"]
     assert collections.snapshot("playlists") == []
     assert len(collections.snapshot("home_playlists")) == 1
     with pytest.raises(ValueError):
