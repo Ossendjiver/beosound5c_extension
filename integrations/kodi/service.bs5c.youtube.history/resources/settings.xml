@@ -13,7 +13,13 @@
           <level>0</level><default>bedroom</default><control type="edit" format="string"/>
         </setting>
         <setting id="history_key" type="string" label="32004">
-          <level>0</level><default></default><control type="edit" format="string"><heading>32004</heading><hidden>true</hidden></control>
+          <level>0</level>
+          <default/>
+          <constraints><allowempty>true</allowempty></constraints>
+          <control type="edit" format="string">
+            <heading>32004</heading>
+            <hidden>true</hidden>
+          </control>
         </setting>
       </group>
     </category>
