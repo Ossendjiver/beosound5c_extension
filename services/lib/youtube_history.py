@@ -163,6 +163,8 @@ def install(app):
     app["youtube_history"] = history
     app.router.add_get("/library/youtube/history", handle_history)
     app.router.add_post("/library/youtube/history", handle_history)
+    from . import youtube_collections
+    youtube_collections.install(app, history)
 
     async def cleanup(_app):
         history.close()
