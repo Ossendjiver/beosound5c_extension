@@ -33,7 +33,7 @@ def validate_change(value, collection):
     if type(value["deleted"]) is not bool:
         raise ValueError("Invalid deletion flag")
     item = value["item"]
-    if not isinstance(item, dict) or len(json.dumps(item, ensure_ascii=False)) > 12000:
+    if not isinstance(item, dict) or len(json.dumps(item, ensure_ascii=False)) > 60000:
         raise ValueError("Invalid item data")
     # Permit SmartTube metadata without accepting arbitrary nested objects or URLs.
     if any(not isinstance(k, str) or len(k) > 64 or
@@ -45,8 +45,9 @@ def validate_change(value, collection):
     if collection in ("playlists", "home_playlists"):
         videos = item.get("videos", [])
         if not isinstance(videos, list) or len(videos) > 500 or any(
-                not isinstance(v, dict) or not isinstance(v.get("id"), str) or
-                not re.fullmatch(r"[A-Za-z0-9_-]{11}", v["id"]) for v in videos):
+                not isinstance(v, dict) or
+                not isinstance(v.get("videoId", v.get("id")), str) or
+                not re.fullmatch(r"[A-Za-z0-9_-]{11}", v.get("videoId", v.get("id"))) for v in videos):
             raise ValueError("Invalid playlist videos")
     return value
 
@@ -87,7 +88,7 @@ class Collections:
             current = previous["version"] if previous else 0
             if e["base_version"] != current:
                 return {"accepted": False, "conflict": True, "version": current}
-            if not previous and not e["deleted"]:
+            if (not previous or self.db.execute("SELECT deleted FROM youtube_collections WHERE collection=? AND item_id=?", (collection, e["id"])).fetchone()["deleted"]) and not e["deleted"]:
                 count = self.db.execute(
                     "SELECT COUNT(*) FROM youtube_collections WHERE collection=? AND deleted=0",
                     (collection,)).fetchone()[0]
