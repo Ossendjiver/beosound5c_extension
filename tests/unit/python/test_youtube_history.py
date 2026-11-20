@@ -100,3 +100,40 @@ def test_invalid_batch_is_atomic_and_cannot_mutate_live_history(monkeypatch):
             store.import_events([sample(device_id="takeout"), sample(video_id="bad")])
         assert not store.entries(events=True)
         store.close()
+
+
+def test_authenticated_phone_playback_reaches_history_endpoint(monkeypatch):
+    """Protocol verification of the local phone outbox's POST → BS5c API contract."""
+    import asyncio
+    from aiohttp import web
+    from aiohttp.test_utils import TestClient, TestServer
+    from lib.youtube_history import handle_history
+
+    monkeypatch.setenv("BS5C_YOUTUBE_HISTORY_KEY", "test-key-" * 8)
+    monkeypatch.setattr("lib.youtube_history.time.time", lambda: 2000.0)
+
+    async def run():
+        with tempfile.TemporaryDirectory() as folder:
+            history = YouTubeHistory(Path(folder) / "youtube.sqlite3")
+            app = web.Application()
+            app["youtube_history"] = history
+            app.router.add_post("/library/youtube/history", handle_history)
+            app.router.add_get("/library/youtube/history", handle_history)
+            async with TestClient(TestServer(app)) as client:
+                headers = {"X-HomeMedia-YouTube-Key": "test-key-" * 8}
+                phone = sample(device_id="phone", watched_at_ms=1900000,
+                               position_ms=65000, duration_ms=120000)
+                rejected = await client.post("/library/youtube/history", json=phone)
+                assert rejected.status == 403
+                response = await client.post("/library/youtube/history", json=phone, headers=headers)
+                assert response.status == 200
+                assert (await response.json())["accepted"] is True
+                response = await client.get("/library/youtube/history?events=1", headers=headers)
+                assert response.status == 200
+                event = (await response.json())["items"][0]
+                assert event["device_id"] == "phone"
+                assert event["position_ms"] == 65000
+                assert event["watched_at_ms"] == 1900000
+            history.close()
+
+    asyncio.run(run())
