@@ -1,6 +1,9 @@
 # Unified YouTube library — BS5c, SmartTube and Home Media
 
-**Status: draft only; not installed or validated on live devices.**
+**Status:** The first Bedroom Kodi ↔ BS5c history and Watch Later sync
+has been manually verified on the actual devices (20 November 2026).
+The dated-events and Samsung extension is separately staged, not yet deployed.
+See [dated history and Samsung observer](../../docs/youtube-chronology-samsung.md).
 
 BS5c library service on port 8788 is the central source of truth. The
 independent Kodi add-on in `service.bs5c.youtube.history/` keeps SmartTube's
@@ -64,8 +67,9 @@ collection; other custom playlists remain separate to preserve their format.
 ## Limits and safety
 
 - This is **not** a Google sign-in / Google account history synchronisation.
-- SmartTube only writes history for videos launched from its own lists; an
-  externally started `play/?video_id=` video needs additional event reporting.
+- SmartTube writes history for its own lists; the independent Kodi monitor
+  separately reports externally started `play/?video_id=` playback.
+  The Samsung observer never treats an unverified TV app launch as a watch.
 - Each Kodi device keeps its own local cache, settings, DASH manifests and
   download data. Do not point multiple Kodi instances at a shared add-on
   profile via SMB/NFS.
@@ -76,5 +80,6 @@ collection; other custom playlists remain separate to preserve their format.
   `/channel/UC...` subscription URLs sync directly. Unresolved
   `@handle` or `/user/` addresses remain local rather than being
   lost or assigned an incorrect channel ID.
-- Historical Google Takeout backfill into the central store, full conflict
-  resolution UI and live-device/Android integration testing remain outstanding.
+- Google Takeout's historical timestamps can now be backfilled after the v2
+  BS5c and Android updates, retaining multiple original views. Full conflict
+  resolution UI and the live Samsung / phone v2 acceptance tests remain pending.
