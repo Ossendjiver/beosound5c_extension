@@ -187,5 +187,8 @@
     "link": {
       "sources": []
     }
+  },
+  "youtube_history": {
+    "include_samsung": false
   }
 }

@@ -190,7 +190,9 @@
         "showing_child_targets": {
           "type": "object",
           "description": "Maps a Home Assistant Showing active_child entity to the media player that owns its volume.",
-          "additionalProperties": { "type": "string" }
+          "additionalProperties": {
+            "type": "string"
+          }
         },
         "output_name": {
           "type": "string",
@@ -298,7 +300,7 @@
         },
         "station_buttons": {
           "type": "object",
-          "description": "Map remote/keypad buttons to favourite radio stations. Keys are button names ('1'-'9', '0', 'red', 'green', 'yellow', 'blue'); values are station UUIDs from the favourites list. Pressing a bound button while the radio source is selected jumps directly to that station; bound color buttons take precedence over the global balance shortcut (GREEN/YELLOW) and BLUE\u2192JOIN handler.",
+          "description": "Map remote/keypad buttons to favourite radio stations. Keys are button names ('1'-'9', '0', 'red', 'green', 'yellow', 'blue'); values are station UUIDs from the favourites list. Pressing a bound button while the radio source is selected jumps directly to that station; bound color buttons take precedence over the global balance shortcut (GREEN/YELLOW) and BLUE→JOIN handler.",
           "propertyNames": {
             "enum": [
               "0",
@@ -432,31 +434,87 @@
         "speaker_start": {
           "type": "object",
           "description": "Optional physical BS5C speaker picker. See config/speaker-start.example.json for the Home Assistant routing configuration.",
-          "required": ["power_entities", "targets"],
+          "required": [
+            "power_entities",
+            "targets"
+          ],
           "properties": {
-            "power_entities": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
-            "playback_entities": { "type": "array", "items": { "type": "string" } },
+            "power_entities": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "minItems": 1
+            },
+            "playback_entities": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
             "targets": {
               "type": "object",
               "minProperties": 1,
               "additionalProperties": {
                 "type": "object",
-                "required": ["name", "queue_id", "player_entities", "player_name"],
+                "required": [
+                  "name",
+                  "queue_id",
+                  "player_entities",
+                  "player_name"
+                ],
                 "properties": {
-                  "name": { "type": "string" },
-                  "queue_id": { "type": "string" },
-                  "player_entities": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
-                  "player_name": { "type": "string" },
-                  "receiver": { "type": "string" },
-                  "source": { "type": "string" },
-                  "switch": { "type": "string" },
-                  "cinema": { "enum": ["on", "off"] },
-                  "player_entity": { "type": "string" },
-                  "resume_script": { "type": "string" },
+                  "name": {
+                    "type": "string"
+                  },
+                  "queue_id": {
+                    "type": "string"
+                  },
+                  "player_entities": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "minItems": 1
+                  },
+                  "player_name": {
+                    "type": "string"
+                  },
+                  "receiver": {
+                    "type": "string"
+                  },
+                  "source": {
+                    "type": "string"
+                  },
+                  "switch": {
+                    "type": "string"
+                  },
+                  "cinema": {
+                    "enum": [
+                      "on",
+                      "off"
+                    ]
+                  },
+                  "player_entity": {
+                    "type": "string"
+                  },
+                  "resume_script": {
+                    "type": "string"
+                  },
                   "startup_input": {
                     "type": "object",
-                    "required": ["entity", "source"],
-                    "properties": { "entity": { "type": "string" }, "source": { "type": "string" } }
+                    "required": [
+                      "entity",
+                      "source"
+                    ],
+                    "properties": {
+                      "entity": {
+                        "type": "string"
+                      },
+                      "source": {
+                        "type": "string"
+                      }
+                    }
                   }
                 }
               }
@@ -722,12 +780,12 @@
             "audio": {
               "type": "boolean",
               "default": true,
-              "description": "Forward Audio-typed Beo4 keys (Radio, CD, A.Mem, \u2026)."
+              "description": "Forward Audio-typed Beo4 keys (Radio, CD, A.Mem, …)."
             },
             "video": {
               "type": "boolean",
               "default": true,
-              "description": "Forward Video-typed Beo4 keys (TV, DVD, V.Aux, \u2026)."
+              "description": "Forward Video-typed Beo4 keys (TV, DVD, V.Aux, …)."
             }
           },
           "additionalProperties": false
@@ -768,6 +826,18 @@
             }
           },
           "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "youtube_history": {
+      "type": "object",
+      "description": "Opt-in rules for central YouTube viewing history. Samsung events are recorded only if the entity person.thomas is currently home and the watcher verifies the actual video ID and measured playback progress.",
+      "properties": {
+        "include_samsung": {
+          "type": "boolean",
+          "default": false,
+          "description": "Include Samsung YouTube-on-TV views in BS5c history only when person.thomas is home. Missing, unavailable or away presence blocks collection."
         }
       },
       "additionalProperties": false

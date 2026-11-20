@@ -469,6 +469,7 @@ function render(cfg) {
         renderPlayer(cfg) +
         renderVolume(cfg) +
         renderHA(cfg) +
+        renderYouTubeHistory(cfg) +
         renderScreen(cfg) +
         renderHLK(cfg) +
         renderSystemSettings(cfg) +
@@ -699,6 +700,24 @@ function renderHA(cfg) {
                     <input id="cfg-mqtt-password" type="password" placeholder="Leave blank to keep existing" autocomplete="new-password">
                 </div>
             </div>
+        </div>
+    </div>`;
+}
+
+function renderYouTubeHistory(cfg) {
+    const history = cfg.youtube_history || {};
+    const includeSamsung = history.include_samsung === true;
+    return `<div class="cfg-card" id="cfg-youtube-history">
+        <h2>YouTube history</h2>
+        <div class="sec-header">
+            <input id="cfg-youtube-history-samsung" type="checkbox" ${includeSamsung ? 'checked' : ''}>
+            <label for="cfg-youtube-history-samsung">Include Samsung YouTube viewing in my history</label>
+        </div>
+        <div class="hint" style="margin: 8px 0 0 30px">
+            Only records verified Lounge Samsung YouTube playback while
+            <code>person.thomas</code> reports <code>home</code> in Home Assistant.
+            Unknown or away presence always excludes the watch. This does not
+            affect Bedroom SmartTube or phone YouTube history.
         </div>
     </div>`;
 }
@@ -2103,6 +2122,9 @@ function buildConfig() {
     cfg.home_assistant = cfg.home_assistant || {};
     cfg.home_assistant.url = document.getElementById('cfg-ha-url')?.value || '';
     cfg.home_assistant.webhook_url = document.getElementById('cfg-ha-webhook')?.value || '';
+    cfg.youtube_history = cfg.youtube_history || {};
+    cfg.youtube_history.include_samsung =
+        document.getElementById('cfg-youtube-history-samsung')?.checked === true;
     cfg.screen = cfg.screen || {};
     const immersiveDelay = parseInt(document.getElementById('cfg-screen-immersive-delay')?.value);
     cfg.screen.immersive_delay_s = Number.isFinite(immersiveDelay) ? immersiveDelay : 180;
