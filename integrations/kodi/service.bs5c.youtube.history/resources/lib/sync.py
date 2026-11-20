@@ -9,8 +9,18 @@ import re
 import tempfile
 import time
 from pathlib import Path
-from urllib.request import Request, urlopen
+from urllib.request import Request, urlopen, build_opener, HTTPRedirectHandler
 from urllib.error import HTTPError, URLError
+
+class _NoRedirect(HTTPRedirectHandler):
+    def redirect_request(self, request, response, code, message, headers, newurl):
+        return None
+
+
+def safe_open(request, timeout):
+    """A redirected request must never forward the private BS5c key."""
+    return build_opener(_NoRedirect()).open(request, timeout=timeout)
+
 
 VIDEO_ID = re.compile(r"^[A-Za-z0-9_-]{11}$")
 DEVICE_ID = re.compile(r"^[A-Za-z0-9_-]{1,48}$")
@@ -89,7 +99,7 @@ def save_acks(path, acks):
             os.unlink(temp)
 
 
-def send_event(base, key, event, opener=urlopen):
+def send_event(base, key, event, opener=safe_open):
     if not key or len(key) < 32:
         raise ValueError("Configure the dedicated BS5c YouTube history key")
     # Only a configured private LAN IP / hostname; never accept arbitrary URLs
@@ -150,7 +160,7 @@ def fetch_history(host, key):
         raise ValueError("Private BS5c IP and dedicated key required")
     req = Request("http://%s:8788/library/youtube/history?limit=500" % host,
                   headers={"X-HomeMedia-YouTube-Key": key}, method="GET")
-    with urlopen(req, timeout=5) as response:
+    with safe_open(req, timeout=5) as response:
         raw = response.read(1_000_001)
     if len(raw) > 1_000_000:
         raise ValueError("Remote history response too large")
