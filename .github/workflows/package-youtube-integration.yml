@@ -42,7 +42,7 @@ jobs:
           with zipfile.ZipFile(out/"bs5c-youtube-server-staging.zip", "w", zipfile.ZIP_DEFLATED) as z:
               for path in ("services/lib/youtube_history.py", "services/lib/youtube_collections.py",
                            "services/library.py", "services/lib/speaker_start.py",
-                           "integrations/kodi/README.md"):
+                           "integrations/kodi/README.md", "integrations/kodi/DEVICE_DEPLOYMENT.md"):
                   z.write(path)
           for zipfile_path in out.glob("*.zip"):
               with zipfile.ZipFile(zipfile_path) as z:
