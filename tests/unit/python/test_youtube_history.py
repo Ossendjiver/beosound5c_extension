@@ -77,7 +77,7 @@ def test_dated_rewatches_and_historical_backfill_are_preserved(monkeypatch):
     monkeypatch.setattr("lib.youtube_history.time.time", lambda: 2000.0)
     with tempfile.TemporaryDirectory() as folder:
         store = YouTubeHistory(Path(folder) / "youtube.sqlite3")
-        assert store.upsert(sample(watched_at_ms=1700000, position_ms=50000))
+        assert store.upsert(sample(watched_at_ms=1700000, position_ms=110000, ended=True))
         assert store.upsert(sample(watched_at_ms=1800000, position_ms=70000))
         # Import an older Google Takeout event: keep the real date, but never
         # replace the more recent 70-second live resume point.
