@@ -27,6 +27,15 @@ jobs:
           root = pathlib.Path("integrations/kodi")
           addon = root / "service.bs5c.youtube.history"
           assert ET.parse(addon/"addon.xml").getroot().attrib["id"] == "service.bs5c.youtube.history"
+          manifest = ET.parse(addon/"addon.xml").getroot()
+          assert manifest.attrib["version"] == "0.1.2"
+          settings = ET.parse(addon/"resources/settings.xml").getroot()
+          key = settings.find(".//setting[@id='history_key']")
+          assert key is not None, "history_key is missing"
+          assert key.findtext("constraints/allowempty") == "true"
+          assert key.findtext("control/hidden") == "true"
+          assert key.find("control").attrib["type"] == "edit"
+          assert (addon/"resources/language/resource.language.en_gb/strings.po").is_file()
           for path in addon.rglob("*.py"):
               py_compile.compile(str(path), doraise=True)
           for path in ("services/lib/youtube_history.py",
