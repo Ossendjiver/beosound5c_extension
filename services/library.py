@@ -66,6 +66,7 @@ ROUTER_BROADCAST = "http://127.0.0.1:8770/router/broadcast"
 MASS_COMMAND = "http://127.0.0.1:8783/command"
 MASS_LIBRARY = "http://127.0.0.1:8783/playlists"
 from lib import track_enrichment
+from lib import youtube_history
 
 CACHE_LIBRARY = Path("/media/local/cache/mass_playlists.json")
 DB_PATH = Path(os.getenv("BS5C_LIBRARY_DB", "/media/local/cache/library_recommender.sqlite3"))
@@ -2025,6 +2026,7 @@ def create_app() -> web.Application:
     service = LibraryService()
     app = web.Application(client_max_size=65536)
     app["library_service"] = service
+    youtube_history.install(app)
     app.router.add_get("/library/playback/capabilities", service.handle_playback_capabilities)
     app.router.add_get("/library/playback/state", service.handle_playback_state)
     app.router.add_get("/library/playback/jobs", service.handle_playback_jobs)
