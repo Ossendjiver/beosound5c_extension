@@ -50,7 +50,7 @@ def event_for(row, device, observed_ms=None):
     # time for live progress updates, which can repeat within the same second.
     stamp = now_ms if 0 <= now_ms - watched_at*1000 < 120000 else watched_at*1000
     title = str(row.get("title") or "")[:300]
-    channel = str(row.get("channel") or "")[:150]
+    channel = str(row.get("channel") or row.get("author") or "")[:150]
     return {
         "video_id": row["id"], "device_id": device,
         "title": title, "channel": channel,
@@ -142,3 +142,88 @@ def sync_once(history_path, ack_path, device, host, key, sender=send_event, obse
             acks = {ident: value for ident, value in acks.items() if ident in relevant}
         save_acks(ack_path, acks)
     return changed
+
+def fetch_history(host, key):
+    """Read up to the latest 500 records; streaming URLs never leave Kodi."""
+    from ipaddress import ip_address
+    if not ip_address(host).is_private or len(key) < 32:
+        raise ValueError("Private BS5c IP and dedicated key required")
+    req = Request("http://%s:8788/library/youtube/history?limit=500" % host,
+                  headers={"X-HomeMedia-YouTube-Key": key}, method="GET")
+    with urlopen(req, timeout=5) as response:
+        raw = response.read(1_000_001)
+    if len(raw) > 1_000_000:
+        raise ValueError("Remote history response too large")
+    result = json.loads(raw)
+    if not isinstance(result.get("items"), list):
+        raise ValueError("Invalid remote history")
+    return result["items"]
+
+
+def merge_remote_history(history_path, ack_path, remote, active_id=""):
+    """Merge remote progress under SmartTube's lock without touching active video.
+
+    Remote records carry millisecond timestamps; SmartTube's JSON uses seconds.
+    Imported entries are acknowledged so that the next upload cycle does not
+    echo them back to BS5c. No removal of unknown local history is performed.
+    """
+    import fcntl
+    if not isinstance(remote, list):
+        raise ValueError("Expected remote history list")
+    directory = os.path.dirname(history_path)
+    os.makedirs(directory, exist_ok=True)
+    lock_path = os.path.join(directory, "store.lock")
+    with open(lock_path, "a+") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        try:
+            local = read_history(history_path)
+            current = {row["id"]: row for row in local
+                       if isinstance(row, dict) and VIDEO_ID.fullmatch(str(row.get("id", "")))}
+            imported = 0
+            changed_ids = []
+            for source in remote[:500]:
+                if not isinstance(source, dict):
+                    continue
+                ident = source.get("video_id")
+                if not isinstance(ident, str) or not VIDEO_ID.fullmatch(ident) or ident == active_id:
+                    continue
+                timestamp = source.get("watched_at_ms")
+                if type(timestamp) is not int or timestamp < 0:
+                    continue
+                old = current.get(ident)
+                # >1.5s avoids echoing the same update rounded to whole seconds.
+                if old is not None and timestamp <= int(old.get("watched_at", 0))*1000 + 1500:
+                    continue
+                position = source.get("position_ms", 0)
+                total = source.get("duration_ms", 0)
+                if type(position) is not int or type(total) is not int or not (0 <= position <= 86400000 and 0 <= total <= 86400000):
+                    continue
+                updated = dict(old or {}, id=ident, type="video",
+                               title=source.get("title") or (old or {}).get("title") or "YouTube video",
+                               author=source.get("channel") or (old or {}).get("author") or "",
+                               position=position // 1000, total=total // 1000,
+                               duration=total // 1000,
+                               watched_at=timestamp // 1000, is_live=False)
+                current[ident] = updated
+                changed_ids.append(ident)
+                imported += 1
+            if not imported:
+                return 0
+            entries = sorted(current.values(), key=lambda entry: int(entry.get("watched_at", 0)), reverse=True)[:500]
+            # Atomic replace follows SmartTube's existing library.py semantics.
+            atomic = os.path.join(directory, ".bs5c-import-history.json")
+            try:
+                with open(atomic, "w", encoding="utf-8") as out:
+                    json.dump(entries, out, ensure_ascii=False)
+                os.replace(atomic, history_path)
+            finally:
+                if os.path.exists(atomic):
+                    os.unlink(atomic)
+            acks = load_acks(ack_path)
+            for entry in entries:
+                if entry["id"] in changed_ids:
+                    acks[entry["id"]] = signature(entry)
+            save_acks(ack_path, acks)
+            return imported
+        finally:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
