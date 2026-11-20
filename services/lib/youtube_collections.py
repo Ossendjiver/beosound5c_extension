@@ -120,10 +120,10 @@ async def handle_collections(request):
             return web.json_response({"error": "Unexpected query"}, status=400)
         return web.json_response({"items": store.snapshot(name)}, headers={"Cache-Control": "no-store"})
     try:
-        if request.content_length is not None and request.content_length > 16384:
+        if request.content_length is not None and request.content_length > 65536:
             return web.json_response({"error": "Too large"}, status=413)
-        raw = await request.content.read(16385)
-        if len(raw) > 16384 or not request.content.at_eof():
+        raw = await request.content.read(65537)
+        if len(raw) > 65536 or not request.content.at_eof():
             return web.json_response({"error": "Too large"}, status=413)
         update = json.loads(raw)
         result = store.change(name, update)
