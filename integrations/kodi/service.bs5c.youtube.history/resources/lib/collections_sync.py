@@ -61,10 +61,11 @@ def _remote(host, key, collection, change=None):
 
 
 def sync_collection(profile, private_profile, collection, device, host, key, remote=_remote):
-    """Attempt merges. No update to local list if another Kodi process changed it.
+    """Compare local and remote revisions; never lock SmartTube during network I/O.
 
-    Revisions are stored per item. A missing item is a deletion *only* when it
-    was previously tracked; unknown local/remote discrepancies are bootstrapped.
+    Kodi's flock covers local read and replace, not slow HTTP calls.
+    CAS versions protect BS5c writes; before committing locally we re-read
+    to avoid clobbering a change made by SmartTube during the network roundtrip.
     """
     if collection not in COLLECTIONS:
         raise ValueError("Invalid collection")
@@ -77,73 +78,83 @@ def sync_collection(profile, private_profile, collection, device, host, key, rem
         fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
         try:
             local_list = load_json(path, [])
-            if not isinstance(local_list, list):
-                raise ValueError("Malformed local collection")
-            local = {row["id"]: row for row in local_list if isinstance(row, dict)
-                     and isinstance(row.get("id"), str)}
-            if len(local) != len(local_list):
-                raise ValueError("Invalid local collection entries")
-            tracked = load_json(state_path, {})
-            if not isinstance(tracked, dict):
-                raise ValueError("Invalid revision state")
-            # Acquire snapshot before mutations; never infer a deletion on first sync.
-            snapshot = remote(host, key, collection)
-            server = {r["id"]: r for r in snapshot["items"]}
-            new_local = dict(local)
-            conflicts = []
-            changes = 0
-            for ident in sorted(set(local) | set(server) | set(tracked)):
-                current = local.get(ident)
-                old = tracked.get(ident)
-                remote_row = server.get(ident)
-                ver = remote_row["version"] if remote_row else 0
-                remote_item = None if not remote_row or remote_row["deleted"] else remote_row["item"]
-                local_changed = old is not None and (
-                    (fingerprint(current) if current is not None else None) != old.get("fingerprint"))
-                remote_changed = old is not None and ver != old.get("version")
-                if old is None and current is not None and remote_row is not None:
-                    if fingerprint(current) != (fingerprint(remote_item) if remote_item else None):
-                        conflicts.append(ident)  # Unknown competing initial states
-                        continue
-                if local_changed and remote_changed:
+        finally:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+        if not isinstance(local_list, list):
+            raise ValueError("Malformed local collection")
+        local = {row["id"]: row for row in local_list if isinstance(row, dict)
+                 and isinstance(row.get("id"), str)}
+        if len(local) != len(local_list):
+            raise ValueError("Invalid local collection entries")
+        tracked = load_json(state_path, {})
+        if not isinstance(tracked, dict):
+            raise ValueError("Invalid revision state")
+        # All HTTP requests are outside SmartTube's file lock.
+        snapshot = remote(host, key, collection)
+        server = {r["id"]: r for r in snapshot["items"]}
+        new_local = dict(local)
+        conflicts = []
+        changes = 0
+        for ident in sorted(set(local) | set(server) | set(tracked)):
+            current = local.get(ident)
+            old = tracked.get(ident)
+            remote_row = server.get(ident)
+            ver = remote_row["version"] if remote_row else 0
+            remote_item = None if not remote_row or remote_row["deleted"] else remote_row["item"]
+            local_changed = old is not None and (
+                (fingerprint(current) if current is not None else None) != old.get("fingerprint"))
+            remote_changed = old is not None and ver != old.get("version")
+            if old is None and current is not None and remote_row is not None:
+                if fingerprint(current) != (fingerprint(remote_item) if remote_item else None):
                     conflicts.append(ident)
                     continue
-                if local_changed or (old is None and current is not None and remote_row is None):
-                    result = remote(host, key, collection, {
-                        "id": ident, "device_id": device, "base_version": ver,
-                        "deleted": current is None, "item": current or {},
-                    })
-                    if result.get("conflict"):
-                        conflicts.append(ident)
-                        continue
-                    ver = result["version"]
-                    remote_item = current
-                    changes += 1
-                elif not local_changed and (remote_changed or old is None):
-                    if remote_item is None:
-                        new_local.pop(ident, None)
-                    else:
-                        new_local[ident] = remote_item
-                    changes += 1
-                final = new_local.get(ident)
-                tracked[ident] = {"version": ver,
-                                  "fingerprint": fingerprint(final) if final is not None else None}
-            if conflicts:
-                # A real conflict remains unresolved, not overwritten; surface it.
-                atomic_json(os.path.join(private_profile, collection + ".conflicts.json"),
-                            {"ids": conflicts})
-            else:
-                conflict_path = os.path.join(private_profile, collection + ".conflicts.json")
-                if os.path.exists(conflict_path):
-                    os.unlink(conflict_path)
-            if len(new_local) > LIMIT[collection]:
-                raise ValueError("Local list exceeds SmartTube collection cap")
+            if local_changed and remote_changed:
+                conflicts.append(ident)
+                continue
+            if local_changed or (old is None and current is not None and remote_row is None):
+                result = remote(host, key, collection, {
+                    "id": ident, "device_id": device, "base_version": ver,
+                    "deleted": current is None, "item": current or {},
+                })
+                if result.get("conflict"):
+                    conflicts.append(ident)
+                    continue
+                ver = result["version"]
+                changes += 1
+            elif not local_changed and (remote_changed or old is None):
+                if remote_item is None:
+                    new_local.pop(ident, None)
+                else:
+                    new_local[ident] = remote_item
+                changes += 1
+            final = new_local.get(ident)
+            tracked[ident] = {"version": ver,
+                              "fingerprint": fingerprint(final) if final is not None else None}
+
+        if conflicts:
+            atomic_json(os.path.join(private_profile, collection + ".conflicts.json"),
+                        {"ids": conflicts})
+        else:
+            conflict_path = os.path.join(private_profile, collection + ".conflicts.json")
+            if os.path.exists(conflict_path):
+                os.unlink(conflict_path)
+        if len(new_local) > LIMIT[collection]:
+            raise ValueError("Local list exceeds SmartTube collection cap")
+
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        try:
+            latest = load_json(path, [])
+            if latest != local_list:
+                # Never overwrite a freshly changed local list.
+                # The next poll will reconcile it using these server revisions.
+                atomic_json(state_path, tracked)
+                return {"changes": changes, "conflicts": len(conflicts), "local_busy": True}
             if new_local != local:
                 atomic_json(path, list(new_local.values()))
             atomic_json(state_path, tracked)
-            return {"changes": changes, "conflicts": len(conflicts)}
         finally:
             fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+        return {"changes": changes, "conflicts": len(conflicts), "local_busy": False}
 
 
 def sync_all(profile, private_profile, device, host, key):
