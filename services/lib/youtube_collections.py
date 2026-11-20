@@ -13,7 +13,7 @@ import time
 from aiohttp import web
 from .youtube_history import _authorised
 
-COLLECTIONS = {"follows": 200, "watch_later": 500, "playlists": 200}
+COLLECTIONS = {"follows": 200, "watch_later": 500, "playlists": 200, "home_playlists": 200}
 IDENT = re.compile(r"^[A-Za-z0-9_.:@/-]{1,128}$")
 DEVICE = re.compile(r"^[A-Za-z0-9_-]{1,48}$")
 
@@ -42,7 +42,7 @@ def validate_change(value, collection):
     if collection in ("follows", "watch_later"):
         if item and item.get("id") != item_id:
             raise ValueError("ID mismatch")
-    if collection == "playlists":
+    if collection in ("playlists", "home_playlists"):
         videos = item.get("videos", [])
         if not isinstance(videos, list) or len(videos) > 500 or any(
                 not isinstance(v, dict) or not isinstance(v.get("id"), str) or
