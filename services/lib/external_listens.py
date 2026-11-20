@@ -178,6 +178,7 @@ def install(app: web.Application):
             raise web.HTTPUnauthorized(text="External listening writes disabled or unauthorised")
 
     async def recent(request):
+        require_token(request)
         try:
             limit=int(request.query.get("limit", "50"))
         except ValueError:
