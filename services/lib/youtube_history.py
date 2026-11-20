@@ -127,6 +127,24 @@ class YouTubeHistory:
         return bool(cursor.rowcount)
 
     def _append_event(self, e):
+        # Progress reports every 30 seconds belong to one viewing session,
+        # not thirty separate "watches". Takeout's original view timestamps
+        # always remain separate, even when the same video was replayed.
+        if e["device_id"] != "takeout":
+            previous = self.db.execute("""
+                SELECT id, watched_at_ms, position_ms, ended
+                FROM youtube_watch_events WHERE video_id=? AND device_id=?
+                ORDER BY watched_at_ms DESC LIMIT 1
+            """, (e["video_id"], e["device_id"])).fetchone()
+            if (previous and not previous["ended"] and
+                    0 <= e["watched_at_ms"] - previous["watched_at_ms"] < 6 * 3600 * 1000 and
+                    e["position_ms"] >= previous["position_ms"]):
+                self.db.execute("""
+                    UPDATE youtube_watch_events SET watched_at_ms=?, title=?, channel=?,
+                        position_ms=?, duration_ms=?, ended=? WHERE id=?
+                """, (e["watched_at_ms"], e["title"] or "", e["channel"] or "",
+                      e["position_ms"], e["duration_ms"], int(e["ended"]), previous["id"]))
+                return
         self.db.execute("""
             INSERT OR IGNORE INTO youtube_watch_events
                 (video_id,device_id,title,channel,position_ms,duration_ms,watched_at_ms,ended)
