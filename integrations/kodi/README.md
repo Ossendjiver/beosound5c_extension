@@ -1,46 +1,80 @@
-# SmartTube → BS5c unified YouTube history (staged)
+# Unified YouTube library — BS5c, SmartTube and Home Media
 
-This folder contains a standalone Kodi service add-on, `service.bs5c.youtube.history`.
-It reads **SmartTube for Kodi**'s `history.json` and sends changed playback
-records to the opt-in BS5c library endpoint. No patch to SmartTube, LibreELEC
-system image or Kodi media library is necessary.
+**Status: draft only; not installed or validated on live devices.**
 
-## Status / preconditions
+BS5c library service on port 8788 is the central source of truth. The
+independent Kodi add-on in `service.bs5c.youtube.history/` keeps SmartTube's
+existing local JSON lists in sync without modifying SmartTube. It leaves
+`cache/`, stream manifests, temporary files, `settings.xml` and other
+playback configuration **local** to each Kodi device.
 
-**Not deployed; do not install until the BS5c draft PR is reviewed and
-its API deployed.** This is an initial one-way monitor, not yet bidirectional
-resume sync or Google account history sync.
+## Server storage and authentication
 
-1. Deploy the BS5c history API from PR #27 after tests pass.
-2. Set `BS5C_YOUTUBE_HISTORY_KEY` to a random 32+ character string in the
-   BS5c library service's systemd environment and restart only that service.
-   Keep the key out of Git, browser URLs and diagnostic logs.
-3. Package the exact directory `service.bs5c.youtube.history/` as a Kodi
-   add-on ZIP with that directory at the ZIP root.
-4. Install the ZIP from Kodi's Add-ons → Install from zip file.
-5. In **BS5c YouTube History Monitor** settings, configure:
-   - Enable YouTube history upload (off by default)
-   - BS5c private IPv4 address, normally `192.168.4.103`
-   - Device ID: `bedroom`, `lounge`, or `dining` (unique per instance)
-   - Dedicated key matching the BS5c environment variable
-6. Play a video **from SmartTube's own listings**, wait for SmartTube's first
-   30-second history save, then check the BS5c history read API using the
-   same key. Kodi logs expose only errors by class, not credentials.
+The BS5c library service exposes authenticated endpoints:
 
-The monitor polls every 30 seconds and stores acknowledgements in its own
-add-on profile. It sends only changed history records, oldest first.
-Failures do not acknowledge delivery and are retried on the next poll;
-a successful record is acknowledged immediately so subsequent failures do
-not replay earlier records. BS5c rejects duplicate or older timestamps.
+- `GET/POST /library/youtube/history` — watch history and progress, 20,000 videos
+- `GET/POST /library/youtube/collections/follows` — subscriptions, 200 channels
+- `GET/POST /library/youtube/collections/watch_later` — Watch Later, 500 videos
+- `GET/POST /library/youtube/collections/playlists` — SmartTube saved YouTube
+  playlist references, 200 bookmarks
+- `GET/POST /library/youtube/collections/home_playlists` — Home Media local
+  custom video playlists, 200 lists; deliberately **not** injected as
+  YouTube playlist references into SmartTube
 
-**Limits and caveats:** SmartTube keeps at most 500 local history records.
-The first run forwards those records where available, but cannot recover
-older erased entries. Videos launched externally via SmartTube's
-`/play/?video_id=` route are not recorded by SmartTube's current history
-service, so this monitor cannot see those sessions. Enhancing that coverage
-requires a SmartTube-specific playback event adapter.
+All modifications are authenticated with `X-HomeMedia-YouTube-Key` matching
+`BS5C_YOUTUBE_HISTORY_KEY` on BS5c. The routes are **disabled** if this
+environment variable is absent or shorter than 32 characters.
+The database is `/media/local/cache/youtube_history.sqlite3` by default
+(separate from music-learning history), override using
+`BS5C_YOUTUBE_HISTORY_DB`. Back up this database regularly.
 
-The key is a shared secret transmitted over local HTTP; do not expose port
-8788 to the internet or untrusted Wi-Fi. Use a VPN or authenticated HTTPS
-proxy for remote clients. Kodi's add-on settings are local files and should
-not be included in public backups.
+## Kodi installation (after review)
+
+1. Install the BS5c server feature and configure a random 32+ character
+   `BS5C_YOUTUBE_HISTORY_KEY` in the BS5c library systemd environment.
+   Do not put it in Git or exposed configuration archives.
+2. Package `service.bs5c.youtube.history/` as a Kodi add-on ZIP with the
+   containing directory at the ZIP root.
+3. Install the ZIP through Kodi **Add-ons → Install from zip file**.
+4. In BS5c YouTube History Monitor settings, set Enable, BS5c LAN address
+   (typically `192.168.4.103`), a distinct device ID (`bedroom`,
+   `lounge`, `dining`) and the same dedicated key.
+5. Test a video played from SmartTube's own listings, another device's
+   Watch Later edit, and a local playlist update. The monitor scans every
+   30 seconds.
+
+The monitor first uploads local history records that were not acknowledged,
+then pulls the latest 500 central records without overwriting the actively
+playing video or re-uploading imported records. For follows, Watch Later and
+saved playlist references, it uses versioned compare-and-swap. Local and
+remote edits to the **same** item that conflict are preserved locally, with
+the affected IDs written into `<monitor-profile>/<collection>.conflicts.json`
+for review. Edits to different items can continue. Deleted entries have
+server-side tombstones to prevent offline devices from resurrecting them.
+
+## Android
+
+Home Media's YouTube settings include an optional BS5c sync switch and
+dedicated key (stored with the app's encrypted settings). The phone reports
+playback progress to BS5c and retains undelivered updates locally for retry.
+Its subscriptions and custom playlists synchronise while on the home LAN.
+Home Media's Watch later playlist is mapped to the shared SmartTube Watch Later
+collection; other custom playlists remain separate to preserve their format.
+
+## Limits and safety
+
+- This is **not** a Google sign-in / Google account history synchronisation.
+- SmartTube only writes history for videos launched from its own lists; an
+  externally started `play/?video_id=` video needs additional event reporting.
+- Each Kodi device keeps its own local cache, settings, DASH manifests and
+  download data. Do not point multiple Kodi instances at a shared add-on
+  profile via SMB/NFS.
+- The LAN protocol uses HTTP plus a shared key. Never expose port 8788
+  publicly or over untrusted networks. Remote access needs an authenticated
+  HTTPS proxy/VPN and a separately audited forwarding implementation.
+- The Android bridge currently works on local Wi-Fi; canonical
+  `/channel/UC...` subscription URLs sync directly. Unresolved
+  `@handle` or `/user/` addresses remain local rather than being
+  lost or assigned an incorrect channel ID.
+- Historical Google Takeout backfill into the central store, full conflict
+  resolution UI and live-device/Android integration testing remain outstanding.
