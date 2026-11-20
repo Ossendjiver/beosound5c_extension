@@ -1,0 +1,27 @@
+# Kodi English add-on settings labels
+msgid ""
+msgstr ""
+"Project-Id-Version: service.bs5c.youtube.history\n"
+"Language: en_GB\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+
+msgctxt "#32000"
+msgid "BS5c synchronisation"
+msgstr ""
+
+msgctxt "#32001"
+msgid "Enable BS5c YouTube synchronisation"
+msgstr ""
+
+msgctxt "#32002"
+msgid "BS5c LAN IPv4 address"
+msgstr ""
+
+msgctxt "#32003"
+msgid "Room ID (bedroom, lounge, dining)"
+msgstr ""
+
+msgctxt "#32004"
+msgid "Dedicated BS5c YouTube key"
+msgstr ""
