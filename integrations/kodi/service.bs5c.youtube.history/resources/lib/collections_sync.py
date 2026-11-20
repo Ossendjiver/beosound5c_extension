@@ -9,10 +9,20 @@ import hashlib
 import json
 import os
 import tempfile
-from urllib.request import Request, urlopen
+from urllib.request import Request, urlopen, build_opener, HTTPRedirectHandler
 from urllib.error import HTTPError
 
 import fcntl
+
+class _NoRedirect(HTTPRedirectHandler):
+    def redirect_request(self, request, response, code, message, headers, newurl):
+        return None
+
+
+def safe_open(request, timeout):
+    """A redirected request must never forward the private BS5c key."""
+    return build_opener(_NoRedirect()).open(request, timeout=timeout)
+
 
 COLLECTIONS = ("follows", "watch_later", "playlists")
 LIMIT = {"follows": 200, "watch_later": 500, "playlists": 200}
@@ -52,7 +62,7 @@ def _remote(host, key, collection, change=None):
     req = Request(url, data=data, method="POST" if data is not None else "GET",
                   headers={"X-HomeMedia-YouTube-Key": key, "Content-Type": "application/json"})
     try:
-        with urlopen(req, timeout=8) as resp:
+        with safe_open(req, timeout=8) as resp:
             return json.loads(resp.read(8_000_001))
     except HTTPError as error:
         if error.code == 409:
