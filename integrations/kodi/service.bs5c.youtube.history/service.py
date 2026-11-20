@@ -11,7 +11,7 @@ ADDON = xbmcaddon.Addon()
 SMARTTUBE = "plugin.video.smarttube"
 ROOT = xbmcvfs.translatePath(ADDON.getAddonInfo("path"))
 sys.path.insert(0, os.path.join(ROOT, "resources", "lib"))
-from sync import sync_once, fetch_history, merge_remote_history  # noqa: E402
+from sync import sync_once, fetch_history, merge_remote_history, send_event  # noqa: E402
 from collections_sync import sync_all  # noqa: E402
 
 
@@ -20,6 +20,7 @@ def run():
     own_profile = xbmcvfs.translatePath(ADDON.getAddonInfo("profile"))
     smarttube_history = xbmcvfs.translatePath("special://profile/addon_data/" + SMARTTUBE + "/history.json")
     ack_path = os.path.join(own_profile, "synced.json")
+    last_direct_sample = ("", -1)
     smarttube_profile = os.path.dirname(smarttube_history)
     while not monitor.abortRequested():
         if ADDON.getSettingBool("enabled"):
@@ -33,6 +34,29 @@ def run():
                 active = (home.getProperty("SmartTube.VideoId")
                           if player.isPlayingVideo() and
                           player.getPlayingFile() == home.getProperty("SmartTube.StreamUrl") else "")
+                # SmartTube's external /play/?video_id= route leaves SmartTube.Item
+                # empty. Kodi playback is still observable via VideoId/StreamUrl,
+                # so report those sessions directly instead of losing history.
+                if active and not home.getProperty("SmartTube.Item"):
+                    try:
+                        position_ms = max(0, int(player.getTime() * 1000))
+                        duration_ms = max(0, int(player.getTotalTime() * 1000))
+                        state = (active, position_ms // 1000)
+                        if state != last_direct_sample:
+                            send_event(host, key, {
+                                "video_id": active, "device_id": device,
+                                "title": xbmc.getInfoLabel("VideoPlayer.Title")[:300],
+                                "channel": xbmc.getInfoLabel("VideoPlayer.Artist")[:150],
+                                "position_ms": min(position_ms, duration_ms) if duration_ms else position_ms,
+                                "duration_ms": duration_ms,
+                                "watched_at_ms": int(__import__("time").time() * 1000),
+                                "ended": bool(duration_ms and position_ms >= duration_ms * .9),
+                            })
+                            last_direct_sample = state
+                    except (RuntimeError, ValueError, TypeError):
+                        pass
+                else:
+                    last_direct_sample = ("", -1)
                 imported = merge_remote_history(smarttube_history, ack_path,
                                                 fetch_history(host, key), active_id=active)
                 collections = sync_all(smarttube_profile, own_profile, device, host, key)
