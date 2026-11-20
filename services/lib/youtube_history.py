@@ -20,6 +20,7 @@ SOURCE = re.compile(r"^[A-Za-z0-9_-]{1,48}$")
 MAX_MS = 24 * 60 * 60 * 1000
 MAX_FUTURE = 5 * 60 * 1000
 MAX_ITEMS = 20000
+MAX_EVENTS = 50000
 FIELDS = {"video_id", "device_id", "title", "channel", "position_ms",
           "duration_ms", "watched_at_ms", "ended"}
 REQUIRED = FIELDS - {"title", "channel"}
@@ -77,6 +78,25 @@ class YouTubeHistory:
             );
             CREATE INDEX IF NOT EXISTS idx_youtube_history_watched
                 ON youtube_history(watched_at_ms DESC);
+            CREATE TABLE IF NOT EXISTS youtube_watch_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                video_id TEXT NOT NULL,
+                device_id TEXT NOT NULL,
+                title TEXT NOT NULL,
+                channel TEXT NOT NULL,
+                position_ms INTEGER NOT NULL,
+                duration_ms INTEGER NOT NULL,
+                watched_at_ms INTEGER NOT NULL,
+                ended INTEGER NOT NULL,
+                UNIQUE(video_id, device_id, watched_at_ms)
+            );
+            CREATE INDEX IF NOT EXISTS idx_youtube_watch_events_date
+                ON youtube_watch_events(watched_at_ms DESC);
+            -- Legacy data has one most recent position per video; retain it on upgrade.
+            INSERT OR IGNORE INTO youtube_watch_events
+                (video_id,device_id,title,channel,position_ms,duration_ms,watched_at_ms,ended)
+            SELECT video_id,device_id,title,channel,position_ms,duration_ms,watched_at_ms,ended
+                FROM youtube_history;
         """)
 
     def upsert(self, event):
@@ -97,6 +117,7 @@ class YouTubeHistory:
                 WHERE excluded.watched_at_ms > youtube_history.watched_at_ms
             """, (e["video_id"], e["device_id"], e["title"], e["channel"],
                   e["position_ms"], e["duration_ms"], e["watched_at_ms"], int(e["ended"])))
+            self._append_event(e)
             if cursor.rowcount:
                 count = self.db.execute("SELECT COUNT(*) FROM youtube_history").fetchone()[0]
                 if count > MAX_ITEMS:
@@ -105,17 +126,58 @@ class YouTubeHistory:
                         ORDER BY watched_at_ms ASC, video_id ASC LIMIT ?)""", (count-MAX_ITEMS,))
         return bool(cursor.rowcount)
 
-    def entries(self, limit=100, video_id=None):
+    def _append_event(self, e):
+        self.db.execute("""
+            INSERT OR IGNORE INTO youtube_watch_events
+                (video_id,device_id,title,channel,position_ms,duration_ms,watched_at_ms,ended)
+            VALUES (?,?,?,?,?,?,?,?)
+        """, (e["video_id"], e["device_id"], e["title"], e["channel"],
+              e["position_ms"], e["duration_ms"], e["watched_at_ms"], int(e["ended"])))
+        count = self.db.execute("SELECT COUNT(*) FROM youtube_watch_events").fetchone()[0]
+        if count > MAX_EVENTS:
+            self.db.execute("""DELETE FROM youtube_watch_events WHERE id IN (
+                SELECT id FROM youtube_watch_events
+                ORDER BY watched_at_ms ASC, id ASC LIMIT ?)""", (count - MAX_EVENTS,))
+
+    def import_events(self, events):
+        """All-or-nothing backfill; never overwrite a newer live resume position."""
+        validated = [validate_event(event) for event in events]
+        with self.db:
+            for event in validated:
+                self._append_event(event)
+                self.db.execute("""
+                    INSERT INTO youtube_history
+                        (video_id,device_id,title,channel,position_ms,duration_ms,watched_at_ms,ended)
+                    VALUES (?,?,?,?,?,?,?,?)
+                    ON CONFLICT(video_id) DO UPDATE SET
+                        device_id=excluded.device_id,
+                        title=COALESCE(NULLIF(excluded.title,''), youtube_history.title),
+                        channel=COALESCE(NULLIF(excluded.channel,''), youtube_history.channel),
+                        position_ms=excluded.position_ms,
+                        duration_ms=CASE WHEN excluded.duration_ms=0 THEN youtube_history.duration_ms ELSE excluded.duration_ms END,
+                        watched_at_ms=excluded.watched_at_ms,
+                        ended=excluded.ended
+                    WHERE excluded.watched_at_ms > youtube_history.watched_at_ms
+                """, (event["video_id"], event["device_id"], event["title"], event["channel"],
+                      event["position_ms"], event["duration_ms"], event["watched_at_ms"], int(event["ended"])))
+        return len(validated)
+
+    def entries(self, limit=100, video_id=None, events=False):
+        if type(limit) is not int or not 1 <= limit <= 500:
+            raise ValueError("Invalid limit")
+        if video_id is not None and (not isinstance(video_id, str) or not ID.fullmatch(video_id)):
+            raise ValueError("Invalid video ID")
+        table = "youtube_watch_events" if events else "youtube_history"
         if video_id is not None:
-            if not ID.fullmatch(video_id):
-                raise ValueError("Invalid video ID")
-            rows = self.db.execute("SELECT * FROM youtube_history WHERE video_id=?", (video_id,))
+            query = (f"SELECT * FROM {table} WHERE video_id=? ORDER BY watched_at_ms DESC LIMIT ?"
+                     if events else f"SELECT * FROM {table} WHERE video_id=?")
+            args = (video_id, limit) if events else (video_id,)
         else:
-            if type(limit) is not int or not 1 <= limit <= 500:
-                raise ValueError("Invalid limit")
-            rows = self.db.execute(
-                "SELECT * FROM youtube_history ORDER BY watched_at_ms DESC, video_id LIMIT ?", (limit,))
-        return [{**dict(row), "ended": bool(row["ended"])} for row in rows]
+            query = f"SELECT * FROM {table} ORDER BY watched_at_ms DESC, video_id LIMIT ?"
+            args = (limit,)
+        rows = self.db.execute(query, args)
+        return [{k: v for k, v in {**dict(row), "ended": bool(row["ended"])}.items() if k != "id"}
+                for row in rows]
 
     def close(self):
         self.db.close()
@@ -133,10 +195,14 @@ async def handle_history(request):
     history = request.app["youtube_history"]
     if request.method == "GET":
         try:
-            if set(request.query) - {"limit", "video_id"}:
+            if set(request.query) - {"limit", "video_id", "events"}:
                 raise ValueError("Unexpected query field")
             limit = int(request.query.get("limit", "100"))
-            items = history.entries(limit=limit, video_id=request.query.get("video_id"))
+            events = request.query.get("events", "0")
+            if events not in ("0", "1"):
+                raise ValueError("Invalid events mode")
+            items = history.entries(limit=limit, video_id=request.query.get("video_id"),
+                                    events=events == "1")
             return web.json_response({"items": items}, headers={"Cache-Control": "no-store"})
         except (ValueError, TypeError):
             return web.json_response({"error": "Invalid history query"}, status=400)
@@ -155,6 +221,28 @@ async def handle_history(request):
         return web.json_response({"error": "Invalid playback event"}, status=400)
 
 
+async def handle_history_import(request):
+    if not _authorised(request):
+        return web.json_response({"error": "YouTube history unavailable"}, status=403)
+    try:
+        if request.content_length is not None and request.content_length > 65000:
+            return web.json_response({"error": "Request too large"}, status=413)
+        payload = await request.content.read(65001)
+        if len(payload) > 65000 or not request.content.at_eof():
+            return web.json_response({"error": "Request too large"}, status=413)
+        import json
+        data = json.loads(payload)
+        if not isinstance(data, dict) or set(data) != {"events"}:
+            raise ValueError("Invalid import payload")
+        events = data["events"]
+        if not isinstance(events, list) or not 1 <= len(events) <= 100:
+            raise ValueError("Expected 1–100 events")
+        count = request.app["youtube_history"].import_events(events)
+        return web.json_response({"accepted": count}, headers={"Cache-Control": "no-store"})
+    except (ValueError, TypeError, UnicodeDecodeError, KeyError):
+        return web.json_response({"error": "Invalid history import"}, status=400)
+
+
 def install(app):
     """Attach opt-in history to the BS5c library service."""
     if len(os.environ.get("BS5C_YOUTUBE_HISTORY_KEY", "")) < 32:
@@ -163,8 +251,13 @@ def install(app):
     app["youtube_history"] = history
     app.router.add_get("/library/youtube/history", handle_history)
     app.router.add_post("/library/youtube/history", handle_history)
+    app.router.add_post("/library/youtube/history/import", handle_history_import)
     from . import youtube_collections
     youtube_collections.install(app, history)
+    # Optional independent Home Assistant watcher; uses a real YouTube-on-TV
+    # playback entity, never SamsungTV Smart's unverified launch acknowledgement.
+    from . import youtube_samsung
+    youtube_samsung.install(app, history)
 
     async def cleanup(_app):
         history.close()
