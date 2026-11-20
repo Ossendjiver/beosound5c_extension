@@ -1,0 +1,66 @@
+name: Package BS5c YouTube and Kodi Monitor
+
+on:
+  push:
+    branches:
+      - feature/unified-youtube-history-bs5c
+  pull_request:
+    paths:
+      - 'services/lib/youtube_*.py'
+      - 'integrations/kodi/**'
+      - '.github/workflows/package-youtube-integration.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate and package installable components
+        shell: bash
+        run: |
+          python - <<'PY'
+          import pathlib, py_compile, zipfile, xml.etree.ElementTree as ET
+          root = pathlib.Path("integrations/kodi")
+          addon = root / "service.bs5c.youtube.history"
+          assert ET.parse(addon/"addon.xml").getroot().attrib["id"] == "service.bs5c.youtube.history"
+          manifest = ET.parse(addon/"addon.xml").getroot()
+          assert manifest.attrib["version"] == "0.1.2"
+          settings = ET.parse(addon/"resources/settings.xml").getroot()
+          key = settings.find(".//setting[@id='history_key']")
+          assert key is not None, "history_key is missing"
+          assert key.findtext("constraints/allowempty") == "true"
+          assert key.findtext("control/hidden") == "true"
+          assert key.find("control").attrib["type"] == "edit"
+          assert (addon/"resources/language/resource.language.en_gb/strings.po").is_file()
+          for path in addon.rglob("*.py"):
+              py_compile.compile(str(path), doraise=True)
+          for path in ("services/lib/youtube_history.py",
+                       "services/lib/youtube_collections.py",
+                       "services/library.py", "services/lib/speaker_start.py"):
+              py_compile.compile(path, doraise=True)
+          out = pathlib.Path("dist")
+          out.mkdir(exist_ok=True)
+          with zipfile.ZipFile(out/"service.bs5c.youtube.history-0.1.2.zip", "w", zipfile.ZIP_DEFLATED) as z:
+              for path in sorted(addon.rglob("*")):
+                  if path.is_file() and "__pycache__" not in path.parts:
+                      z.write(path, path.relative_to(root))
+          with zipfile.ZipFile(out/"bs5c-youtube-server-staging.zip", "w", zipfile.ZIP_DEFLATED) as z:
+              for path in ("services/lib/youtube_history.py", "services/lib/youtube_collections.py",
+                           "services/library.py", "services/lib/speaker_start.py",
+                           "integrations/kodi/README.md", "integrations/kodi/DEVICE_DEPLOYMENT.md"):
+                  z.write(path)
+          for zipfile_path in out.glob("*.zip"):
+              with zipfile.ZipFile(zipfile_path) as z:
+                  assert z.testzip() is None
+              print(zipfile_path)
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: BS5c-SmartTube-installation-staging
+          path: dist/*.zip
+          retention-days: 30
+          if-no-files-found: error
