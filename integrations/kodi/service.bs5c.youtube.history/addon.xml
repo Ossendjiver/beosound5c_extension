@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<addon id="service.bs5c.youtube.history" name="BS5c YouTube History Monitor" version="0.1.0" provider-name="Ossendjiver">
+  <requires>
+    <import addon="xbmc.python" version="3.0.0"/>
+    <import addon="plugin.video.smarttube" version="0.3.0" optional="true"/>
+  </requires>
+  <extension point="xbmc.service" library="service.py" start="startup"/>
+  <extension point="xbmc.addon.metadata">
+    <summary lang="en_GB">Synchronise SmartTube's watch history with BS5c</summary>
+    <description lang="en_GB">Opt-in, local-LAN forwarding of SmartTube's saved watch history and resume progress to the BS5c library service. No account login and no modification of SmartTube.</description>
+    <platform>all</platform>
+    <license>GPL-3.0-or-later</license>
+  </extension>
+</addon>
