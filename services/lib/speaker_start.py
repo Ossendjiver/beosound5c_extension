@@ -9,6 +9,7 @@ import uuid
 
 import aiohttp
 
+from .background_tasks import BackgroundTaskSet
 from .config import cfg
 from .endpoints import source_url
 
@@ -28,6 +29,7 @@ class SpeakerStartError(Exception):
 class SpeakerStart:
     def __init__(self, session):
         self.session = session
+        self._tasks = BackgroundTaskSet(logger, label="speaker-start")
         self.settings = cfg("playback", "speaker_start", default={}) or {}
         self.targets = self.settings.get("targets") or {}
         self.token = os.getenv("HA_TOKEN", "").strip()
@@ -176,7 +178,8 @@ class SpeakerStart:
 
         owner = "bs5c-" + uuid.uuid4().hex
         await self._ha(_LEASE, {"action": "acquire", "owner": owner})
-        tasks = [asyncio.create_task(self._route(target, command)), asyncio.create_task(self._renew(owner))]
+        tasks = [self._tasks.spawn(self._route(target, command), name="speaker_route"),
+                 self._tasks.spawn(self._renew(owner), name="speaker_lease_renew")]
         try:
             done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
             if tasks[1] in done:
