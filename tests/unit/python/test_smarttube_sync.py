@@ -55,3 +55,27 @@ def test_missing_or_invalid_smarttube_history(tmp_path):
                      sender=lambda host, key, event: sent.append(event),
                      observed_ms=1700000001000) == 1
     assert sent[0]["video_id"] == "dQw4w9WgXcQ"
+
+
+def test_remote_history_merges_without_echo_and_respects_active_video(tmp_path):
+    from sync import merge_remote_history, load_acks, signature
+    history = tmp_path / "history.json"
+    acks = tmp_path / "acks.json"
+    initial = row(watched_at=1700000000, position=20)
+    history.write_text(json.dumps([initial]), encoding="utf-8")
+    remote = [{"video_id": "dQw4w9WgXcQ", "device_id": "phone",
+               "title": "Phone title", "channel": "Channel", "position_ms": 62000,
+               "duration_ms": 100000, "watched_at_ms": 1700000050000,
+               "ended": False}]
+    assert merge_remote_history(str(history), str(acks), remote, active_id="dQw4w9WgXcQ") == 0
+    assert read_history(str(history))[0]["position"] == 20
+    assert merge_remote_history(str(history), str(acks), remote) == 1
+    imported = read_history(str(history))[0]
+    assert imported["type"] == "video"
+    assert imported["position"] == 62
+    assert imported["author"] == "Channel"
+    assert load_acks(str(acks))[imported["id"]] == signature(imported)
+    assert merge_remote_history(str(history), str(acks), remote) == 0
+    assert sync_once(str(history), str(acks), "bedroom", "192.168.4.103",
+                     "x"*40, sender=lambda *args: (_ for _ in ()).throw(
+                         AssertionError("Echoed an imported history record"))) == 0
