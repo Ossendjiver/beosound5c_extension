@@ -71,3 +71,32 @@ def test_no_existing_music_tables_are_modified(monkeypatch):
         assert "youtube_history" in tables
         assert "listens" not in tables
         store.close()
+
+
+def test_dated_rewatches_and_historical_backfill_are_preserved(monkeypatch):
+    monkeypatch.setattr("lib.youtube_history.time.time", lambda: 2000.0)
+    with tempfile.TemporaryDirectory() as folder:
+        store = YouTubeHistory(Path(folder) / "youtube.sqlite3")
+        assert store.upsert(sample(watched_at_ms=1700000, position_ms=50000))
+        assert store.upsert(sample(watched_at_ms=1800000, position_ms=70000))
+        # Import an older Google Takeout event: keep the real date, but never
+        # replace the more recent 70-second live resume point.
+        historical = sample(device_id="takeout", watched_at_ms=1200000,
+                            position_ms=0, duration_ms=0)
+        assert store.import_events([historical, historical]) == 2
+        assert store.entries()[0]["watched_at_ms"] == 1800000
+        assert store.entries()[0]["position_ms"] == 70000
+        events = store.entries(events=True)
+        assert {e["watched_at_ms"] for e in events} == {1200000, 1700000, 1800000}
+        assert len(events) == 3
+        store.close()
+
+
+def test_invalid_batch_is_atomic_and_cannot_mutate_live_history(monkeypatch):
+    monkeypatch.setattr("lib.youtube_history.time.time", lambda: 2000.0)
+    with tempfile.TemporaryDirectory() as folder:
+        store = YouTubeHistory(Path(folder) / "youtube.sqlite3")
+        with pytest.raises(ValueError):
+            store.import_events([sample(device_id="takeout"), sample(video_id="bad")])
+        assert not store.entries(events=True)
+        store.close()
