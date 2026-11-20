@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - feature/unified-youtube-history-bs5c
+      - feature/youtube-samsung-event-history
   pull_request:
     paths:
       - 'services/lib/youtube_*.py'
@@ -19,6 +20,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Install YouTube API test dependencies
+        run: python -m pip install -r tests/requirements.txt
+      - name: Verify chronological event and Samsung safety tests
+        run: python -m pytest -q tests/unit/python/test_youtube_history.py tests/unit/python/test_youtube_samsung.py
       - name: Validate and package installable components
         shell: bash
         run: |
@@ -39,6 +44,7 @@ jobs:
           for path in addon.rglob("*.py"):
               py_compile.compile(str(path), doraise=True)
           for path in ("services/lib/youtube_history.py",
+                       "services/lib/youtube_samsung.py",
                        "services/lib/youtube_collections.py",
                        "services/library.py", "services/lib/speaker_start.py"):
               py_compile.compile(path, doraise=True)
@@ -48,10 +54,11 @@ jobs:
               for path in sorted(addon.rglob("*")):
                   if path.is_file() and "__pycache__" not in path.parts:
                       z.write(path, path.relative_to(root))
-          with zipfile.ZipFile(out/"bs5c-youtube-server-staging.zip", "w", zipfile.ZIP_DEFLATED) as z:
+          with zipfile.ZipFile(out/"bs5c-youtube-history-v2-modules.zip", "w", zipfile.ZIP_DEFLATED) as z:
               for path in ("services/lib/youtube_history.py", "services/lib/youtube_collections.py",
-                           "services/library.py", "services/lib/speaker_start.py",
-                           "integrations/kodi/README.md", "integrations/kodi/DEVICE_DEPLOYMENT.md"):
+                           "services/lib/youtube_samsung.py",
+                           "integrations/kodi/README.md", "integrations/kodi/DEVICE_DEPLOYMENT.md",
+                           "docs/youtube-chronology-samsung.md"):
                   z.write(path)
           for zipfile_path in out.glob("*.zip"):
               with zipfile.ZipFile(zipfile_path) as z:
@@ -60,7 +67,7 @@ jobs:
           PY
       - uses: actions/upload-artifact@v4
         with:
-          name: BS5c-SmartTube-installation-staging
+          name: BS5c-YouTube-history-v2-staging
           path: dist/*.zip
           retention-days: 30
           if-no-files-found: error
