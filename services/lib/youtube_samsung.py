@@ -131,7 +131,7 @@ class SamsungWatchMonitor:
                 await self.sample()
             except asyncio.CancelledError:
                 raise
-            except (aiohttp.ClientError, asyncio.TimeoutError, ValueError, TypeError, OSError) as exc:
+            except Exception as exc:
                 log.debug("Samsung YouTube state unavailable: %s", type(exc).__name__)
             await asyncio.sleep(30)
 
