@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<settings version="1">
+  <section id="service.bs5c.youtube.history">
+    <category id="general" label="BS5c synchronisation">
+      <group id="1">
+        <setting id="enabled" type="boolean" label="Enable YouTube history upload">
+          <level>0</level><default>false</default><control type="toggle"/>
+        </setting>
+        <setting id="host" type="string" label="BS5c LAN IPv4 address">
+          <level>0</level><default>192.168.4.103</default><control type="edit" format="string"/>
+        </setting>
+        <setting id="device_id" type="string" label="Room ID (bedroom, lounge, dining)">
+          <level>0</level><default>bedroom</default><control type="edit" format="string"/>
+        </setting>
+        <setting id="history_key" type="string" label="Dedicated BS5c YouTube key">
+          <level>0</level><default></default><control type="edit" format="string" hidden="true"/>
+        </setting>
+      </group>
+    </category>
+  </section>
+</settings>
