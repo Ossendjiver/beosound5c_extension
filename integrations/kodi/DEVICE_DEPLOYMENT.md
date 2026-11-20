@@ -1,3 +1,9 @@
+> **v2 chronology update (20 November 2026):** For the Samsung/history extension,
+> use [the safe module-only deployment](../../docs/youtube-chronology-samsung.md).
+> Do **not** replace your live `services/library.py`; it contains later device
+> features absent from the original staged ZIP. Existing Bedroom Kodi monitor
+> v0.1.2 remains compatible and needs no changes.
+
 # BS5c / LibreELEC YouTube — safe device deployment checklist
 
 **The GitHub PR is not an on-device deployment.** This procedure must be run
@@ -26,7 +32,7 @@ from the BS5c PR. It contains:
   `services/lib/youtube_history.py`,
   `services/lib/youtube_collections.py`,
   `services/lib/speaker_start.py`
-- `service.bs5c.youtube.history-0.1.0.zip`: independent Kodi service
+- `service.bs5c.youtube.history-0.1.2.zip`: independent Kodi service
 
 Unzip the server staging files into a **temporary folder** on BS5c.
 Before replacing `library.py`, compare it with the live copy using
@@ -72,7 +78,7 @@ YouTube playback event. Do not expose port 8788 publicly.
 ## 5. Install and test Bedroom Kodi first
 
 - Install `plugin.video.smarttube` on Bedroom Kodi.
-- In Kodi Add-ons, install `service.bs5c.youtube.history-0.1.0.zip`.
+- In Kodi Add-ons, install `service.bs5c.youtube.history-0.1.2.zip`.
 - Set monitor device ID `bedroom`, BS5c IP, the matching key, and Enable.
 - In Pellucid, install the staged 3.1.3 skin ZIP; test the YouTube main-menu
   entry and every navigation tab.
