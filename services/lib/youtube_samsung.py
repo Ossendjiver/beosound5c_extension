@@ -21,6 +21,18 @@ import aiohttp
 log = logging.getLogger(__name__)
 VIDEO_ID = re.compile(r"^[A-Za-z0-9_-]{11}$")
 DEFAULT_ENTITY = "media_player.youtube_on_frame_65"
+PRESENCE_ENTITY = "person.thomas"
+
+
+def samsung_history_enabled(config):
+    """Require an explicit boolean opt-in; absent/malformed settings are OFF."""
+    return isinstance(config, dict) and config.get("include_samsung") is True
+
+
+def is_user_home(state):
+    """The actual person entity must report home. Unknown/away always fail closed."""
+    return isinstance(state, dict) and state.get("entity_id") == PRESENCE_ENTITY and state.get("state") == "home"
+
 
 
 def video_id_from_content(content):
@@ -106,20 +118,47 @@ class SamsungWatchMonitor:
         self.entity = entity
         self.last_signal = None
 
-    async def sample(self):
-        async with self.session.get(self.host + self.entity,
+    @staticmethod
+    def enabled():
+        # Existing BS5c settings page persists this to /etc/beosound5c/config.json.
+        # The config loader caches until a normal Save & Restart; fail closed.
+        try:
+            from .config import cfg
+            return samsung_history_enabled(cfg("youtube_history", default={}))
+        except (OSError, ValueError, TypeError, RuntimeError):
+            return False
+
+    async def _ha_state(self, entity):
+        async with self.session.get(self.host + entity,
                                     headers={"Authorization": "Bearer " + self.token},
                                     timeout=aiohttp.ClientTimeout(total=8),
                                     allow_redirects=False) as response:
             if response.status != 200:
-                log.debug("Samsung HA video observer unavailable (HTTP %s)", response.status)
-                return
+                log.debug("Samsung HA observer unavailable for %s (HTTP %s)", entity, response.status)
+                return None
             data = await response.json()
-        event = sample_youtube_state(data)
+            return data if isinstance(data, dict) else None
+
+    async def sample(self):
+        if not self.enabled():
+            self.last_signal = None
+            return
+        # Presence first, then actual media state. Recheck presence immediately
+        # before a write so a departure between requests cannot log a watch.
+        present = await self._ha_state(PRESENCE_ENTITY)
+        if not is_user_home(present):
+            self.last_signal = None
+            return
+        video = await self._ha_state(self.entity)
+        event = sample_youtube_state(video)
         if event is None:
             self.last_signal = None
             return
-        signal = (event["video_id"], event["position_ms"], data["state"])
+        present = await self._ha_state(PRESENCE_ENTITY)
+        if not is_user_home(present) or not self.enabled():
+            self.last_signal = None
+            return
+        signal = (event["video_id"], event["position_ms"], video["state"])
         if signal == self.last_signal:
             return
         self.history.upsert(event)
