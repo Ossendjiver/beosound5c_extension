@@ -36,15 +36,27 @@ No raw audio, credentials or event bodies are logged. Keep this database private
 There is a 100,000-event cap; full storage returns an error so HA retains its
 pending event. Back it up locally and arrange retention before reaching the cap.
 
-The worker searches **existing MA library tracks**. It requires unique exact
-normalized title and artist, an identical version, and compatible duration when
-known. It rejects potentially truncated search results. It does not fabricate
-URIs or add unknown music to the library. Unresolved recordings stay in this
-external history and are retried hourly up to 24 times.
+The worker searches existing MA library tracks, then the user's configured
+provider catalogues when the recording is absent from the library. It uses
+actual returned provider items/URIs. It requires matching title and artist,
+compatible version and duration, and a compatible album for catalogue matches.
+Shared explicit ISRCs can disambiguate duplicate catalogue copies. Unknown or
+conflicting versions remain unresolved; no fabricated URI or library entry is
+created. Retries back off through one, two and four minutes, then hourly, up to
+24 attempts. Recognition does not require an MA library entry.
 
-A real resolved track uses `music/mark_played`, `fully_played=false`, observed
+A real resolved track uses `music/mark_played`, normally `fully_played=false`, observed
 `seconds_played`, `is_playing=false`, `user_initiated=false`. This records a
 partial playlog entry without falsely incrementing full-track play counts.
+Completed-play credit requires a start estimate and at least 90% of catalogue
+duration observed, with a minimum 30 seconds. Partial entries remain partial;
+MA's default recent-track query excludes them.
+
+An album context is recorded once per enabled session and four-hour period using the same semantics
+as MA's native queue: playing its tracks can put an album in Recently played
+without marking any other album tracks as heard. Context writes have separate
+persistent idempotency/uncertainty states. User-confirmed manual backfills are
+annotated separately and do not forge acoustic observations.
 The installed MA 2.10.5 implementation was inspected and its authenticated
 HTTP library-search endpoint tested. Its playlog is a per-item view, not the
 complete historical ledger; this SQLite inbox preserves distinct events.
@@ -57,8 +69,11 @@ through an ambiguous downstream failure.
 
 Receiver unit tests and isolated HTTP tests passed on BS5c. Synthetic HTTP
 fixtures used a separate temporary database and stubbed downstream search.
-They did not add fictitious production listens or MA plays. The first genuinely
-confirmed completed listen is still needed for full live-path verification.
+They did not add fictitious production listens or MA plays. A real user-confirmed
+session was subsequently backfilled: all confirmed tracks and its album context
+were verified through that user's MA recent-items API. The manual annotations
+and listening history remain private on the host. Ten receiver tests and three
+separate Dining presence-policy/patcher tests pass.
 
 Rollback affects only this new service and preserves its database:
 

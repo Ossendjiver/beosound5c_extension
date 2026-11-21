@@ -13,3 +13,4 @@ jobs:
           python-version: '3.12'
       - run: python -m py_compile services/external_listens.py
       - run: python -m unittest discover -s tests -p test_external_listens.py -v
+      - run: python -m unittest discover -s tests -p test_presence_limit.py -v

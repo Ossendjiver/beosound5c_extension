@@ -4,6 +4,7 @@ Only exact, unique existing MA library tracks are credited. An uncertain
 mark_played response is never automatically retried (MA has no event-id API).
 """
 import hmac
+import hashlib
 from contextlib import contextmanager
 import json
 import math
@@ -43,24 +44,53 @@ def validate(event):
     return event
 
 
-def resolve(event, tracks):
+def album_key(name):
+    return canonical(re.sub(r'\s*\((?:expanded|deluxe)(?:\s+(?:edition|version))?\)\s*$','',str(name or ''),flags=re.I))
+
+def resolve(event, tracks, catalogue=False):
     matches = {}
     for track in tracks:
         if canonical(track.get('name')) != canonical(event['title']):
             continue
         # Version must be explicit in the audio result to match a versioned item.
-        if canonical(track.get('version')) != canonical(event.get('version')):
+        isrc=str(event.get('isrc') or '').upper()
+        target_isrcs={str(value).upper() for kind,value in track.get('external_ids',[]) if kind=='isrc'}
+        same_isrc=bool(isrc and isrc in target_isrcs)
+        if isrc and target_isrcs and not same_isrc:continue
+        version=canonical(track.get('version'))
+        if version in ('album version','original version'):version=''
+        if version != canonical(event.get('version')) and not same_isrc:
             continue
         artists = [canonical(a.get('name')) for a in track.get('artists', [])]
         if canonical(event['artist']) not in artists and canonical(event['artist']) != canonical(' & '.join(a.get('name','') for a in track.get('artists', []))):
             continue
-        if track.get('provider') != 'library' or not track.get('uri'):
+        provider=track.get('provider','')
+        if not provider or provider.startswith('builtin') or (not catalogue and provider!='library'):
+            continue
+        if not str(track.get('uri','')).startswith(provider+'://track/'):
             continue
         duration = event.get('duration_seconds')
         if duration and track.get('duration') and abs(duration-track['duration']) > max(4,duration*.03):
             continue
         matches[track['uri']] = track
-    return next(iter(matches.values())) if len(matches) == 1 else None
+    if catalogue and matches:
+        preferred={uri:t for uri,t in matches.items() if event.get('album') and
+            album_key((t.get('album') or {}).get('name'))==album_key(event['album'])}
+        if preferred:matches=preferred
+        else:
+            # Recognition services often name a single rather than the actual
+            # physical compilation. Without album agreement require every
+            # remaining catalogue candidate to share an explicit recording ID.
+            identities=[{str(value).upper() for kind,value in t.get('external_ids',[]) if kind=='isrc'} for t in matches.values()]
+            if not identities or not all(identities) or not set.intersection(*identities):return None
+    if len(matches)==1:return next(iter(matches.values()))
+    if catalogue and matches:
+        # Multiple services/copies may expose the same real recording. Require
+        # a shared explicit ISRC rather than choosing between versions blindly.
+        identities=[{str(value).upper() for kind,value in t.get('external_ids',[]) if kind=='isrc'} for t in matches.values()]
+        if identities and all(identities) and set.intersection(*identities):
+            return matches[sorted(matches)[0]]
+    return None
 
 
 class Inbox:
@@ -68,6 +98,7 @@ class Inbox:
         self.path = str(path)
         with self.db() as db:
             db.execute('CREATE TABLE IF NOT EXISTS listens (id TEXT PRIMARY KEY,payload TEXT NOT NULL,status TEXT NOT NULL,updated REAL NOT NULL,attempts INTEGER NOT NULL DEFAULT 0,ma_uri TEXT)')
+            db.execute('CREATE TABLE IF NOT EXISTS contexts(id TEXT PRIMARY KEY,payload TEXT NOT NULL,status TEXT NOT NULL,updated REAL NOT NULL)')
 
     @contextmanager
     def db(self):
@@ -92,15 +123,29 @@ class Inbox:
         return 'accepted'
 
     def deliver_one(self, api):
+        # MA records an album as a played context when one of its tracks is
+        # played; this does not claim every track on that album was heard.
         with self.db() as db:
-            row=db.execute("SELECT id,payload FROM listens WHERE status='pending' OR (status='unresolved' AND attempts<24 AND updated<?) ORDER BY updated LIMIT 1",(time.time()-3600,)).fetchone()
+            context=db.execute("SELECT id,payload FROM contexts WHERE status='pending' LIMIT 1").fetchone()
+            if context:db.execute("UPDATE contexts SET status='uncertain',updated=? WHERE id=?",(time.time(),context[0]))
+        if context:
+            try:api('music/mark_played',dict(media_item=json.loads(context[1]),fully_played=True,user_initiated=True))
+            except Exception:return True
+            with self.db() as db:db.execute("UPDATE contexts SET status='ma_recorded',updated=? WHERE id=?",(time.time(),context[0]))
+            return True
+        with self.db() as db:
+            row=db.execute("SELECT id,payload FROM listens WHERE status='pending' OR (status='unresolved' AND attempts<24 AND updated + CASE WHEN attempts<4 THEN 30*(1 << attempts) ELSE 3600 END <= ?) ORDER BY updated LIMIT 1",(time.time(),)).fetchone()
         if not row:return False
         identifier,payload=row;event=json.loads(payload)
         try:
             found=api('music/search',dict(search_query=event['title']+' '+event['artist'],media_types=['track'],limit=25,library_only=True))
-            # Never choose from a possibly truncated list.
+            # A truncated library search cannot prove a unique library item.
             tracks=found.get('tracks',[]) if isinstance(found,dict) else []
             track=resolve(event,tracks) if len(tracks)<25 else None
+            if not track:
+                found=api('music/search',dict(search_query=event['title']+' '+event['artist'],media_types=['track'],limit=25,library_only=False))
+                tracks=found.get('tracks',[]) if isinstance(found,dict) else []
+                track=resolve(event,tracks,catalogue=True)
         except Exception:
             track=None
         if not track:
@@ -111,8 +156,20 @@ class Inbox:
         # or network ambiguity stays uncertain for manual reconciliation.
         with self.db() as db:
             db.execute("UPDATE listens SET status='uncertain',ma_uri=?,updated=? WHERE id=?",(track['uri'],time.time(),identifier))
+            album=track.get('album') or {}
+            if (album.get('media_type')=='album' and album.get('uri') and
+                    album_key(album.get('name'))==album_key(event.get('album'))):
+                bucket=str(int(event['first_observed_at']//14400))
+                session=(str(event['listening_session_id'])+'|'+bucket
+                    if event.get('listening_session_id') else bucket)
+                context_id=hashlib.sha256((event['room']+event['source']+session+album['uri']).encode()).hexdigest()
+                db.execute('INSERT OR IGNORE INTO contexts VALUES(?,?,?,?)',
+                    (context_id,json.dumps(album),'pending',time.time()))
+        duration=event.get('duration_seconds')
+        complete=bool(event.get('track_start_inferred') and type(duration) in (int,float)
+            and math.isfinite(duration) and duration>0 and event['listened_seconds']>=max(30,.9*duration))
         try:
-            api('music/mark_played',dict(media_item=track,fully_played=False,
+            api('music/mark_played',dict(media_item=track,fully_played=complete,
                 seconds_played=int(event['listened_seconds']),is_playing=False,user_initiated=False))
         except Exception:
             return True

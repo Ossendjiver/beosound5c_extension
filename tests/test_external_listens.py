@@ -48,3 +48,38 @@ class InboxTests(unittest.TestCase):
     def test_missing_track_retained(self):
         self.box.accept(self.event);self.box.deliver_one(lambda *args:{'tracks':[]})
         self.assertEqual(self.status(),'unresolved')
+
+    def test_real_provider_catalogue_resolves_without_library_prerequisite(self):
+        track=dict(self.track,provider='tidal-instance',uri='tidal-instance://track/123',album={'name':'Album (Expanded Edition)'})
+        self.assertIsNone(m.resolve(self.event,[track]))
+        self.assertEqual(m.resolve(self.event,[track],catalogue=True),track)
+        self.assertIsNone(m.resolve(self.event,[dict(track,version='Live')],catalogue=True))
+        self.assertIsNone(m.resolve(self.event,[dict(track,album={'name':'Other Album'})],catalogue=True))
+
+    def test_near_complete_observed_track_can_enter_completed_recents(self):
+        self.box.accept(dict(self.event,listened_seconds=38,duration_seconds=40,track_start_inferred=True))
+        calls=[]
+        def api(command,args):
+            calls.append((command,args));return {'tracks':[self.track]}
+        self.box.deliver_one(api)
+        self.assertTrue(calls[-1][1]['fully_played'])
+        self.assertEqual(calls[-1][1]['seconds_played'],38)
+
+    def test_single_release_label_can_resolve_only_with_shared_recording_id(self):
+        track=dict(self.track,provider='tidal-instance',uri='tidal-instance://track/123',
+            album={'name':'Different compilation'},external_ids=[['isrc','USAAA1234567']])
+        self.assertEqual(m.resolve(self.event,[track],catalogue=True),track)
+        other=dict(track,uri='tidal-instance://track/456',external_ids=[['isrc','USBBB1234567']])
+        self.assertIsNone(m.resolve(self.event,[track,other],catalogue=True))
+
+    def test_album_context_is_recorded_once_without_completing_other_tracks(self):
+        track=dict(self.track,album=dict(name='Album',provider='library',uri='library://album/1',media_type='album',item_id='1'))
+        self.box.accept(self.event);calls=[]
+        def api(command,args):
+            calls.append((command,args));return {'tracks':[track]}
+        self.box.deliver_one(api);self.box.deliver_one(api);self.box.deliver_one(api)
+        marks=[args for command,args in calls if command=='music/mark_played']
+        self.assertEqual(len(marks),2)
+        self.assertFalse(marks[0]['fully_played']);self.assertTrue(marks[1]['fully_played'])
+        self.assertEqual(marks[1]['media_item']['media_type'],'album')
+        self.assertTrue(marks[1]['user_initiated'])
