@@ -1,0 +1,23 @@
+[Unit]
+Description=Verified external listening inbox for Music Assistant
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=thomas
+Group=thomas
+EnvironmentFile=/etc/beosound5c/secrets.env
+EnvironmentFile=/etc/beosound5c/external-listens.env
+StateDirectory=beosound5c-external-listens
+UMask=0077
+ExecStart=/usr/bin/python3 /home/thomas/beosound5c/services/external_listens.py
+Restart=on-failure
+RestartSec=10
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
